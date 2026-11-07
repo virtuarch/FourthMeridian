@@ -9,7 +9,7 @@
  *
  * Three strata, always kept apart on every surface:
  *   registration — an account exists (User rows)
- *   presence     — an authenticated session touched the day (SESSION_ACTIVE_DAY)
+ *   presence     — a human-initiated authenticated request touched the day (SESSION_ACTIVE_DAY; background polls excluded, PB-10 F3)
  *   engagement   — meaningful product activity (product events, chat/brief
  *                  invocations with a userId, connection actions). Never cron,
  *                  webhooks, operator actions or harness invocations.

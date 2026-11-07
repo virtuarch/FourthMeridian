@@ -183,8 +183,9 @@ export function isBoundaryContinuous(
  *
  * Plaid import never writes debtSubtype (exchangeToken.ts), so Plaid cards have
  * debtSubtype = null. We therefore accept an explicit credit_card OR a
- * null-subtype debt account that carries a creditLimit (the only stored
- * revolving-credit signal). Any account with an explicit NON-card subtype
+ * null-subtype debt account that carries a creditLimit OR (PB-8) whose Plaid
+ * `providerSubtype` is a credit subtype ("credit card", "paypal") — Plaid sends
+ * some cards with no limit at all, and those were being held flat. Any account with an explicit NON-card subtype
  * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
  * is excluded and stays flat.
  *
@@ -206,12 +207,30 @@ export function isReconstructableCard(a: {
   type:        string;
   debtSubtype: string | null;
   creditLimit: number | null;
+  /**
+   * PB-8 — `FinancialAccount.providerSubtype` (Plaid `subtype`, lowercased).
+   * Optional only so hand-built inputs keep compiling; every DB caller selects
+   * it (pinned by lib/snapshots/card-predicate-authority.test.ts).
+   */
+  providerSubtype?: string | null;
 }): boolean {
   if (a.type !== "debt") return false;
   if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype === null && a.creditLimit != null) return true;
-  return false;
+  if (a.debtSubtype !== null) return false; // an explicit non-card subtype stays flat
+  if (a.creditLimit != null) return true;
+  // PB-8 — Plaid sends many cards (Capital One among them) with
+  // `balances.limit: null`, so the limit cannot be the only revolving signal.
+  // The provider's own subtype is evidence of the same fact.
+  const sub = a.providerSubtype?.trim().toLowerCase() ?? null;
+  return sub !== null && PLAID_CREDIT_SUBTYPES.has(sub);
 }
+
+/**
+ * PB-8 — Plaid's `credit` account subtypes: revolving, transaction-driven lines
+ * whose posted ledger walks back from the current balance. (Plaid `loan`
+ * subtypes — mortgage, auto, student, … — are installment and never walk.)
+ */
+export const PLAID_CREDIT_SUBTYPES: ReadonlySet<string> = new Set(["credit card", "paypal"]);
 
 // ── Derived snapshot fields (parity with lib/snapshots/regenerate.ts) ─────────
 
@@ -269,6 +288,20 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
   };
 }
 
+/**
+ * FIN-E part 2 — THE value every snapshot writer stores in
+ * `SpaceSnapshot.restrictedCash`: the classifier's restricted share of the SAME
+ * cash the row's `cash + savings` sums (`classifyAccounts.totalRestrictedCash`).
+ * NULL when the totals carry no split (a hand-built `ClassifyTotals`) — never 0,
+ * because a 0 would claim "no restricted cash" where nothing was measured. Kept
+ * OUT of `SnapshotFields` so the stored-row identities pinned on those columns
+ * are untouched. Used by all three writers (regenerate, regenerate-history,
+ * backfill); pinned in lib/snapshots/restricted-cash-writers.test.ts.
+ */
+export function snapshotRestrictedCash(c: Pick<ClassifyTotals, "totalRestrictedCash">): number | null {
+  return typeof c.totalRestrictedCash === "number" && Number.isFinite(c.totalRestrictedCash) ? c.totalRestrictedCash : null;
+}
+
 export interface SnapshotFields {
   stocks:      number;
   crypto:      number;
@@ -323,8 +356,9 @@ const FLOOR_EPOCH = new Date(0);
  * Per account:
  *   - account-level floor = its earliest real (non-deleted) Transaction; NO
  *     transactions ⇒ `today` (genuinely zero reconstructable days) EXCEPT a
- *     held-flat balance-bearing cash/debt account (REG-2), which floors to EPOCH
- *     so it spans the window held flat at its current balance;
+ *     held-flat balance-bearing account (REG-2): a cash account floors to EPOCH
+ *     (spans the window held flat at its current balance); a DEBT account
+ *     (PB-8) floors to its connection — ESTIMATED from there, UNKNOWN before;
  *   - SECONDARY floor (SHARED spaces only) = the SpaceAccountLink.createdAt — this
  *     Space's history cannot predate when the account was shared into it; a
  *     PERSONAL space (the account's home) has no such bound (it would re-collapse
@@ -335,7 +369,14 @@ const FLOOR_EPOCH = new Date(0);
  * floor to EPOCH. Pure: `today` is passed in, EPOCH is a constant.
  */
 export function computeAccountFloors(
-  entries:             readonly { id: string; linkCreatedAt: Date }[],
+  entries:             readonly {
+    id: string;
+    linkCreatedAt: Date;
+    /** PB-8 — the account's type; a held-flat `debt` account never floors to EPOCH. */
+    type?: string;
+    /** PB-8 — FinancialAccount.createdAt, for that liability's connection floor. */
+    accountCreatedAt?: Date;
+  }[],
   earliestTxByAccount: ReadonlyMap<string, Date>,
   heldFlatIds:         ReadonlySet<string>,
   isSharedSpace:       boolean,
@@ -343,9 +384,16 @@ export function computeAccountFloors(
   ignoreFloors = false,
 ): Map<string, Date> {
   return new Map(
-    entries.map(({ id, linkCreatedAt }): [string, Date] => {
+    entries.map(({ id, linkCreatedAt, type, accountCreatedAt }): [string, Date] => {
       if (ignoreFloors) return [id, FLOOR_EPOCH];
-      const txFloor = earliestTxByAccount.get(id) ?? (heldFlatIds.has(id) ? FLOOR_EPOCH : today);
+      // PB-8 (owner 2026-11-02) — a held-flat LIABILITY (a mortgage with no
+      // transactions) is never painted backward across the epoch: it is present
+      // from its CONNECTION (max(account created, linked)) and UNKNOWN before.
+      // A held-flat cash account keeps REG-2's EPOCH floor (out of PB-8's scope).
+      const heldFlatFloor = type === "debt"
+        ? maxDate(truncDateUTC(accountCreatedAt ?? linkCreatedAt), truncDateUTC(linkCreatedAt))
+        : FLOOR_EPOCH;
+      const txFloor = earliestTxByAccount.get(id) ?? (heldFlatIds.has(id) ? heldFlatFloor : today);
       const linkFloor = isSharedSpace ? truncDateUTC(linkCreatedAt) : FLOOR_EPOCH;
       return [id, maxDate(txFloor, linkFloor)];
     }),
@@ -383,4 +431,63 @@ export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
   const cashOnHand  = Math.max(cash, 0);
 
   return { stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+}
+
+// ── FM-AUDIT-022 — unvalued wallets in the historical backfill ────────────────
+
+/**
+ * The shape `resolveWalletBalance` (lib/crypto/wallet-current-value.ts) returns
+ * — declared structurally so this module stays import-free and pure.
+ */
+export interface ResolvedWalletBalance {
+  balance: number;
+  valuationUnknown?: true;
+}
+
+/**
+ * FM-AUDIT-022 — the backfill's account rows, run through THE totals
+ * classification for a wallet (`resolveWalletBalance`, resolved by the caller
+ * and passed in keyed by account id).
+ *
+ * The backfill holds crypto FLAT at today's value. "Today's value" must be the
+ * same one today's live snapshot counts (lib/snapshots/space-accounts.ts), not
+ * the stored `FinancialAccount.balance` column: for a NO_PRICE /
+ * NO_OBSERVATION wallet that column is the schema DEFAULT 0 or an undated,
+ * unprovenanced figure, and carrying it back 30 days wrote a number today's
+ * row explicitly refuses ("excluded, not yet valued").
+ *
+ *   no entry in `resolved` (not a spine wallet) → row untouched, byte-identical
+ *   VALUED / STALE                               → the spine value
+ *   NO_PRICE / NO_OBSERVATION                    → structural 0 + `valuationUnknown`,
+ *                                                  so `classifyAccounts` EXCLUDES it
+ *                                                  and counts it in `unvaluedCount`
+ */
+export function applyResolvedWalletBalances<T extends { id: string; balance: number }>(
+  accounts: readonly T[],
+  resolved: ReadonlyMap<string, ResolvedWalletBalance>,
+): Array<T & { valuationUnknown?: true }> {
+  return accounts.map((a) => {
+    const r = resolved.get(a.id);
+    if (r === undefined) return a;
+    return {
+      ...a,
+      balance: r.balance,
+      ...(r.valuationUnknown ? { valuationUnknown: true as const } : {}),
+    };
+  });
+}
+
+/**
+ * FM-AUDIT-022 — the completeness tier a reconstructed row records from its
+ * classification: "incomplete" when any account was EXCLUDED from the totals
+ * (an FX-unavailable balance, `unconverted`; or an unvalued wallet,
+ * `unvaluedCount`), else null (NOT RECORDED — the prior backfill behaviour).
+ *
+ * The same expression the live writer stamps (lib/snapshots/regenerate.ts,
+ * `c.unconverted || c.unvaluedCount > 0 ? "incomplete" : null`), in the same
+ * canonical vocabulary (snapshot-completeness.core.ts reads "incomplete" as
+ * `unreliable`). No new field, no parallel vocabulary.
+ */
+export function excludedTotalsCompletenessTier(c: { unconverted: boolean; unvaluedCount: number }): "incomplete" | null {
+  return c.unconverted || c.unvaluedCount > 0 ? "incomplete" : null;
 }

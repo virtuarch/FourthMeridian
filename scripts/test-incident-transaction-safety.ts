@@ -36,7 +36,7 @@
  * commits — and then raises P2002. That is the production interleaving, forced.
  */
 import { PrismaClient, Prisma } from "@prisma/client";
-import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
+import { applyOperatorTransition, recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
 import { buildIncidentKey } from "@/lib/platform/incidents/identity";
 
 const URL = process.env.TX1_DATABASE_URL;
@@ -345,6 +345,20 @@ async function main() {
     const b = await db.syncIssue.findUnique({ where: { id: blocking!.incidentId }, select: { resolved: true, resolvedAt: true, resolutionKind: true } });
     check("it carries a resolution timestamp and kind",
       b?.resolved === true && b?.resolvedAt !== null && b?.resolutionKind === "AUTOMATIC_RECOVERY");
+    // P8 #1 — against the REAL CHECKs (resolved/state/reason, evidence size, event codes):
+    // the closure is a transition with its proof and its timeline event.
+    const full = await db.syncIssue.findUnique({ where: { id: blocking!.incidentId }, select: { lifecycleState: true, resolutionReasonCode: true, resolutionEvidence: true } });
+    const ev = full?.resolutionEvidence as { rule?: string; proofCount?: number; proof?: { endpoint?: string; status?: string }[] } | null;
+    check("it is lifecycleState RESOLVED with reason TRANSACTIONS_SYNC_SUCCEEDED (the DB CHECK accepted it)",
+      full?.lifecycleState === "RESOLVED" && full?.resolutionReasonCode === "TRANSACTIONS_SYNC_SUCCEEDED", JSON.stringify(full));
+    check("its resolutionEvidence is the SUCCEEDED TRANSACTIONS stage",
+      ev?.rule === "TRANSACTIONS_SYNC_SUCCEEDED_V1" && ev.proofCount === 1 && ev.proof?.[0]?.endpoint === "TRANSACTIONS" && ev.proof?.[0]?.status === "SUCCEEDED");
+    const changed = await db.syncIssueEvent.findMany({ where: { incidentId: blocking!.incidentId, type: "STATE_CHANGED" }, select: { fromState: true, toState: true, actorKind: true } });
+    check("exactly one SYSTEM STATE_CHANGED ACTIVE → RESOLVED event was written",
+      changed.length === 1 && changed[0].fromState === "ACTIVE" && changed[0].toState === "RESOLVED" && changed[0].actorKind === "SYSTEM", JSON.stringify(changed));
+    const rerun = await resolveByAutomaticRecovery({ plaidItemId: ITEM, domain: "transactions", runId: null }, db, async () => null);
+    const after = await db.syncIssueEvent.count({ where: { incidentId: blocking!.incidentId, type: "STATE_CHANGED" } });
+    check("a re-run is idempotent: 0 resolved, no second event", rerun.resolved === 0 && after === 1);
     const u = await db.syncIssue.findUnique({ where: { id: unrelated!.incidentId }, select: { resolved: true } });
     check("the unrelated investments condition stays OPEN", u?.resolved === false);
     resolvedEpisodeId = blocking!.incidentId;
@@ -362,6 +376,70 @@ async function main() {
     const row = await db.syncIssue.findUnique({ where: { id: again!.incidentId }, select: { previousIncidentId: true } });
     check("it links back to the previous generation via previousIncidentId",
       row?.previousIncidentId === resolvedEpisodeId, `${row?.previousIncidentId}`);
+  }
+
+  // ── E8 — PB-1 S6 OPERATOR TRANSITIONS against the real CHECKs ────────────
+  console.log("\nE8. OPERATOR — acknowledge / resolve satisfy the DB CHECKs, keep the B9-rollback constraints, and CAS under a real race");
+  {
+    await reset();
+    const actor = { userId: "tx1-operator", via: "PLATFORM_GRANT" as const, area: "PLATFORM_OPS" };
+    const reason = { code: "INCIDENT" as const, note: "disposable harness" };
+    const o = await recordIncidentObservation(OBS(), db, async () => null);
+    const ack = await applyOperatorTransition({ incidentId: o!.incidentId, transition: { action: "acknowledge" }, actor, reason }, db);
+    const a = await db.syncIssue.findUnique({ where: { id: o!.incidentId }, select: { lifecycleState: true, resolved: true, acknowledgedAt: true, acknowledgedById: true, acknowledgedAuditId: true } });
+    check("acknowledge commits: the three acknowledged* fields together, lifecycleState NULL (B9 constraint a)",
+      ack.ok && ack.changed === true && !!a?.acknowledgedAt && a.acknowledgedById === actor.userId && !!a.acknowledgedAuditId && a.lifecycleState === null && a.resolved === false, JSON.stringify({ ack, a }));
+    const audit = await db.auditLog.findUnique({ where: { id: a!.acknowledgedAuditId! }, select: { action: true, performedByAdminId: true } });
+    check("…its AuditLog row exists (same transaction)", audit?.action === "SYNC_INCIDENT_ACKNOWLEDGED" && audit.performedByAdminId === actor.userId);
+    const opEvents = await db.syncIssueEvent.findMany({ where: { incidentId: o!.incidentId, actorKind: "OPERATOR" }, select: { type: true, actionCode: true, auditId: true } });
+    check("…and its OPERATOR event", opEvents.length === 1 && opEvents[0].actionCode === "ACKNOWLEDGE" && opEvents[0].auditId === a!.acknowledgedAuditId);
+    let partial: string | null = null;
+    try { await db.$executeRawUnsafe(`UPDATE "SyncIssue" SET "acknowledgedById" = NULL WHERE id = $1`, o!.incidentId); } catch (e) { partial = String((e as { message?: string })?.message ?? e); }
+    check("non-vacuity: a partial acknowledgement is refused by SyncIssue_acknowledged_all_or_none_check", !!partial && /acknowledged_all_or_none/.test(partial), partial ? partial.slice(0, 200) : "accepted");
+    // The B9 rollback contract: B9's automatic resolution (resolved=true, lifecycleState untouched)
+    // must still be writable on an ACKNOWLEDGED row. Run it and roll it back.
+    const b9: { error: string | null } = { error: "not run" };
+    try {
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`UPDATE "SyncIssue" SET resolved = true, "resolvedAt" = now(), "resolutionKind" = 'AUTOMATIC_RECOVERY' WHERE id = $1`, o!.incidentId);
+        b9.error = null;
+        throw new Error("rollback");
+      });
+    } catch (e) { if (b9.error !== null) b9.error = msg(e); }
+    check("B9 rollback contract: B9-style auto-resolution of an acknowledged row passes every CHECK", b9.error === null, b9.error ?? "");
+
+    // A real race: a concurrent observation holds the row (lastOccurredAt / updatedAt move) while the
+    // operator resolve reads the OLD version; its CAS blocks, then re-checks and matches 0 rows.
+    const release = defer();
+    const held = defer();
+    const racer = other.$transaction(async (wtx) => {
+      await wtx.syncIssue.update({ where: { id: o!.incidentId }, data: { lastOccurredAt: new Date() } });
+      held.resolve();
+      await release.p;
+    }, { timeout: 30000 });
+    await held.p;
+    const pending = applyOperatorTransition({ incidentId: o!.incidentId, transition: { action: "resolve", resolutionReasonCode: "OPERATOR_FIXED" }, actor, reason }, db);
+    await new Promise((r) => setTimeout(r, 300));
+    release.resolve();
+    await racer;
+    const lost = await pending;
+    const afterLost = await db.syncIssue.findUnique({ where: { id: o!.incidentId }, select: { resolved: true, resolutionAuditId: true } });
+    const resolveAudits = await db.auditLog.count({ where: { action: "SYNC_INCIDENT_RESOLVED", performedByAdminId: actor.userId } });
+    check("a concurrent observation makes the resolve a CONFLICT; nothing committed (row open, no audit row)",
+      !lost.ok && lost.code === "CONFLICT" && afterLost?.resolved === false && afterLost.resolutionAuditId === null && resolveAudits === 0, JSON.stringify({ lost, afterLost, resolveAudits }));
+
+    const res = await applyOperatorTransition({ incidentId: o!.incidentId, transition: { action: "resolve", resolutionReasonCode: "OPERATOR_FIXED" }, actor, reason }, db);
+    const r = await db.syncIssue.findUnique({ where: { id: o!.incidentId }, select: { lifecycleState: true, resolved: true, resolvedAt: true, resolutionKind: true, resolutionReasonCode: true, resolvedById: true, resolutionAuditId: true, resolutionEvidence: true } });
+    check("resolve commits through every CHECK: RESOLVED + resolved + resolvedAt + reason, operator + audit",
+      res.ok && res.changed === true && r?.lifecycleState === "RESOLVED" && r.resolved === true && !!r.resolvedAt && r.resolutionKind === "OPERATOR_RESOLVED"
+      && r.resolutionReasonCode === "OPERATOR_FIXED" && r.resolvedById === actor.userId && !!r.resolutionAuditId
+      && (r.resolutionEvidence as { rule?: string } | null)?.rule === "OPERATOR_RESOLVED_V1", JSON.stringify(r));
+    const next = await recordIncidentObservation(OBS(), db, async () => null);
+    const nrow = await db.syncIssue.findUnique({ where: { id: next!.incidentId }, select: { previousIncidentId: true, openedBy: true, lifecycleState: true } });
+    const oldRow = await db.syncIssue.findUnique({ where: { id: o!.incidentId }, select: { resolved: true, lifecycleState: true } });
+    check("the next failure opens a NEW episode (RECURRENCE, linked back, state NULL); the resolved row stays RESOLVED (B9 constraint b)",
+      next?.created === true && nrow?.previousIncidentId === o!.incidentId && nrow.openedBy === "RECURRENCE" && nrow.lifecycleState === null
+      && oldRow?.resolved === true && oldRow.lifecycleState === "RESOLVED", JSON.stringify({ nrow, oldRow }));
   }
 
   console.log(failures === 0

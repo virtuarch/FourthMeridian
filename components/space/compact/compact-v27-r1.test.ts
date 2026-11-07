@@ -40,7 +40,7 @@ const baseline = JSON.parse(read("components/space/compact/desktop-baseline.json
 const RAIL = ["Overview", "Activity", "Accounts", "Transactions", "Members"].map((label) => ({ id: label.toUpperCase(), label }));
 const COMPACT_RAIL = RAIL.filter((o) => o.id !== "MEMBERS");
 const shell = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(SpaceShell, {
-  title: "Chris's Space", subtitle: "Personal · Updated 3h ago", currencyControl: createElement("button", { type: "button" }, "USD"), onManage: () => {},
+  title: "Jules's Space", subtitle: "Personal · Updated 3h ago", currencyControl: createElement("button", { type: "button" }, "USD"), onManage: () => {},
   railOptions: RAIL, compactRailOptions: COMPACT_RAIL, activeTab: "OVERVIEW", onSelectTab: () => {}, mobileOptimized: true,
   children: createElement("p", null, "content"), ...extra,
 } as never));
@@ -67,13 +67,13 @@ console.log("1. the compact header row");
 {
   const html = shell({ compactTitleOnly: true });
   const row = headerRow(html);
-  check("the Space name, title weight, truncating", /<h1 class="lg:hidden truncate text-lg font-semibold[^"]*">Chris&#x27;s Space<\/h1>/.test(row), row.slice(0, 300));
+  check("the Space name, title weight, truncating", /<h1 class="lg:hidden truncate text-lg font-semibold[^"]*">Jules&#x27;s Space<\/h1>/.test(row), row.slice(0, 300));
   check("the name renders ONCE in the compact header (no subtitle line repeating it, no small eyebrow copy)",
-    (row.match(/Chris&#x27;s Space/g) ?? []).length === 1 && !/Updated 3h ago/.test(row) && !/<h1 class="[^"]*text-\[13px\]/.test(row));
-  check("order: name, then USD, then Manage", row.indexOf("Chris&#x27;s Space") < row.indexOf(">USD<") && row.indexOf(">USD<") < row.indexOf("Manage"));
+    (row.match(/Jules&#x27;s Space/g) ?? []).length === 1 && !/Updated 3h ago/.test(row) && !/<h1 class="[^"]*text-\[13px\]/.test(row));
+  check("order: name, then USD, then Manage", row.indexOf("Jules&#x27;s Space") < row.indexOf(">USD<") && row.indexOf(">USD<") < row.indexOf("Manage"));
   check("no date control and no view selector in the header row", !/data-timeline-period|data-compact-view-selector|fm-compact-time-slot/.test(row));
   const tx = headerRow(shell({ activeTab: "TRANSACTIONS" }));
-  check("non-Overview tabs keep name + subtitle + controls (unchanged)", /<h1 class="truncate text-lg font-semibold[^"]*">Chris&#x27;s Space<\/h1><p[^>]*>Personal · Updated 3h ago<\/p>/.test(tx) && /Manage/.test(tx));
+  check("non-Overview tabs keep name + subtitle + controls (unchanged)", /<h1 class="truncate text-lg font-semibold[^"]*">Jules&#x27;s Space<\/h1><p[^>]*>Personal · Updated 3h ago<\/p>/.test(tx) && /Manage/.test(tx));
   check("host: title-only on Overview, the compact rail without Members",
     /compactTitleOnly=\{activeTab === "OVERVIEW"\}/.test(code("components/dashboard/SpaceDashboard.tsx"))
       && /const compactRailOptions = railOptions\.filter\(\(o\) => o\.id !== "MEMBERS"\);/.test(code("components/dashboard/SpaceDashboard.tsx")));

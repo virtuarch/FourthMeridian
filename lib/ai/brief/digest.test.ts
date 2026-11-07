@@ -104,7 +104,7 @@ console.log('\n3. what MUST move it');
   differs('a change window becoming measurable or refused', (p) => { delete p.recentChanges.m1; });
   differs('freshness degrading (LIVE → RECENT)', (p) => { p.freshness!.band = 'RECENT'; });
   differs('needsReauth appearing', (p) => { p.freshness!.needsReauth = true; });
-  differs('the knowledge-gap set changing', (p) => { p.dataQuality.knowledgeGaps = [{ account: 'Amex Gold', missing: 'APR' }]; });
+  differs('the knowledge-gap set changing', (p) => { p.dataQuality.knowledgeGaps = [{ account: 'Example Card Product D', missing: 'APR' }]; });
   differs('an ungraded section appearing', (p) => { p.dataQuality.ungraded = [{ section: 'debt', reason: 'APR_MISSING' }]; });
   differs('a verdict changing', (p) => { p.behavior!.liquidity = { ...p.behavior!.liquidity!, classification: 'WARNING', coverageMonths: 1.1 }; });
   differs('the debt RATE verdict changing (the projection key is still `debt`)',
@@ -129,14 +129,14 @@ console.log('\n3. what MUST move it');
 console.log('\n3b. a source changing state');
 {
   const stale = structuredClone(base);
-  stale.freshness = { ...stale.freshness!, staleSources: [{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
+  stale.freshness = { ...stale.freshness!, staleSources: [{ label: 'Example Bank', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
   const dStale = materialDigest(stale);
   check('a source newly needing attention moves it', dStale !== d0);
   const later = structuredClone(stale);
   later.freshness!.staleSources![0].lastUpdated = '2026-08-10';
   check('its date alone does not (the band carries age)', materialDigest(later) === dStale);
   const recovered = structuredClone(stale);
-  recovered.freshness!.staleSources = [{ label: 'Chase', state: 'OUT_OF_DATE', lastUpdated: '2026-08-18' }];
+  recovered.freshness!.staleSources = [{ label: 'Example Bank', state: 'OUT_OF_DATE', lastUpdated: '2026-08-18' }];
   check('the same source changing state moves it', materialDigest(recovered) !== dStale);
 }
 

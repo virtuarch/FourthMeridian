@@ -80,7 +80,7 @@ source — `SpaceSnapshot`, not the valuation path).
 
 ## 4 · Reproduction (Phase 2), read-only
 
-Every screenshot value reproduced exactly for Chris' Space:
+Every screenshot value reproduced exactly for Jules' Space:
 
 | Field | Reproduced |
 |---|---|

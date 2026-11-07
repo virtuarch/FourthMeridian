@@ -62,6 +62,7 @@ import {
   isProviderCleanupOwed,
   type ProviderCleanupStatus,
 } from "@/lib/platform/plaid/provider-cleanup";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -80,12 +81,14 @@ export type ProviderCleanupRetryResponse = {
   /** True when the obligation remains after the attempt. */
   stillOwed: boolean;
   /** Present when the retry could not even be attempted. */
-  skipped?: "NOT_OWED" | "ITEM_GONE";
+  skipped?: "NOT_OWED" | "ITEM_GONE" | "IN_PROGRESS";
 };
 
 export async function POST(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "ops-provider-cleanup");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => null)) as { plaidItemId?: unknown } | null;
   const plaidItemId = typeof body?.plaidItemId === "string" ? body.plaidItemId : null;
@@ -99,6 +102,15 @@ export async function POST(req: NextRequest) {
   if (!(await isProviderCleanupOwed(plaidItemId))) {
     return NextResponse.json(
       { plaidItemId, confirmed: false, stillOwed: false, skipped: "NOT_OWED" } satisfies ProviderCleanupRetryResponse,
+      { status: 409 },
+    );
+  }
+
+  // PB-5 (S2) — an operator removal inside its PRE_PROVIDER grace window may
+  // have its own provider call in flight: never start a second one beside it.
+  if ((await getProviderCleanupStatus()).owed.some((o) => o.plaidItemId === plaidItemId && o.inProgress)) {
+    return NextResponse.json(
+      { plaidItemId, confirmed: false, stillOwed: true, skipped: "IN_PROGRESS" } satisfies ProviderCleanupRetryResponse,
       { status: 409 },
     );
   }

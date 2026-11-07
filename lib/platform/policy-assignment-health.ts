@@ -15,32 +15,42 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { env } from "@/lib/env";
 import { resolvableGroupKeys, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import { opaqueDedupeToken, opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 
 /** The narrow read surface (systemDb satisfies it; tests hand a fake). Counts and finds only. */
 export interface PolicyAssignmentReadClient {
   user: {
-    count(args: { where: { role: "USER"; deactivatedAt: null; policyAssignment: { is: null } } }): Promise<number>;
+    count(args: { where: typeof UNASSIGNED_CUSTOMER_WHERE }): Promise<number>;
     findMany(args: {
-      where: { role: "USER"; deactivatedAt: null; policyAssignment: { is: null } };
+      where: typeof UNASSIGNED_CUSTOMER_WHERE;
       select: { id: true; createdAt: true };
       orderBy: { createdAt: "asc" };
       take: number;
     }): Promise<{ id: string; createdAt: Date }[]>;
   };
   customerPolicyAssignment: {
-    count(args: { where: { policyGroup: { notIn: string[] }; user: { role: "USER"; deactivatedAt: null } } }): Promise<number>;
+    count(args: { where: { policyGroup: { notIn: string[] }; user: typeof OPEN_CUSTOMER_WHERE } }): Promise<number>;
     findMany(args: {
-      where: { policyGroup: { notIn: string[] }; user: { role: "USER"; deactivatedAt: null } };
+      where: { policyGroup: { notIn: string[] }; user: typeof OPEN_CUSTOMER_WHERE };
       select: { userId: true; policyGroup: true; assignedAt: true };
       orderBy: { assignedAt: "asc" };
       take: number;
     }): Promise<{ userId: string; policyGroup: string; assignedAt: Date }[]>;
   };
 }
+
+/**
+ * WHO IS UNASSIGNED — an active USER-role account with no assignment row. The
+ * ONE predicate: this alert read and the Customer Success "who needs help"
+ * reader (lib/platform/customer/attention.ts) both use it, so the alert and the
+ * dashboard can never disagree about who is affected.
+ */
+export const UNASSIGNED_CUSTOMER_WHERE = { ...OPEN_CUSTOMER_WHERE, policyAssignment: { is: null } };
 
 export async function loadPolicyAssignmentHealth(opts: {
   client?: PolicyAssignmentReadClient; enforced?: boolean; now?: Date; cap?: number;
@@ -55,8 +65,8 @@ export async function loadPolicyAssignmentHealth(opts: {
   const known = resolvableGroupKeys(opts.catalogue ?? await loadPolicyGroupCatalogue());
   // Review fix: only accounts that can use the product — deactivated (incl.
   // pending-deletion) accounts and non-customer roles are not affected parties.
-  const unassignedWhere = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };
-  const unknownWhere = { policyGroup: { notIn: known }, user: { role: "USER" as const, deactivatedAt: null } };
+  const unassignedWhere = UNASSIGNED_CUSTOMER_WHERE;
+  const unknownWhere = { policyGroup: { notIn: known }, user: OPEN_CUSTOMER_WHERE };
   const [unassignedCount, unassignedRows, unknownCount, unknownRows] = await Promise.all([
     client.user.count({ where: unassignedWhere }),
     client.user.findMany({ where: unassignedWhere, select: { id: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: cap }),
@@ -68,5 +78,7 @@ export async function loadPolicyAssignmentHealth(opts: {
     unassignedRows: unassignedRows.map((r) => ({ userId: r.id, createdAt: r.createdAt })),
     unknownRows,
     enforced: opts.enforced ?? env.isPolicyAssignmentFailClosed,
+    refOf: opaqueUserRef,
+    dedupeOf: opaqueDedupeToken,
   }, opts.now ?? new Date(), cap);
 }

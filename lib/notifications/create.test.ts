@@ -231,7 +231,7 @@ async function run(): Promise<void> {
     const input = {
       type: "SYNC_FAILED" as NotificationTypeId,
       userId: "u1",
-      data: { plaidItemId: "item_1", institutionName: "Chase" },
+      data: { plaidItemId: "item_1", institutionName: "Example Bank" },
     };
     const first = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     const second = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
@@ -323,8 +323,8 @@ async function run(): Promise<void> {
       id: "inv_1",
       status: "PENDING",
       expiresAt: new Date("2026-08-01T00:00:00Z"),
-      space: { name: "Hogan Family" },
-      invitedBy: { name: "Chris Hogan", username: "chris" },
+      space: { name: "Example Family" },
+      invitedBy: { name: "Jules Example", username: "jules" },
     };
     const input = buildSpaceInviteNotificationInput("space_1", "u_invitee", invite);
     check("invite maps to SPACE_INVITE_RECEIVED", input.type === "SPACE_INVITE_RECEIVED");
@@ -332,8 +332,8 @@ async function run(): Promise<void> {
     check(
       "metadata honors the pointer contract (inviteId, spaceName, inviterName)",
       input.data?.inviteId === "inv_1" &&
-        input.data?.spaceName === "Hogan Family" &&
-        input.data?.inviterName === "@chris",
+        input.data?.spaceName === "Example Family" &&
+        input.data?.inviterName === "@jules",
     );
     check("expiry mirrors SpaceInvite.expiresAt", input.expiresAt === invite.expiresAt);
 
@@ -341,7 +341,7 @@ async function run(): Promise<void> {
     const res = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("invite producer creates exactly one notification", res.status === "created" && fake.rows.length === 1);
-    check("invite title renders with the Space name", row.title === "You're invited to Hogan Family");
+    check("invite title renders with the Space name", row.title === "You're invited to Example Family");
     check("invite notification carries the Space context", row.spaceId === "space_1");
   }
   {
@@ -390,7 +390,7 @@ async function run(): Promise<void> {
     // with no override rows (dedupe key resolves from data.plaidItemId).
     const fake = makeFakeClient();
     const res = await createNotification(
-      { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Chase" } },
+      { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Example Bank" } },
       { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     check("default-ON type (SYNC_COMPLETED) creates a row with no override rows", res.status === "created" && fake.rows.length === 1);
@@ -425,7 +425,7 @@ async function run(): Promise<void> {
   const emailInput = {
     type: "SYNC_FAILED" as NotificationTypeId, // default: IN_APP + EMAIL
     userId: "u1",
-    data: { plaidItemId: "p-hogan", institutionName: "Hogan Bank" },
+    data: { plaidItemId: "p-example", institutionName: "Example Bank" },
   };
   {
     // One email per Space invite: the notification is in-app only — no email
@@ -437,7 +437,7 @@ async function run(): Promise<void> {
       const fake = makeFakeClient();
       const { adapter, messages } = makeFakeAdapter({ status: "sent", id: "m", provider: "resend" });
       const res = await createNotification(
-        { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i1", spaceName: "Hogan Family", inviterName: "@chris" } },
+        { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i1", spaceName: "Example Family", inviterName: "@jules" } },
         { client: fake.client, prefClient: prefs, emailAdapter: adapter },
       );
       check(`SPACE_INVITE_RECEIVED (${label}): in-app row created, NO email, no delivery row`,
@@ -458,7 +458,7 @@ async function run(): Promise<void> {
     check("attempts starts at 1 (retries are OPS-4)", d.attempts === 1);
     check("delivery row anchored to the created notification", d.notificationId === res.id);
     check("adapter got the recipient email + rendered copy",
-      messages[0]?.email === "u1@example.com" && messages[0]?.title === "We couldn't sync Hogan Bank");
+      messages[0]?.email === "u1@example.com" && messages[0]?.title === "We couldn't sync Example Bank");
   }
   {
     // Failed send → row records the failure; deliveredAt stays null.
@@ -505,7 +505,7 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
     const emailOnFinancial = makePrefClient([{ category: "FINANCIAL", channel: "EMAIL", enabled: true }]);
-    const syncInput = { type: "SYNC_FAILED" as NotificationTypeId, userId: "u1", data: { plaidItemId: "p1", institutionName: "Chase" } };
+    const syncInput = { type: "SYNC_FAILED" as NotificationTypeId, userId: "u1", data: { plaidItemId: "p1", institutionName: "Example Bank" } };
     const first = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
     const second = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
     check("suppressed duplicate ships no second email",

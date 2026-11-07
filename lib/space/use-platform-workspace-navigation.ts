@@ -45,11 +45,21 @@
  *     (`resolvePlatformViewId`, shared with the server's first paint);
  *   • a retired workspace id that became a view (`?workspace=platform-jobs`)
  *     opens that view and canonicalizes in place.
+ *
+ * WORKSPACE-SCOPED FILTERS (PB-4, S2 ruling 2026-11-02) — a param that belongs
+ * to ONE workspace's content (Customer Success's `?attention=`) is DELETED by a
+ * user workspace switch, in the SAME write that changes `?workspace=` (one
+ * commit carrying both keys, with the switch's declared intent). A filter set in
+ * Customers therefore never silently re-applies when the operator comes back
+ * later from another workspace. Hydration and Back/Forward never strip it:
+ * returning to the entry that had it restores it, as any history entry is
+ * restored (and React StrictMode's double mount is irrelevant — nothing is
+ * cleared on unmount).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
-import { buildSpaceUrl, readSpaceParam } from "@/lib/space/space-url";
+import { PLATFORM_WORKSPACE_SCOPED_PARAMS, readSpaceParam } from "@/lib/space/space-url";
 import { resolveSelectedWorkspaceKey, type MountWorkspaceSummary } from "@/lib/space/mount-context";
 import {
   canonicalPlatformWorkspaceId,
@@ -58,36 +68,23 @@ import {
   resolveRequestedPlatformView,
 } from "@/lib/platform/workspaces";
 
-/** The Space-scoped param carrying the open Platform workspace. */
-export const PLATFORM_WORKSPACE_PARAM = "workspace";
+// The pure link builder and its constants live in a server-safe module so the
+// navigation registry imports the SAME function (lib/platform/workspace-href.ts).
+import {
+  PLATFORM_DEFAULT_WORKSPACE_ID,
+  PLATFORM_VIEW_PARAM,
+  PLATFORM_WORKSPACE_PARAM,
+} from "@/lib/platform/workspace-href";
+export {
+  PLATFORM_DEFAULT_WORKSPACE_ID,
+  PLATFORM_VIEW_PARAM,
+  PLATFORM_WORKSPACE_PARAM,
+  platformWorkspaceHref,
+} from "@/lib/platform/workspace-href";
 
-/** The Space-scoped param carrying the open view of that workspace (non-default only). */
-export const PLATFORM_VIEW_PARAM = "view";
-
-/**
- * The Platform default workspace id. Mirrors the server resolver's default
- * (lib/space/mount-context.server.ts `PLATFORM_DEFAULT_WORKSPACE`), which a
- * client module cannot import; lib/space/mount-context.test.ts pins the two
- * agree. It is the id that writes NO param (the clean area URL).
- */
-export const PLATFORM_DEFAULT_WORKSPACE_ID = "platform-overview";
-
-/** The ONLY route that renders a Platform Space (one definition for hrefs). */
-const PLATFORM_ROUTE_PREFIX = "/dashboard/platform/";
-
-/**
- * The canonical deep link for a Platform workspace — what the sidebar row's
- * href carries and what the URL writer commits. The default workspace is the
- * bare area URL; every other workspace appends `?workspace=<id>` through the
- * shared serializer. `viewId` is written as given — callers pass a NON-default
- * view only (the default view is the bare workspace link).
- */
-export function platformWorkspaceHref(area: string, workspaceId: string, viewId?: string | null): string {
-  return buildSpaceUrl(`${PLATFORM_ROUTE_PREFIX}${area}`, "", {
-    [PLATFORM_WORKSPACE_PARAM]: workspaceId === PLATFORM_DEFAULT_WORKSPACE_ID ? null : workspaceId,
-    [PLATFORM_VIEW_PARAM]: viewId ?? null,
-  });
-}
+/** Params scoped to one workspace's content, deleted by a user workspace switch (see the header).
+ *  Declared in the ONE Space-URL list (space-url.ts), typed against SPACE_URL_PARAMS. */
+export { PLATFORM_WORKSPACE_SCOPED_PARAMS };
 
 /** Stable "no views anywhere" map (an area without views, e.g. Security). */
 const NO_VIEWS: Readonly<Record<string, readonly string[]>> = {};
@@ -131,6 +128,8 @@ export function usePlatformWorkspaceNavigation({
 
   // ── HISTORY INTENT — declared by the entry point, never inferred ────────────
   const historyIntent = useRef<"push" | "replace">("replace");
+  /** The workspace the URL last carried — a USER switch away from it clears the workspace-scoped params. */
+  const committedTab = useRef<string | null>(null);
 
   // First paint = the server's resolution of the same URL, so hydration never
   // diverges; everything after mount is URL-driven.
@@ -189,10 +188,14 @@ export function usePlatformWorkspaceNavigation({
     const history = historyIntent.current;
     historyIntent.current = "replace";
     const defaultView = viewIds[state.tab]?.[0] ?? null;
+    // A USER switch (declared PUSH) to another workspace — never hydration or Back/Forward (REPLACE / no write).
+    const switched = history === "push" && committedTab.current !== null && committedTab.current !== state.tab;
+    committedTab.current = state.tab;
     spaceUrl.commit(
       {
         [PLATFORM_WORKSPACE_PARAM]: state.tab === PLATFORM_DEFAULT_WORKSPACE_ID ? null : state.tab,
         [PLATFORM_VIEW_PARAM]: state.view && state.view !== defaultView ? state.view : null,
+        ...(switched ? Object.fromEntries(PLATFORM_WORKSPACE_SCOPED_PARAMS.map((k) => [k, null])) : {}),
       },
       { history },
     );

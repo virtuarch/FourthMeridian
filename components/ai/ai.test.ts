@@ -273,7 +273,7 @@ console.log("5. backend contract unchanged");
 console.log("5a. a knowledge gap renders beneath the answer it belongs to");
 {
   const gaps = [
-    { accountId: "a1", accountName: "Amex Platinum", field: "apr" as const, label: "APR", debtSubtype: "credit_card" },
+    { accountId: "a1", accountName: "Example Card Platinum", field: "apr" as const, label: "APR", debtSubtype: "credit_card" },
   ];
   const extras = () => h(KnowledgeGapCard, {
     children: h(KnowledgeClarificationCard, { gaps, onExpand: noop, onSnooze: noop }),
@@ -287,11 +287,11 @@ console.log("5a. a knowledge gap renders beneath the answer it belongs to");
   }));
 
   check("the answer renders", view.includes("About eleven months at your current pace."));
-  check("the gap renders too", view.includes("APR") && view.includes("Amex Platinum"));
+  check("the gap renders too", view.includes("APR") && view.includes("Example Card Platinum"));
   check("…in words, not by icon or colour alone",
     view.includes("missing for") && view.includes("adding it improves accuracy"));
   check("…beneath the answer, in document order",
-    view.indexOf("About eleven months") < view.indexOf("Amex Platinum"));
+    view.indexOf("About eleven months") < view.indexOf("Example Card Platinum"));
   check("…under a quiet eyebrow, not a warning box",
     view.includes("Sharpen this answer") && !/role="alert"|aria-live/.test(view));
   check("the conversation log is the only announced region",

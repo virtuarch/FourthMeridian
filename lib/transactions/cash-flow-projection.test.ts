@@ -180,11 +180,11 @@ test("liquidity reason measures partition Cash Out (no double-count when combine
 });
 
 // ─── CF-3B — drill-down (rowsForMeasures) shows only the rows behind a measure ───
-// Sanitized real "mixed day" (2026-07-08 Christian's Space): posted Lulu +
+// Sanitized real "mixed day" (2026-07-08 Jules' Space): posted Lulu +
 // T-Mobile card purchases share the day with a card debt payment and income.
 // The bug: the Calendar/History drill-down showed EVERY row that day, mixing
 // purchases with payments and burying the Lulu purchase.
-const LULU = tx({ id: "lulu-jul8", amount: -72.83, date: "2026-07-08", category: "Shopping", flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Lulu Hypermarket" });
+const LULU = tx({ id: "lulu-jul8", amount: -72.83, date: "2026-07-08", category: "Shopping", flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Example Grocer" });
 const mixedDay: LiquidityTx[] = [
   LULU,
   tx({ id: "tmobile", amount: -119, date: "2026-07-08", category: "Utilities", flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "T-Mobile" }),
@@ -261,32 +261,32 @@ test("Phase 1: 'Spending' nets refunds and excludes debt payments / income / wit
 
 // ── Spending Calendar filter — representative real rows (Concern C) ──────────────
 // Reuses the SAME economic measure (allSpending) and rowsForMeasures the Calendar
-// heat-map/tooltip/drawer already consume — no Calendar-only classifier. Four real
-// merchants: Harvey Nichols + Uber on a credit card (liability tier), Lulu
-// Hypermarket + Hunger Station on checking (direct/debit), plus a fee, interest, a
-// refund, and a same-day debt payment. Hunger Station is `pending` (policy row).
-const HARVEY_N = tx({ id: "harvey", amount: -692.97, date: "2026-06-05", category: "Shopping",  flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Harvey Nichols" });
-const LULU_HYP = tx({ id: "luluhyp", amount: -72.83, date: "2026-06-06", category: "Groceries", flowType: "SPENDING", accountId: "chk",  financialAccountId: "chk",  merchant: "Lulu Hypermarket" });
-const UBER_RDE = tx({ id: "uber",   amount: -18.40, date: "2026-06-07", category: "Travel",    flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Uber" });
-const HUNGER_S = tx({ id: "hunger", amount: -33.10, date: "2026-06-08", category: "Dining",    flowType: "SPENDING", accountId: "chk",  financialAccountId: "chk",  merchant: "Hunger Station", pending: true });
+// heat-map/tooltip/drawer already consume — no Calendar-only classifier. Four
+// merchants: a department store + a ride share on a credit card (liability tier), a
+// grocer + a food-delivery app on checking (direct/debit), plus a fee, interest, a
+// refund, and a same-day debt payment. The delivery row is `pending` (policy row).
+const HARVEY_N = tx({ id: "store",  amount: -615.30, date: "2026-06-05", category: "Shopping",  flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Example Dept Store" });
+const LULU_HYP = tx({ id: "grocer", amount: -64.20, date: "2026-06-06", category: "Groceries", flowType: "SPENDING", accountId: "chk",  financialAccountId: "chk",  merchant: "Example Grocer" });
+const UBER_RDE = tx({ id: "uber",   amount: -21.15, date: "2026-06-07", category: "Travel",    flowType: "SPENDING", accountId: "card", financialAccountId: "card", merchant: "Uber" });
+const HUNGER_S = tx({ id: "deliv",  amount: -27.45, date: "2026-06-08", category: "Dining",    flowType: "SPENDING", accountId: "chk",  financialAccountId: "chk",  merchant: "Example Delivery", pending: true });
 const CARD_FEE = tx({ id: "fee",    amount: -12.00, date: "2026-06-09", category: "Fee",       flowType: "FEE",      accountId: "card", financialAccountId: "card", merchant: "Card fee" });
 const CARD_INT = tx({ id: "int",    amount: -8.00,  date: "2026-06-09", category: "Interest",  flowType: "INTEREST", accountId: "card", financialAccountId: "card", merchant: "Interest charge" });
-const CARD_REF = tx({ id: "ref",    amount: 20.00,  date: "2026-06-10", category: "Shopping",  flowType: "REFUND",   accountId: "card", financialAccountId: "card", merchant: "Harvey Nichols refund" });
+const CARD_REF = tx({ id: "ref",    amount: 20.00,  date: "2026-06-10", category: "Shopping",  flowType: "REFUND",   accountId: "card", financialAccountId: "card", merchant: "Example Dept Store refund" });
 const DEBT_PAY = tx({ id: "debt",   amount: -500,   date: "2026-06-08", category: "Payment",   flowType: "DEBT_PAYMENT", accountId: "chk", financialAccountId: "chk", merchant: "AUTOPAY", counterpartyAccountId: "card" });
 const spendingRows: LiquidityTx[] = [HARVEY_N, LULU_HYP, UBER_RDE, HUNGER_S, CARD_FEE, CARD_INT, CARD_REF, DEBT_PAY];
 
 test("Spending filter: all four representative purchases appear in 'Spending'", () => {
   const ids = rowsForMeasures(spendingRows, ["allSpending"], liqCtx).map((r) => r.id).sort();
-  for (const id of ["harvey", "luluhyp", "uber", "hunger"]) {
+  for (const id of ["store", "grocer", "uber", "deliv"]) {
     assert.ok(ids.includes(id), `${id} appears in Spending`);
   }
 });
 
 test("Spending filter: posted card purchases appear in Spending AND Credit-card spending", () => {
   const cc = rowsForMeasures(spendingRows, ["creditCardSpending"], liqCtx).map((r) => r.id);
-  assert.ok(cc.includes("harvey") && cc.includes("uber"), "Harvey Nichols + Uber are credit-card spending");
+  assert.ok(cc.includes("store") && cc.includes("uber"), "dept store + ride share are credit-card spending");
   const dd = rowsForMeasures(spendingRows, ["directDebitSpending"], liqCtx).map((r) => r.id);
-  assert.ok(dd.includes("luluhyp") && dd.includes("hunger"), "Lulu + Hunger Station are direct/debit spending");
+  assert.ok(dd.includes("grocer") && dd.includes("deliv"), "grocer + delivery are direct/debit spending");
   // Both subsets are still part of top-level Spending.
   const spend = new Set(rowsForMeasures(spendingRows, ["allSpending"], liqCtx).map((r) => r.id));
   assert.ok([...cc, ...dd].every((id) => spend.has(id)), "card + debit spending ⊂ Spending");
@@ -304,16 +304,16 @@ test("Spending filter: fees + interest included; refunds net the total down", ()
   assert.ok(spend.includes("fee") && spend.includes("int"), "fee + interest counted as Spending");
   assert.ok(spend.includes("ref"), "refund row surfaces in the Spending drawer (nets the total)");
   const f = aggregateDayFacts(spendingRows, liqCtx);
-  // gross = 692.97+72.83+18.40+33.10+12+8 = 837.30 ; refund 20 ; spend = 817.30
-  assert.equal(Math.round(economicSpend(f) * 100), Math.round(817.30 * 100));
+  // gross = 615.30+64.20+21.15+27.45+12+8 = 748.10 ; refund 20 ; spend = 728.10
+  assert.equal(Math.round(economicSpend(f) * 100), Math.round(728.10 * 100));
 });
 
 test("Spending filter: a pending cost-flow row is included (documents pending policy)", () => {
-  // Hunger Station is pending:true — the projection filters on NOTHING pending, so
+  // The delivery row is pending:true — the projection filters on NOTHING pending, so
   // it is in the Spending cell AND the drawer, exactly like posted rows.
   assert.ok(HUNGER_S.pending === true);
   const spend = rowsForMeasures(spendingRows, ["allSpending"], liqCtx).map((r) => r.id);
-  assert.ok(spend.includes("hunger"), "pending purchase included in Spending (policy)");
+  assert.ok(spend.includes("deliv"), "pending purchase included in Spending (policy)");
 });
 
 test("Spending filter reconciles: Spending == economic spend == Σ Spending-by-Category", () => {
@@ -322,9 +322,9 @@ test("Spending filter reconciles: Spending == economic spend == Σ Spending-by-C
   const byCategory = outflowByCategory(spendingRows).reduce((s, c) => s + c.value, 0);
   assert.equal(Math.round(measure * 100), Math.round(economicSpend(f) * 100));
   assert.equal(Math.round(byCategory * 100), Math.round(economicSpend(f) * 100));
-  // Shopping carries Harvey Nichols £692.97 net of its £20 refund = £672.97.
+  // Shopping carries the dept store 615.30 net of its 20 refund = 595.30.
   const shopping = outflowByCategory(spendingRows).find((c) => c.id === "Shopping");
-  assert.equal(Math.round((shopping?.value ?? 0) * 100), Math.round(672.97 * 100));
+  assert.equal(Math.round((shopping?.value ?? 0) * 100), Math.round(595.30 * 100));
 });
 
 test("Spending filter: credit-card + direct/debit spending partition Spending gross (no overlap)", () => {

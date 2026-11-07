@@ -32,12 +32,12 @@ const code = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8").replace
 // ── A ───────────────────────────────────────────────────────────────────────
 console.log("A · account labels");
 {
-  check("minimized: institution · type · ••last4", minimizedAccountLabel({ institution: "Chase", type: "checking", mask: "1234" }) === "Chase · Checking ••1234");
+  check("minimized: institution · type · ••last4", minimizedAccountLabel({ institution: "Example Bank", type: "checking", mask: "1234" }) === "Example Bank · Checking ••1234");
   check("only the last 4 digits of a longer mask, digits only", maskedDigits("00-98765") === "••8765" && maskedDigits("ab") === null && maskedDigits(null) === null);
   check("no mask ⇒ type word alone; unknown type ⇒ 'Account'", minimizedAccountPart({ type: "savings", mask: null }) === "Savings" && minimizedAccountPart({ type: "weird", mask: null }) === "Account");
   check("no institution ⇒ the account part alone", minimizedAccountLabel({ institution: null, type: "debt", mask: "9" }) === "Debt ••9");
-  check("detail label adds the customer's account name", detailAccountLabel({ institution: "Chase", type: "checking", mask: "1234", name: "Rent fund" }) === "Rent fund (Chase · Checking ••1234)");
-  check("detail label without a name is the minimized label", detailAccountLabel({ institution: "Chase", type: "checking", mask: null, name: "  " }) === "Chase · Checking");
+  check("detail label adds the customer's account name", detailAccountLabel({ institution: "Example Bank", type: "checking", mask: "1234", name: "Rent fund" }) === "Rent fund (Example Bank · Checking ••1234)");
+  check("detail label without a name is the minimized label", detailAccountLabel({ institution: "Example Bank", type: "checking", mask: null, name: "  " }) === "Example Bank · Checking");
 }
 
 // ── B ───────────────────────────────────────────────────────────────────────
@@ -47,7 +47,28 @@ console.log("B · operator lists never read the account name");
   check("the incident preview selects institution / type / mask, not name",
     /financialAccount\.findMany\(\{[\s\S]*?select: \{ id: true, institution: true, type: true, mask: true \}/.test(preview) && !/name: true/.test(preview));
   check("…and labels the account through the minimized helper", /secondary: minimizedAccountPart\(acct\)/.test(preview) && !/acct\.name/.test(preview));
-  check("Platform Ops attention consumes that same minimized preview", /getIncidentPreview\(/.test(code("lib/platform/ops/attention.ts")));
+  // PB-1 R6a — DELIBERATE PIN UPDATE (was: /getIncidentPreview\(/). Ops attention now reads the module's
+  // broken-now page and names subjects through the preview's OWN minimized resolver (the same select and
+  // helper pinned above); it may not resolve subjects any other way, nor touch the account table itself.
+  {
+    const opsAttention = code("lib/platform/ops/attention.ts");
+    check("Platform Ops attention names subjects through that same minimized resolver",
+      /import \{ resolveSubjects \} from "@\/lib\/platform\/incidents\/preview";/.test(opsAttention) && /resolveSubjects\(shown\)/.test(opsAttention)
+      && !/financialAccount|plaidItem\.|institutionName|minimizedAccount/.test(opsAttention));
+    // S2 (R6a review) — hardening: no customer identity in the Ops reader, and its @/lib imports are
+    // pinned to today's set, so a new data-reading import is a reviewed change, not a drive-by.
+    check("Platform Ops attention never names subjectUserId", !/subjectUserId/.test(opsAttention));
+    const OPS_ATTENTION_IMPORTS = [
+      "@/lib/alerts/evaluate", "@/lib/alerts/rules", "@/lib/alerts/run", "@/lib/connections/health", "@/lib/jobs/health",
+      "@/lib/platform/ai/brief-ops", "@/lib/platform/ai/failures", "@/lib/platform/incidents/intelligence",
+      "@/lib/platform/incidents/platform-projection", "@/lib/platform/incidents/preview", "@/lib/platform/incidents/projections",
+      "@/lib/platform/ops/attention-core", "@/lib/platform/policy-assignment-health", "@/lib/platform/provider-health",
+      "@/lib/platform/refresh/execution-query", "@/lib/platform/resource-freshness",
+    ];
+    const opsImports = [...new Set([...opsAttention.matchAll(/from "(@\/lib\/[^"]+)"/g)].map((m) => m[1]))].sort();
+    check("Platform Ops attention imports exactly the reviewed @/lib set (a new data-reading import is a reviewed change)",
+      JSON.stringify(opsImports) === JSON.stringify([...OPS_ATTENTION_IMPORTS].sort()), opsImports.join(", "));
+  }
   check("Customer Success sync issues consume that same minimized preview", /getIncidentPreview\(/.test(code("app/api/platform/customer-success/sync-issues/route.ts")));
 }
 
@@ -75,12 +96,12 @@ console.log("D · full account names only in the audited profile");
     /issues\.map\(\(i\) => i\.financialAccountId\)\.filter\(\(x\): x is string => !!x && accountIds\.includes\(x\)\)/.test(detail));
   check("…through the detail label", /detailAccountLabel\(a\)/.test(detail));
   const v = projectIncidents(
-    [{ id: "i1", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: null, financialAccountId: "a1", firstOccurredAt: null, lastOccurredAt: null, createdAt: new Date(0), resolved: false }],
-    [], [], new Map([["a1", "Rent fund (Chase · Checking ••1234)"]]),
+    [{ id: "i1", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: null, financialAccountId: "a1", firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }],
+    [], [], new Map([["a1", "Rent fund (Example Bank · Checking ••1234)"]]),
   );
-  check("projectIncidents attaches the label", v.open[0].account === "Rent fund (Chase · Checking ••1234)");
+  check("projectIncidents attaches the label", v.open[0].account === "Rent fund (Example Bank · Checking ••1234)");
   check("…and null without one", projectIncidents(
-    [{ id: "i2", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: "p", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: new Date(0), resolved: false }], [], [],
+    [{ id: "i2", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: "p", financialAccountId: null, firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }], [], [],
   ).open[0].account === null);
   check("profile VIEWS never crowd the profile's operator-action list",
     /action: \{ not: AuditAction\.CUSTOMER_PROFILE_VIEWED \}/.test(detail));

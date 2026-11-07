@@ -9,8 +9,20 @@
 
 import type { Account, Snapshot, Transaction } from "@/types";
 
-/** A visible account tagged with the Space it was exported through. */
-export type ExportAccount = Account & { spaceId: string; spaceName: string };
+/**
+ * A visible account tagged with the Space it was exported through.
+ *
+ * FM-AUDIT-022 — `balance` is `null` (never 0) for an account with no value (an
+ * unpriced or never-observed wallet), and `valuationStatus` says why. Both are
+ * set ONLY by `toExportAccount` (lib/export/accounts.ts); a valued account
+ * carries its number and no `valuationStatus` key.
+ */
+export type ExportAccount = Omit<Account, "balance" | "valuationUnknown"> & {
+  balance:          number | null;
+  valuationStatus?: "not_yet_valued";
+  spaceId:          string;
+  spaceName:        string;
+};
 /** A banking transaction tagged with its Space. */
 export type ExportTransaction = Transaction & { spaceId: string };
 
@@ -108,4 +120,6 @@ export interface ExportData {
   aiMemory: Record<string, unknown>[];
   /** PRIV-006 — the user's own Daily Briefs (generated content only). */
   dailyBriefs: Record<string, unknown>[];
+  /** PB-1 Phase 1 — sync incidents about the user (live + 13-month archive), allowlisted fields only. */
+  syncIncidents: { live: Record<string, unknown>[]; archived: Record<string, unknown>[] };
 }

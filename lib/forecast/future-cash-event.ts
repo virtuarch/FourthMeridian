@@ -6,15 +6,15 @@
  * Pure: no DB, no model, no clock of its own, no persistence. Substrate only.
  *
  * ── The failure this closes ─────────────────────────────────────────────────
- * Measured live: a user mentions a $15,500 completion bonus and $1,500 vacation
- * pay, neither with any statement about tax treatment, and the answer offered
- * $17,000 of spendable cash. The two amounts were known. Whether either was
+ * Measured live failure (figures illustrative): a $10,000 bonus and $1,000 of
+ * vacation pay, neither with any statement about tax treatment, and the answer
+ * offered $11,000 of spendable cash. The two amounts were known. Whether either was
  * money the user could spend was not known, and the sum silently asserted it.
  *
  * An amount and a spendable amount are different facts. This module refuses to
  * expose them through one number:
  *
- *   nominal stated amounts        $17,000     known, and sayable
+ *   nominal stated amounts        $11,000     known, and sayable
  *   assertable net contribution   NOT ASSERTABLE — basis is unestablished
  *
  * ── Why basis cannot be inferred ────────────────────────────────────────────
@@ -77,7 +77,7 @@ export type AmountBasisKind = typeof AmountBasis[keyof typeof AmountBasis];
  *     minting the value would invite one.
  *
  * ⚠️ PROVENANCE IS ORTHOGONAL TO BASIS. A user-asserted amount can have UNKNOWN
- * basis ("I'm getting a $15,500 bonus" — said with certainty, tax treatment
+ * basis ("I'm getting a $10,000 bonus" — said with certainty, tax treatment
  * unstated). A derived date can carry a user-asserted amount. The two questions
  * are "who says so" and "what is it an amount of", and answering one never
  * answers the other.
@@ -136,7 +136,7 @@ export type FlowRoleKind = typeof FlowRole[keyof typeof FlowRole];
 /**
  * When the movement happens.
  *
- * A user can know "a bonus in October" without knowing October 15th, and
+ * A user can know "a bonus in May" without knowing May 15th, and
  * inventing the 15th to make arithmetic convenient is the same class of error
  * as inventing a pay date. So an unresolved month stays a month.
  *
@@ -191,12 +191,12 @@ export interface EventAmount {
    * resolve — that distinction belongs to a STATED payroll figure.
    *
    * Measured, this is the whole of the income blocker on the real Space: 20
-   * settled Vectrus deposits into `CHASE COLLEGE` (type `checking`), a level of
-   * $5,286.64 held within 1.29% across 11 of them, and every projected
+   * settled Employer A deposits into a checking account, a level of
+   * $4,928.41 held within 1.29% across 11 of them, and every projected
    * occurrence refused for want of a basis assertion about money that had
    * already arrived.
    *
-   * ⚠️ IT NEVER APPLIES TO A STATED FUTURE AMOUNT. A $15,500 bonus the user
+   * ⚠️ IT NEVER APPLIES TO A STATED FUTURE AMOUNT. A $10,000 bonus the user
    * mentions is GROSS and stays GROSS; nothing about it was observed settling
    * anywhere. Only a derived level from settled depository credits sets this.
    */
@@ -301,22 +301,22 @@ export function observedCashContribution(event: FutureCashEvent): NetContributio
  * AMOUNT AUTHORITY — measured, and found insufficient.
  *
  * The question §6 asks is whether a current periodic amount can be derived from
- * the ledger. Measured on the real Vectrus payroll, 19 payments:
+ * the ledger. Measured on the real Employer A payroll, 19 payments:
  *
- *   full series      min 923.50  max 6275.07  median 5306.12  CV 24.6%
- *   last six         5286.64 · 6275.07 · 5286.65 · 5286.63 · 5286.40 · 5306.12
+ *   full series      min 874.11  max 5855.82  median 4946.78  CV 24.6%
+ *   last six         4928.41 · 5855.82 · 4928.42 · 4928.40 · 4928.15 · 4946.78
  *
  * A stable current regime is visible — five of the last six sit inside a $19.72
  * band, 0.16% apart — and it is NOT derivable without policy. Reaching it means
- * excluding a partial first period ($2,306.42, started mid-cycle), excluding an
- * off-cycle payment ($923.50), excluding a high outlier ($6,275.07), and
- * detecting a regime change: the series steps down from ~$5,950 in January to
- * ~$5,290 from April onward. Each exclusion is a judgement about what counts as
+ * excluding a partial first period ($2,185.16, started mid-cycle), excluding an
+ * off-cycle payment ($874.11), excluding a high outlier ($5,855.82), and
+ * detecting a regime change: the series steps down from ~$5,340 in January to
+ * ~$4,738 from April onward. Each exclusion is a judgement about what counts as
  * a normal paycheck, and the naive alternatives are all wrong — the mean is
- * $5,108, the median $5,306, the most recent $5,306.12, and none of them is
+ * $4,767, the median $4,947, the most recent $4,946.78, and none of them is
  * "the amount" without someone deciding the outlier rule first.
  *
- * Abacus is worse and confirms the shape: CV 24.1%, with a $10,668.74 payment
+ * Employer B is worse and confirms the shape: CV 24.1%, with a $9,964.06 payment
  * sitting in an otherwise ~$4,400 series.
  *
  * So this slice does NOT establish an amount from observation. Cadence-derived

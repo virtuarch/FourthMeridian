@@ -21,14 +21,18 @@
  *                                      estimated rows, BYPASSING the new-Space
  *                                      gate (includes multi-day live Spaces).
  *   --force-missing-estimated-all --apply   Write missing estimated rows for all.
- *   --dev-seed-target-spaces-30d       DEV ONLY — dry run for a fixed list of
- *                                      dev-DB Space IDs; bypasses the new-Space
- *                                      gate AND ignores account/link createdAt
- *                                      floors so up to 30 days reconstruct.
- *   --dev-seed-target-spaces-30d --apply    Write missing estimated rows for them.
- *   --repair-july2-christian           Surgical one-off — show the bad 2026-07-02
- *                                      LIVE row for Christian's Space.
- *   --repair-july2-christian --apply   Delete only that one LIVE row, then
+ *   --dev-seed-target-spaces-30d --space-ids=<id,id,...>
+ *                                      DEV ONLY — dry run for the given dev-DB
+ *                                      Space IDs (required); bypasses the
+ *                                      new-Space gate AND ignores account/link
+ *                                      createdAt floors so up to 30 days
+ *                                      reconstruct. Add --apply to write.
+ *   --repair-july2-owner --space-id=<id>
+ *                                      Surgical one-off — show the bad
+ *                                      2026-07-02 LIVE row for the given Space
+ *                                      (--space-id is required; fails closed).
+ *   --repair-july2-owner --space-id=<id> --apply
+ *                                      Delete only that one LIVE row, then
  *                                      recreate July 2 as an estimated row.
  *   --rollback                         Dry run — count isEstimated rows to delete.
  *   --rollback --apply                 Delete all isEstimated (backfilled) rows.
@@ -55,31 +59,39 @@ const APPLY = process.argv.includes("--apply");
 const ROLLBACK = process.argv.includes("--rollback");
 const FORCE_ALL = process.argv.includes("--force-missing-estimated-all");
 const DEV_SEED = process.argv.includes("--dev-seed-target-spaces-30d");
-const REPAIR_JULY2 = process.argv.includes("--repair-july2-christian");
+const REPAIR_JULY2 = process.argv.includes("--repair-july2-owner");
 
-// Surgical one-off repair: Christian's Space had a partial/incomplete LIVE
-// snapshot on 2026-07-02 (cash ~1152 vs ~6439 on adjacent days). This mode
-// deletes ONLY that one LIVE row, then reruns the backfill so July 2 is
-// recreated as isEstimated=true. Never deletes estimated rows; never touches
-// other Spaces or dates.
-const REPAIR_SPACE_ID = "cmr456dtb0004117fjb6qavmm";
+// Surgical one-off repair: one Space had a partial/incomplete LIVE snapshot
+// on 2026-07-02 (cash far below the adjacent days). This mode deletes ONLY
+// that one LIVE row for the Space named by the REQUIRED --space-id= argument,
+// then reruns the backfill so July 2 is recreated as isEstimated=true. Never
+// deletes estimated rows; never touches other Spaces or dates.
 const REPAIR_DATE_FROM = new Date("2026-07-02T00:00:00.000Z");
 const REPAIR_DATE_TO   = new Date("2026-07-03T00:00:00.000Z"); // exclusive
 
-// DEV-ONLY targeted seeding. These specific dev-DB Spaces get up to 30 days of
-// estimated history so charts render a trend. Isolated to this flag; never used
-// by the app runtime.
-const DEV_SEED_TARGET_SPACE_IDS = [
-  "cmr456dtb0004117fjb6qavmm",
-  "cmr4652a3067z117fqu32m3sc",
-  "cmr469jxx068s117f687bid5b",
-  "cmr46amp806ag117fnhownjvh",
-  "cmr46bn5n06c4117fjzzg84rn",
-  "cmr46ch5w06ct117fjtcyr8dq",
-  "cmr46dejs06ej117fux87wlq0",
-  "cmr46ebfj06fg117fz6mkwzsv",
-  "cmr46fz8706g6117f0xdq6ch5",
-];
+function argValue(name: string): string | undefined {
+  const prefix = `--${name}=`;
+  const hit = process.argv.find((a) => a.startsWith(prefix));
+  const v = hit?.slice(prefix.length).trim();
+  return v ? v : undefined;
+}
+
+function usageExit(message: string): never {
+  console.error(`✗ ${message}`);
+  console.error("  Usage:");
+  console.error("    backfill-snapshots.ts --repair-july2-owner --space-id=<id> [--apply]");
+  console.error("    backfill-snapshots.ts --dev-seed-target-spaces-30d --space-ids=<id,id,...> [--apply]");
+  process.exit(2);
+}
+
+// DEV-ONLY targeted seeding. The dev-DB Spaces named by the REQUIRED
+// --space-ids= argument get up to 30 days of estimated history so charts
+// render a trend. Isolated to this flag; never used by the app runtime.
+function devSeedTargetSpaceIds(): string[] {
+  const ids = (argValue("space-ids") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (ids.length === 0) usageExit("--dev-seed-target-spaces-30d requires --space-ids=<id,id,...>");
+  return ids;
+}
 
 async function rollback(): Promise<void> {
   const grouped = await db.spaceSnapshot.groupBy({
@@ -200,7 +212,8 @@ async function forceMissingEstimatedAll(): Promise<void> {
 }
 
 async function devSeedTargetSpaces30d(): Promise<void> {
-  console.log("⚠️  DEV SEED — targeted, local/dev only. For the fixed target Space list");
+  const DEV_SEED_TARGET_SPACE_IDS = devSeedTargetSpaceIds();
+  console.log("⚠️  DEV SEED — targeted, local/dev only. For the given target Space list");
   console.log("    it bypasses the new-Space gate AND ignores account/link createdAt");
   console.log("    floors so up to 30 days reconstruct. Live rows are never touched;");
   console.log("    only missing dates are inserted (today excluded, isEstimated=true).\n");
@@ -242,8 +255,9 @@ function fmtRow(r: { date: Date; cash: number; debt: number; totalAssets: number
   return `date=${d} cash=${r.cash} debt=${r.debt} totalAssets=${r.totalAssets} netWorth=${r.netWorth} isEstimated=${r.isEstimated}`;
 }
 
-async function repairJuly2Christian(): Promise<void> {
-  console.log(`Repair July 2 — Christian's Space — ${APPLY ? "APPLY" : "DRY RUN"}`);
+async function repairJuly2Owner(): Promise<void> {
+  const REPAIR_SPACE_ID = argValue("space-id") ?? usageExit("--repair-july2-owner requires --space-id=<id>");
+  console.log(`Repair July 2 — target Space — ${APPLY ? "APPLY" : "DRY RUN"}`);
   console.log(`  spaceId=${REPAIR_SPACE_ID}  date=2026-07-02\n`);
 
   const SELECT = { id: true, date: true, cash: true, debt: true, totalAssets: true, netWorth: true, isEstimated: true };
@@ -267,7 +281,7 @@ async function repairJuly2Christian(): Promise<void> {
     return;
   }
   const target = live[0];
-  console.log(`\n  Target LIVE row to delete: id=${target.id}  cash=${target.cash} (adjacent days ~6438.95)`);
+  console.log(`\n  Target LIVE row to delete: id=${target.id}  cash=${target.cash} (compare with adjacent days)`);
 
   if (!APPLY) {
     console.log("\n  Dry run only — nothing deleted or written. Re-run with --apply to repair.");
@@ -295,7 +309,7 @@ async function repairJuly2Christian(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (REPAIR_JULY2) await repairJuly2Christian();
+  if (REPAIR_JULY2) await repairJuly2Owner();
   else if (ROLLBACK) await rollback();
   else if (DEV_SEED) await devSeedTargetSpaces30d();
   else if (FORCE_ALL) await forceMissingEstimatedAll();

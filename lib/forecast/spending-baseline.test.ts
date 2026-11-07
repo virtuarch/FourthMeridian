@@ -11,8 +11,8 @@
  * holiday and a round of gifts, and described no month the user had lived.
  *
  * ── The finding ─────────────────────────────────────────────────────────────
- * On the real Space the honest answer is UNKNOWN. Discretionary spending runs
- * $1,943–$16,144 per 28 days; the most recent complete period has no neighbour
+ * On the production case the honest answer is UNKNOWN. On a synthetic series of
+ * the same shape, discretionary spending runs $2,000–$16,500 per 28 days; the most recent complete period has no neighbour
  * close enough to join it. A number appears only if the band is widened until
  * "the same level" spans a threefold range, or by discarding a third of the
  * evidence. Both manufacture an answer.
@@ -380,27 +380,27 @@ check('L6 nor flow-predicates',
 check('L7 no category decomposition was built', !/byCategory|categoryBaseline/.test(code));
 
 // ═══════════════════════════════════════════════════════════════════════════
-// M. THE REAL SPACE
+// M. A VOLATILE SPACE (synthetic, shaped like the production case)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Real 28-day consumption totals from Chris' Space, newest first. */
-const REAL = [5681.07, 1943.35, 3916.40, 16144.42, 6190.66, 3501.67, 4869.51,
-  6510.52, 4191.70, 7220.08, 3974.98, 8840.99, 4828.34, 5181.37];
-const real = derive([...REAL].reverse());
+/** Synthetic 28-day consumption totals, newest first. */
+const VOLATILE = [6000.00, 2000.00, 4000.00, 16500.00, 6000.00, 3500.00, 5000.00,
+  6500.00, 4000.00, 7000.00, 4000.00, 8038.15, 5000.00, 5000.00];
+const volatileSpace = derive([...VOLATILE].reverse());
 
-eq('M1 the real Space yields UNKNOWN', real.assertable, false);
+eq('M1 the volatile Space yields UNKNOWN', volatileSpace.assertable, false);
 check('M2 because recent spending does not repeat closely enough',
-  !real.assertable && /does not repeat closely enough/.test(real.reason), (real as {reason:string}).reason);
-check('M3 the range is 8.3x — this is a finding, not a tuning problem',
-  Math.max(...REAL) / Math.min(...REAL) > 8);
+  !volatileSpace.assertable && /does not repeat closely enough/.test(volatileSpace.reason), (volatileSpace as {reason:string}).reason);
+check('M3 the range is 8.25x — this is a finding, not a tuning problem',
+  Math.max(...VOLATILE) / Math.min(...VOLATILE) > 8);
 check('M4 and no naive average is offered in its place',
-  !describeSpendingBaseline(real).join(' ').match(/\d{4}/),
-  describeSpendingBaseline(real).join(' '));
+  !describeSpendingBaseline(volatileSpace).join(' ').match(/\d{4}/),
+  describeSpendingBaseline(volatileSpace).join(' '));
 check('M5 the refusal forbids stating a figure',
-  /No baseline spending figure may be stated/.test(describeSpendingBaseline(real).join('\n')));
-// The naive answers, for contrast — and they disagree with each other by 24%.
+  /No baseline spending figure may be stated/.test(describeSpendingBaseline(volatileSpace).join('\n')));
+// The naive answers, for contrast — and they disagree with each other by 25%.
 check('M6 the naive 3-month and 6-month averages differ materially from each other',
-  Math.abs(8349.66 - 6712.88) / 6712.88 > 0.2);
+  Math.abs(7500.00 - 6000.00) / 6000.00 > 0.2);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // N. Regression corpus A–O
@@ -426,7 +426,7 @@ check('N-J a partial period is not treated as whole',
   withOld.periods.some((p) => p.excludedBecause === SpendExclusion.PARTIAL_PERIOD));
 eq('N-K transfers are excluded structurally', isOrdinaryConsumption('TRANSFER'), false);
 eq('N-L investment flows are excluded structurally', isOrdinaryConsumption('INVESTMENT'), false);
-eq('N-M volatile discretionary history → UNKNOWN', real.assertable, false);
+eq('N-M volatile discretionary history → UNKNOWN', volatileSpace.assertable, false);
 eq('N-N a user-asserted baseline is representable', said.provenance, EventProvenance.USER_ASSERTED);
 check('N-O obligations and baseline do not double-count',
   !isOrdinaryConsumption('DEBT_PAYMENT') && !/obligation/i.test(codeOnly));

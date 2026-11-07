@@ -1,5 +1,8 @@
 # Beta Group — Environment Parity and Lifecycle Audit (2026-10-31)
 
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #159
+> Current state (2026-11-02): lifecycle L2 gating has shipped. Still open (owner decision): removing Plaid Items when a beta ends.
+
 Owner directives: *Beta Group Lifecycle and Cost Controls* and *Beta Group Environment Parity*.
 Status: **read-only.**
 - **Preview:** inspected read-only in its database.

@@ -189,7 +189,7 @@ export function ProductAnalyticsSurface({ title, data }: { title: string; data: 
 
       {/* 3 · RETENTION — weekly cohorts; a cohort too young says so. */}
       <Movement label="Retention" hint={RETENTION_BASIS}>
-        <BigStat label="Returning ever" value={fmtCount(data.retention.returningEver.count)} qualifier={returningEverText(data.retention.returningEver)} />
+        <BigStat label="Returned (ever)" value={fmtCount(data.retention.returningEver.count)} qualifier={returningEverText(data.retention.returningEver)} />
         <div className="mt-6 overflow-x-auto">
           <div className="mb-1 hidden items-center gap-4 border-b px-1 pb-2 md:grid" style={{ gridTemplateColumns: RETENTION_COLS, borderColor: "var(--border-hairline)" }}>
             {RETENTION_HEADINGS.map((h) => <span key={h} className={HEADING_CLASS}>{h}</span>)}

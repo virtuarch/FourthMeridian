@@ -217,7 +217,7 @@ test('a candidate outside the date window does not match', () => {
   assert.equal(matchTransferCandidate(chk, [far], CTX).status, 'NONE');
 });
 
-test('v2.6-L4D: a 3-day skew DOES match — the real Chase→Amex-HYSA distance', () => {
+test('v2.6-L4D: a 3-day skew DOES match — the real Example Bank→Example Card-HYSA distance', () => {
   // The live case the old 2-day window could never see: destination posted
   // 2026-07-31, source pending 2026-08-03.
   const source = leg({ id: 'src', financialAccountId: 'fa_chk', amount: -4000, date: new Date('2026-08-03') });

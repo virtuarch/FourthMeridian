@@ -355,11 +355,11 @@ async function main() {
   {
     const r = harness();
     r.state.pkg.freshness = { ...r.state.pkg.freshness!, band: 'VERY_STALE', oldestBalanceAgeDays: 26, needsReauth: true,
-      staleSources: [{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
+      staleSources: [{ label: 'Example Bank', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
     const t = (h: number) => new Date(T0.getTime() + h * 3_600_000);
     await r.ensure(t(0));
     check('the day\'s Brief is written over the connection that needs reconnecting', r.state.generations === 1
-      && r.state.lastInput?.freshness?.staleSources?.[0]?.label === 'Chase');
+      && r.state.lastInput?.freshness?.staleSources?.[0]?.label === 'Example Bank');
 
     r.state.watermark = 'wm-reauth-attempt';   // a reconnect that failed: a row was touched, nothing material moved
     const failedAttempt = await r.ensure(t(1));
@@ -404,8 +404,10 @@ async function main() {
     // update the pin. The version, not this hash, decides validity.
     // v2.7-P0: 08fbac9b9cb7 → dfb26bf3e8ae (debt-semantics-1; generation NOT bumped).
     // v2.7 owner ruling (PR #63): → 5bb1d55b1cf8 (debt-semantics-2: TRANSFER_DESTINATION_UNCONFIRMED; generation NOT bumped).
+    // PB-8c: → 64cc74805870 (partial-history-1: recentChanges.<w>.unavailable; generation NOT bumped).
+    // FIN-005 part 1: → ccf4199202c0 (restricted-cash-1: unavailable.liquid for restricted cash; generation NOT bumped).
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === '5bb1d55b1cf8', BRIEF_PROMPT_HASH);
+      BRIEF_PROMPT_HASH === 'ccf4199202c0', BRIEF_PROMPT_HASH);
     check('what a row stores is the intentional version plus the hash plus the revision',
       BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`);
 
@@ -491,7 +493,7 @@ async function main() {
     check('the generation version was NOT bumped by the debt-semantics prompt fix', BRIEF_GENERATION_VERSION === 'brief-generation-5');
     check('the stored version parses to the generation alone', generationVersionOf(BRIEF_PROMPT_VERSION) === BRIEF_GENERATION_VERSION);
     check('the revision is readable back', promptRevisionOf(BRIEF_PROMPT_VERSION) === BRIEF_PROMPT_REVISION
-      && BRIEF_PROMPT_REVISION === 'debt-semantics-2');
+      && BRIEF_PROMPT_REVISION === 'restricted-cash-1'); // FIN-005 part 1 (was partial-history-1)
     check('a pre-revision row records no revision', promptRevisionOf('brief-generation-5+prompt-08fbac9b9cb7') === null
       && promptRevisionOf(null) === null);
 
@@ -500,7 +502,7 @@ async function main() {
     const today = key('2026-09-13');
     await r.ensure(t(0));
     check('a NEW generation records the new revision and the new prompt hash',
-      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-debt-semantics-2`,
+      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-restricted-cash-1`,
       String(r.store.get(today)!.promptVersion));
     // The row exactly as the previous deploy wrote it: same generation, old prompt hash, no revision.
     r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';
@@ -516,7 +518,7 @@ async function main() {
   console.log('\n15. v2.7-P0 — the resolved-nature change cannot, by itself, regenerate a stored Brief');
   {
     const DP = 'DEBT_PAYMENT' as Transaction['flowType'];
-    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', amexChk: 'checking' };
+    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', excardChk: 'checking' };
     const txRow = (id: string, date: string, amount: number, over: Partial<Transaction>): Transaction => ({
       id, accountId: 'chk', date, amount, merchant: 'RAW', category: 'Payment' as Transaction['category'], pending: false,
       flowAuthority: 'CLASSIFIER', ...over } as Transaction);
@@ -525,8 +527,8 @@ async function main() {
       // No transfer evidence: before this PR it reached the package as DEBT_PAYMENT (a
       // material SIGNAL flow); the contract now resolves it to an unclassified movement.
       txRow('a', '2026-09-11', -1500, { flowType: DP }),
-      // Matured to Amex checking: TRANSFER before and after.
-      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
+      // Matured to Example Card checking: TRANSFER before and after.
+      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'excardChk' }),
       txRow('c', '2026-09-10', 4812.66, { flowType: 'INCOME' as Transaction['flowType'], category: 'Income' as Transaction['category'] }),
     ];
     const window = recentActivityWindow('2026-09-13');

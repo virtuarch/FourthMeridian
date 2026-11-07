@@ -31,4 +31,6 @@ export interface PlatformViewLeadProps {
   onOpenWorkspace: (workspaceId: string) => void;
   /** The operator's resolved access (descriptive); forwarded to blocks that render a control. */
   access?: SpaceMountAccess;
+  /** PB-1 2B — the open view's id (a lead shared by several views reads its preset from it). */
+  viewId?: string;
 }

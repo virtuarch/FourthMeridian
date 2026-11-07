@@ -7,8 +7,9 @@
  * order against a growing transcript, because continuity is a large part of what
  * is being tested — "February?" only means anything after "assume I spend 6k".
  *
- * ⚠️ THE GOLDENS' ANSWERS ARE NOT IN HERE, and must never be. `docs/plans/
- * AI-CONVERSATION-GOLDENS.md` evaluates behaviour; leaking its wording into the
+ * ⚠️ THE GOLDENS' ANSWERS ARE NOT IN HERE, and must never be. The goldens (kept
+ * in private records; `docs/plans/AI-CONVERSATION-GOLDENS.md` is a stub)
+ * evaluate behaviour; leaking their wording into the
  * prompt would test whether a model can copy rather than whether it can reason.
  * `whatItDiscriminates` is a note for the human reader of the transcript — it is
  * never sent to the model, and a test pins that.
@@ -21,7 +22,7 @@
 export interface Probe {
   id:    string;
   title: string;
-  /** User turns, in order. Messy on purpose — this is how Chris types. */
+  /** User turns, in order. Messy on purpose — this is how Alex Example types. */
   turns: string[];
   /** For the human reading the transcript. NEVER sent to the model. */
   whatItDiscriminates: string;
@@ -211,7 +212,7 @@ export const PROBES: readonly Probe[] = [
     ],
     whatItDiscriminates:
       'THE CONTEXT-RETENTION MEASUREMENT, and the only probe long enough to make one. ' +
-      'Sixteen turns of the sequence Chris actually types, including four referential ' +
+      'Sixteen turns of the sequence Alex Example actually types, including four referential ' +
       'follow-ups placed at deliberate distances: "pull em up in table" and "which one was ' +
       'the biggest?" are immediate drill-downs; "are you sure?" asks the model to re-verify ' +
       'a figure one turn old; and the last turn reaches back FIFTEEN turns to a payload any ' +

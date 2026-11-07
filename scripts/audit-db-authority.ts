@@ -172,7 +172,7 @@ const CONFINED: Record<string, { allowed: string[]; why: string }> = {
       // caller could ask it about somebody else. The suite asserts the narrowing
       // (every `where` mentions only financialAccountId and status) and both of
       // the orderings the policies force, so this stays a capability.
-      // Decision: docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
+      // Decision: docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide.
       "lib/accounts/links-everywhere.ts",
     ],
     why: "fm_system reaches every tenant through role-scoped policies. It is an exceptional authority; an ordinary HTTP request handler must never execute through it.",

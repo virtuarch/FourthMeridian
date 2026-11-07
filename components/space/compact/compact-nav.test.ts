@@ -36,7 +36,7 @@ const ITEMS = [
 ];
 const RAIL = ["Overview", "Activity", "Accounts", "Transactions", "Members"].map((label) => ({ id: label.toUpperCase(), label }));
 const shell = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(SpaceShell, {
-  title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
+  title: "Jules's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
   railOptions: RAIL, activeTab: "OVERVIEW", onSelectTab: () => {}, mobileOptimized: true,
   children: createElement("p", null, "content"), ...extra,
 } as never));
@@ -79,7 +79,7 @@ console.log("\n2. in the compact controls row — and invisible to desktop");
   check("Leave is offered in the compact controls when the host passes it", />Leave<\/button>/.test(shellHtml) && /<button type="button" class="lg:hidden min-h-9/.test(shellHtml));
   check("…and not otherwise", !/>Leave</.test(shell()));
   check("without compactTitleOnly the compact header is exactly as before (title + subtitle)",
-    /<h1 class="truncate text-lg font-semibold[^"]*">Chris&#x27;s Space<\/h1><p/.test(shell()));
+    /<h1 class="truncate text-lg font-semibold[^"]*">Jules&#x27;s Space<\/h1><p/.test(shell()));
   check("DESKTOP: with Leave, title-only and the compact rail passed, the ≥1024px markup equals the P0 baseline",
     desktopMarkup(shellHtml) === baseline.renders["SpaceShell (customer, Overview)"]);
 }

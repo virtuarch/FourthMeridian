@@ -124,8 +124,8 @@ function main() {
 
     check("an absent subject is null, not a guess", subjectText({ primary: null, secondary: null }) === null);
     check("a blank subject is treated as absent", subjectText({ primary: "  ", secondary: null }) === null);
-    check("both halves join", subjectText({ primary: "Chase", secondary: "Checking" }) === "Chase · Checking");
-    check("one half stands alone", subjectText({ primary: "Chase", secondary: null }) === "Chase");
+    check("both halves join", subjectText({ primary: "Example Bank", secondary: "Checking" }) === "Example Bank · Checking");
+    check("one half stands alone", subjectText({ primary: "Example Bank", secondary: null }) === "Example Bank");
 
     check("no recovery rule is stated plainly", RECOVERY_TEXT.none === "No automatic recovery rule");
     check("there is NO 'recovery in progress' wording — nothing proves it",
@@ -209,10 +209,36 @@ function main() {
   }
 
   // ── 8. Scope — the browser and the resolvers did not start ─────────────────
-  console.log("8. Preview only: no browser, no resolver, no operator controls");
+  console.log("8. Scope — the browser is read-only (PB-1 2B); no resolver, no operator controls");
   {
-    const controlRoutes = walk("app/api").filter((f) => /\/incidents?\//.test(f));
-    check("no incident browser API was built", controlRoutes.length === 0, controlRoutes.join(", "));
+    // PB-1 2B — DELIBERATE FENCE UPDATE (was: "no incident browser API was built").
+    // The browser shipped as exactly four READ routes over the intelligence
+    // module; the fence now pins that they stay read-only, guarded, and the
+    // only incident routes (operator controls remain S6's).
+    const controlRoutes = walk("app/api").filter((f) => /\/incidents?\//.test(f)).sort();
+    const BROWSER = [
+      "app/api/platform/customer-success/incidents/[id]/route.ts",
+      "app/api/platform/customer-success/incidents/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/route.ts",
+      "app/api/platform/platform-ops/incidents/route.ts",
+    ];
+    // PB-1 S6 — DELIBERATE FENCE UPDATE: the operator controls landed as exactly two
+    // Platform Ops POST routes (guard / limiter / audit pinned in incident-boundary.test.ts §12).
+    // Customer Success gains none: its incident routes stay the two reads above.
+    const S6_CONTROLS = [
+      "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
+    ];
+    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls",
+      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS].sort()), controlRoutes.join(", "));
+    for (const f of BROWSER) {
+      const s = code(f);
+      const area = f.includes("/platform-ops/") ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";
+      check(`${f}: GET only, ${area} READ, through the intelligence accessors (no db)`,
+        !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(s)
+        && new RegExp(`requirePlatformAccess\\(\\s*"${area}"\\s*,\\s*"READ"\\s*\\)`).test(s)
+        && /incidentAccessors\.(search|investigate)\(/.test(s) && !/@\/lib\/db|\.syncIssue\./.test(s));
+    }
 
     for (const f of [CORE, PREVIEW, VIEW, "components/platform/widgets/IncidentPreview.tsx"]) {
       const s = code(f);

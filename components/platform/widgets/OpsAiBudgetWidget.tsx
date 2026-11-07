@@ -29,6 +29,7 @@ import { Gauge } from "lucide-react";
 import { PlatformWidgetCard, WidgetMessage, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { BigStat, GroupLabel, KeyRow, Provenance, SectionSurface, TONE_COLOR, ToneBadge, Unavailable } from "../platform-surface";
 import { ESTIMATE_NOT_BILLING, type AiBudgetUtilization } from "@/lib/platform/ai/cost-controls.types";
+import { fleetCeilingText } from "@/lib/platform/ai/fleet-ceiling.core";
 import { formatUtc } from "./policies-view";
 import {
   AI_BUDGET_SUBJECT, FLEET_NOTE, PAST_DELIVERIES_NOTE, controlsText, customerRowText, deliveryText, enforcementWord, fleetReading, overheadText,
@@ -72,13 +73,15 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
               derivation={thresholdText(data.fleet, data.windowHours)}
               hint={FLEET_NOTE}
             />
-            <UtilizationBar label="Fleet utilization of the alert threshold" pct={data.fleet.utilizationPct} />
+            <UtilizationBar label="Fleet utilization of the alert threshold" pct={fleet.pct} />
             <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{overheadText(data.overhead)}</p>
           </div>
           <div className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-5 @min-[42rem]:border-t-0 @min-[42rem]:border-l @min-[42rem]:pl-6 @min-[42rem]:pt-0">
             <GroupLabel hint="The controls as the Policies surface declares them; changed there, never here.">Controls in force</GroupLabel>
             <KeyRow label="Paid AI requests" value={<ToneBadge word={paused.word} tone={paused.tone} />} />
             <KeyRow label="Daily allowance" value={<ToneBadge word={enforced.word} tone={enforced.tone} />} />
+            {/* SEC-AI-001 — read-only; set and changed in Policies, never here. */}
+            <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{fleetCeilingText(data.controls.fleetCeilingUsd ?? null, data.controls.fleetCeilingState)}</p>
             <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{controlsText(data.controls, data.windowHours)}</p>
           </div>
         </div>

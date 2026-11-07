@@ -86,11 +86,13 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
 import { mergeSpaceExportHoldings } from "@/lib/export/holdings";
+import { countUnvaluedExportAccounts, toExportAccount } from "@/lib/export/accounts";
 import { getTransactions } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolvePersonalSpaceId } from "@/lib/accounts/space-account-link";
 import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-history";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { readExportIncidents } from "@/lib/platform/incidents/subject-export";
 import {
   capTransactions,
   EXPORT_TRANSACTION_CAP,
@@ -211,7 +213,9 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     // exported at FULL detail. Both gates, as before.
     for (const row of phase.withVis) {
       if (!isFullVisibility(row.visibilityLevel)) continue;
-      accounts.push({ ...row.account, spaceId, spaceName });
+      // FM-AUDIT-022 — an unvalued wallet exports `balance: null` + a status,
+      // never the structural 0 the read layer carries for the totals.
+      accounts.push(toExportAccount(row.account, spaceId, spaceName));
     }
     for (const t of phase.spaceTxns.rows) transactions.push({ ...t, spaceId });
     holdings.push(...mergeSpaceExportHoldings({
@@ -254,7 +258,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     tx.userSession.findMany({
       where:  { userId },
       orderBy: { createdAt: "desc" },
-      select: { ipAddress: true, userAgent: true, lastActiveAt: true, revokedAt: true, createdAt: true },
+      select: { ipAddress: true, userAgent: true, lastActiveAt: true, lastPresenceAt: true, lastInteractionAt: true, revokedAt: true, createdAt: true },
     }),
     tx.recoveryCode.findMany({
       where:  { userId },
@@ -367,6 +371,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       sessions: sessions.map((s) => ({
         ipAddress: s.ipAddress, userAgent: s.userAgent,
         lastActiveAt: iso(s.lastActiveAt), revokedAt: iso(s.revokedAt), createdAt: iso(s.createdAt),
+        // PB-10 — the presence heartbeat's last values (no history is kept).
+        lastPresenceAt: iso(s.lastPresenceAt), lastInteractionAt: iso(s.lastInteractionAt),
       })),
       recoveryCodes: recoveryCodes.map((c) => ({
         usedAt: iso(c.usedAt), expiresAt: iso(c.expiresAt), createdAt: iso(c.createdAt),
@@ -423,6 +429,9 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     dailyBriefs: dailyBriefs.map((b) => ({
       spaceId: b.spaceId, briefDay: iso(b.briefDay), content: b.content, generatedAt: iso(b.generatedAt),
     })),
+    // PB-1 Phase 1 — after every tenant phase, on the incident tables' own
+    // authority (fm_system), with this user's ids only (lib/platform/incidents/subject-export.ts).
+    syncIncidents: await readExportIncidents(userId),
   };
 
   const counts: Record<string, number> = {
@@ -437,6 +446,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     aiAdvice: data.aiAdvice.length,
     aiMemory: data.aiMemory.length,
     dailyBriefs: data.dailyBriefs.length,
+    syncIncidents: data.syncIncidents.live.length,
+    syncIncidentArchives: data.syncIncidents.archived.length,
     sessions: data.security.sessions.length,
   };
 
@@ -446,6 +457,15 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   ];
   if (data.holdings.length) {
     notes.push("Transactions cover banking activity; investment positions are in holdings.csv.");
+  }
+  // FM-AUDIT-022 — stated only when such accounts are present.
+  const unvaluedAccounts = countUnvaluedExportAccounts(data.accounts);
+  if (unvaluedAccounts > 0) {
+    notes.push(
+      `${unvaluedAccounts} account(s) are not yet valued (a wallet with no price or no observation). ` +
+      `Their balance is empty in accounts.csv and null in data.json — not zero — and valuation_status / ` +
+      `valuationStatus reads "not_yet_valued". They are excluded from every total.`,
+    );
   }
   if (truncated) {
     notes.push(`Transactions were capped at the newest ${data.transactions.length} rows (KD-7 5,000-row limit).`);

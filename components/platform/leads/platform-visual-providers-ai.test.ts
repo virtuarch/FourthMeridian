@@ -25,7 +25,7 @@ import { PLATFORM_AREA_WORKSPACES } from "@/lib/platform/workspaces";
 import {
   CAP_UNKNOWN,
   FLEET_DIAGNOSTICS,
-  callsDegrade,
+  callsDowngrade,
   cycleSpendTotal,
   healthDistribution,
   integrationVerdict,
@@ -51,7 +51,7 @@ import {
   tokenDays,
   topCustomers,
 } from "./ai-costs-model";
-import { ProvidersDrawerBody, ProvidersLeadSurface, TILE_ROWS } from "./ProvidersLead";
+import { ProviderTile, ProvidersDrawerBody, ProvidersLeadSurface, TILE_ROWS } from "./ProvidersLead";
 import { AI_DRAWERS, AiCostsDrawerBody, AiCostsLeadSurface, CUSTOMER_ROWS } from "./AiCostsLead";
 
 let failures = 0;
@@ -102,7 +102,7 @@ const inputs = (over: Partial<ProviderInputs> = {}): ProviderInputs => ({
   email: ok({ windowDays: 7, counts: { sent: 9, captured: 1, error: 0, skipped: 0, total: 10 }, recentErrors: [] }),
   plaid: ok({ priceAuthority: { configured: true, tier: "ESTIMATED", rates: [], note: "" }, cycles: [{ label: "current", agree: true, cycle: { start: "2026-10-01", end: "2026-10-31" }, during: { usd: 12.5, unpricedItemMonths: 0 }, atEnd: { usd: 12.5 } }] }),
   operations: ok({ window: { from: "2026-10-24", to: "2026-10-30" }, deterministic: false, indeterminacyReason: "open", checkedAt: AGO(1), totalCalls: 100, tier: "observed",
-    operations: [opsRow("PLAID", 80, 2, 1), opsRow("ALCHEMY", 20, 0)] }),
+    operations: [opsRow("PLAID", 80, 0, 1), opsRow("ALCHEMY", 20, 0)] }),
   trend: ok(trendData()),
   nowMs: NOW,
   ...over,
@@ -121,12 +121,23 @@ console.log("1. Providers — health classes, verdict, distribution, KPIs, hones
     by.get("PLAID")!.healthClass === "healthy" && by.get("OPEN_EXCHANGE_RATES")!.healthClass === "healthy"
       && ["ALCHEMY", "ESPLORA", "COINGECKO", "OPENAI", "RESEND"].every((k) => by.get(k)!.healthClass === "not-assessed"));
   check("call counts alone never make a provider 'healthy' (Alchemy: 20 clean calls, still not assessed)", by.get("ALCHEMY")!.status.word === "Not assessed");
-  check("downgrade rule: ≥ 5 % of ≥ 20 calls failed; 1 of 19 or 2 of 80 does not",
-    callsDegrade(20, 1) && callsDegrade(100, 5) && !callsDegrade(19, 1) && !callsDegrade(80, 2) && !callsDegrade(0, 0));
+  // Re-pinned 2026-11-03 (intentional): the downgrade is provider-outcome@1 — ≥ 20 attempts,
+  // then any failure ⇒ degraded, ≥ 50 % ⇒ failing; below the floor nothing changes.
+  check("downgrade rule (provider-outcome@1): 1 of 20 ⇒ degraded, 2 of 80 ⇒ degraded, 10 of 20 ⇒ failing; 1 of 19 ⇒ degraded (small sample), 19 of 19 ⇒ failing; 0 of 19, 0 of 20, 0 of 0 ⇒ none",
+    callsDowngrade(20, 1) === "degraded" && callsDowngrade(80, 2) === "degraded" && callsDowngrade(100, 5) === "degraded" && callsDowngrade(20, 10) === "failing"
+      && callsDowngrade(19, 1) === "degraded" && callsDowngrade(19, 19) === "failing" && callsDowngrade(15, 10) === "degraded"
+      && callsDowngrade(19, 0) === null && callsDowngrade(20, 0) === null && callsDowngrade(0, 0) === null);
+  const isolated = providerEntities(inputs({ operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 20, 1)] }) as never })).find((e) => e.key === "PLAID")!;
+  check("the defect: Plaid with 1 failed call of 20 in 7 d reads Degraded (never Failing), the basis naming both counts",
+    isolated.healthClass === "degraded" && isolated.status.word === "Degraded" && /^1 of 20 provider calls failed in 7 d \(5% · provider-outcome@1\)$/.test(isolated.statusBasis), isolated.statusBasis);
+  const notEnough = providerEntities(inputs({ health: ok({ checkedAt: AGO(1), counts: {}, providers: [health("PLAID", "Plaid", "INSUFFICIENT_DATA"), health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "OPERATIONAL")] }) as never,
+    operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 5, 0)] }) as never })).find((e) => e.key === "PLAID")!;
+  check("too little evidence: 'Not enough data', never Healthy, and not counted healthy",
+    notEnough.status.word === "Not enough data" && notEnough.healthClass === "not-assessed");
   const degradedByCalls = providerEntities(inputs({ operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 40, 4)] }) as never }));
   const plaid = degradedByCalls.find((e) => e.key === "PLAID")!;
   check("provider-ops DOWNGRADES a healthy verdict (10 % of 40 calls failed ⇒ Degraded, with the basis)",
-    plaid.healthClass === "degraded" && plaid.status.word === "Degraded" && /10% of 40 provider calls failed in 7 d/.test(plaid.statusBasis), plaid.statusBasis);
+    plaid.healthClass === "degraded" && plaid.status.word === "Degraded" && /4 of 40 provider calls failed in 7 d \(10%/.test(plaid.statusBasis), plaid.statusBasis);
   const failing = providerEntities(inputs({ health: ok({ checkedAt: AGO(1), counts: {}, providers: [health("PLAID", "Plaid", "FAILING"), health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "STALE")] }) as never }));
   check("worst first: failing, then degraded, then healthy, then not assessed", failing[0].key === "PLAID" && failing[1].key === "OPEN_EXCHANGE_RATES");
   check("verdict: Failing > Degraded > Healthy; Unknown when nothing assessed; Reading while loading",
@@ -138,14 +149,39 @@ console.log("1. Providers — health classes, verdict, distribution, KPIs, hones
   const dist = healthDistribution(ents);
   check("donut sums to the providers listed; zero slices dropped", dist.reduce((a, i) => a + i.value, 0) === ents.length && dist.every((i) => i.value > 0) && dist.map((i) => i.id).join() === "healthy,not-assessed");
   const kpis = providerKpis(ents, inputs());
-  check("KPIs: healthy 2/7 · failed 2 of 100 · rate-limited 1 · est. spend this cycle $14.25 (Plaid $12.50 + OpenAI Oct $1.75)",
-    kpis.map((k) => `${k.label}=${k.value}`).join() === "Providers healthy=2/7,Failed calls · 7 d=2,Rate-limited · 7 d=1,Est. spend · cycle=$14.25", kpis.map((k) => `${k.label}=${k.value}`).join());
+  check("KPIs: healthy 2/7 · failed 0 of 100 · rate-limited 1 · est. spend this cycle $14.25 (Plaid $12.50 + OpenAI Oct $1.75)",
+    kpis.map((k) => `${k.label}=${k.value}`).join() === "Providers healthy=2/7,Failed calls · 7 d=0,Rate-limited · 7 d=1,Est. spend · cycle=$14.25", kpis.map((k) => `${k.label}=${k.value}`).join());
+  const kpisFailed = providerKpis(ents, inputs({ operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 80, 2, 1), opsRow("ALCHEMY", 20, 0)] }) as never }));
+  check("failed-calls KPI is the measured count (2 of 100)", kpisFailed.find((k) => k.key === "failed")!.value === "2" && kpisFailed.find((k) => k.key === "failed")!.sub === "of 100 attempts · measured");
   check("…the spend KPI is partial (an OpenAI day in the cycle had unpriced tokens)", cycleSpendTotal(ents).kind === "ESTIMATED" && (cycleSpendTotal(ents) as { partial: boolean }).partial);
   const noRates = providerEntities(inputs({ plaid: ok({ priceAuthority: { configured: false }, cycles: [] }) as never, trend: ok(trendData({ pricingConfigured: false })) as never }));
   check("no rate card anywhere ⇒ spend KPI 'Unknown', never $0", providerKpis(noRates, inputs()).find((k) => k.key === "spend")!.value === "Unknown");
   check("ops unread ⇒ failed / rate-limited KPIs are '—', never 0",
     providerKpis(ents, inputs({ operations: failed("x") as never })).filter((k) => k.key === "failed" || k.key === "limited").every((k) => k.value === "—"));
   check("every provider says 'cap unknown' and never prints a cap number", ents.every((e) => e.cap === CAP_UNKNOWN && usageText(e).endsWith(CAP_UNKNOWN) || e.key === "RESEND"));
+}
+
+// ── 1b. Every tile shows its verdict basis (provider-connection@2 / provider-outcome@1) ──
+console.log("1b. Providers — the tile shows the rule and counts behind its word; reconnects are a neutral fact");
+{
+  const conn = { definition: "provider-connection@2", verdict: null, rule: "none", concentration: null, tally: { active: 10, error: 0, reauth: 4, unclassified: 0, revoked: 0 }, basis: null, facts: ["4 connections need the customer to reconnect"] };
+  const ents = providerEntities(inputs({
+    health: ok({ checkedAt: AGO(1), counts: {}, providers: [
+      health("PLAID", "Plaid", "INSUFFICIENT_DATA", { trustBasis: "2 runs with an outcome — 3 needed for a verdict (provider-outcome@1)", connections: conn }),
+      health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "FAILING", { trustBasis: "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)" }),
+    ] }) as never,
+    operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 20, 1)] }) as never,
+  }));
+  const plaid = ents.find((e) => e.key === "PLAID")!;
+  check("the Preview Plaid case: reauth never Failing — degraded only by its own 1 of 20 calls, the basis says which rule",
+    plaid.status.word === "Degraded" && /^1 of 20 provider calls failed in 7 d/.test(plaid.statusBasis) && plaid.connectionFacts[0] === "4 connections need the customer to reconnect", plaid.statusBasis);
+  const oxr = ents.find((e) => e.key === "OPEN_EXCHANGE_RATES")!;
+  check("statusBasis is the read-model's trustBasis (rule + counts)", oxr.statusBasis === "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)");
+  const tile = text(renderToStaticMarkup(createElement(ProviderTile, { e: plaid, onSelect: () => {} })));
+  check("tile renders the basis beside the word, and the reconnects as a neutral fact",
+    tile.includes("Degraded") && tile.includes("1 of 20 provider calls failed in 7 d") && tile.includes("4 connections need the customer to reconnect"), tile);
+  const oxrTile = text(renderToStaticMarkup(createElement(ProviderTile, { e: oxr, onSelect: () => {} })));
+  check("a Failing tile names its rule, never left beside an unrelated failure count", oxrTile.includes("Failing") && oxrTile.includes("(provider-connection@2)"), oxrTile);
 }
 
 // ── 2. AI & Costs model ──────────────────────────────────────────────────────
@@ -275,7 +311,8 @@ console.log("3. Render — compact default screens, drawers host every former wi
   const unknownHtml = text(renderToStaticMarkup(createElement(AiCostsLeadSurface, aiProps({ trend: ok(trendData({ pricingConfigured: false })), inv7: failed("x"), budget: failed("x") }) as never)));
   check("AI: unpriced ⇒ the hero says Unknown and prints no dollar figure", /AI spend · 30 d Unknown/.test(unknownHtml) && /Spend Unknown — no AI rate card configured/.test(unknownHtml));
 
-  const aiView = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-ai")!.views![0];
+  // PLATFORM ECONOMICS — re-pinned: AI & Costs is now the "ai" VIEW of Economics (same lead, same hosted keys).
+  const aiView = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-economics")!.views!.find((v) => v.id === "ai")!;
   const drawerKeys = AI_DRAWERS.flatMap((d) => d.keys);
   check("AI: every hosted key is in exactly one drawer", (aiView.hosted ?? []).every((k) => drawerKeys.filter((x) => x === k).length === 1) && drawerKeys.length === (aiView.hosted ?? []).length);
   for (const d of AI_DRAWERS) {

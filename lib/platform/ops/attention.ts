@@ -11,7 +11,8 @@
  *   providers     getProviderHealth          (handed the SAME freshness + connection reads)
  *   resources     checkResourceFreshness     (stored data)
  *   alerts        loadLatestAlertEvaluation  (firing NOW) + loadRecentAlertRuns (history, kept apart)
- *   incidents     getIncidentPreview         (active, ordered, subjects resolved) → D5 projection,
+ *   incidents     incidentAccessors.brokenNow (Ops tier, module order; PB-1 R6a) → D5 projection,
+ *                 subjects named for the shown slice (resolveSubjects),
  *                 + getIncidentDetail for the correlated few, to name an execution as evidence
  *   policy-assignments loadPolicyAssignmentHealth (missing / invalid customer policy-group
  *                 assignments, capped 25 + exact counts; opaque customer reference only)
@@ -35,9 +36,10 @@ import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
 import { loadLatestAlertEvaluation, loadRecentAlertRuns } from "@/lib/alerts/run";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { collectAlertHistory, type AlertFiredRecord } from "@/lib/alerts/evaluate";
-import { getIncidentPreview } from "@/lib/platform/incidents/preview";
+import { resolveSubjects } from "@/lib/platform/incidents/preview";
+import { incidentAccessors, type OpsToken } from "@/lib/platform/incidents/intelligence";
 import { getIncidentDetail } from "@/lib/platform/incidents/projections";
-import { projectIncidentForPlatform, type PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
+import { projectVerdictForPlatform, type PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import {
   ATTENTION_AUTHORITIES,
   USER_IMPACT_WINDOW_HOURS,
@@ -59,8 +61,20 @@ import { getBriefOps } from "@/lib/platform/ai/brief-ops";
 // read-only fm_system read; this file still imports no database client).
 import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
 
-/** Active incidents asked for. More than the preview's six; still a floor when exceeded. */
+/** Broken-now incidents shown. More than the preview's six; still a floor when exceeded. */
 export const ATTENTION_INCIDENT_LIMIT = 20;
+/**
+ * Open SyncIssue rows the module scans for the broken-now page (the preview's scan; `truncated` past it).
+ *
+ * The scan is the 200 most recently seen open rows (lastOccurredAt desc). When it is cut, a bounded
+ * SECOND scan (ATTENTION_CRITICAL_SCAN) reads the OPEN rows of the classifier's critical kinds outside
+ * it, merged de-duplicated by id (S2 ruling, PB-1 R6a review — the R3 open-first pattern), so a
+ * critical incident older than 200 newer open rows is still ranked. Either cap reached ⇒ `truncated`
+ * (the floor caption shows "+"), never silent.
+ */
+const ATTENTION_INCIDENT_SCAN = 200;
+/** Open critical-kind rows read beyond the recent scan; reaching it is `truncated` (a floor). */
+export const ATTENTION_CRITICAL_SCAN = 100;
 /** How many correlated incidents get a detail read to name their execution. */
 const INCIDENT_EVIDENCE_LOOKUPS = 10;
 /** Delivery-history rows returned (the retained runs hold at most ~10 cycles). */
@@ -101,23 +115,37 @@ async function attempt<T>(what: AttentionAuthority | UserImpactAuthority | "aler
   }
 }
 
-/** Active incidents through the D5 projection, with an execution named where one is correlated. */
-async function readIncidents(): Promise<NonNullable<AttentionInputs["incidents"]>> {
-  const preview = await getIncidentPreview(ATTENTION_INCIDENT_LIMIT);
-  const lookups = preview.items.filter((i) => i.executionCorrelated).slice(0, INCIDENT_EVIDENCE_LOOKUPS);
+/**
+ * PB-1 R6a — broken-now incidents straight from the incident-intelligence module
+ * (Ops-tier token the ROUTE minted with atOpsTier), in the module's own order
+ * (attentionPriority, then recency, then id). No projection view, no `state`
+ * filter, no referent rule here: D1 / D2 / D2b / D10 are the module's. Subjects
+ * are named for the shown slice only; an execution is named where one is
+ * correlated. `truncated` is the module's D5 flag.
+ */
+async function readIncidents(token: OpsToken): Promise<NonNullable<AttentionInputs["incidents"]>> {
+  const page = await incidentAccessors.brokenNow(token, { limit: ATTENTION_INCIDENT_SCAN, criticalOpenLimit: ATTENTION_CRITICAL_SCAN });
+  const shown = page.items.slice(0, ATTENTION_INCIDENT_LIMIT);
+  const subjects = await resolveSubjects(shown);
+  const lookups = shown.filter((v) => v.correlatedOccurrenceCount > 0).slice(0, INCIDENT_EVIDENCE_LOOKUPS);
   const executionById = new Map<string, string | null>();
   await Promise.all(
-    lookups.map(async (i) => {
-      const detail = await getIncidentDetail(i.id).catch(() => null);
+    lookups.map(async (v) => {
+      const detail = await getIncidentDetail(v.id).catch(() => null);
       const newest = detail?.occurrences.find((o) => o.refreshExecutionId != null);
-      executionById.set(i.id, newest?.refreshExecutionId ?? null);
+      executionById.set(v.id, newest?.refreshExecutionId ?? null);
     }),
   );
-  const items: PlatformIncidentProjection[] = preview.items.map((i) => projectIncidentForPlatform(i, executionById.get(i.id) ?? null));
-  return { items, activeTotal: preview.activeTotal, truncated: preview.truncated };
+  const items: PlatformIncidentProjection[] = shown.map((v) =>
+    projectVerdictForPlatform(v, subjects.get(v.id) ?? { primary: null, secondary: null }, executionById.get(v.id) ?? null));
+  return { items, activeTotal: page.items.length, truncated: page.truncated };
 }
 
-export async function getAttention(now: Date = new Date()): Promise<AttentionResponse> {
+export async function getAttention(
+  /** PB-1 R4 — the Ops-tier incident token the ROUTE minted (atOpsTier) from its own guard result. */
+  incidentToken: OpsToken,
+  now: Date = new Date(),
+): Promise<AttentionResponse> {
   const connectionsP = attempt("connection-health", () => getConnectionHealth(20));
   const freshnessP = attempt("resource-freshness", () => checkResourceFreshness(undefined, now));
 
@@ -135,7 +163,7 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
       latest: await loadLatestAlertEvaluation(),
       titles: Object.fromEntries(ALERT_RULES.map((r) => [r.id, r.title])),
     })),
-    attempt("incidents", readIncidents),
+    attempt("incidents", () => readIncidents(incidentToken)),
     attempt("alert-history", () => loadRecentAlertRuns()),
     // BETA V1 — user-impact readers, each best-effort and named when it fails.
     attempt("refresh-executions", async () => {

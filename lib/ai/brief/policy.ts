@@ -120,10 +120,20 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * History — debt-semantics-1: recent-activity rows carry the resolved `nature`;
  * an internal transfer between the user's own accounts is "moved between your
  * accounts", never a payment or a debt reduction; an unclassified movement is
- * described only as money that moved (docs/plans/RESOLVED-TRANSACTION-NATURE-
- * CONTRACT-2026-10-27.md).
+ * described only as money that moved (docs/systems/transactions.md, "Resolved
+ * transaction nature").
+ *
+ * partial-history-1 (PB-8c): a change withheld because its window opens before the
+ * balance-history floor arrives as `recentChanges.<w>.unavailable.<metric>` (the
+ * reason, never a figure) and is said as "history is partial before <date>"; an
+ * estimated change is called estimated.
+ *
+ * restricted-cash-1 (FIN-005 part 1): a liquid change withheld because the cash
+ * history includes restricted cash (HSA, retirement) that today's unrestricted
+ * liquid excludes arrives as `recentChanges.<w>.unavailable.liquid` with that
+ * reason; the two are different measures and are never compared.
  */
-export const BRIEF_PROMPT_REVISION = 'debt-semantics-2';
+export const BRIEF_PROMPT_REVISION = 'restricted-cash-1';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

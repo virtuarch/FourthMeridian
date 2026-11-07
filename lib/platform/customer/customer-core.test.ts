@@ -3,10 +3,13 @@
  * spine: provenance survives, forbidden material never crosses, authorities are named.
  * Run: npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/customer/customer-core.test.ts
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import {
   actionTouchesItems, firstConnectedAt, projectActivity, projectAiUsage, projectCohorts, projectConnections, projectIdentity,
   projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectRollup, projectSpaces, requestStage, operatorDisplayName,
+  type IncidentVerdictFacts,
 } from "./customer-core";
 
 let failures = 0;
@@ -62,18 +65,27 @@ console.log("spaces");
   check("deleted Space dropped; roles typed as strings", s.length === 1 && s[0].role === "OWNER");
 }
 
-console.log("activity — which authority answered");
+console.log("activity — PB-10: presence buckets, never the session-use clock");
 {
-  const a = projectActivity({ lastSessionActiveAt: T("2026-10-08T10:00:00Z"), lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 1 });
-  check("session clock wins when newer", a.lastActiveSource === "SESSION");
-  const b = projectActivity({ lastSessionActiveAt: null, lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 0 });
-  check("LOGIN audit is the fallback", b.lastActiveSource === "LOGIN");
-  check("nothing recorded says so", projectActivity({ lastSessionActiveAt: null, lastLoginAt: null, activeSessions: 0 }).lastActiveSource === "NONE");
+  const now = T("2026-10-08T12:00:00Z");
+  const at = (min: number) => new Date(now.getTime() - min * 60_000);
+  const a = projectActivity({ presence: { lastPresenceAt: at(1), lastInteractionAt: at(2) }, lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 1, now });
+  check("fresh presence + recent interaction ⇒ Active now", a.presence === "ACTIVE" && a.presenceLabel === "Active now");
+  check("last active is a coarse bucket, never a raw timestamp", a.lastActive.bucket === "WITHIN_5_MIN" && !/\d{4}-\d{2}-\d{2}T/.test(a.lastActive.label));
+  check("last login is reported separately", a.lastLoginAt === "2026-10-07T00:00:00.000Z");
+  const b = projectActivity({ presence: { lastPresenceAt: at(1), lastInteractionAt: at(40) }, lastLoginAt: null, activeSessions: 1, now });
+  check("fresh presence, stale interaction ⇒ Online, idle", b.presence === "IDLE" && b.presenceLabel === "Online, idle" && b.lastActive.bucket === "WITHIN_HOUR");
+  const c = projectActivity({ presence: { lastPresenceAt: at(10), lastInteractionAt: at(10) }, lastLoginAt: null, activeSessions: 1, now });
+  check("expired presence ⇒ Offline, even with a valid session", c.presence === "OFFLINE" && c.presenceLabel === "Offline");
+  const d = projectActivity({ presence: { lastPresenceAt: null, lastInteractionAt: null }, lastLoginAt: T("2026-10-08T11:59:00Z"), activeSessions: 3, now });
+  check("valid sessions + a login a minute ago, no heartbeat ⇒ Unknown, never online", d.presence === "UNKNOWN" && d.lastActive.label === "Unknown");
+  check("the view has no raw presence/session clock field for operators",
+    !("lastActiveAt" in d) && !("lastPresenceAt" in d) && !("lastInteractionAt" in d) && !("lastActiveSource" in d));
 }
 
 console.log("connections — health from the shared derivation, no secrets");
 {
-  const plaid = [{ id: "p1", institutionName: "Chase", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-08T11:00:00Z"), createdAt: T("2026-09-04T00:00:00Z"), investmentsConsent: "ENABLED",
+  const plaid = [{ id: "p1", institutionName: "Example Bank", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-08T11:00:00Z"), createdAt: T("2026-09-04T00:00:00Z"), investmentsConsent: "ENABLED",
     ...({ encryptedToken: "v2:TOKEN", cursor: "CURSOR", balance: 123.45 } as object) }];
   const wallets = [{ id: "c1", provider: "WALLET", externalConnectionId: "bc1qabcdef123456", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-01T00:00:00Z"), createdAt: T("2026-09-10T00:00:00Z"),
     ...({ credential: "xpubSECRET" } as object) }];
@@ -88,15 +100,35 @@ console.log("connections — health from the shared derivation, no secrets");
   check("…and nothing at all is null", firstConnectedAt([], [], []) === null);
 }
 
-console.log("incidents");
+console.log("incidents — R1 reads module verdicts (brokenNow), never resolved=false");
 {
+  const verdict = (id: string, over: Partial<IncidentVerdictFacts> = {}): IncidentVerdictFacts => ({
+    id, provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "p1", financialAccountId: null,
+    firstSeenAt: "2026-10-07T00:00:00.000Z", lastSeenAt: "2026-10-07T00:00:00.000Z",
+    brokenNow: true, state: "active", freshness: "current", ...over,
+  });
   const v = projectIncidents(
-    [{ id: "i1", provider: "PLAID", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "p1", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: T("2026-10-07T00:00:00Z"), resolved: false },
-     { id: "i2", provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "p1", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: T("2026-10-07T00:00:00Z"), resolved: true }],
+    [verdict("i1", { kind: "TRANSACTION_PERSISTENCE_FAILED" }),
+     verdict("i2", { brokenNow: false, state: "resolved" }),
+     verdict("tomb", { kind: "REMOVED_TOMBSTONE", brokenNow: false, state: "resolved" }),
+     verdict("revoked", { brokenNow: false, state: "resolved" }),
+     verdict("stale", { brokenNow: false, state: "stale-unverified", freshness: "stale" }),
+     verdict("unv", { freshness: "unverified" })],
     [{ id: "e1", sourceKind: "PLAID_ITEM", plaidItemId: "p1", sourceRef: null, trigger: "MANUAL", profile: "FULL_REFRESH", overallStatus: "SUCCEEDED", startedAt: T("2026-10-08T00:00:00Z"), durationMs: 1200, failureCategory: null }],
     [{ receivedAt: T("2026-10-08T01:00:00Z"), webhookType: "TRANSACTIONS", webhookCode: "SYNC_UPDATES_AVAILABLE", handling: "SYNC_SCHEDULED", plaidItemId: "p1", errorCode: null }]);
-  check("only open incidents listed; createdAt backs missing occurrence clocks", v.open.length === 1 && v.open[0].firstOccurredAt === "2026-10-07T00:00:00.000Z");
+  check("only broken-now verdicts are open (D1 / D2b / D10: closed, evidence and stale rows are not)",
+    v.open.map((o) => o.id).join() === "i1,unv", JSON.stringify(v.open.map((o) => o.id)));
+  check("since / recency come from the verdict (D7)", v.open[0].firstOccurredAt === "2026-10-07T00:00:00.000Z" && v.open[0].lastOccurredAt === "2026-10-07T00:00:00.000Z");
+  check("an unverified incident stays open and says so (D10)", v.open.find((o) => o.id === "unv")?.freshness === "unverified");
+  check("truncation is explicit (D5)", v.openTruncated === false
+    && projectIncidents([verdict("x")], [], [], new Map(), { truncated: true }).openTruncated === true);
   check("executions and webhooks projected", v.recentExecutions[0].overallStatus === "SUCCEEDED" && v.recentWebhooks[0].handling === "SYNC_SCHEDULED");
+  const strip = (x: string) => x.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const core = strip(readFileSync(path.join(process.cwd(), "lib/platform/customer/customer-core.ts"), "utf8"));
+  const detail = strip(readFileSync(path.join(process.cwd(), "lib/platform/customer/customer-detail.ts"), "utf8"));
+  check("R1 pin: the panel projection never reads `resolved`", !/\.resolved\b/.test(core));
+  check("R2 pin: the CS detail loader reads no SyncIssue directly — only through the intelligence module",
+    !/\.syncIssue\.|syncIssue\s*\./.test(detail) && /\.forCustomer\(incidentToken, userId/.test(detail));
 }
 
 console.log("AI usage — returned calls priced, failures counted, estimate labelled");
@@ -159,8 +191,8 @@ console.log("BETA — per-user roll-up (projectRollup)");
 
 console.log("operator identity label — username first, never email");
 {
-  check("username wins", operatorDisplayName({ id: "abcdefgh123456", username: "chrstn", name: "Chris" }) === "chrstn");
-  check("name when the username is missing", operatorDisplayName({ id: "abcdefgh123456", username: null, name: "Chris" }) === "Chris");
+  check("username wins", operatorDisplayName({ id: "abcdefgh123456", username: "devuser", name: "Jules" }) === "devuser");
+  check("name when the username is missing", operatorDisplayName({ id: "abcdefgh123456", username: null, name: "Jules" }) === "Jules");
   check("opaque reference when both are missing", operatorDisplayName({ id: "abcdefgh123456", username: "  ", name: null }) === "user …123456");
   check("never derived from an email", !/@/.test(operatorDisplayName({ id: "x1y2z3", username: null, name: null, ...({ email: "someone@example.com" } as object) })));
 }

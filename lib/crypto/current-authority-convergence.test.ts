@@ -50,13 +50,20 @@ const READERS = [
   const src = read(...AUTHORITY.split("/"));
   check("the substitution has a single named authority",
     /export async function applyCanonicalWalletBalances/.test(src));
+  // FM-AUDIT-022 — re-pinned: the substitution goes through the ONE totals
+  // classification, which keeps VALUED/STALE (hasKnownValue) and EXCLUDES the rest.
   check("…which substitutes for VALUED and STALE alike",
-    /hasKnownValue\(v\) \? \{ balance: v\.value! \} : \{\}/.test(code(src)),
+    /\.\.\.resolveWalletBalance\(r\.balance, v\)/.test(code(src))
+      && /if \(hasKnownValue\(v\)\) return \{ balance: v\.value! \};/.test(code(src)),
     "a stale reading is the last known position; the column is an unwritten zero");
   check("…and returns the state alongside, so a caller can disclose it",
     /cryptoPosition: v/.test(code(src)));
-  check("…leaving NO_PRICE / NO_OBSERVATION on whatever the caller had",
-    /there is no number to put in its place/.test(src));
+  // FM-AUDIT-022 — INVERTED, deliberately: falling through to "whatever the
+  // caller had" WAS the defect (a new wallet's DEFAULT 0, or a stale column,
+  // counted in net worth undisclosed). NO_PRICE / NO_OBSERVATION are excluded.
+  check("…EXCLUDING NO_PRICE / NO_OBSERVATION, never leaving the caller's column",
+    /return \{ balance: 0, valuationUnknown: true \};/.test(code(src))
+      && !/there is no number to put in its place/.test(src));
 
   for (const [name, file] of READERS) {
     const s = code(read(...file.split("/")));
@@ -121,8 +128,10 @@ const READERS = [
   check("…and still makes no visibility decision of its own",
     !/visibilityLevel|TRANSACTION_DETAIL_VISIBILITY/.test(src));
   const accounts = code(read("lib", "data", "accounts.ts"));
+  // FM-AUDIT-022 — re-pinned: through the one totals classification.
+  // FIN-A2 re-pin: the call now also passes balanceObserved (same balance read).
   check("BALANCE_ONLY still receives the corrected balance",
-    /balance:     displayBalance\(r\.balance, walletValue\)/.test(accounts));
+    /balance:     walletBalance\(r\.balance, r\.id, r\.balanceObserved\)\.balance/.test(accounts));
   const ai = code(read("lib", "ai", "assemblers", "accounts.ts"));
   check("the AI assembler still filters by balance disclosure AFTER substitution",
     /grantsBalanceDisclosure/.test(ai),

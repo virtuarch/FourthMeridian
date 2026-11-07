@@ -29,6 +29,7 @@ import type { WealthResult, WealthDriver } from "@/lib/wealth/wealth-time-machin
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
+import { gateFor, gatedCompareLabel, type WealthChangeGate } from "./wealth-change-gate";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { METRIC_DRIVER_COMPONENTS, METRIC_POSSESSIVE } from "./wealth-metric-facets";
 
@@ -41,15 +42,19 @@ export function WealthChangeLedger({
   result,
   currency,
   metric = "netWorth",
+  changeGate = null,
 }: {
   result:   WealthResult;
   currency: string;
   /** The selected wealth metric — the card reconciles with this, not net worth. */
   metric?:  WealthMetricKey;
+  /** PB-8b — per-series change verdicts (balance-history floors). Absent ⇒ as before. */
+  changeGate?: WealthChangeGate | null;
 }) {
   const { deltas, drivers, compareState } = result;
-  const compareLabel =
-    compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
+  const gate = gateFor(changeGate, metric);
+  const compareLabel = gatedCompareLabel(
+    compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined, gate);
 
   const heading = `What moved ${METRIC_POSSESSIVE[metric]}?`;
 
@@ -57,6 +62,17 @@ export function WealthChangeLedger({
     return (
       <Block label={heading}>
         <WealthUnavailable message={`Add a Compare To date above to break down how ${METRIC_POSSESSIVE[metric]} changed.`} />
+      </Block>
+    );
+  }
+
+  // PB-8b — the comparison day is before a balance-history floor: the "change"
+  // would be the missing accounts arriving, not movement. Withheld, and said.
+  if (gate.state === "withheld") {
+    return (
+      <Block label={heading}>
+        {/* S2 2026-11-03 — while coverage loads the change is PENDING: "—", not a sentence. */}
+        <WealthUnavailable message={"pending" in gate ? gate.message : `${gate.message}.`} />
       </Block>
     );
   }

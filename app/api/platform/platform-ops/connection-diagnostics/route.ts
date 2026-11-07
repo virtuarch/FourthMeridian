@@ -28,12 +28,18 @@ export const dynamic = "force-dynamic";
 
 export interface ConnectionDiagnosticsResponse {
   connections: ConnectionDiagnostic[];
+  /**
+   * PB-5 — DESCRIPTIVE only: whether the "Remove connection" action renders.
+   * True exactly when access came from the SYSTEM_ADMIN role (no grant); the
+   * remove route re-checks with requireFreshSystemAdmin.
+   */
+  viewer: { canRemove: boolean };
 }
 
 export async function GET() {
-  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
+  const [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
 
   const connections = await getConnectionDiagnostics();
-  return NextResponse.json({ connections } satisfies ConnectionDiagnosticsResponse);
+  return NextResponse.json({ connections, viewer: { canRemove: auth.grant === null } } satisfies ConnectionDiagnosticsResponse);
 }

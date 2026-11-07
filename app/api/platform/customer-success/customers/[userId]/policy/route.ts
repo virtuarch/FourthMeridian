@@ -20,6 +20,7 @@ import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit"
 import { AssignmentRefusedError, assignCustomerPolicy } from "@/lib/platform/customer/assign";
 import { projectPolicy, type CustomerPolicyView } from "@/lib/platform/customer/customer-core";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,8 @@ export interface AssignPolicyResponse { success: true; policy: CustomerPolicyVie
 export async function POST(req: NextRequest, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
   const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "cs-customer-policy");
+  if (limited) return limited;
   const { userId } = await ctx.params;
   const body = await req.json().catch(() => ({})) as { policyGroup?: unknown; overlay?: unknown; aiDailyUsdAllowanceOverride?: unknown; reason?: unknown };
   if (body.policyGroup !== undefined && typeof body.policyGroup !== "string") return NextResponse.json({ error: "policyGroup must be a string." }, { status: 400 });

@@ -87,10 +87,10 @@ console.log("1. the wording helpers: origin chips, provenance, legend, value wor
 {
   check("origin chip words", originChip("DEFAULT") === "Default" && originChip("SETTING") === "Setting" && originChip("INVALID_SETTING") === "Default in force — stored value invalid");
   const d = cv("allowance.usd", "x", 5, 5);
-  const s = cv("allowance.usd", "x", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
-  const bad = cv("allowance.usd", "x", 5, 5, { origin: "INVALID_SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
+  const s = cv("allowance.usd", "x", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Jules" });
+  const bad = cv("allowance.usd", "x", 5, 5, { origin: "INVALID_SETTING", updatedAt: SET_AT, updatedByName: "Jules" });
   check("provenance: Platform default / Set <UTC date> by <name> / Default in force — stored value is invalid",
-    controlProvenance(d, formatUtc) === "Platform default" && controlProvenance(s, formatUtc) === "Set 14 Oct 2026, 09:00 UTC by Chris" && controlProvenance(bad, formatUtc) === "Default in force — stored value is invalid");
+    controlProvenance(d, formatUtc) === "Platform default" && controlProvenance(s, formatUtc) === "Set 14 Oct 2026, 09:00 UTC by Jules" && controlProvenance(bad, formatUtc) === "Default in force — stored value is invalid");
   check("provenance never invents a name", controlProvenance(cv("allowance.usd", "x", 7, 5, { origin: "SETTING", updatedAt: SET_AT }), formatUtc) === "Set 14 Oct 2026, 09:00 UTC");
   check("legend numeric: Default $5 · Setting $7 · Max $20; default row reads Setting —; invalid row reads Setting invalid",
     controlLegend(s).map((i) => `${i.label} ${i.value}`).join(" · ") === "Default $5 · Setting $7 · Max $20"
@@ -120,7 +120,7 @@ console.log("\n2. validation BEFORE submission: whole dollars within the read mo
 
 console.log("\n3. the PATCH body: ONE call, only the controls that changed, each with the version the operator read");
 {
-  const m = model((x) => { x.allowance.usd = cv("allowance.usd", "Daily allowance (USD)", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" }); });
+  const m = model((x) => { x.allowance.usd = cv("allowance.usd", "Daily allowance (USD)", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Jules" }); });
   const start = draftFromModel(m, "allowance");
   check("the starting draft mirrors the values in force (numbers as raw strings)", start["allowance.enforced"] === true && start["allowance.usd"] === "7");
   check("an unchanged draft produces no change and no error", resolveDraft(m, "allowance", start).changes.length === 0 && Object.keys(resolveDraft(m, "allowance", start).errors).length === 0);
@@ -202,7 +202,7 @@ console.log("\n7. compact cards and disabled administrative controls for READ / 
 console.log("\n8. persisted state, invalid settings, firing alerts and pause status");
 {
   const m = model((x) => {
-    x.allowance.usd = cv("allowance.usd", "Daily allowance (USD)", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Chris" });
+    x.allowance.usd = cv("allowance.usd", "Daily allowance (USD)", 7, 5, { origin: "SETTING", updatedAt: SET_AT, updatedByName: "Jules" });
     x.allowance.enforced = cv("allowance.enforced", "Allowance enforced", true, true, { origin: "INVALID_SETTING", updatedAt: SET_AT });
     x.allowance.effectiveDefaultUsd = 7;
     x.userAlert.enabled = cv("userAlert.enabled", "Per-user alert enabled", false, true, { origin: "SETTING", updatedAt: SET_AT });

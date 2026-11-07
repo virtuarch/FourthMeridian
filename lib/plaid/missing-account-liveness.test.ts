@@ -47,7 +47,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 // never be recreated.
 function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<string> }) {
   const txns: { id: string; plaidTransactionId: string | null; financialAccountId: string; deletedAt: Date | null }[] = [];
-  const item = { id: "item_1", cursor: null as string | null, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item = { id: "item_1", cursor: null as string | null, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank" };
   const cursorWrites: (string | null)[] = [];
   const syncIssues: { kind: string; plaidTransactionId: string | null; detail?: Record<string, unknown>; resolved: boolean }[] = [];
   let seq = 0;
@@ -69,9 +69,11 @@ function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<
         id: `si${n + 1}`, kind: i.kind, provider: "PLAID", detail: i.detail,
         plaidTransactionId: i.plaidTransactionId, resolved: i.resolved,
       })),
-      updateMany: async ({ where }: { where: { id?: { in: string[] } } }) => {
+      // P8 #1 — the resolver now writes per row (`id` is a string) inside its
+      // own CAS transaction; the bulk `{in}` form is kept for older callers.
+      updateMany: async ({ where }: { where: { id?: string | { in: string[] } } }) => {
         let count = 0;
-        const ids = where.id?.in ?? [];
+        const ids = typeof where.id === "string" ? [where.id] : where.id?.in ?? [];
         for (const [n, i] of syncIssues.entries()) {
           if (ids.includes(`si${n + 1}`) && !i.resolved) { i.resolved = true; count++; }
         }
@@ -79,7 +81,11 @@ function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<
       },
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
+    // P8 #1 — the incident lifecycle's OWN transition transaction (CAS +
+    // STATE_CHANGED) runs on this fake; the sync itself opens none.
+    async $transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn({ syncIssue: this.syncIssue, syncIssueEvent: { create: async () => ({ id: "ev1" }) } });
+    },
     plaidItem: {
       findUnique: async () => ({ ...item }),
       update: async ({ data }: { data: { cursor?: string | null } }) => {
@@ -156,7 +162,7 @@ const runSync = (fdb: ReturnType<typeof makeFakeDb>, fplaid: ReturnType<typeof m
 
 /** A provider account as `accountsGet` returns it. */
 const providerAccount = (id: string) => ({
-  account_id: id, name: "Recovered Checking", official_name: "Chase Total Checking",
+  account_id: id, name: "Recovered Checking", official_name: "Example Bank Total Checking",
   mask: "4321", type: "depository", subtype: "checking",
   balances: { current: 100, available: 90, limit: null, iso_currency_code: "USD" },
 });
@@ -176,7 +182,7 @@ function recoveryDeps(fdb: ReturnType<typeof makeFakeDb>, over: {
   const deps = {
     loadItem: async () => ({
       userId: "u1", ownerDeactivated: over.ownerDeactivated ?? false,
-      accessToken: "plaintext-token", institutionName: "Chase", institutionId: "ins_1",
+      accessToken: "plaintext-token", institutionName: "Example Bank", institutionId: "ins_1",
     }),
     countBlockingIssues: async () => over.blocking ?? 1,
     fetchProviderAccounts: async () => {

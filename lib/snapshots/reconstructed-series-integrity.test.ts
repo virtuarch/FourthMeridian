@@ -16,7 +16,7 @@
  * not contain.
  *
  * ── Why these tests exist ────────────────────────────────────────────────────
- * Chris' Space stored snapshots violate the identity at exactly one reconstructed
+ * Jules' Space stored snapshots violate the identity at exactly one reconstructed
  * date (2025-07-31, residual +145.98) with no compensating counterpart, which
  * leaves all 375 earlier rows a constant 145.98 too low. A fresh replay violates
  * it on none of 745 days.

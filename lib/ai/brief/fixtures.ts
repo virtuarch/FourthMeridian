@@ -93,8 +93,8 @@ const src = (label: string, kind: DataSourceView['kind'], feeds: NonNullable<Dat
 /** The sources behind the fixture Space: one bank for cash and the card, one brokerage, one wallet. */
 export function fixtureSources(over: { bank?: Partial<DataSourceView>; brokerage?: Partial<DataSourceView>; wallet?: Partial<DataSourceView> } = {}): SpaceDataHealth {
   const sources = [
-    src('Chase', 'BANK', ['liquid', 'liabilities', 'bankingRows'], over.bank),
-    src('Charles Schwab', 'BANK', ['investments'], over.brokerage),
+    src('Example Bank', 'BANK', ['liquid', 'liabilities', 'bankingRows'], over.bank),
+    src('Example Brokerage', 'BANK', ['investments'], over.brokerage),
     src('Ledger Wallet', 'WALLET', ['digitalAssets'], over.wallet),
   ];
   return { sources, groups: [], attention: sources.filter((x) => x.needsAttention).length };
@@ -275,7 +275,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     p.currentState.liquid = 15709.85;
     p.currentState.investments = { traditional: 84300.10, digital: 28440.27, combined: 112740.37 };
     p.recentActivity!.top = [
-      { date: '2026-09-12', amount: -3210.55, flow: 'DEBT_PAYMENT', merchant: 'Chase Card Payment', category: 'Payment', betweenOwnAccounts: true, account: 'LIQUID' },
+      { date: '2026-09-12', amount: -3210.55, flow: 'DEBT_PAYMENT', merchant: 'Example Bank Card Payment', category: 'Payment', betweenOwnAccounts: true, account: 'LIQUID' },
       { date: '2026-09-12', amount: 3210.55, flow: 'DEBT_PAYMENT', merchant: 'Payment Thank You', category: 'Payment', betweenOwnAccounts: true, account: 'LIABILITY' },
       ...p.recentActivity!.top.slice(0, 3),
     ];
@@ -389,8 +389,8 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     p.currentState.debt = 5412.80;
     p.currentState.netWorth = 126247.97;
     p.dataQuality.knowledgeGaps = [
-      { account: 'Chase Sapphire', missing: 'APR' },
-      { account: 'Amex Gold', missing: 'APR' },
+      { account: 'Example Bank Card Product A', missing: 'APR' },
+      { account: 'Example Card Product D', missing: 'APR' },
     ];
     p.dataQuality.ungraded = [{ section: 'debt', reason: 'APR_MISSING' }];
   }, {}, { debt: { aprPct: null, accounts: 2 } }),
@@ -475,7 +475,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
   // ── Claim-scoped freshness, both directions ───────────────────────────────
   // The brokerage has been silent for four weeks and needs reconnecting. Card debt
   // rose this week through a purchase that posted ON the card. Real Briefs wrote
-  // "this view could be out of date because Charles Schwab data is over a month
+  // "this view could be out of date because Example Brokerage data is over a month
   // old" about exactly this kind of debt claim. The brokerage feeds investments,
   // priced positions and net worth — and nothing else.
   scenario('18-stale-brokerage-debt-claim', 'a stale brokerage must not qualify a debt claim', (p) => {

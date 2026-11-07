@@ -28,7 +28,7 @@
  * count is accurate under `fm_app` too. Unlike `SpaceAccountLink`, there is no
  * second tenant whose row could be hidden from the count. The authority here is
  * about the EXECUTION PHASE (background, post-commit), not about blast radius.
- * See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md, "Not a finding".
+ * See docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide (the Plaid orphan gate note).
  *
  * ⚠️ `remaining !== 0` is a plain read, NOT a conditional write, so it is not an
  * instance of the RLS-C-S6a count-as-business-answer defect — and on `fm_system`
@@ -43,6 +43,7 @@ import { PlaidItemStatus } from "@prisma/client";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { resolveIncidentsForRemovedSubjects } from "@/lib/plaid/syncIssues";
 
 /**
  * A narrow injection seam, defaulting to the real singletons so production is
@@ -60,6 +61,8 @@ export type DisconnectDeps = {
   plaid?: Pick<typeof plaidClient, "itemRemove">;
   /** The health chokepoint. Injected only so the test can observe the write. */
   setHealth?: typeof setPlaidItemHealth;
+  /** PB-1 S3 — the incident closure, injected so a unit test never reaches a real database. */
+  resolveRemovedSubjects?: (scope: { plaidItemIds: string[] }) => Promise<number>;
 };
 
 export async function disconnectPlaidItemIfOrphaned(
@@ -82,6 +85,17 @@ export async function disconnectPlaidItemIfOrphaned(
 
   const item = await database.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) return;
+
+  // PB-5 (S2) — A REMOVAL ALREADY CONFIRMED IS NOT ATTEMPTED AGAIN. The token
+  // is scrubbed to the sentinel ONLY after Plaid confirmed the Item gone (see
+  // the PRIV-004 block below), so a sentinel token is proof the provider
+  // question is closed. A later call — a retry that read "owed" before the
+  // confirmation landed, a second operator click — would otherwise fail to
+  // decrypt "" (no provider code ⇒ "retryable") and write a spurious
+  // UNCONFIRMED marker: a closed obligation reopened, which no retry could ever
+  // close again (every retry would fail the same decrypt). Nothing to call,
+  // nothing to record. A re-linked item carries a fresh token and is unaffected.
+  if (item.encryptedToken === REVOKED_TOKEN_SENTINEL) return;
 
   // ── THE PROVIDER ATTEMPT, AND WHAT ITS OUTCOME IS ALLOWED TO MEAN ─────────
   // Previously: catch → log → fall through, so a transport failure and a
@@ -125,6 +139,10 @@ export async function disconnectPlaidItemIfOrphaned(
   // fixed once. The thing that was missing was never the status; it was any
   // record of whether cleanup is still owed.
   await setHealth(plaidItemDbId, { status: PlaidItemStatus.REVOKED });
+
+  // PB-1 S3 — the item is REVOKED, so its open incidents close as
+  // SUBJECT_REMOVED (never a recovery). Outside any transaction; never throws.
+  await (deps.resolveRemovedSubjects ?? resolveIncidentsForRemovedSubjects)({ plaidItemIds: [plaidItemDbId] });
 
   // PRIV-004 — once Plaid has CONFIRMED the Item is gone (removed, or already
   // absent), the access token is dead ciphertext with no remaining use, so it

@@ -331,7 +331,7 @@ function inc(amount: number, flow: FlowType, over: Partial<Transaction> = {}): T
 
 const srcRows: Transaction[] = [
   inc(5000, "INCOME", { merchantDisplayName: "Acme Payroll", merchant: "ACME CORP DIRECT DEP" }),
-  inc(2000, "INCOME", { merchant: "Coinbase" }),
+  inc(2000, "INCOME", { merchant: "Example Exchange" }),
   inc(100,  "INCOME", { description: "Interest payment" }),
   inc(9999, "TRANSFER",   { merchantDisplayName: "Internal move" }),   // excluded
   inc(8888, "INVESTMENT", { merchantDisplayName: "BTC disposal" }),    // excluded (BTC sale)
@@ -339,7 +339,7 @@ const srcRows: Transaction[] = [
 ];
 const bySrc = incomeBySource(srcRows);
 check("incomeBySource: INCOME-only, grouped, descending",
-  bySrc.map((c) => `${c.label}:${c.value}`).join(",") === "Acme Payroll:5000,Coinbase:2000,Interest payment:100",
+  bySrc.map((c) => `${c.label}:${c.value}`).join(",") === "Acme Payroll:5000,Example Exchange:2000,Interest payment:100",
   JSON.stringify(bySrc));
 check("incomeBySource excludes TRANSFER", !bySrc.some((c) => c.label === "Internal move"));
 check("incomeBySource excludes INVESTMENT (BTC sale)", !bySrc.some((c) => c.label === "BTC disposal"));
@@ -353,7 +353,7 @@ check("incomeBySource empty when no inflows",
 check("source label: merchantDisplayName wins",
   incomeSourceLabel(inc(1, "INCOME", { merchantDisplayName: "Acme", merchant: "RAW" })) === "Acme");
 check("source label: falls back to raw merchant",
-  incomeSourceLabel(inc(1, "INCOME", { merchant: "Coinbase" })) === "Coinbase");
+  incomeSourceLabel(inc(1, "INCOME", { merchant: "Example Exchange" })) === "Example Exchange");
 check("source label: falls back to description",
   incomeSourceLabel(inc(1, "INCOME", { description: "Dividend" })) === "Dividend");
 check("source label: falls back to category",

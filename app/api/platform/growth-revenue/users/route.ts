@@ -21,9 +21,10 @@
  */
 
 import { NextResponse } from "next/server";
-import { UserRole } from "@prisma/client";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { db } from "@/lib/db";
+import { CLOSED_ACCOUNT_WHERE, CUSTOMER_WHERE } from "@/lib/platform/customer/population";
+import { countAccountsWithLiveSession } from "@/lib/platform/security/live-sessions";
 import { AuditAction } from "@/lib/audit-actions";
 
 export const runtime = "nodejs";
@@ -37,7 +38,7 @@ export interface GrowthUsersSummary {
   deactivated: number;
   /** …with an account deletion scheduled. */
   deletionScheduled: number;
-  /** …holding at least one session that is not revoked. */
+  /** …holding at least one LIVE session (liveSessionWhere — not revoked, within the SEC-010 lifetime, account not locked out). */
   withLiveSession: number;
   /** …with no recorded sign-in at all (AuditLog LOGIN, which is never pruned). */
   neverSignedIn: number;
@@ -48,13 +49,15 @@ export async function GET(): Promise<Response> {
   const [, err] = await requirePlatformAccess("GROWTH_REVENUE", "READ");
   if (err) return err;
 
-  const customer = { role: UserRole.USER };
-  const [total, emailVerified, deactivated, deletionScheduled, liveSessionUsers, signedInUsers] = await Promise.all([
+  const customer = CUSTOMER_WHERE;
+  const now = new Date();
+  const [total, emailVerified, deactivated, deletionScheduled, withLiveSession, signedInUsers] = await Promise.all([
     db.user.count({ where: customer }),
     db.user.count({ where: { ...customer, emailVerifiedAt: { not: null } } }),
-    db.user.count({ where: { ...customer, deactivatedAt: { not: null } } }),
+    db.user.count({ where: { ...customer, ...CLOSED_ACCOUNT_WHERE } }),
     db.user.count({ where: { ...customer, deletionScheduledAt: { not: null } } }),
-    db.userSession.groupBy({ by: ["userId"], where: { revokedAt: null, user: { is: customer } }, _count: { _all: true } }),
+    // accounts-with-live-session@1 — the shared reader (lib/platform/security/live-sessions.ts).
+    countAccountsWithLiveSession(db, now),
     db.auditLog.groupBy({ by: ["userId"], where: { action: AuditAction.LOGIN, user: { is: customer } }, _count: { _all: true } }),
   ]);
 
@@ -63,7 +66,7 @@ export async function GET(): Promise<Response> {
     emailVerified,
     deactivated,
     deletionScheduled,
-    withLiveSession: liveSessionUsers.length,
+    withLiveSession,
     neverSignedIn: Math.max(0, total - signedInUsers.length),
     checkedAt: new Date().toISOString(),
   } satisfies GrowthUsersSummary);

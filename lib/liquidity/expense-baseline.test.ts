@@ -12,7 +12,7 @@
  * which, so a user could not reconcile them.
  *
  * Measured before this landed (scripts/audit-coverage-fraction-divergence.ts):
- * 0 Spaces declared a baseline, 6 had a measured one, and on Chris' Space the
+ * 0 Spaces declared a baseline, 6 had a measured one, and on Jules' Space the
  * product showed NO coverage while the engine told the AI "1.6 months" — a
  * WARNING-grade position the product never mentioned. The NUMERATORS agreed on
  * all 6 Spaces, so the denominator was the whole divergence.

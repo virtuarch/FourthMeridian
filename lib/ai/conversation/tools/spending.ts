@@ -118,8 +118,8 @@ export const getSpending: ToolDefinition = {
       byMonth: months,
       // ⚠️ THE MONTHLY FIGURE, COMPUTED OVER WHOLE MONTHS — because dividing a
       // window total by its length is where "how long would my cash last"
-      // quietly goes wrong. On this Space ordinary spending ran $2,290 in one
-      // month and $14,142 in another; a mean alone describes neither, and a
+      // quietly goes wrong. On this Space ordinary spending ran about $2,000 in one
+      // month and about $12,000 in another; a mean alone describes neither, and a
       // window that opens or closes mid-month puts a fraction of a month's
       // spending against a whole one. Nothing here is a burn rate, a target or
       // a recommendation — it is the spread the months actually have.

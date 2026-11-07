@@ -75,6 +75,42 @@ export interface ClassifiableAccount {
    * any caller that made no claim keep their exact prior arithmetic).
    */
   adjustedBalance?: number | null;
+  /**
+   * FM-AUDIT-022 — this row has NO value: a wallet in NO_PRICE or
+   * NO_OBSERVATION, classified by `resolveWalletBalance`
+   * (lib/crypto/wallet-current-value.ts), the one place that decides it. Such a
+   * row is EXCLUDED from every total below — never counted at 0 or at a stale
+   * stored column — and counted in `unvaluedCount` so the exclusion is
+   * disclosed. Absent on every valued row (their arithmetic is untouched).
+   */
+  valuationUnknown?: boolean;
+  /**
+   * FM-AUDIT-022 — on an aggregated privacy row only: how many of its MEMBERS
+   * were excluded as unvalued (their contribution is already absent from the
+   * aggregate's balance). Counted into `unvaluedCount`.
+   */
+  unvaluedMemberCount?: number;
+}
+
+/**
+ * FM-AUDIT-022 — how many accounts a row withholds from the totals for having
+ * no value. The ONE reader of the two fields above, shared by classifyAccounts
+ * and any surface that discloses beside its own summary.
+ */
+export function unvaluedAccountCount(a: { valuationUnknown?: boolean; unvaluedMemberCount?: number }): number {
+  return (a.valuationUnknown === true ? 1 : 0) + (a.unvaluedMemberCount ?? 0);
+}
+
+/**
+ * FIN-A2 — what a surface prints IN PLACE of a balance for a row the totals
+ * classification excluded (`valuationUnknown`). Never "$0". A wallet is
+ * "Not yet valued" (no price / no observation, FM-AUDIT-022); any other account
+ * excluded there was connected without an observed balance
+ * (`balanceObserved === false`) and reads "Balance unavailable". ONE place, so
+ * no surface invents its own wording.
+ */
+export function unvaluedBalanceLabel(a: { type: string }): "Not yet valued" | "Balance unavailable" {
+  return a.type === "crypto" ? "Not yet valued" : "Balance unavailable";
 }
 
 /**
@@ -84,7 +120,9 @@ export interface ClassifiableAccount {
  * claim — counts `balance`, byte-for-byte as before. `balance` itself stays the
  * provider-reported figure for display.
  */
-export function countedBalance(a: { type: string; balance: number; adjustedBalance?: number | null }): number {
+export function countedBalance(a: { type: string; balance: number; adjustedBalance?: number | null; valuationUnknown?: boolean }): number {
+  // FM-AUDIT-022 — an unvalued row contributes nothing, whatever its balance says.
+  if (a.valuationUnknown === true) return 0;
   if ((a.type === "checking" || a.type === "savings") && typeof a.adjustedBalance === "number") {
     return a.adjustedBalance;
   }
@@ -297,6 +335,14 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
    * `unconverted` implies `estimated`; false on the context-less path.
    */
   unconverted:        boolean;
+  /**
+   * FM-AUDIT-022 — accounts EXCLUDED from every total above because they have
+   * no value (an unpriced or never-observed wallet; see `valuationUnknown`).
+   * Never valued at 0, never at a stale stored balance — the totals are an
+   * honest partial and a surface showing them discloses "N not yet valued".
+   * 0 when nothing was excluded.
+   */
+  unvaluedCount:      number;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
@@ -319,8 +365,10 @@ function sumBalances(
 ): number {
   // v2.7-P0 — `countedBalance`: the adjusted figure for a depository row that
   // carries one, else `balance` (identical arithmetic for every other row).
-  if (!ctx) return accounts.reduce((s, a) => s + countedBalance(a), 0);
+  // FM-AUDIT-022 — an unvalued row is EXCLUDED (skipped), not added as 0.
+  if (!ctx) return accounts.reduce((s, a) => (a.valuationUnknown === true ? s : s + countedBalance(a)), 0);
   return accounts.reduce((s, a) => {
+    if (a.valuationUnknown === true) return s;
     const c = convertMoney({ amount: countedBalance(a), currency: a.currency ?? null }, valuationDateISO!, ctx);
     if (c.estimated) flag.estimated = true; // MC1 P3 Slice 2 — taint propagation (D-7)
     // V25-FINAL-1 — an unavailable member has NO target value (amount null): it is
@@ -406,12 +454,13 @@ export function classifyAccounts<T extends ClassifiableAccount>(
   // equivalent to clamp-then-convert and byte-identical under identity.
   const totalLiabilities   = ctx
     ? liabilities.reduce((s, a) => {
+        if (a.valuationUnknown === true) return s; // FM-AUDIT-022 — excluded
         const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, effectiveValuationDateISO!, ctx);
         if (c.estimated) flag.estimated = true;
         if (c.amount === null) { flag.unconverted = true; return s; } // V25-FINAL-1 — excluded, not native, not a fake 0
         return s + amountOwed(c.amount);
       }, 0)
-    : liabilities.reduce((s, a) => s + amountOwed(a.balance), 0);
+    : liabilities.reduce((s, a) => (a.valuationUnknown === true ? s : s + amountOwed(a.balance)), 0);
   // Unchanged expression: restricted cash stays an asset, so net worth cannot move.
   const totalAssets        = totalChecking + totalSavings + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
@@ -435,5 +484,6 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     netWorth,
     estimated: flag.estimated,
     unconverted: flag.unconverted,
+    unvaluedCount: accounts.reduce((n, a) => n + unvaluedAccountCount(a), 0),
   };
 }

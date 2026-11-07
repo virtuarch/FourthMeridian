@@ -143,7 +143,8 @@ async function list(): Promise<void> {
   console.log("2. GET /catalog");
   const all = await capture(catalogList(u("/catalog?limit=100"), NOW));
   const items = all.json.items as Array<{ key: string; status: string; displayName: string }>;
-  check("limit=100 → 200 with every entry (60) and nextCursor null", all.status === 200 && items.length === 60 && all.json.nextCursor === null && all.json.limit === 100);
+  // PB-5: 61 (+CONNECTION_REMOVED_BY_SUPPORT).
+  check("limit=100 → 200 with every entry (61) and nextCursor null", all.status === 200 && items.length === 61 && all.json.nextCursor === null && all.json.limit === 100);
   check("checkedAt is the server time; floor and capped are false (code registry)", all.json.checkedAt === NOW.toISOString() && all.json.floor === false && all.json.capped === false);
   const rank = (s: string) => DEFINITION_STATUS_ORDER.indexOf(s as never);
   const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
@@ -158,7 +159,7 @@ async function list(): Promise<void> {
   check("same order as compareCatalog", items.map((i) => i.key).join() === CATALOG_KEYS.map((k) => COMMS_CATALOG[k]).sort(compareCatalog).map((d) => d.key).join());
   const totals = all.json.totals as Record<string, number>;
   check("totals carry every status key and sum to the item count",
-    DEFINITION_STATUS_ORDER.every((s) => typeof totals[s] === "number") && Object.values(totals).reduce((a, b) => a + b, 0) === 60 && totals.RETIRED === 2);
+    DEFINITION_STATUS_ORDER.every((s) => typeof totals[s] === "number") && Object.values(totals).reduce((a, b) => a + b, 0) === 61 && totals.RETIRED === 2);
 
   const def = await capture(catalogList(u("/catalog"), NOW));
   check("default limit is 50, with a cursor for the rest", (def.json.items as unknown[]).length === 50 && typeof def.json.nextCursor === "string" && def.json.limit === 50);
@@ -198,7 +199,8 @@ async function list(): Promise<void> {
   const trig = await capture(triggersList(u("/triggers?limit=100"), NOW));
   check("GET /triggers → every trigger key, read-only list envelope", trig.status === 200 &&
     (trig.json.items as Array<{ key: string }>).map((i) => i.key).join() === TRIGGER_KEYS.join() && trig.json.nextCursor === null && trig.json.floor === false);
-  check("triggers: only emitted events are AVAILABLE (15 since 2026-10-31)", (trig.json.items as Array<{ status: string }>).filter((t) => t.status === "AVAILABLE").length === 15);
+  // PB-5: 16 (+connection.removed_by_operator).
+  check("triggers: only emitted events are AVAILABLE (16 since 2026-11-01)", (trig.json.items as Array<{ status: string }>).filter((t) => t.status === "AVAILABLE").length === 16);
   const trigBad = await capture(triggersList(u("/triggers?limit=500"), NOW));
   check("triggers: limit=500 → 400", trigBad.status === 400);
 }

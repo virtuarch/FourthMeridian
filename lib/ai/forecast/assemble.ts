@@ -376,8 +376,8 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
       const sub = st.subject as Extract<StatementSubject, { kind: 'ONE_OFF_EVENT' }>;
       return {
         // ⚠️ THE ID CARRIES THE AMOUNT. Without it the dedupe map below
-        // collapsed "a $15,500 gross bonus on October 15" and "a $1,500 payout
-        // on October 15" into one event — the programme's own live-failure
+        // collapsed "a $10,000 gross bonus" and "a $1,000 payout" on the same
+        // day (figures illustrative) into one event — the programme's own live-failure
         // fixture, silently losing the payout. Two movements that share a day
         // and a role are still two movements.
         id: `user:${sub.direction}:${sub.role}:${sub.dateISO}:${sub.amount}`,
@@ -481,9 +481,9 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // read `status === FACTUALLY_LICENSED`, which treated ASSUMPTION_DEPENDENT as
   // no answer at all — and ASSUMPTION_DEPENDENT is the ordinary result whenever
   // the user supplies a spending level or a payroll basis. Measured on the
-  // conformance corpus: "Assume I spend $4,000/month and that my Vectrus
+  // conformance corpus: "Assume I spend $4,000/month and that my Employer A
   // paycheck is net" produced a licensed ASSUMPTION_DEPENDENT closing of
-  // $35,144.66, and a projection then computed the SAME $35,144.66 and overlaid
+  // $35,000.00, and a projection then computed the SAME $35,000.00 and overlaid
   // it as the answer. Two harms, both real:
   //
   //   · the authority was misattributed — a result resting on the user's own
@@ -491,7 +491,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   //     is observed-continuation framing for a conclusion no observation
   //     supports on its own; and
   //   · the assumption provenance disappeared with it. The user's "my paycheck
-  //     is net" is what licenses $37,006.51 as cash, and the projection block
+  //     is net" is what licenses $37,000.00 as cash, and the projection block
   //     lists OBSERVED_CONTINUATION assumptions instead, so the one input that
   //     materially changes the result stopped being visible.
   //

@@ -72,8 +72,11 @@ export async function POST(req: NextRequest) {
 
     // Already deactivated (shouldn't be reachable with a live session, but a
     // race with another device is possible) — treat as success, no double
-    // stamp.
+    // stamp. The revocation is RE-RUN (idempotent): the first attempt may have
+    // stamped the account and then failed to revoke, and a retry that only
+    // reported success would leave those sessions live.
     if (dbUser.deactivatedAt) {
+      await revokeAllUserSessions(user.id);
       return NextResponse.json({ success: true });
     }
 

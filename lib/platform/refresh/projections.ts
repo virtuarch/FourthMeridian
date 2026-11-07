@@ -37,6 +37,7 @@
 import "server-only";
 import { todayUTCISO } from "@/lib/time/clock";
 import { deriveIngestionActivity, deriveIngestionDeferral, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { importExecutionFact, type ImportEvidence, type ImportExecutionFact } from "@/lib/platform/onboarding/import-status-core";
 
 // ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Every `db.` in this file
 // read one of the four DF-2 refresh tables and NOTHING else, all four of which
@@ -602,4 +603,111 @@ export async function getIngestionEvidence(
     activity.set(item.id, deriveIngestionActivity({ syncLockedAt: item.syncLockedAt, latestExecution }, now));
   }
   return { deferrals, activity };
+}
+
+// ── PB-7 — onboarding import evidence ────────────────────────────────────────
+
+/** Bound on the rows one evidence read loads (a window holds a handful of executions per item). */
+const IMPORT_EVIDENCE_MAX_ROWS = 5_000;
+
+/**
+ * PB-7 — the evidence behind "how did this connection's first import go?"
+ * (lib/platform/onboarding/import-status-core.ts): each item's RefreshExecution
+ * rows in its first `windowMs` after linking, and when its wealth history was
+ * first rebuilt (the first SUCCEEDED REGENERATION stage). Per-item, like
+ * getIngestionEvidence: it carries NO owner — the caller (Customer Success, or
+ * the identity-free Platform Ops tile) decides who the items belong to.
+ *
+ * Statuses, triggers, timestamps and a failure CATEGORY only; errorSummary is
+ * read solely to recognise a reaped row and is never returned.
+ */
+export async function getImportEvidence(
+  items: readonly { id: string; createdAt: Date }[],
+  windowMs: number,
+): Promise<{ evidence: Map<string, ImportEvidence>; floor: boolean }> {
+  const evidence = new Map<string, ImportEvidence>();
+  if (items.length === 0) return { evidence, floor: false };
+
+  const rows = await systemDb.refreshExecution.findMany({
+    where: {
+      OR: items.map((i) => ({
+        plaidItemId: i.id,
+        startedAt: { gte: new Date(i.createdAt.getTime() - 60_000), lte: new Date(i.createdAt.getTime() + windowMs) },
+      })),
+    },
+    select: {
+      id: true, plaidItemId: true, trigger: true, profile: true, startedAt: true, completedAt: true,
+      overallStatus: true, failureCategory: true, errorSummary: true,
+    },
+    orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+    take: IMPORT_EVIDENCE_MAX_ROWS,
+  });
+  const regen = rows.length === 0 ? [] : await systemDb.refreshEndpointResult.findMany({
+    where: { refreshExecutionId: { in: rows.map((r) => r.id) }, endpoint: "REGENERATION", status: "SUCCEEDED" },
+    select: { refreshExecutionId: true, startedAt: true, completedAt: true },
+    take: IMPORT_EVIDENCE_MAX_ROWS,
+  });
+
+  const itemOf = new Map(rows.map((r) => [r.id, r.plaidItemId] as const));
+  const firstRegen = new Map<string, Date>();
+  for (const s of regen) {
+    const item = itemOf.get(s.refreshExecutionId);
+    const at = s.completedAt ?? s.startedAt;
+    if (!item) continue;
+    const cur = firstRegen.get(item);
+    if (!cur || at < cur) firstRegen.set(item, at);
+  }
+  const byItem = new Map<string, ImportExecutionFact[]>();
+  for (const r of rows) {
+    if (!r.plaidItemId) continue;
+    byItem.set(r.plaidItemId, [...(byItem.get(r.plaidItemId) ?? []), importExecutionFact(r)]);
+  }
+  for (const i of items) {
+    evidence.set(i.id, { executions: byItem.get(i.id) ?? [], firstWealthRegenAt: firstRegen.get(i.id) ?? null });
+  }
+  return { evidence, floor: rows.length >= IMPORT_EVIDENCE_MAX_ROWS };
+}
+
+/**
+ * PB-1 Phase 2 — the LATEST stage attempt and the LATEST stage skip per subject,
+ * for the incident STALE rule (lib/platform/incidents/intelligence — design
+ * §3.2, §12 P2.1). An aggregate (one row per subject, `_max` only), so it is
+ * never capped: a wide scan cannot crowd one subject's evidence out.
+ *
+ * Subjects: a Plaid item by `plaidItemId`, any other source (a wallet's
+ * FinancialAccount) by `sourceRef`. Keyed on the EXECUTION's start — strictly
+ * after `after`, so the run that recorded the failure is never its own proof.
+ * "Attempt" = any non-SKIPPED result on one of `endpoints`; "skip" = SKIPPED.
+ * No payload, no error text, no skip reason, no execution id. fm_system.
+ * Throws on a failed read — the caller treats that as UNREADABLE evidence.
+ */
+export async function latestStageAttemptsBySubject(args: {
+  plaidItemIds: readonly string[];
+  sourceRefs: readonly string[];
+  endpoints: readonly string[];
+  after: Date;
+}): Promise<Array<{ plaidItemId: string | null; sourceRef: string | null; lastAttemptAt: Date | null; lastSkipAt: Date | null }>> {
+  if (args.endpoints.length === 0 || (args.plaidItemIds.length === 0 && args.sourceRefs.length === 0)) return [];
+  const subjects = [
+    ...(args.plaidItemIds.length ? [{ plaidItemId: { in: [...args.plaidItemIds] } }] : []),
+    ...(args.sourceRefs.length ? [{ sourceRef: { in: [...args.sourceRefs] } }] : []),
+  ];
+  const latest = (skipped: boolean) => systemDb.refreshExecution.groupBy({
+    by: ["plaidItemId", "sourceRef"],
+    where: {
+      startedAt: { gt: args.after },
+      OR: subjects,
+      endpoints: { some: { endpoint: { in: [...args.endpoints] }, status: skipped ? "SKIPPED" : { not: "SKIPPED" } } },
+    },
+    _max: { startedAt: true },
+  });
+  const [attempts, skips] = await Promise.all([latest(false), latest(true)]);
+  const out = new Map<string, { plaidItemId: string | null; sourceRef: string | null; lastAttemptAt: Date | null; lastSkipAt: Date | null }>();
+  const key = (g: { plaidItemId: string | null; sourceRef: string | null }) => `${g.plaidItemId ?? ""}|${g.sourceRef ?? ""}`;
+  for (const g of attempts) out.set(key(g), { plaidItemId: g.plaidItemId, sourceRef: g.sourceRef, lastAttemptAt: g._max.startedAt ?? null, lastSkipAt: null });
+  for (const g of skips) {
+    const cur = out.get(key(g)) ?? { plaidItemId: g.plaidItemId, sourceRef: g.sourceRef, lastAttemptAt: null, lastSkipAt: null };
+    out.set(key(g), { ...cur, lastSkipAt: g._max.startedAt ?? null });
+  }
+  return [...out.values()];
 }

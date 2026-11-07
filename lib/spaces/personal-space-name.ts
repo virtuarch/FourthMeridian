@@ -26,7 +26,7 @@ function generatedForms(firstName: string): Set<string> {
   const f = firstName.trim();
   return new Set([
     generatedPersonalSpaceName(f),
-    `${f}'s Space`,                    // pre-possessive() rows ("Chris's Space")
+    `${f}'s Space`,                    // pre-possessive() rows ("Jules's Space")
     `${possessive(f)} Dashboard`,      // pre-"Space" vocabulary
     `${f}'s Dashboard`,
   ]);

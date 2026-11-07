@@ -12,7 +12,7 @@
  * `custom` are `live` — those are the only two Space types a user can create.
  *
  * So the EF surfaces cannot be reached by any new Space, and the one live
- * account (Chris') has a PERSONAL Space. Everything still referencing the
+ * account (Jules') has a PERSONAL Space. Everything still referencing the
  * concept is therefore one of:
  *
  *   ACTIVE          reachable by a Space a user can create today

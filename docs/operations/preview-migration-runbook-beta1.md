@@ -52,7 +52,7 @@ On 2026-10-22, PR deployment `dpl_J8du…` (`/api/health` scheduler block) repor
 ## 2. Backup and restore verification
 
 1. **Platform backup (read from the Supabase dashboard on 2026-10-22; doc 17 §2).**
-   - Preview project `fourth-meridian-preview` (VirtuArch org, **Pro** plan, Nano compute).
+   - Preview project `fourth-meridian-preview` (the team org, **Pro** plan, Nano compute).
    - **Daily PHYSICAL backups, 7 kept** (15–21 Oct, newest 21 Oct 22:53 UTC, all COMPLETED), so the nearest platform recovery point can be up to about 24 h old.
    - **PITR is DISABLED** (paid add-on), so there is no point-in-time recovery to the moment before step 4.
    - Recovery options shown:

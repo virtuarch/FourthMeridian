@@ -22,7 +22,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 
 const NOW = new Date("2026-10-28T12:00:00Z");
 const conn = (over: Partial<SyncConnection>): SyncConnection => ({
-  id: "c1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: "2026-10-28T08:00:00Z", investments: null, ...over,
+  id: "c1", provider: "PLAID", institution: "Example Bank", state: "ready", lastSyncedAt: "2026-10-28T08:00:00Z", investments: null, ...over,
 } as SyncConnection);
 const intel = (over: Partial<ConnectionIntelligenceStatus>): ConnectionIntelligenceStatus => ({
   phase: "READY", intelligenceReady: true, availableHistory: null, earliestTransactionDate: "2024-10-01",
@@ -35,7 +35,7 @@ console.log("Overview — account groups");
 {
   const groups = groupAccounts([
     { id: "1", name: "Total Checking", type: "checking", mask: "1234" },
-    { id: "2", name: "Sapphire", type: "debt", subtype: "credit card" },
+    { id: "2", name: "Card Product A", type: "debt", subtype: "credit card" },
     { id: "3", name: "Savings", type: "savings" },
     { id: "4", name: "Home loan", type: "debt", subtype: "mortgage" },
     { id: "5", name: "Checking 2", type: "checking" },

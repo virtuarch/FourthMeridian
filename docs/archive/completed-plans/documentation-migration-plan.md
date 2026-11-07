@@ -211,7 +211,7 @@ Rejected alternatives · security reviews · major-migration rationale · irreve
 *(`connection-lifecycle-roadmap.md` and `platform-ops-roadmap.md`: fold the durable
 model into `systems/connections.md` / `systems/platform-operations.md`, then archive
 the roadmap shell. `prov-provider-orchestration-refactor.md`: deferred PROV-5B/6
-notes → `parked-ideas.md`, then archive.)*
+notes → `parked-ideas.md` (removed; see git history), then archive.)*
 
 ### 3.6 DELETE — served their purpose (git preserves history)
 

@@ -28,6 +28,8 @@ export interface BriefDelta {
   abs: number;
   pct: number | null;
   from?: number;
+  /** PB-8c — an endpoint includes a debt held at today's balance (no history): state it as estimated. */
+  estimated?: true;
 }
 
 /**
@@ -42,6 +44,14 @@ export interface BriefChangeWindow {
   investments?:   BriefDelta;
   digitalAssets?: BriefDelta;
   debt?:          BriefDelta;
+  /**
+   * PB-8c — metrics whose change over this window is WITHHELD because the window
+   * opens before the balance-history floor (some accounts have no history that
+   * far back, so the difference would be them arriving): metric → the reason
+   * ("Change unavailable: history is partial before <date>"). The metric's delta
+   * is absent. Absent when nothing was withheld.
+   */
+  unavailable?:   Partial<Record<'netWorth' | 'liquid' | 'debt', string>>;
 }
 
 export interface BriefActivityRow {

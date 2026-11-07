@@ -129,25 +129,25 @@ console.log("3. Cash + liability walks share the posted-only basis");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Regression fixture — the reported CHASE COLLEGE shape (Part 7).
-//    Anchor = today posted balance; a $5,318.61 posted card-payment outflow near
-//    the boundary; a +$5,286.63 PENDING payroll credit near the boundary; the
-//    first observed balance. (Real numbers used as a fixture, never as logic.)
+// 4. Regression fixture — the reported EXAMPLE BANK EVERYDAY shape (Part 7).
+//    Anchor = today posted balance; a $4,610.35 posted card-payment outflow near
+//    the boundary; a +$3,915.20 PENDING payroll credit near the boundary; the
+//    first observed balance. (Illustrative numbers used as a fixture, never as logic.)
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("4. CHASE COLLEGE regression fixture — posted-only continuity");
+console.log("4. EXAMPLE BANK EVERYDAY regression fixture — posted-only continuity");
 {
   const today = fromISO("2026-07-18");              // anchor day
   const start = fromISO("2026-07-13");
-  const ANCHOR = 868.23;                             // today's posted checking balance
-  const OBSERVED_07_15 = 6186.84;                    // first observed value (frozen live row)
+  const ANCHOR = 742.10;                             // today's posted checking balance
+  const OBSERVED_07_15 = 5352.45;                    // first observed value (frozen live row)
 
   // POSTED-only deltas (what the FIXED query yields): only the 07-16 card payments.
   const posted = new Map<string, Map<string, number>>([
-    ["chk", new Map([["2026-07-16", -5318.61]])],
+    ["chk", new Map([["2026-07-16", -4610.35]])],
   ]);
-  // OLD query would ALSO fold the 07-17 PENDING payroll (+5286.63) into 07-17.
+  // OLD query would ALSO fold the 07-17 PENDING payroll (+3915.20) into 07-17.
   const buggy = new Map<string, Map<string, number>>([
-    ["chk", new Map([["2026-07-16", -5318.61], ["2026-07-17", 5286.63]])],
+    ["chk", new Map([["2026-07-16", -4610.35], ["2026-07-17", 3915.20]])],
   ]);
 
   const fixed  = reconstructDailyCashBalances([{ id: "chk", balance: ANCHOR }], posted, today, start);
@@ -156,7 +156,7 @@ console.log("4. CHASE COLLEGE regression fixture — posted-only continuity");
   const recon0714Fixed  = fixed.get("2026-07-14")!.get("chk")!;
   const recon0714Broken = broken.get("2026-07-14")!.get("chk")!;
 
-  check("FIXED posted-only reconstruction of 07-14 = 6186.84 (matches observed 07-15)",
+  check("FIXED posted-only reconstruction of 07-14 = 5352.45 (matches observed 07-15)",
     approx(recon0714Fixed, OBSERVED_07_15), `got ${recon0714Fixed}`);
   check("posted-only 07-15 seam is continuous (residual ≈ 0, no boundary activity)",
     isBoundaryContinuous(recon0714Fixed, OBSERVED_07_15, /*postedBoundaryActivity 07-15*/ 0),
@@ -165,8 +165,8 @@ console.log("4. CHASE COLLEGE regression fixture — posted-only continuity");
   // The pending-inclusive walk introduces an unexplained residual = the pending amount.
   check("BUGGY pending-inclusive 07-14 is NOT continuous (phantom = the pending payroll)",
     !isBoundaryContinuous(recon0714Broken, OBSERVED_07_15, 0));
-  check("the unexplained residual equals the pending amount ($5,286.63)",
-    approx(boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0), 5286.63),
+  check("the unexplained residual equals the pending amount ($3,915.20)",
+    approx(boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0), 3915.20),
     `residual ${boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0)}`);
 }
 

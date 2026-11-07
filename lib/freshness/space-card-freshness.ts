@@ -10,7 +10,7 @@
  * latest SNAPSHOT date. A snapshot date says when Fourth Meridian last COMPUTED
  * a net worth, never when the balances underneath were observed. On the live
  * corpus the seed Spaces carried snapshot dates of 2026-07-19 while every
- * account in them had last been checked **56 days** earlier, and Chris' Space
+ * account in them had last been checked **56 days** earlier, and Jules' Space
  * read "Updated today" from a 2026-08-04 snapshot over balances last checked the
  * day before.
  *

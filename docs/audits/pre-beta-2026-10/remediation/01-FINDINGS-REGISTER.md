@@ -65,8 +65,8 @@ Counts at baseline: P0 0 · P1 34 · P2 77 · P3 73 (static); runtime reclassifi
 | PRIV-013 / PRIV-015 | P2 | — | sub-processors; Sentry breadcrumbs | A | `beforeBreadcrumb` scrub; sub-processor list copy | PARTIAL (PRIV-015 done; PRIV-013 counsel) | 4adc094 | counsel for copy |
 | FIN-003 | P2 | CONFIRMED | `cash-flow.ts` | B | sign-aware income | RESOLVED | 66ed6bf, b04e4f1 |  |
 | FIN-004 | P2 | SUPPORTED | Cash Flow page vs AI | B | document split; UTC boundaries if cheap | DEFERRED (owner convention) | documented in 08 |  |
-| FIN-005 | P2 | CONFIRMED | `backfill-core.ts`, `cash-history.ts` | B | history basis from `totalLiquid` | PARTIAL (split computed; column deferred) | dad72a6 |  |
-| FIN-006 | P2 | — | holdings refresh | — | DEFERRED (consent-gated pipeline stage; design) | DEFERRED | | |
+| FIN-005 | P2 | CONFIRMED | `backfill-core.ts`, `cash-history.ts` | B | history basis from `totalLiquid` | **FIXED on `develop` (2026-11-03):** part 1 (#311: all-cash label; Brief and AI withhold the cross-basis change) + part 2 (#323: `SpaceSnapshot.restrictedCash` written by every snapshot writer; history reads unrestricted cash when every row in the window has it, else stays all-cash). Past rows stay null (unknown) until the owner-gated repair (release plan B10.5) | dad72a6, #311, #323 |  |
+| FIN-006 | P2 | — | holdings refresh | — | consent-gated holdings stage on the cron and webhook pipelines | **FIXED on `develop` (2026-11-03)** | #312 (`jobs/sync-banks.ts` → `runAutoHoldingsStage`; webhook `deferredPipelineRunsHoldings`) | Only Items where Investments is already billed; uninitialized consented Items are not auto-initialized (owner decision: would start billing) |
 | FIN-007 | P2 | — | webhook health codes | C | map `ITEM/ERROR`, `PENDING_EXPIRATION`, `USER_PERMISSION_REVOKED` to health transitions | RESOLVED | 5e59c89, 7cad17e |  |
 | FIN-008 | P2 | — | Brief unconverted | — | DEFERRED (non-USD only) | DEFERRED | | |
 | FIN-009 | P2 | — | fingerprint ambiguity | B | refuse adoption on >1 match; record issue | RESOLVED | db5ee8d, 37a5e6f |  |

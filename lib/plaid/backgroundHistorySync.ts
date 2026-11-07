@@ -45,7 +45,7 @@ import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-n
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { refreshBalancesForItem } from "@/lib/plaid/refresh";
+import { refreshBalancesForItem, runAutoHoldingsStage } from "@/lib/plaid/refresh";
 import {
   regenerateWealthHistoryForAccounts,
   maxAvailableWealthWindow,
@@ -496,6 +496,13 @@ export async function runDeferredHistorySync(
   // Both optional; absent ⇒ byte-identical to the pre-DF-2C behavior.
   recorder?: RefreshStageRecorder,
   runId?: string,
+  /**
+   * FIN-006 — run the HOLDINGS stage after BALANCES. The webhook producer sets
+   * it (syncPlaidItemFromWebhook, trigger WEBHOOK — incl. HOLDINGS/DEFAULT_UPDATE);
+   * the connect follow-on (RECONNECT: exchangeToken already synced holdings) and
+   * the resume backstop leave it off, so those pipelines are unchanged.
+   */
+  opts: { holdings?: boolean; holdingsStage?: typeof runAutoHoldingsStage } = {},
 ): Promise<boolean> {
   try {
     // ── LIVENESS — RECOVER AN ACCOUNT THE IMPORT NEVER CREATED ──────────────
@@ -540,6 +547,14 @@ export async function runDeferredHistorySync(
         // projection the lifecycle service writes in lockstep with `resolvedAt`,
         // but legacy rows predate that service, so requiring BOTH to be open
         // counts only issues that are unambiguously still open.
+        //
+        // PB-1 PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — a CONTROL GATE, not a
+        // display read: this persisted-open COUNT decides whether recovery runs; it
+        // never shows an incident to anyone. Pinned (incident-boundary.test.ts §11)
+        // to a COUNT over MISSING_ACCOUNT with resolved=false — no detail, no select.
+        // ⚠ REVISIT if the intelligence module ever applies a module-only (derived,
+        // not persisted) closure to MISSING_ACCOUNT: this gate would then count a row
+        // the module already reads as closed.
         countBlockingIssues: (id) => db.syncIssue.count({
           where: { plaidItemId: id, kind: SyncIssueKind.MISSING_ACCOUNT, resolvedAt: null, resolved: false },
         }),
@@ -592,6 +607,10 @@ export async function runDeferredHistorySync(
         coveredAccountIds: bal.updatedAccountIds,
         accounts:          bal.accountCoverage,
       });
+      // FIN-006 — the SAME holdings stage manual refresh and the cron run, for an
+      // Item Plaid already bills for Investments; never throws. Before today's snapshot, so the
+      // snapshot reads the fresh positions.
+      if (opts.holdings) await (opts.holdingsStage ?? runAutoHoldingsStage)(bal, recorder);
       if (bal.updatedAccountIds.length > 0) {
         freshnessStage = "SNAPSHOT";
         recorder?.begin("SNAPSHOT", "DERIVED");

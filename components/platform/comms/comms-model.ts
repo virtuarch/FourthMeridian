@@ -298,6 +298,8 @@ export const SUPPRESSION_LABEL = {
   // The server SUPPRESSES these (storm.ts): never sent later, so never "held".
   RATE_LIMITED: `Not sent: ${STORM_MAX_PER_HOUR} emails/hour limit`,
   RATE_LIMIT_UNVERIFIED: "Not sent: limit couldn’t be verified",
+  // PB-5 — the type's email is switched off in code (never sent later).
+  SHIPPED_OFF: "Not sent: email switched off",
 } as const satisfies Record<SuppressionReason, string>;
 
 /** The in-app leg suppressed by the customer's own preference is named as such. */

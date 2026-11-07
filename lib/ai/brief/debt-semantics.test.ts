@@ -3,8 +3,8 @@
  *
  * The Daily Brief must NEVER describe a transfer between two owned depository
  * accounts as reducing debt. Package, prompt and acceptance guard, end to end,
- * over the anonymised Production pattern (Chase checking → Amex HYSA / Amex
- * checking / Schwab checking / Chase card / Apple Cash), with the HISTORICAL
+ * over the anonymised Production pattern (Example Bank checking → Example Card HYSA / Example Card
+ * checking / Example Brokerage checking / Example Bank card / Apple Cash), with the HISTORICAL
  * UNREPAIRED rows (provider DEBT_PAYMENT) as input. No DB, no model.
  *
  *   npx tsx lib/ai/brief/debt-semantics.test.ts
@@ -25,7 +25,7 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const TYPES: Record<string, string> = {
-  chaseChk: 'checking', schwabChk: 'checking', amexChk: 'checking', amexHysa: 'savings', chaseCard: 'debt',
+  exbankChk: 'checking', exbrokerChk: 'checking', excardChk: 'checking', excardHysa: 'savings', exbankCard: 'debt',
 };
 const accountTypeOf = (id: string) => TYPES[id];
 
@@ -39,13 +39,13 @@ const TR = 'TRANSFER' as Transaction['flowType'];
 
 // BEFORE the repair — the rows exactly as stored on Production.
 const ROWS: Transaction[] = [
-  tx('chaseChk', -1500, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', pending: true, merchantDisplayName: 'AMERICANEXPRESS TRANSFER' }),
-  tx('chaseChk', -125.41, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'amexHysa', date: '2026-10-23' }),
-  tx('chaseChk', -747.26, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
-  tx('chaseChk', -1499.99, { flowType: TR, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'schwabChk' }),
-  tx('chaseChk', -300, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'DEBT_PAYMENT', counterpartyAccountId: 'chaseCard', merchantDisplayName: 'Payment to Chase card' }),
-  tx('chaseCard', 300, { flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'chaseChk', merchantDisplayName: 'Payment thank you' }),
-  tx('chaseChk', -150, { flowType: TR, transferMaturity: 'EXTERNAL_PERSON_TRANSFER', transferDisposition: 'PAYMENT_APP_MOVEMENT' as Transaction['transferDisposition'] }),
+  tx('exbankChk', -1500, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', pending: true, merchantDisplayName: 'EXAMPLECARD TRANSFER' }),
+  tx('exbankChk', -125.41, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'excardHysa', date: '2026-10-23' }),
+  tx('exbankChk', -747.26, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'excardChk' }),
+  tx('exbankChk', -1499.99, { flowType: TR, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'exbrokerChk' }),
+  tx('exbankChk', -300, { flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'DEBT_PAYMENT', counterpartyAccountId: 'exbankCard', merchantDisplayName: 'Payment to Example Bank card' }),
+  tx('exbankCard', 300, { flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'exbankChk', merchantDisplayName: 'Payment thank you' }),
+  tx('exbankChk', -150, { flowType: TR, transferMaturity: 'EXTERNAL_PERSON_TRANSFER', transferDisposition: 'PAYMENT_APP_MOVEMENT' as Transaction['transferDisposition'] }),
 ];
 const WINDOW = recentActivityWindow('2026-10-26');
 
@@ -55,16 +55,16 @@ const byAmount = (a: number) => activity.top.find((r) => r.amount === a)!;
 
 console.log('1. the package carries the resolved nature, not the stored column');
 {
-  const hysa = byAmount(-1500), schwab = byAmount(-1499.99), amexChk = byAmount(-747.26);
-  for (const [name, r, nature] of [['Chase → Amex HYSA (unrepaired DEBT_PAYMENT)', hysa, 'INTERNAL_SAVINGS_TRANSFER'],
-    ['Chase → Schwab checking', schwab, 'INTERNAL_CHECKING_TRANSFER'],
-    ['Chase → Amex checking (unrepaired DEBT_PAYMENT)', amexChk, 'INTERNAL_CHECKING_TRANSFER']] as const) {
+  const hysa = byAmount(-1500), exbroker = byAmount(-1499.99), excardChk = byAmount(-747.26);
+  for (const [name, r, nature] of [['Example Bank → Example Card HYSA (unrepaired DEBT_PAYMENT)', hysa, 'INTERNAL_SAVINGS_TRANSFER'],
+    ['Example Bank → Example Brokerage checking', exbroker, 'INTERNAL_CHECKING_TRANSFER'],
+    ['Example Bank → Example Card checking (unrepaired DEBT_PAYMENT)', excardChk, 'INTERNAL_CHECKING_TRANSFER']] as const) {
     check(`${name}: nature ${nature}, flow TRANSFER, category not "Payment", own accounts`,
       r.nature === nature && r.flow === 'TRANSFER' && r.category !== 'Payment' && r.betweenOwnAccounts === true,
       JSON.stringify(r));
   }
   const cash = activity.top.find((r) => r.amount === -300)!, card = activity.top.find((r) => r.amount === 300)!;
-  check('Chase card payment: both legs still LIABILITY_PAYMENT / DEBT_PAYMENT',
+  check('Example Bank card payment: both legs still LIABILITY_PAYMENT / DEBT_PAYMENT',
     cash.nature === 'LIABILITY_PAYMENT' && cash.flow === 'DEBT_PAYMENT' && card.nature === 'LIABILITY_PAYMENT' && card.flow === 'DEBT_PAYMENT');
   check('the savings transfer names its other side LIQUID (never LIABILITY)', hysa.otherLegAccount === 'LIQUID' && hysa.account === 'LIQUID');
   check('no internal transfer reaches the model as DEBT_PAYMENT',
@@ -74,7 +74,7 @@ console.log('1. the package carries the resolved nature, not the stored column')
 console.log('\n2. ambiguous / external rows say only what is known');
 {
   const smaller = projectRecentActivity([
-    tx('chaseChk', -900, { flowType: DP, category: 'Payment' as Transaction['category'] }),
+    tx('exbankChk', -900, { flowType: DP, category: 'Payment' as Transaction['category'] }),
     ROWS[6],
   ], WINDOW, true, accountTypeOf);
   const amb = smaller.top.find((r) => r.amount === -900)!;

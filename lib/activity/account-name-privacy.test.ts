@@ -32,7 +32,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const REAL = "Real Chase Checking";
+const REAL = "Real Example Bank Checking";
 const checkingHint = { type: "checking", debtSubtype: null };
 const cardHint = { type: "debt", debtSubtype: "credit_card" };
 
@@ -43,12 +43,12 @@ function main(): void {
   {
     const balance = storedActivityAccountName(VisibilityLevel.BALANCE_ONLY, REAL, checkingHint);
     check("BALANCE_ONLY persists a generic typed label", balance === "Checking Account");
-    check("BALANCE_ONLY never persists the real name", balance !== REAL && !balance.includes("Chase"));
+    check("BALANCE_ONLY never persists the real name", balance !== REAL && !balance.includes("Example Bank"));
   }
   {
     const summary = storedActivityAccountName(VisibilityLevel.SUMMARY_ONLY, REAL, cardHint);
     check("SUMMARY_ONLY persists a generic typed label (fails closed)", summary === "Credit Card");
-    check("SUMMARY_ONLY never persists the real name", summary !== REAL && !summary.includes("Chase"));
+    check("SUMMARY_ONLY never persists the real name", summary !== REAL && !summary.includes("Example Bank"));
   }
   check("FULL with unknown real name falls back to a generic label", storedActivityAccountName(VisibilityLevel.FULL, null, checkingHint) === "Checking Account");
 
@@ -70,7 +70,7 @@ function main(): void {
   {
     const stored = storedActivityAccountName(VisibilityLevel.BALANCE_ONLY, REAL, checkingHint);
     const displayed = displayActivityAccountName(stored, "BALANCE_ONLY");
-    check("write→read for BALANCE_ONLY never exposes the real name", !stored.includes("Chase") && displayed === GENERIC_ACCOUNT_LABEL);
+    check("write→read for BALANCE_ONLY never exposes the real name", !stored.includes("Example Bank") && displayed === GENERIC_ACCOUNT_LABEL);
   }
 
   // ── 4. Source-scan — write sites (share route) wired ───────────────────────

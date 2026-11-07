@@ -22,6 +22,7 @@ import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { decodeTransitions } from "@/lib/platform/plaid/usage";
+import { DEACTIVATED_IN_WINDOW_POLICY, engagedPopulation, type UndecidedPopulationPolicy } from "@/lib/platform/customer/population";
 import {
   ANALYTICS_AUDIT_ACTIONS, ENGAGEMENT_AI_SURFACES, ENGAGEMENT_AUDIT_ACTIONS, analysisSince, buildProductAnalytics,
   type ProductAnalyticsFacts, type UserInstant,
@@ -93,6 +94,32 @@ export async function loadLastEngagements(client: ProductAnalyticsDb, userIds?: 
     ...instants(ai.map((r) => ({ userId: r.userId, at: r._max.occurredAt }))),
     ...instants(audit.map((r) => ({ userId: r.userId, at: r._max.createdAt }))),
   ];
+}
+
+/**
+ * PB-10 — the distinct users with a MEANINGFUL ENGAGEMENT fact at or after
+ * `since` (lib/presence/definitions.ts §6): the same frozen predicate as
+ * loadLastEngagements, windowed. This — never UserSession.lastActiveAt (any
+ * authenticated request, polls included), never the presence heartbeat's
+ * client-asserted lastInteractionAt, never SESSION_ACTIVE_DAY (presence) — is
+ * what "returning" and DAU/WAU/MAU count.
+ */
+export async function loadEngagedUserIdsSince(
+  client: ProductAnalyticsDb, since: Date,
+  /** OD-3 — who an engagement count keeps (default UNDECIDED = every user with a fact, as today). */
+  policy: UndecidedPopulationPolicy<"OD-3"> = DEACTIVATED_IN_WINDOW_POLICY,
+): Promise<Set<string>> {
+  const [ai, audit] = await Promise.all([
+    client.aiInvocation.groupBy({
+      by: ["userId"], where: { userId: { not: null }, occurredAt: { gte: since }, surface: { in: [...ENGAGEMENT_AI_SURFACES] } },
+    }),
+    client.auditLog.groupBy({
+      by: ["userId"], where: { userId: { not: null }, createdAt: { gte: since }, action: { in: [...ENGAGEMENT_AUDIT_ACTIONS] } },
+    }),
+  ]);
+  const out = new Set<string>();
+  for (const r of [...ai, ...audit]) if (r.userId) out.add(r.userId);
+  return engagedPopulation(out, policy);
 }
 
 /** "Ever" facts for the funnel and the cohorts: who exists, first visit, first connection, first AI turn, first Brief view, last engagement. */

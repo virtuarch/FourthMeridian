@@ -62,6 +62,11 @@ interface World {
   mergeDecisions: Array<{ id: string; decidedByUserId: string | null }>;
   settings: Array<{ key: string; updatedById: string | null }>;
   merchantRules: Array<{ id: string; ownerUserId: string | null }>;
+  // PB-1 Phase 1 — incident data.
+  incidents: Array<{ id: string; subjectUserId: string | null; plaidItemId: string | null; financialAccountId: string | null; occAccounts: string[] }>;
+  incidentArchives: Array<{ id: string; incidentId: string; subjectUserId: string | null; plaidItemId: string | null; financialAccountId: string | null }>;
+  incidentEvents: Array<{ id: string; incidentId: string }>;
+  incidentRelations: Array<{ id: string; fromIncidentId: string; toIncidentId: string; createdById: string | null }>;
 }
 
 function baseWorld(): World {
@@ -81,7 +86,7 @@ function baseWorld(): World {
       { id: "A4", ownerUserId: null, ownerSpaceId: "P1", syncStatus: "synced" },
       { id: "A5", ownerUserId: OTHER, ownerSpaceId: null, syncStatus: "synced" },
     ],
-    items: [{ id: "pi_1", userId: USER, status: "ACTIVE", encryptedToken: TOKEN, institutionName: "Chase" }],
+    items: [{ id: "pi_1", userId: USER, status: "ACTIVE", encryptedToken: TOKEN, institutionName: "Example Bank" }],
     audits: [],
     links: [{ id: "L1", addedByUserId: USER, status: "ACTIVE" }],
     aiInvocations: [{ id: "ai1", userId: USER }, { id: "ai2", userId: OTHER }],
@@ -104,7 +109,46 @@ function baseWorld(): World {
     mergeDecisions: [{ id: "m1", decidedByUserId: USER }],
     settings: [{ key: "k", updatedById: USER }],
     merchantRules: [{ id: "r1", ownerUserId: USER }, { id: "r2", ownerUserId: OTHER }],
+    incidents: [
+      // Phase-1 row: owner stamped at observation.
+      { id: "si_owned", subjectUserId: USER, plaidItemId: null, financialAccountId: "A9", occAccounts: [] },
+      // LEGACY row (pre-Phase-1, subjectUserId NULL) on the user's Item — matched by the row's own key.
+      { id: "si_legacy_item", subjectUserId: null, plaidItemId: "pi_1", financialAccountId: null, occAccounts: [] },
+      // LEGACY account-scoped row on an account the tail deletes.
+      { id: "si_legacy_acct", subjectUserId: null, plaidItemId: null, financialAccountId: "A1", occAccounts: [] },
+      // Item-scoped on someone else's Item, but an occurrence names the user's account.
+      { id: "si_occ", subjectUserId: null, plaidItemId: "pi_other", financialAccountId: null, occAccounts: ["A4"] },
+      // Another customer's incident, and a provider-wide one with no subject — both survive.
+      { id: "si_other", subjectUserId: OTHER, plaidItemId: null, financialAccountId: "A5", occAccounts: [] },
+      { id: "si_provider_wide", subjectUserId: null, plaidItemId: null, financialAccountId: null, occAccounts: [] },
+    ],
+    incidentArchives: [
+      { id: "ar_owned", incidentId: "si_old_owned", subjectUserId: USER, plaidItemId: null, financialAccountId: null },
+      { id: "ar_legacy", incidentId: "si_old_legacy", subjectUserId: null, plaidItemId: "pi_1", financialAccountId: null },
+      { id: "ar_other", incidentId: "si_old_other", subjectUserId: OTHER, plaidItemId: null, financialAccountId: null },
+    ],
+    incidentEvents: [
+      { id: "ev1", incidentId: "si_owned" }, { id: "ev2", incidentId: "si_old_legacy" },
+      { id: "ev3", incidentId: "si_other" }, { id: "ev4", incidentId: "si_provider_wide" },
+    ],
+    incidentRelations: [
+      { id: "rel1", fromIncidentId: "si_legacy_item", toIncidentId: "si_other", createdById: null },
+      { id: "rel2", fromIncidentId: "si_other", toIncidentId: "si_provider_wide", createdById: USER },
+    ],
   };
+}
+
+/** Interprets lib/platform/incidents/purge.ts's `where` shapes over the fake rows. */
+function matchesIncidentWhere(
+  r: { subjectUserId: string | null; plaidItemId: string | null; financialAccountId: string | null; occAccounts?: string[] },
+  where: { OR: Array<Record<string, unknown>> },
+): boolean {
+  return where.OR.some((c) =>
+    (c.subjectUserId !== undefined && r.subjectUserId === c.subjectUserId)
+    || (c.plaidItemId !== undefined && r.plaidItemId !== null && (c.plaidItemId as { in: string[] }).in.includes(r.plaidItemId))
+    || (c.financialAccountId !== undefined && r.financialAccountId !== null && (c.financialAccountId as { in: string[] }).in.includes(r.financialAccountId))
+    || (c.occurrences !== undefined && (r.occAccounts ?? []).some((a) =>
+      ((c.occurrences as { some: { subjectAccountId: { in: string[] } } }).some.subjectAccountId.in).includes(a))));
 }
 
 interface Hooks {
@@ -188,6 +232,26 @@ function makeFake(world: World, hooks: Hooks = {}) {
       let n = 0; W.settings.forEach((r) => { if (r.updatedById === where.updatedById) { r.updatedById = null; n++; } }); return { count: n };
     } },
     investmentEvent: { updateMany: async () => ({ count: 0 }) },
+    // PB-1 Phase 1 — the tail's incident deletes.
+    syncIssueEvent: { deleteMany: async ({ where }: { where: { incidentId: { in: string[] } } }) => {
+      const b = W.incidentEvents.length; W.incidentEvents = W.incidentEvents.filter((e) => !where.incidentId.in.includes(e.incidentId)); return { count: b - W.incidentEvents.length };
+    } },
+    syncIssueRelation: {
+      deleteMany: async ({ where }: { where: { OR: [{ fromIncidentId: { in: string[] } }, { toIncidentId: { in: string[] } }] } }) => {
+        const b = W.incidentRelations.length;
+        W.incidentRelations = W.incidentRelations.filter((r) => !where.OR[0].fromIncidentId.in.includes(r.fromIncidentId) && !where.OR[1].toIncidentId.in.includes(r.toIncidentId));
+        return { count: b - W.incidentRelations.length };
+      },
+      updateMany: async ({ where }: { where: { createdById: string } }) => {
+        let n = 0; W.incidentRelations.forEach((r) => { if (r.createdById === where.createdById) { r.createdById = null; n++; } }); return { count: n };
+      },
+    },
+    syncIssue: { deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+      const b = W.incidents.length; W.incidents = W.incidents.filter((r) => !where.id.in.includes(r.id)); return { count: b - W.incidents.length };
+    } },
+    syncIssueArchive: { deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+      const b = W.incidentArchives.length; W.incidentArchives = W.incidentArchives.filter((r) => !where.id.in.includes(r.id)); return { count: b - W.incidentArchives.length };
+    } },
     commsDelivery: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; recipientHash?: string; OR?: Array<{ recipientUserId?: string; recipientHash?: string }> }; data: { recipientUserId?: null; recipientHash?: null } }) => {
       const conds = where.OR ?? [{ recipientUserId: where.recipientUserId, recipientHash: where.recipientHash }];
       let n = 0;
@@ -229,14 +293,33 @@ function makeFake(world: World, hooks: Hooks = {}) {
     ...tx,
     user: { ...tx.user, findUnique: async ({ where }: { where: { id: string } }) => { await yieldTick(); const u = W.users.find((x) => x.id === where.id); return u ? { ...u } : null; } },
     plaidItem: {
-      findMany: async ({ where }: { where: { userId: string; status: string } }) =>
-        W.items.filter((i) => i.userId === where.userId && i.status === where.status).map((i) => ({ id: i.id, encryptedToken: i.encryptedToken, institutionName: i.institutionName })),
+      findMany: async ({ where }: { where: { userId: string; status?: string } }) =>
+        W.items.filter((i) => i.userId === where.userId && (where.status === undefined || i.status === where.status)).map((i) => ({ id: i.id, encryptedToken: i.encryptedToken, institutionName: i.institutionName })),
       update: async ({ where, data }: { where: { id: string }; data: { status?: string } }) => { const i = W.items.find((x) => x.id === where.id); if (i && data.status) i.status = data.status; return {}; },
     },
     spaceAccountLink: { updateMany: async ({ where, data }: { where: { addedByUserId: string; status: string }; data: { status: string } }) => {
       let n = 0; W.links.forEach((l) => { if (l.addedByUserId === where.addedByUserId && l.status === where.status) { l.status = data.status; n++; } }); return { count: n };
     } },
     accountConnection: { findMany: async () => [], findFirst: async () => null, update: async () => ({}) },
+    // PB-1 Phase 1 — the pre-tail reads of the incident purge set.
+    syncIssue: {
+      ...tx.syncIssue,
+      findMany: async ({ where }: { where: { OR: Array<Record<string, unknown>> } }) =>
+        W.incidents.filter((r) => matchesIncidentWhere(r, where)).map((r) => ({ id: r.id })),
+    },
+    syncIssueArchive: {
+      ...tx.syncIssueArchive,
+      findMany: async ({ where }: { where: { OR: Array<Record<string, unknown>> } }) =>
+        W.incidentArchives.filter((r) => matchesIncidentWhere(r, where)).map((r) => ({ id: r.id, incidentId: r.incidentId })),
+    },
+    // PB-1 S3 — the pre-tail capture of the accounts the tail deletes (same OR filter as deleteMany).
+    financialAccount: {
+      ...tx.financialAccount,
+      findMany: async ({ where }: { where: { OR: Array<Record<string, unknown>> } }) =>
+        W.accounts.filter((a) => where.OR.some((c) =>
+          (c.ownerUserId !== undefined && a.ownerUserId === c.ownerUserId)
+          || (c.ownerSpaceId !== undefined && a.ownerSpaceId !== null && (c.ownerSpaceId as { in: string[] }).in.includes(a.ownerSpaceId)))).map((a) => ({ id: a.id })),
+    },
     $transaction: async <T,>(fn: (t: typeof tx) => Promise<T>) => {
       const snapshot = JSON.stringify(W);
       stats.tails++;
@@ -244,11 +327,11 @@ function makeFake(world: World, hooks: Hooks = {}) {
       catch (e) { Object.assign(W, JSON.parse(snapshot, (k, v) => (k.endsWith("At") && typeof v === "string" ? new Date(v) : v))); throw e; }
     },
   };
-  return { client: client as unknown as PurgeClient, stats };
+  return { client: client as unknown as PurgeClient, stats, world: W };
 }
 
 function depsFor(fake: ReturnType<typeof makeFake>, over: Partial<PurgeDeps> & { removeFails?: boolean } = {}) {
-  const calls = { itemRemove: 0, emails: 0, revoke: 0 };
+  const calls = { itemRemove: 0, emails: 0, revoke: 0, closures: [] as Array<{ plaidItemIds?: string[]; financialAccountIds?: string[] }> };
   const deps: PurgeDeps = {
     client: fake.client,
     plaid: { itemRemove: (async () => {
@@ -259,6 +342,7 @@ function depsFor(fake: ReturnType<typeof makeFake>, over: Partial<PurgeDeps> & {
     sendEmail: (async () => { calls.emails++; return { status: "sent" as const, id: "m" }; }) as never,
     revokeSessions: async () => { calls.revoke++; return 0; },
     now: over.now ?? (() => T0),
+    resolveRemovedSubjects: async (scope) => { calls.closures.push(scope); return 0; },
   };
   return { deps, calls };
 }
@@ -294,6 +378,27 @@ async function main() {
     check("exactly one deletion e-mail", calls.emails === 1, `${calls.emails}`);
     check("exactly one itemRemove", calls.itemRemove === 1, `${calls.itemRemove}`);
     check("the user is gone", !(await userExists(fake)));
+    // PB-1 S3 — the removed subjects' incidents are closed (SUBJECT_REMOVED) through the facade.
+    const closedItems = new Set(calls.closures.flatMap((c) => c.plaidItemIds ?? []));
+    check("PB-1 S3: the revoked item's incidents are closed", closedItems.has(baseWorld().items[0].id), JSON.stringify(calls.closures));
+    // PB-1 Phase 1 — create → (archive) → purge leaves NOTHING about the customer, incl. LEGACY rows.
+    const w = fake.world;
+    const ids = (xs: { id: string }[]) => xs.map((x) => x.id).sort().join(",");
+    check("Phase 1: the customer's live incidents are gone (owned, LEGACY item, LEGACY account, occurrence-named)",
+      ids(w.incidents) === "si_other,si_provider_wide", ids(w.incidents));
+    check("Phase 1: the customer's archive rows are gone (owned + LEGACY), another customer's kept",
+      ids(w.incidentArchives) === "ar_other", ids(w.incidentArchives));
+    check("Phase 1: events of purged live AND archived incidents are gone; others kept",
+      ids(w.incidentEvents) === "ev3,ev4", ids(w.incidentEvents));
+    check("Phase 1: relation edges touching a purged incident are gone (either end)",
+      ids(w.incidentRelations) === "rel2", ids(w.incidentRelations));
+    check("Phase 1: the customer as a relation's OPERATOR is scrubbed, the link kept",
+      w.incidentRelations.find((r) => r.id === "rel2")?.createdById === null);
+    check("Phase 1: provider-wide history with no customer subject survives", w.incidents.some((r) => r.id === "si_provider_wide"));
+    const deletedAudit = w.audits.find((a) => a.action === AuditAction.ACCOUNT_DELETED);
+    check("Phase 1: the deletion record carries counts only and says backups age out on their own retention",
+      deletedAudit?.metadata.incidentsDeleted === 4 && deletedAudit?.metadata.incidentArchivesDeleted === 2
+      && deletedAudit?.metadata.backups === "AGE_OUT_ON_BACKUP_RETENTION", JSON.stringify(deletedAudit?.metadata));
   }
 
   console.log("\n2. cancel between the claim and the tail ⇒ nothing irreversible");

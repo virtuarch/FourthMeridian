@@ -25,6 +25,7 @@
 
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { classifyJobHealth, type JobRunHealthRow, type JobHealthStatus } from "@/lib/jobs/health";
+import { jobScheduledIn, type SchedulerPresence } from "@/lib/jobs/scheduler-presence.core";
 import { classifyResourceFreshness, RESOURCE_FRESHNESS, type RefreshLedgerFacts } from "@/lib/platform/resource-freshness";
 import { SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
@@ -61,6 +62,12 @@ export interface FxCoverageRow {
 
 export interface HistoryReaders {
   now: Date;
+  /**
+   * Ops env-aware verdicts — whether this deployment has a scheduler, decided
+   * SERVER-SIDE by the real readers (lib/jobs/scheduler-presence.ts); absent ⇒
+   * "present" (the original classification, byte-identical).
+   */
+  scheduler?: SchedulerPresence;
   /** All JobRun rows started in [from, to] (any job, any trigger). */
   jobRunsInWindow(from: Date, to: Date): Promise<HistoryJobRun[]>;
   /** Newest-first JobRun rows for one job started at or before `asOf` (take N). */
@@ -125,21 +132,32 @@ const jobsSource: OperationalHistorySource = {
     const asOf = endOfDay(at);
     // Reuse the LIVE dead-job detector at the as-of point: classify each registered
     // job over the runs that existed as-of `at`. Observed rows → derived verdict.
-    let healthy = 0, unhealthy = 0, anyObserved = false;
+    // The SAME scheduler-presence rule as the live readers: on a deployment with
+    // no scheduler (Preview) a job with no recorded failure is "not-scheduled" —
+    // neutral, never unhealthy — and a newest-run failure is still "failing".
+    const scheduler = readers.scheduler ?? "present";
+    let healthy = 0, unhealthy = 0, notScheduled = 0, anyObserved = false;
     const worst: JobHealthStatus[] = [];
     for (const job of SCHEDULED_JOBS) {
       const runs = await readers.jobRunsAsOf(job.name, asOf, 10);
       if (runs.length > 0) anyObserved = true;
-      const report = classifyJobHealth(job, runs.map(toHealthRow), asOf);
+      const report = classifyJobHealth(job, runs.map(toHealthRow), asOf, null, null, scheduler);
       if (report.status === "healthy") healthy++;
+      else if (report.status === "not-scheduled") notScheduled++;
       else if (report.status !== "never-ran") { unhealthy++; worst.push(report.status); }
     }
     const tier: OperationalTier = anyObserved ? "derived" : "unknown";
+    // notScheduled is 0 whenever a scheduler is present, so these words and this
+    // status only exist on a deployment without one (Production byte-identical).
+    const status = unhealthy > 0 ? "unhealthy"
+      : anyObserved && healthy === 0 && notScheduled > 0 ? "not-scheduled"
+      : anyObserved ? "healthy" : "unknown";
+    const ns = notScheduled > 0 ? `, ${notScheduled} not scheduled in this environment` : "";
     return {
       sourceId: "jobs", label: "Job Health", at,
       tier,
-      status: unhealthy > 0 ? "unhealthy" : anyObserved ? "healthy" : "unknown",
-      summary: anyObserved ? `${healthy} healthy, ${unhealthy} unhealthy of ${SCHEDULED_JOBS.length} jobs` : "no job runs recorded as of this date",
+      status,
+      summary: anyObserved ? `${healthy} healthy, ${unhealthy} unhealthy${ns} of ${SCHEDULED_JOBS.length} jobs` : "no job runs recorded as of this date",
       value: unhealthy,
     };
   },
@@ -239,7 +257,9 @@ const freshnessSource: OperationalHistorySource = {
       expectedUnits: SUPPORTED_QUOTES.length,
       observedUnits: newest ? newest.observedUnits : 0,
     };
-    const report = classifyResourceFreshness(fxDescriptor, obs, NO_LEDGER, endOfDay(at));
+    // The same scheduler-presence rule as the live freshness reader (absent ⇒ present: unchanged).
+    const scheduled = fxDescriptor.producingJob ? jobScheduledIn(readers.scheduler ?? "present", fxDescriptor.producingJob) : true;
+    const report = classifyResourceFreshness(fxDescriptor, obs, NO_LEDGER, endOfDay(at), scheduled);
     return {
       sourceId: "freshness", label: "Resource Freshness", at,
       tier: newest ? "derived" : "unknown",

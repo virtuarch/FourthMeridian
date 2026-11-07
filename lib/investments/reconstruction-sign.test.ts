@@ -9,7 +9,7 @@
  * stores an unsigned MAGNITUDE with direction in `type`, and the runner passed
  * it through raw. BUY happened to work; every SELL was inverted — it subtracted
  * where it had to add — so the walk landed at exactly −Σ|quantity|. Measured on
- * the local corpus, every one of nine Schwab positions matched that formula:
+ * the local corpus, every one of nine Example Brokerage positions matched that formula:
  * AMZN −1, JPM −1, TXN −1, NKE −4, NVDA −2.0059, INTC −6, TQQQ −20.
  *
  * The proof that the correction is right, not merely different: each corrected

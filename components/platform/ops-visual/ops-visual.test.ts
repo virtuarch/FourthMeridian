@@ -169,10 +169,10 @@ const previewAttention = {
   items: [
     attItem("job:evaluate-alerts", "job", "evaluate-alerts", "critical", "Dead — no run recorded for several times its 6 h cadence (last started 23d ago)."),
     attItem("job:sol-history-backfill", "job", "sol-history-backfill", "critical", "Dead — no run recorded for several times its 1 h cadence (last started 2d ago)."),
-    attItem("c4", "connection", "Schwab", "error", "Needs reauthorization — the customer must reconnect."),
-    attItem("c1", "connection", "Chase", "warning", "Stale — last success 3 days ago."),
-    attItem("c2", "connection", "Amex", "warning", "Stale — last success 4 days ago."),
-    attItem("c3", "connection", "Citi", "warning", "Stale — last success 5 days ago."),
+    attItem("c4", "connection", "Example Brokerage", "error", "Needs reauthorization — the customer must reconnect."),
+    attItem("c1", "connection", "Example Bank", "warning", "Stale — last success 3 days ago."),
+    attItem("c2", "connection", "Example Card", "warning", "Stale — last success 4 days ago."),
+    attItem("c3", "connection", "Institution C", "warning", "Stale — last success 5 days ago."),
   ],
   counts: { critical: 2, error: 1, warning: 3, info: 0 }, authoritiesChecked: { count: 7, names: [] }, authoritiesFailed: [], floors: [],
   recentFirings: { runs: 0, newestEvaluatedAt: null, oldestEvaluatedAt: null, count: 0, items: [] }, userImpact: {},
@@ -182,7 +182,7 @@ const previewAttention = {
   check("the two dead jobs fold into ONE scheduler group naming the cause", g.filter((x) => x.key === "scheduler-inactive").length === 1 && g[0].title === "15 jobs" && /scheduler not active/.test(g[0].line), `${g[0].title} · ${g[0].line}`);
   check("…counting every job the scheduler has not woken (15), not one row per job", g[0].count === 15 && !/dead/i.test(`${g[0].title} ${g[0].line}`), `${g[0].count} ${g[0].line}`);
   check("three stale connections are ONE group ('3 connections · Stale')", g.some((x) => x.title === "3 connections" && x.line === "Stale" && x.count === 3));
-  check("a lone reauth connection stays its own row", g.some((x) => x.title === "Schwab" && x.count === 1));
+  check("a lone reauth connection stays its own row", g.some((x) => x.title === "Example Brokerage" && x.count === 1));
   check("groups keep the server's (severity-ranked) order — no second ordering authority", g.map((x) => x.severity).join() === "critical,error,warning");
   const gActive = groupAttention(previewAttention, evActive, prodJobs);
   check("with an ACTIVE scheduler, job items are NOT folded into a scheduler group", !gActive.some((x) => x.key === "scheduler-inactive") && gActive.some((x) => x.title === "2 jobs" && x.action.kind === "jobs"));
@@ -266,6 +266,29 @@ console.log("4. Day series, composition and KPIs");
   check("KPI: success rate falls back to recent runs when 7 days are not covered (labelled so)", k[3].sub === "recent runs");
   const kDown = healthKpis({ jobs: failed("500"), scheduler: failed("500"), attention: failed("500"), groups: [], days7: [] });
   check("KPIs: an unread source is '—', never 0", kDown.every((x) => x.value === "—"));
+
+  // Ops env-aware verdicts — the SERVER's not-scheduled status (Preview, no scheduler).
+  const serverPreview = {
+    healthy: false, checkedAt: AGO_H(0),
+    counts: { healthy: 0, running: 0, overdue: 0, failing: 1, dead: 0, neverRan: 0, notScheduled: SCHEDULED_JOB_NAMES.length - 1 },
+    jobs: SCHEDULED_JOB_NAMES.map((name) => name === "sync-banks"
+      ? job(name, { status: "failing", lastRunStatus: "failed", consecutiveFailures: 1, lastStartedAt: AGO_H(300), totalRuns: 1, failedRuns: 1 })
+      : job(name, { status: "not-scheduled" })),
+  };
+  const ns = honestJobStatus(serverPreview.jobs.find((r) => r.job === "fetch-fx-rates")!, evInactive);
+  check("not-scheduled ⇒ neutral word, muted, never failed / healthy",
+    ns.kind === "not-scheduled" && ns.word === "Not scheduled in this environment" && ns.tone === "muted");
+  check("…the same with an ACTIVE evidence read (the server decided, the client does not re-judge)",
+    honestJobStatus(serverPreview.jobs.find((r) => r.job === "fetch-fx-rates")!, evActive).kind === "not-scheduled");
+  const ranFailed = honestJobStatus(serverPreview.jobs.find((r) => r.job === "sync-banks")!, evInactive);
+  check("a run that failed is still Failed on Preview (single run worded 'Last run failed')", ranFailed.kind === "failed" && ranFailed.reason === "Last run failed");
+  const kPrev = healthKpis({ jobs: ok(serverPreview), scheduler: ok(previewScheduler), attention: ok(previewAttention), groups: [], days7: [] });
+  check("KPI: not-scheduled jobs leave the healthy denominator, named in the qualifier (0/1 · 14 not scheduled here)",
+    kPrev[0].value === `0/1` && kPrev[0].sub === `${SCHEDULED_JOB_NAMES.length - 1} not scheduled here`, `${kPrev[0].value} ${kPrev[0].sub}`);
+  const allNs = { ...serverPreview, counts: { ...serverPreview.counts, failing: 0, notScheduled: SCHEDULED_JOB_NAMES.length }, jobs: SCHEDULED_JOB_NAMES.map((name) => job(name, { status: "not-scheduled" })) };
+  const kAll = healthKpis({ jobs: ok(allNs), scheduler: ok(previewScheduler), attention: ok(previewAttention), groups: [], days7: [] });
+  check("KPI: every job not scheduled ⇒ '—' (muted), never 0/15", kAll[0].value === "—" && kAll[0].tone === "muted");
+  check("KPI (Production, no notScheduled key): unchanged '12/15 · by job health'", k[0].value === "12/15" && k[0].sub === "by job health");
 }
 
 // ── 5. Manual-action reachability ────────────────────────────────────────────

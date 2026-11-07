@@ -35,6 +35,7 @@ import "server-only";
 import { db, systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { toISODateUTC } from "@/lib/time/clock";
+import { ENGAGEMENT_WINDOW_DAYS as W } from "@/lib/presence/definitions";
 import { activeUsers, activitySets, type ActivityFactSet } from "@/lib/platform/growth/product-analytics-core";
 import { loadActivityFacts } from "@/lib/platform/growth/product-analytics";
 import type { ActiveUsers } from "@/lib/platform/growth/product-analytics-types";
@@ -127,22 +128,24 @@ function realReaders(now: Date): ActivityReaders {
 export async function getUserActivity(deps: { now?: Date; readers?: ActivityReaders } = {}): Promise<UserActivityMetrics> {
   const now = deps.now ?? new Date();
   const r = deps.readers ?? realReaders(now);
+  // rolling — see PLATFORM-INTELLIGENCE X5: `since(n)` is n × 24 h back from now, NOT n UTC days.
+  // Moving these reads to UTC days changes their numbers and needs new metric versions.
   const since = (days: number) => new Date(now.getTime() - days * DAY_MS);
 
-  // Day-grain facts start at 00:00Z of the oldest of the 30 calendar days ending today.
+  // Day-grain facts start at 00:00Z of the oldest of the MAU calendar days ending today.
   const today = toISODateUTC(now);
   const factsSince = new Date(`${today}T00:00:00.000Z`);
-  factsSince.setUTCDate(factsSince.getUTCDate() - 29);
+  factsSince.setUTCDate(factsSince.getUTCDate() - (W.mau - 1));
 
   const [totalUsers, newUsers7, newUsers30, activatedEver, dau, wau, mau, opens30, facts] = await Promise.all([
     r.totalUsers(),
-    r.newUsersSince(since(7)),
-    r.newUsersSince(since(30)),
+    r.newUsersSince(since(W.wau)), // rolling — see PLATFORM-INTELLIGENCE X5
+    r.newUsersSince(since(W.mau)), // rolling — see PLATFORM-INTELLIGENCE X5
     r.activatedEver(),
-    r.distinctLoginUsers(since(1)),
-    r.distinctLoginUsers(since(7)),
-    r.distinctLoginUsers(since(30)),
-    r.spaceOpensSince(since(30)),
+    r.distinctLoginUsers(since(W.dau)), // rolling — see PLATFORM-INTELLIGENCE X5
+    r.distinctLoginUsers(since(W.wau)), // rolling — see PLATFORM-INTELLIGENCE X5
+    r.distinctLoginUsers(since(W.mau)), // rolling — see PLATFORM-INTELLIGENCE X5
+    r.spaceOpensSince(since(W.mau)), // rolling — see PLATFORM-INTELLIGENCE X5
     r.activityFacts(factsSince),
   ]);
   const sets = activitySets(facts);
@@ -150,7 +153,7 @@ export async function getUserActivity(deps: { now?: Date; readers?: ActivityRead
   return {
     totalUsers, newUsers7, newUsers30, activatedEver,
     dau, wau, mau, signInBasis: "LOGIN",
-    active: { daily: activeUsers(sets, today, 1), weekly: activeUsers(sets, today, 7), monthly: activeUsers(sets, today, 30) },
+    active: { daily: activeUsers(sets, today, W.dau), weekly: activeUsers(sets, today, W.wau), monthly: activeUsers(sets, today, W.mau) },
     activeBasis: ACTIVE_BASIS,
     spaceOpens30: countSpaceOpens(opens30),
     checkedAt: now.toISOString(),

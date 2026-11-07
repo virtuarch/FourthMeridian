@@ -196,6 +196,14 @@ export interface NotificationTypeDefinition {
    * email. Absent = the original F11/S3 coupling (no in-app row ⇒ no email).
    */
   emailIndependentOfInApp?: true;
+  /**
+   * PB-5 — the type's EMAIL leg is BUILT but SHIPPED OFF by a code constant
+   * (the DIGEST_ENABLED idiom; lib/notifications/connection-removed-switch.ts).
+   * When true, createNotification never sends the email, whatever the
+   * preferences say, and records the leg SUPPRESSED / SHIPPED_OFF instead —
+   * the in-app leg is unaffected. Absent / false = the normal channel rules.
+   */
+  emailShippedOff?: boolean;
   retention: RetentionPolicy;
   /** May fold into the S6 digest email (declared at birth — F13). */
   digestable: boolean;

@@ -13,8 +13,10 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, systemDb } from "@/lib/db";
+import { loadEngagedUserIdsSince } from "@/lib/platform/growth/product-analytics";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 
 export const runtime = "nodejs";
 
@@ -26,7 +28,7 @@ export interface PlatformSignupsResponse {
   signups30:     number; // users created in the last 30 days
   verified:      number; // users with emailVerifiedAt set
   activatedEver: number; // distinct users with ≥1 UserSession ever (signed in at least once)
-  active7:       number; // distinct users with a session active in the last 7 days
+  active7:       number; // PB-10: distinct users with MEANINGFUL ENGAGEMENT in the last 7 days (lib/presence/definitions.ts) — not session use
 }
 
 export async function GET() {
@@ -34,8 +36,10 @@ export async function GET() {
   if (err) return err;
 
   const now    = Date.now();
-  const week   = new Date(now - 7 * DAY_MS);
-  const month  = new Date(now - 30 * DAY_MS);
+  // rolling — see PLATFORM-INTELLIGENCE X5: n × 24 h back from now, NOT n UTC days (a UTC-day
+  // read changes the numbers and needs a new metric version). The day counts come from the one constant.
+  const week   = new Date(now - ENGAGEMENT_WINDOW_DAYS.wau * DAY_MS);
+  const month  = new Date(now - ENGAGEMENT_WINDOW_DAYS.mau * DAY_MS);
 
   const [totalUsers, signups7, signups30, verified, activatedEver, active7] = await Promise.all([
     db.user.count(),
@@ -43,7 +47,8 @@ export async function GET() {
     db.user.count({ where: { createdAt: { gte: month } } }),
     db.user.count({ where: { emailVerifiedAt: { not: null } } }),
     db.userSession.groupBy({ by: ["userId"] }),
-    db.userSession.groupBy({ by: ["userId"], where: { lastActiveAt: { gte: week } } }),
+    // PB-10 — engagement, not UserSession.lastActiveAt (moves on any authenticated request, polls included).
+    loadEngagedUserIdsSince(systemDb, week),
   ]);
 
   return NextResponse.json({
@@ -52,6 +57,6 @@ export async function GET() {
     signups30,
     verified,
     activatedEver: activatedEver.length,
-    active7:       active7.length,
+    active7:       active7.size,
   } satisfies PlatformSignupsResponse);
 }

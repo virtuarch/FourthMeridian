@@ -50,8 +50,8 @@ const connections: ConnectionHealthResult = {
   total: 5,
   counts: { HEALTHY: 2, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 },
   unhealthy: [
-    { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
-    { source: "PLAID", id: "item_reauth", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "PLAID", id: "item_err", label: "Example Bank", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "PLAID", id: "item_reauth", label: "Institution D", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
     { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null, kind: "WALLET", institution: null, network: "ETH", overdueAfterHours: 6, neverSynced: false, availableActions: [] },
   ],
   retired: { revoked: 1, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
@@ -77,7 +77,7 @@ function provider(over: Partial<ProviderHealth> & { key: string; label: string }
 }
 const providers: ProviderHealthResult = {
   checkedAt: now,
-  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0 },
+  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0, INSUFFICIENT_DATA: 0 },
   providers: [
     provider({ key: "PLAID", label: "Plaid" }),
     provider({ key: "OXR", label: "Open Exchange Rates", kind: "FX", trust: "FAILING", lastFailureAt: AGO(3), freshness: { state: "stale", asOf: "2026-10-10", ageDays: 4, source: "resource-freshness", detail: "4 days stale" }, notes: ["3 consecutive failures"] }),
@@ -114,12 +114,13 @@ const alerts: NonNullable<AttentionInputs["alerts"]> = {
 };
 
 const incident = (over: Partial<PlatformIncidentProjection> & { id: string }): PlatformIncidentProjection => ({
-  label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking",
-  domain: "transactions", severity: "critical", state: "active", firstOccurredAt: AGO(100), lastOccurredAt: AGO(2),
-  occurrenceCount: 4, occurrenceCountKnown: true, recovery: "automatic-available", refreshExecutionId: "exec_1", ...over,
+  label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Example Bank · Checking",
+  domain: "transactions", severity: "critical", effectiveSeverity: "critical", freshness: "current", state: "active", brokenNow: true,
+  firstOccurredAt: AGO(100), lastOccurredAt: AGO(2),
+  occurrenceCount: 4, occurrenceCountKnown: true, refreshExecutionId: "exec_1", ...over,
 });
 const incidents: NonNullable<AttentionInputs["incidents"]> = {
-  items: [incident({ id: "inc_a" }), incident({ id: "inc_b", severity: "warning", subject: null, refreshExecutionId: null, state: "active" })],
+  items: [incident({ id: "inc_a" }), incident({ id: "inc_b", severity: "warning", effectiveSeverity: "warning", subject: null, refreshExecutionId: null, state: "active" })],
   activeTotal: 2, truncated: false,
 };
 
@@ -158,7 +159,7 @@ console.log("restatements, never new verdicts");
   check("ERROR Plaid connection offers resync + request-reauth", by("connection:PLAID:item_err")?.actions.map((a) => a.kind).join(",") === "resync,request-reauth,open-workspace");
   check("a wallet offers no Plaid write, only the doorway", by("connection:WALLET:conn_w")?.actions.map((a) => a.kind).join(",") === "open-workspace");
   check("a stale row's since falls back to its last sync", by("connection:WALLET:conn_w")?.since === connections.unhealthy[2].lastSyncedAt);
-  check("the connection entity carries the institution label and an opaque ref", by("connection:PLAID:item_err")?.entity.label === "Chase" && by("connection:PLAID:item_err")?.entity.ref === "item_err");
+  check("the connection entity carries the institution label and an opaque ref", by("connection:PLAID:item_err")?.entity.label === "Example Bank" && by("connection:PLAID:item_err")?.entity.ref === "item_err");
   // Jobs
   check("dead → critical, failing → error, overdue → warning", by("job:purge-trash")?.severity === "critical" && by("job:sync-banks")?.severity === "error" && by("job:fetch-fx-rates")?.severity === "warning");
   check("healthy and never-ran jobs are not rows", !by("job:evaluate-alerts") && !by("job:sync-crypto"));
@@ -188,6 +189,28 @@ console.log("history never becomes a row");
   check("never evaluated → checked, but no alert rows", never.authorities.checked.includes("alert-evaluation") && !never.items.some((i) => i.entity.kind === "alert-rule"));
 }
 
+console.log("ops env-aware verdicts — not-scheduled jobs are neutral");
+{
+  const preview = buildAttention({ ...full, jobs: { jobs: [
+    ...jobs.jobs.filter((j) => j.job === "sync-banks"),
+    { job: "fetch-fx-rates", status: "not-scheduled", expectedEveryHours: 24, consecutiveFailures: 0, lastStartedAt: AGO(400), lastFailureAt: null, lastFailureSummary: null },
+    { job: "sync-crypto", status: "not-scheduled", expectedEveryHours: 6, consecutiveFailures: 0, lastStartedAt: null, lastFailureAt: null, lastFailureSummary: null },
+  ] } }, now);
+  const jobItems = preview.items.filter((i) => i.entity.kind === "job");
+  check("not-scheduled jobs raise no attention item (excluded from the needs-attention count)",
+    jobItems.length === 1 && jobItems[0].entity.label === "sync-banks");
+  check("a job that ran and failed still raises its item", jobItems[0].severity === "error");
+  check("not-scheduled has no severity in the declared table", (SEVERITY_OF.job as Record<string, unknown>)["not-scheduled"] === undefined);
+  const notEnough = buildAttention({ ...full, providers: { ...providers, providers: [{ ...providers.providers[0], trust: "INSUFFICIENT_DATA" }] } }, now);
+  check("a provider with not enough data raises no attention item", !notEnough.items.some((i) => i.entity.kind === "provider"));
+}
+
+console.log("not-refreshed resources are neutral");
+{
+  const nr = buildAttention({ ...full, resources: { ...resources, resources: [{ ...resources.resources[0], healthState: "not-refreshed", trust: { level: "unknown", caveats: ["Not refreshed in this environment"] } }] } }, now);
+  check("a not-refreshed resource raises no attention item", !nr.items.some((i) => i.entity.kind === "resource"));
+}
+
 console.log("failed authorities and floors");
 {
   const partial = buildAttention({ ...full, jobs: null, incidents: null }, now);
@@ -211,7 +234,7 @@ console.log("privacy · the emitted DTO carries no customer identity");
   const json = JSON.stringify(out);
   check("no email-shaped string", !/[\w.+-]+@[\w-]+\.[\w.]+/.test(json));
   check("no key named email/userId/address/token", !/"(email|userId|walletAddress|address|accessToken|token)"\s*:/.test(json));
-  check("the incident subject is the institution · account label", json.includes("Chase · Checking"));
+  check("the incident subject is the institution · account label", json.includes("Example Bank · Checking"));
 }
 
 console.log("relative age");
@@ -317,10 +340,18 @@ console.log("source · the reader composes EXISTING authorities and owns no data
     check(`${name}: reads no process.env`, !/process\.env/.test(src));
   }
   check("the reader composes the six named authorities",
-    ["getConnectionHealth", "checkScheduledJobHealth", "getProviderHealth", "checkResourceFreshness", "loadLatestAlertEvaluation", "getIncidentPreview"].every((fn) => reader.includes(fn)));
+    ["getConnectionHealth", "checkScheduledJobHealth", "getProviderHealth", "checkResourceFreshness", "loadLatestAlertEvaluation", "incidentAccessors.brokenNow"].every((fn) => reader.includes(fn)));
   check("the reader hands provider health the SAME freshness and connection reads (no duplicate read)", /loadFreshness:\s*\(\)\s*=>/.test(reader) && /loadConnections:\s*\(\)\s*=>/.test(reader));
   check("history is returned as its own field, never folded into items", /recentFirings:/.test(reader) && /collectAlertHistory/.test(reader));
-  check("incidents pass through the D5 projection", reader.includes("projectIncidentForPlatform"));
+  check("incidents pass through the D5 projection", reader.includes("projectVerdictForPlatform"));
+  // PB-1 R6a — Ops attention reads the module's verdicts only: the Ops-tier brokenNow page, no projection
+  // view (getActiveIncidentPage / getIncidentPreview), and the core decides open/closed by `brokenNow` alone.
+  check("PB-1 R6a: the reader reads the module's broken-now page with the route's Ops token, never the projection page",
+    /incidentAccessors\.brokenNow\(token,/.test(reader) && !/getActiveIncidentPage|getIncidentPreview|getActiveIncidents\(/.test(reader));
+  check("PB-1 R6a: the core decides open/closed by the module's brokenNow, never a state / resolved comparison",
+    /\.filter\(\(inc\) => inc\.brokenNow\)/.test(core) && !/inc\.state === "active"|resolved/.test(core.slice(core.indexOf("function incidentItems("), core.indexOf("function policyAssignmentItems("))));
+  check("PB-1 R6a: incident rows rank on the module's effectiveSeverity", /SEVERITY_OF\.incident\[inc\.effectiveSeverity\]/.test(core));
+  check("PB-1 R6a: the reader names no syncIssue rows", !/syncIssue/.test(reader) && !/syncIssue/.test(core));
   // BETA V1 — the three user-impact readers are seams/readers, each best-effort, never a ledger accessor.
   check("BETA V1: the reader composes the three user-impact readers", ["queryRefreshExecutions", "getAiFailureHealth", "getBriefOps"].every((fn) => reader.includes(fn)));
   check("BETA V1: the execution seam is asked as OPERATOR for FAILED/PARTIAL only, bounded", /audience:\s*"operator"/.test(reader) && /overallStatus:\s*\["FAILED",\s*"PARTIAL"\]/.test(reader) && /limit:\s*USER_IMPACT_EXECUTIONS_LIMIT/.test(reader));
@@ -330,7 +361,7 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   check("BETA V1: the core exports a sort for the UI to never re-sort", /export function sortUserImpact/.test(core));
   check("the core never sorts in the UI's place — sortAttention is exported from the core", /export function sortAttention/.test(core));
   check("route: requires PLATFORM_OPS READ", /requirePlatformAccess\(\s*["']PLATFORM_OPS["']\s*,\s*["']READ["']\s*\)/.test(route));
-  check("route: returns the auth error before reading", /if\s*\(\s*err\s*\)\s*return\s+err/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("getAttention()"));
+  check("route: returns the auth error before reading", /if\s*\(\s*err\s*\)\s*return\s+err/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("getAttention(incidentToken)"));
   check("route: never requests WRITE or CONTROL", !/["'](WRITE|CONTROL)["']/.test(route));
   check("route: exports no mutating verb", !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route));
   // The overview's posture composition follows the same rules.
@@ -345,6 +376,25 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   // a boolean (`destinationConfigured`), but the address itself never crosses.
   check("the projection never copies `destination` (presence only)",
     !/\bdestination\b/.test(latest.replace(/strips `destination`/g, "").replace(/newest\.destination\b/g, "").replace(/destinationConfigured/g, "")));
+}
+
+console.log("PB-1 R6a · incidents read the module's verdicts");
+{
+  const only = (items: PlatformIncidentProjection[]) =>
+    buildAttention({ ...full, incidents: { items, activeTotal: items.length, truncated: false } }, now).items.filter((x) => x.evidence?.kind === "execution" || x.evidence?.kind === "incident");
+  const rows = only([
+    incident({ id: "inc_live" }),
+    incident({ id: "inc_unverified", freshness: "unverified", effectiveSeverity: "error", refreshExecutionId: null }),
+    incident({ id: "inc_recovering", state: "recovering", refreshExecutionId: null }),
+    incident({ id: "inc_closed", brokenNow: false, state: "stale-unverified", refreshExecutionId: null }),
+  ]);
+  const byId = new Map(rows.map((r) => [r.id, r] as const));
+  check("a verdict that is not brokenNow never becomes a row (D10 stale-unverified, D2 removed, resolved…)", !byId.has("incident:inc_closed"));
+  check("an unverified critical ranks at its effectiveSeverity (error) and says it is unconfirmed (D10)",
+    byId.get("incident:inc_unverified")?.severity === "error" && /not confirmed inside its window/.test(byId.get("incident:inc_unverified")!.problem));
+  check("a current critical stays critical, with no unverified note", byId.get("incident:inc_live")?.severity === "critical" && !/not confirmed/.test(byId.get("incident:inc_live")!.problem));
+  check("a recovering incident is still listed (broken now) and says it is awaiting confirmation",
+    /recovering \(awaiting confirmation\)/.test(byId.get("incident:inc_recovering")?.problem ?? ""));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

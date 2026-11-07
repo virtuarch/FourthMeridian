@@ -41,6 +41,7 @@
 
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { toISODateUTC } from "@/lib/time/clock";
+import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 import { rollUp, type InvocationFact } from "@/lib/platform/ai/invocation-economics";
 import { monthCycle, priceCycle, type PlaidItemFact, type PlaidItemTransition } from "@/lib/platform/plaid/item-months";
 import type {
@@ -49,7 +50,8 @@ import type {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-export const PRODUCT_ANALYTICS_WINDOW_DAYS = 30 as const;
+/** The 30-day analytics window IS the engagement MAU window (X9: ENGAGEMENT_WINDOW_DAYS is the only source). */
+export const PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau;
 export const ABANDONMENT_HORIZON_DAYS = 7 as const;
 /** Weekly first-visit cohorts reported: this many ISO weeks ending with the current one. */
 export const RETENTION_COHORT_WEEKS = 8;
@@ -62,7 +64,7 @@ export const RETENTION_HORIZON_DAYS = 7;
  */
 export const PRODUCT_ANALYTICS_LOOKBACK_DAYS = RETENTION_COHORT_WEEKS * 7 + RETENTION_HORIZON_DAYS + 7;
 
-/** Presence: the one product event that says "a live session touched this day". */
+/** Presence: the one product event that says "a human-initiated authenticated request touched this day" (PB-10 F3: background polls excluded). */
 export const PRESENCE_ACTIONS: readonly AuditActionType[] = [AuditAction.SESSION_ACTIVE_DAY];
 /** The connection-lifecycle actions the engagement predicate admits. */
 export const CONNECTION_ADD_ACTIONS: readonly AuditActionType[] = [
@@ -250,7 +252,7 @@ export function firstConnections(facts: Pick<ProductAnalyticsFacts, "plaidItems"
 
 export function buildRegistrations(users: readonly UserFact[], today: string): ProductAnalyticsResponse["registrations"] {
   const days = lastNDays(today, PRODUCT_ANALYTICS_WINDOW_DAYS);
-  const last7 = new Set(lastNDays(today, 7));
+  const last7 = new Set(lastNDays(today, ENGAGEMENT_WINDOW_DAYS.wau));
   const perDay = new Map<string, number>(days.map((d) => [d, 0]));
   let deactivated = 0, last7d = 0, last30d = 0;
   for (const u of users) {
@@ -502,8 +504,8 @@ export const PRODUCT_ANALYTICS_EXCLUSIONS: readonly string[] = [
 export function buildProductAnalytics(facts: ProductAnalyticsFacts, now: Date): ProductAnalyticsResponse {
   const today = toISODateUTC(now);
   const sets = activitySets(facts);
-  const daily = activeUsers(sets, today, 1);
-  const weekly = activeUsers(sets, today, 7);
+  const daily = activeUsers(sets, today, ENGAGEMENT_WINDOW_DAYS.dau);
+  const weekly = activeUsers(sets, today, ENGAGEMENT_WINDOW_DAYS.wau);
   const monthly = activeUsers(sets, today, PRODUCT_ANALYTICS_WINDOW_DAYS);
   const perDay = lastNDays(today, PRODUCT_ANALYTICS_WINDOW_DAYS).map((day) => {
     const one = new Set([day]);

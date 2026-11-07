@@ -99,7 +99,8 @@ export function toAccountsCsv(rows: ExportAccount[]): string {
       name:            r.name,
       type:            r.type,
       institution:     r.institution,
-      balance:         r.balance,
+      // FM-AUDIT-022 — null (an unvalued wallet) is a BLANK cell, never 0.
+      balance:         r.balance ?? "",
       currency:        r.currency,
       credit_limit:    r.creditLimit ?? "",
       interest_rate:   r.interestRate ?? "",
@@ -107,6 +108,10 @@ export function toAccountsCsv(rows: ExportAccount[]): string {
       last_updated:    r.lastUpdated,
       space_id:        r.spaceId,
       space_name:      r.spaceName,
+      // FM-AUDIT-022 — ADDITIVE, appended after every pre-existing column (none
+      // renamed, reordered or removed). An unvalued account's `balance` above is
+      // BLANK (never 0) and this says why; empty on every valued row.
+      valuation_status: r.valuationStatus ?? "",
     })),
   );
 }
@@ -152,6 +157,9 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       total_debt:        r.totalDebt,
       total_cash:        r.totalCash,
       total_savings:     r.totalSavings,
+      // FIN-E part 2 — SpaceSnapshot.restrictedCash (HSA / retirement share of
+      // cash + savings). Empty = NOT RECORDED, deliberately distinct from 0.
+      restricted_cash:   typeof r.restrictedCash === "number" ? r.restrictedCash : "",
       total_investments: r.totalInvestments,
       total_crypto:      r.totalCrypto,
       cash_on_hand:      r.cashOnHand,

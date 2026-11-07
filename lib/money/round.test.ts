@@ -21,7 +21,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 check("round2 rounds to cents", round2(1234.5678) === 1234.57 && round2(-1234.5678) === -1234.57);
 check("round2 clears f64 residue: 0.1 + 0.2 ⇒ 0.3", round2(0.1 + 0.2) === 0.3);
-check("round2 is identical to the copies it replaced", [5286.645, 0.005, -0.005, 1e-14, 99.995]
+check("round2 is identical to the copies it replaced", [4928.415, 0.005, -0.005, 1e-14, 99.995]
   .every((n) => round2(n) === Math.round(n * 100) / 100));
 check("MONEY_EPSILON is half a cent", MONEY_EPSILON === 0.005);
 check("a 2.8e-14 residue compares as zero, a cent does not", Math.abs(2.8e-14) < MONEY_EPSILON && !(0.01 < MONEY_EPSILON));

@@ -147,6 +147,29 @@ console.log('\n5. IT EXPIRES, AND IT CLEARS');
           && openRuntimeState('v2:aa:bb:cc', BINDING) === null;
       } finally { process.env.ENCRYPTION_KEY = key; }
     })());
+  // PRIV-004 ruling — the compact seal carries no key id. Across a key rotation
+  // an old cookie opens while ENCRYPTION_KEY_PREVIOUS holds the old key; once
+  // PREVIOUS is removed it must degrade to NO STATE (a fresh conversation),
+  // never throw (which the chat route would surface as a 500).
+  {
+    const key = process.env.ENCRYPTION_KEY;
+    const OLD = 'd'.repeat(64), NEW = 'e'.repeat(64);
+    try {
+      process.env.ENCRYPTION_KEY = OLD; delete process.env.ENCRYPTION_KEY_PREVIOUS;
+      const oldCookie = sealRuntimeState({ scenario: SCENARIO }, BINDING) as string;
+      process.env.ENCRYPTION_KEY = NEW; process.env.ENCRYPTION_KEY_PREVIOUS = OLD;
+      const during = openRuntimeState(oldCookie, BINDING);
+      check('rotation in progress (PREVIOUS = old key): an old cookie still opens with its state',
+        JSON.stringify(during?.scenario) === JSON.stringify(SCENARIO));
+      delete process.env.ENCRYPTION_KEY_PREVIOUS;
+      let threw = false, after: unknown = 'unset';
+      try { after = openRuntimeState(oldCookie, BINDING); } catch { threw = true; }
+      check('PREVIOUS removed: an old cookie degrades to no state (null), it does not throw', !threw && after === null);
+      const src = readFileSync('app/api/ai/chat/route.ts', 'utf8');
+      check('…and the chat route treats a null carrier as a fresh conversation (new identity, no scenario)',
+        /const carried = openRuntimeState\(/.test(src) && /carried\?\.conversationId \?\? randomUUID\(\)/.test(src) && /scenario: carried\?\.scenario \?\? null/.test(src));
+    } finally { process.env.ENCRYPTION_KEY = key; delete process.env.ENCRYPTION_KEY_PREVIOUS; }
+  }
 }
 
 console.log('\n6. THE TAIL IDENTIFIES A CONVERSATION');

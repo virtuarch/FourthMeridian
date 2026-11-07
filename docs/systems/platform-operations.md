@@ -1,310 +1,576 @@
-# Platform Ops
+# Platform Operations
+
+> **Status markers** (ADR-008, [docs/decisions/ADR-008-documentation-lifecycle.md](../decisions/ADR-008-documentation-lifecycle.md)):
+> **IMPLEMENTED**: on `develop`, code path or PR cited, checked against the tree on 2026-11-03.
+> **IN PROGRESS**: an open PR exists; nothing in it is on `develop` yet.
+> **PLANNED**: decided by the owner (ADR-008 "decided but not implemented") or proposed in an active plan. No code yet.
+>
+> **Active plans (Session 1 owns them; this doc links, never copies):**
+> [PB1-INCIDENT-LIFECYCLE](../plans/PB1-INCIDENT-LIFECYCLE.md) ·
+> [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md). Cost and pricing:
+> [billing-and-provider-costs](billing-and-provider-costs.md).
 
 ## Purpose
 
-Platform Ops is Fourth Meridian's operating-the-product platform: a typed
-background-job runtime plus the observability that answers "is the machine
-running, and is the data it produces actually good?". It is deliberately
-separate from customer tenancy — these are the operator's tools for running the
-service itself, not a customer feature.
-
-Two concerns live here:
-
-1. **Execution** — a registry of scheduled jobs, a single dispatcher, an
-   append-only run ledger, and one manual-operations path onto that same
-   ledger.
-2. **Observability** — three *distinct* health authorities (job execution,
-   resource freshness, provider health) plus an alert engine that consumes
-   them. The load-bearing design rule is that these authorities are never
-   conflated: a green job is not proof of fresh data.
+The Platform Space is how operators run Fourth Meridian itself. It is not a customer
+feature. It has five **areas**. Each area is backed by one system-singleton Space
+(`Space.platformArea`) and holds **workspaces**, which can contain **views**. Underneath
+sit a typed background-job runtime, an append-only run ledger, three separate health
+authorities, an alert engine and the sync-incident lifecycle.
 
 ## Authority
 
-- **Job execution health** — `lib/jobs/health.ts` (`checkScheduledJobHealth`,
-  `classifyJobHealth`). The single dead-job detector and rich-metrics read
-  model over the `JobRun` ledger. Answers "did each registered job run when it
-  should, and is any silently broken?"
-- **Resource freshness** — `lib/platform/resource-freshness.ts`
-  (`checkResourceFreshness`, `classifyResourceFreshness`). Content-derived
-  freshness (`MAX(date)` over the underlying archive), computed *only* from the
-  data, never from `JobRun.status`. Answers "is the underlying resource
-  actually fresh?"
-- **Provider health** — `lib/platform/provider-health.ts`
-  (`getProviderHealth`, `buildProviderHealth`, `deriveProviderTrust`). Treats
-  each external provider (Plaid, Open Exchange Rates) as a first-class resource
-  and *synthesizes* over the other authorities — it recomputes none of them.
-- **Alert evaluation** — `lib/alerts/evaluate.ts` (`evaluateAlertRules`) +
-  `lib/alerts/run.ts` (`evaluatePlatformAlerts`). Classifies breach signals
-  over the three authorities' output; holds no health computation of its own.
-- **Authorization** — `lib/platform/policy.ts` (`hasPlatformAccess`) is the pure
-  decision; `lib/platform/authorize.ts` (`requirePlatformAccess`,
-  `requireFreshPlatformAccess`) is the session-aware adapter. This axis is
-  strictly orthogonal to customer Space membership.
+| Concern | Authority | Status |
+|---|---|---|
+| Areas, sections, seed | `PlatformArea` enum (`prisma/schema.prisma`), `PLATFORM_AREAS` (`lib/platform/policy.ts`), idempotent seed `lib/platform/seed.ts` | IMPLEMENTED |
+| Workspace identity | `PLATFORM_WORKSPACES` (`lib/platform/workspaces.ts`), unioned into the universal `WORKSPACE_REGISTRY` (`lib/perspectives.ts`) | IMPLEMENTED |
+| Workspace composition (the only owner) | `PLATFORM_AREA_WORKSPACES`, `PLATFORM_WORKSPACE_ALIASES`, `PLATFORM_SECTION_REPRESENTATION` (`lib/platform/workspaces.ts`) | IMPLEMENTED |
+| Section → widget, view leads | `components/platform/PlatformSpaceDashboard.tsx`, `components/platform/leads/*` | IMPLEMENTED |
+| Authorization | pure `hasPlatformAccess` (`lib/platform/policy.ts`); session adapter `requirePlatformAccess` / `requireFreshPlatformAccess` (`lib/platform/authorize.ts`) | IMPLEMENTED |
+| Job execution health | `lib/jobs/health.ts` | IMPLEMENTED |
+| Resource freshness | `lib/platform/resource-freshness.ts` | IMPLEMENTED |
+| Provider health | `lib/platform/provider-health.ts` | IMPLEMENTED |
+| Alerts | `lib/alerts/evaluate.ts`, `lib/alerts/run.ts` | IMPLEMENTED |
+| Incident lifecycle (the only writer) | `lib/platform/incidents/lifecycle.ts` plus the classifier `lib/platform/sync-issue-semantics.ts` | IMPLEMENTED |
+| Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1–R6b cut over (§13.1 complete: R1/R2 CS incidents panel + CS detail loader #288; R3 convergence #310; R4 projection + R5 feed #325; R5 fold/evaluate #332; R6a Ops attention #333; R6b CS attention #336); residuals named in `lib/platform/incidents/incident-boundary.test.ts` §11 (member activity feed and CS trend as follow-ups; the sync-control gate as a permanent exception) | IMPLEMENTED (module, R1–R6b) |
+| Scheduler presence (env-aware verdicts) | `lib/jobs/scheduler-presence.ts`, `scheduler-presence.core.ts` (PR #282) | IMPLEMENTED |
+| Provider verdict rules | `provider-outcome@1` `lib/platform/verdicts/provider-outcome.ts` (PR #282); `provider-connection@2` `lib/platform/verdicts/provider-connection.ts` (PRs #285, #286; @2 institution concentration) | IMPLEMENTED |
+| Fleet AI spend status | `fleetSpendStatus` (`lib/platform/ai/fleet-spend-status.ts`, PR #281) | IMPLEMENTED |
+| Opaque customer reference (PRIV-ref) | `lib/platform/opaque-user-ref.ts`, `opaque-user-ref-format.ts` (PR #284) | IMPLEMENTED |
+| Operational policy (Policies workspace) | `lib/platform/policies/*` | IMPLEMENTED |
 
-## Inputs
+## Areas and workspaces (as registered)
 
-- **The single dispatch cron** — `vercel.json` fires `POST /api/jobs/dispatch`
-  at `0,30 0,6,7,12,18 * * *` (UTC half-hour slots). This is the only external
-  trigger for scheduled work.
-- **The job registry** — `SCHEDULED_JOBS` (`lib/jobs/registry.ts`): each entry
-  names its daily fire slot(s), an optional `expectedEveryHours` cadence, and a
-  dynamically-imported idempotent body.
-- **Underlying content archives** — `FxRate`, `PriceObservation`,
-  `PositionObservation` (read by freshness probes).
-- **`ApiUsageCounter`** — per-provider call/token volume (written by
-  `lib/usage/record.ts`), read for provider call counts.
-- **Connection health** — `lib/connections/health.ts` (sync-provider recency),
-  consumed by both provider health and alerting.
-- **`PlatformSetting`** — key/value overrides (alert rule enable/disable via
-  `alert_rule_enabled:<ruleId>`).
-- **`PlatformGrant`** rows + the session user's role — the authz inputs.
-- **Manual-operation requests** — `POST` bodies to the operations route.
+Five areas: `PLATFORM_OPS`, `SECURITY_OPS`, `GROWTH_REVENUE`, `CUSTOMER_SUCCESS` and
+`MERCHANT_OPS` (`prisma/schema.prisma` `enum PlatformArea`). Each one opens on the
+shared `platform-overview` identity, and an area can relabel it. Every row below is
+IMPLEMENTED in `lib/platform/workspaces.ts` (`PLATFORM_AREA_WORKSPACES`).
 
-## Outputs
+| Area (label) | Workspaces → views | Lead component |
+|---|---|---|
+| Platform Operations | **Operations**: Overview · Jobs · Pipeline (drill-down, no second tab row) · **Providers** (one view) · **Economics**: Overview · AI & Costs · Providers · Entitlements · **Policies**: Policy groups · Platform defaults · Alerts · Emergency controls (drill-down) · **Incidents** | `OperationsLead`, `PipelineLead`, `ProvidersLead`, `EconomicsOverviewLead`, `AiCostsLead`, `EconomicsProvidersLead`, `EconomicsEntitlementsLead`, `PoliciesLead` |
+| Security Operations | **Security** (posture dashboard) · **Audit** · **Operator actions** | `SecurityLead` |
+| Growth | **Growth** (acquisition dashboard; hosts the beta signup list) | `GrowthLead` |
+| Customer Success | **Customers** · **Incidents** · **Communications**: Library · Automations · Delivery & History · Preferences | `CustomerSuccessLead`, `components/platform/comms/*` |
+| Merchant Operations | **Merchant identity** (the merge review page itself stays at `/merchant-ops`) | `MerchantLead` |
 
-- **`JobRun` rows** — the append-only execution ledger (see Persistence).
-- **Read-model JSON** served by the authorized routes under
-  `app/api/platform/platform-ops/`: `job-health`, `resource-freshness`,
-  `provider-health`, `operations`, `alerts`, `api-usage`, `connection-health`,
-  `rate-limits`, `env-status`.
-- **Alert emails** — the `platform-alert` template sent to
-  `env.PLATFORM_ALERTS_EMAIL` (OPS-1 `sendEmail`) on breach.
-- **`AuditLog` rows** — every manual operation (execute and dry-run) is audited.
-- **Platform Ops Space widgets** — rendered from the section registry in
-  `PLATFORM_AREAS.PLATFORM_OPS.sections` (`lib/platform/policy.ts`).
+Composition rules (IMPLEMENTED, pinned by `lib/platform/workspaces.test.ts`):
 
-## Canonical contracts
+- **Views are composition only.** A view selects which section keys render (inline or
+  `hosted` inside a lead's drawers). It never adds a section key or a DB row.
+- **Retired ids still resolve.** `platform-trends` and `platform-costs` map to their new
+  workspace, and `platform-jobs` / `platform-refresh` map to Operations › Jobs / Pipeline
+  (`PLATFORM_WORKSPACE_ALIASES`), so old `?workspace=` links still land.
+- **Absorption is declared.** When one widget replaces others (for example
+  `ops_platform_health` absorbing alerts, provider health, freshness, rate limits and env
+  status, or `ops_job_health` absorbing `ops_manual_operations`), the mapping is recorded
+  in `PLATFORM_SECTION_REPRESENTATION`. The reachability guard follows it transitively,
+  so a section is never dropped silently.
+- **A key in only some registries renders nothing.** A section must exist in
+  `PLATFORM_AREAS`, the composition and the widget registry. A new section also needs the
+  seed re-run on every environment (`lib/platform/seed.ts`).
+- **One request per workspace resource.** Widgets in a workspace that read the same route
+  share one fetch (`components/platform/workspace-session.tsx`). Inspection reads, such as
+  the execution timeline, stay independent.
 
-- `ScheduledJob` (`lib/jobs/registry.ts`) — one daily unit of work.
-- `runJob(name, fn, { trigger })` (`lib/jobs/run.ts`) — THE only writer of
-  `JobRun`. `trigger` ∈ `"cron" | "manual" | "script"`.
-- `JobHealthReport` / `ScheduledJobsHealth` (`lib/jobs/health.ts`) — status
-  (`healthy | never-ran | running | overdue | dead | failing`) plus rich
-  metrics.
-- `ResourceFreshnessReport` / `ResourceFreshnessDescriptor`
-  (`lib/platform/resource-freshness.ts`) — states `fresh | stale | empty | idle`
-  plus a `FreshnessTrust` roll-up.
-- `ProviderHealthReport` / `ProviderSpec` (`lib/platform/provider-health.ts`) —
-  `ProviderTrust` ∈ `OPERATIONAL | DEGRADED | STALE | FAILING | UNKNOWN`.
-- `OperationCommand` / `runOperation` (`lib/platform/operations/`) — the
-  future-safe command vocabulary (`run-now · refresh · retry · backfill ·
-  dry-run · invalidate`) and its execution seam.
-- `AlertRuleDefinition` / `AlertSignal` / `AlertRunSummary` (`lib/alerts/`).
-- `PlatformGrantCtx` + `hasPlatformAccess(area, needed, grants)`
-  (`lib/platform/policy.ts`).
+## Authorization: a separate plane
 
-## Persistence
+IMPLEMENTED. Platform access is decided from `PlatformGrant` rows only, one per
+`(userId, area)`, and revoking one flips its status to `REVOKED`, never deletes it.
+`PlatformAccessLevel` is ranked **CONTROL ≥ WRITE ≥ READ** (`LEVEL_RANK`,
+`lib/platform/policy.ts`). WRITE does **not** satisfy CONTROL, so changing how the
+platform itself behaves has to be granted on purpose. Only `ACTIVE` grants count.
+`lib/platform/policy.ts` knows nothing about `SpaceMemberRole`: operating the product is
+not a tenant capability, and mixing the two would be a confused-deputy risk. The
+`SYSTEM_ADMIN` break-glass bypass sits in the adapter (`lib/platform/authorize.ts`), not
+in the pure policy. Platform refusals are recorded as one bounded anomaly row per user,
+area and window (`lib/platform/ops/access-denied.ts`). Server routes live under
+`app/api/platform/{platform-ops,security-ops,growth-revenue,customer-success,merchant-ops}/`
+and gate through `requirePlatformAccess` / `requireFreshPlatformAccess`.
 
-- **`JobRun`** (`prisma/schema.prisma`) is the one execution store: `jobName`,
-  `trigger`, `executionId`, `status`, `startedAt`, `completedAt`, `durationMs`,
-  `summary` (JSON — counts/kinds/IDs only, never user content or money),
-  `errorSummary` (truncated message, no stack). Append-only: `runJob` writes one
-  start row and exactly one completion write.
-- **Freshness, provider health, and job health create NO tables and perform NO
-  writes** — every fact is computed read-time from data that already exists.
-- **The alert store IS the `JobRun` ledger.** `evaluate-alerts` runs are
-  `JobRun` rows whose `summary` (`AlertRunSummary`) records what fired; the next
-  cycle reads recent summaries to drive suppression. No alert table exists.
-- **`ApiUsageCounter`** — per `(provider, metric, unit, day)` counters.
-- **`PlatformGrant`** — one row per `(userId, area)`; revocation is a status
-  flip (`ACTIVE → REVOKED`) with provenance, never a delete.
-- **`PlatformSetting`** — alert-rule overrides and other platform toggles.
-- **`BetaAccessRequest`** — the Growth & Revenue beta queue (a sibling platform
-  area, not Platform Ops proper).
+## Execution and observability
 
-## Consumers
+All IMPLEMENTED.
 
-- **The dispatcher** (`lib/jobs/dispatch.ts`) — selects due `SCHEDULED_JOBS` per
-  slot and runs each through `runJob` with per-job isolation.
-- **Manual Operations** (`lib/platform/operations/execute.ts`) — resolves a
-  registered command's target body from `SCHEDULED_JOBS` and runs it through the
-  *same* `runJob(trigger:"manual")` path.
-- **Provider health** consumes job health (via a windowed `JobRun` read),
-  resource freshness (for archive providers), connection health (for sync
-  providers), and `ApiUsageCounter`.
-- **The alert engine** consumes job health, resource freshness, and connection
-  health; delivers via OPS-1 email.
-- **Platform Ops routes + widgets** consume all the above read models behind
-  `requirePlatformAccess`.
+- **One dispatcher, one ledger.** A single Vercel cron wakes `POST /api/jobs/dispatch`
+  every 15 minutes (`vercel.json`). `lib/jobs/dispatch.ts` decides from the `JobRun`
+  ledger and the cadence policy which `SCHEDULED_JOBS` (`lib/jobs/registry.ts`) are due:
+  never ran, or the newest run is older than cadence minus tolerance, with an overlap
+  guard. `runJob` (`lib/jobs/run.ts`) is the **only** writer of `JobRun`. Manual
+  operations (`lib/platform/operations/execute.ts`, registry
+  `lib/platform/operations/registry.ts`) run the same body through
+  `runJob(trigger:"manual")`, now from the Jobs rows, with fleet runs behind CONTROL plus
+  a reason and a confirmation.
+- **Three authorities, never conflated.** Job health (`lib/jobs/health.ts`), resource
+  freshness (content-derived `MAX(date)`, `lib/platform/resource-freshness.ts`) and
+  provider health (a worst-wins synthesis over the other two plus connection health,
+  `lib/platform/provider-health.ts`). **False-green invariant:** a succeeded job over a
+  stale archive still reads stale. The job success is shown beside the content state and
+  never used to derive it. Downstream layers consume these outputs and never recompute
+  them.
+- **Alerts** classify over the authorities' output. The alert store is the `JobRun`
+  ledger itself: `evaluate-alerts` runs record what fired in their `summary`, which drives
+  suppression. There is no alert table. `never-ran` is not alertable.
+- **Ledger writes are best-effort.** A failed observability write is logged and
+  swallowed, so observing a job never breaks it.
 
-## Invariants
+### Environment-aware verdicts: scheduler presence
 
-- **One execution path, one ledger.** `runJob` is the only code that writes
-  `JobRun`; a manual run executes the byte-identical body the cron runs and is
-  indistinguishable in the ledger except by `trigger`.
-- **The false-green invariant.** Resource freshness is derived from content
-  only. A `succeeded` job over a stale or empty archive still reads `stale` /
-  `empty`, and the `JobRun` success is surfaced *beside* the content truth as an
-  explicit "job success is not resource freshness" caveat, never used to derive
-  the state. `fetch-fx-rates` returning `source:"none"` and vendor-gated
-  `fetch-security-prices` are the concrete cases this catches.
-- **Provider trust is worst-wins.** `deriveProviderTrust` returns the worse of
-  the content axis and the execution axis; quota is honest-`null` because
-  neither Plaid nor OXR exposes a pollable quota fact this app stores.
-- **Authorities are never re-derived downstream.** Provider health imports
-  freshness and connection health rather than recomputing staleness; the alert
-  engine classifies over authority *output* and never queries a product table.
-- **The authz axis is orthogonal.** Platform access is decided from
-  `PlatformGrant` rows alone; `lib/platform/policy.ts` knows nothing about
-  `SpaceMemberRole` (tripwired by `lib/platform-surface.test.ts`). `SYSTEM_ADMIN`
-  is a break-glass bypass living in the adapter, not the pure policy. `WRITE`
-  implies `READ`; only `ACTIVE` grants count.
-- **In-flight lock without a lock table.** A manual run is refused when a
-  non-stale `running` `JobRun` exists for the job, using the same staleness
-  window (`STALE_RUNNING_HOURS`) the dead-job detector uses.
-- **Ledger writes are best-effort.** A `JobRun` write failure is logged and
-  swallowed — observability must never break the job it observes.
-- **`never-ran` is not alertable.** It is an operator-decides state; only
-  `overdue` (scheduler-silent) and `failing` job states fire.
+IMPLEMENTED, PR #282 (resource-freshness half extended in PR #285).
 
-### Platform-grant capability matrix
+- **Where it is decided.** `deploymentSchedulerPresence()` (`lib/jobs/scheduler-presence.ts`)
+  reads `deploymentEnvironment()` (`lib/env.ts`) on the server only, never a client value,
+  query parameter or header. The pure mapping `schedulerPresenceFor`
+  (`lib/jobs/scheduler-presence.core.ts`): `production` and `development` are `present`,
+  `preview` is `absent` (Vercel fires the `vercel.json` crons on Production only).
+- **Job health** (`classifyJobHealth`, `lib/jobs/health.ts`). With `present`, the
+  classification is unchanged. With `absent`, only the age-based states (`never-ran`,
+  `overdue`, `dead`) are re-read: a recorded failure at the head of the ledger stays
+  `failing`; otherwise the job is `not-scheduled` ("Not scheduled in this environment").
+  `not-scheduled` is neutral: not failed, not healthy, no attention severity, no alert, and
+  excluded from the overview failure verdict. `running`, `skipped`, `failing` and a recent
+  `healthy` are untouched.
+- **Resource freshness** (`classifyResourceFreshness`, `lib/platform/resource-freshness.ts`).
+  When the producing job is not scheduled on the deployment, a `stale` or `empty` source
+  with no refresh attempt inside its stale window becomes `not-refreshed` ("Not refreshed
+  in this environment", trust `unknown`), neutral like `not-scheduled`. A source that was
+  attempted inside the window (even manually) and is still behind stays `stale` / `empty`.
+  A blocked pipeline keeps its own words.
 
-`PlatformArea × PlatformAccessLevel`, decided by `hasPlatformAccess`. Areas are
-each backed by exactly one system-singleton Space (`Space.platformArea`); a
-capability name like `PLATFORM_OPS_MANAGE` is derived display sugar for
-`(PLATFORM_OPS, WRITE)`, never a stored primitive.
+### Provider verdict rules
 
-| Area | READ grants | WRITE grants |
-| --- | --- | --- |
-| `PLATFORM_OPS` | View job health, freshness, provider health, alerts, API usage, rate limits, env status | Invoke Manual Operations (Run Now / Dry Run) |
-| `SECURITY_OPS` | View audit feed, auth posture, sessions, anomalies | (reserved for future security actions) |
-| `GROWTH_REVENUE` | View signups/activation, beta-access queue | Approve/deny beta requests |
-| `CUSTOMER_SUCCESS` | View operational sync-issue triage | (reserved) |
+IMPLEMENTED. Both rules are pure, client-safe, versioned, and stamp their definition id on
+the verdict so a verdict on screen traces to the rule and to the counted rows. They share
+one failing share, `PROVIDER_FAILING_SHARE = 0.5`
+(`lib/platform/verdicts/provider-outcome.ts`), so they cannot drift apart. Provider health
+(`lib/platform/provider-health.ts`) still combines them worst-wins with freshness.
 
-`SYSTEM_ADMIN` bypasses all of the above (break-glass) and is redirected to the
-admin surface rather than the platform Space host.
+**`provider-outcome@1`** (PR #282, `assessOutcomes`). One rule turns outcome counts into a
+verdict for both the server read-model (producing-job runs, `provider-health.ts`) and the
+Providers dashboard (ProviderCall attempts, `components/platform/leads/providers-model.ts`).
+Thresholds: minimum sample 3 runs or 20 calls; failing ratio 0.5; a run of 3 consecutive
+failures. Evaluation order, first match decides:
 
-## Workspace map (OPS-2C)
+1. **Recency** (ordered evidence, job runs only): the last 3 outcomes all failed ⇒ FAILING.
+2. **All failed** (unordered evidence, calls): at least 3 decided outcomes, every one
+   failed ⇒ FAILING.
+3. **Small sample with a failure**: below the minimum sample, at least one failed ⇒
+   DEGRADED ("small sample").
+4. **Sample**: below the minimum sample, none failed ⇒ NOT_ENOUGH_DATA (never HEALTHY).
+5. **Ratio**: failed / decided ≥ 0.5 ⇒ FAILING.
+6. **Isolated**: any failure below that ratio ⇒ DEGRADED.
+7. **None**: no failure in a sufficient sample ⇒ HEALTHY.
 
-Platform Operations is an internal Space on the universal Space architecture. Nine
-workspaces; composition lives in `lib/platform/workspaces.ts`, section identity in
-`lib/platform/policy.ts`, and section→widget in `PlatformSpaceDashboard.tsx`. **A key
-registered in only two of those three renders nothing and fails silently** — pinned by
-`refresh-widgets.test.ts`.
+The failure checks run before the sample floor, so the floor can only withhold HEALTHY; it
+never turns a failure into "Not enough data". In-flight rows are not decided outcomes.
 
-| Workspace | Sections (in render order) |
+**`provider-connection@2`** (v1: PR #285, follow-ups PR #286; v2: institution
+concentration, S2 P8 item 5; `connectionTrustState`, `tallyConnections`,
+`concentrationOf`, `assessConnections`). v1 is retired: nothing computes it. Before it, one customer's connection in ERROR,
+REVOKED or NEEDS_REAUTH failed the whole provider. A customer who must reconnect is a
+per-customer state, surfaced by Customer Success and attention, not a provider verdict.
+
+- **Step 1, code→state mapping (pinned by test).** The principle: only provider- or
+  institution-side codes (`PROVIDER_SIDE_ERROR_CODES`) count as ERROR; customer-actionable
+  codes (`CUSTOMER_REAUTH_CODES`) count as NEEDS_REAUTH whatever status was written; any
+  other or missing code is UNCLASSIFIED, which can degrade a provider but never fail it. So
+  a new code can never silently become a provider-wide outage. REVOKED is neutral;
+  STALE / HEALTHY contribute nothing (recency belongs to the freshness authority).
+- **Step 2, verdict, first match decides.** The denominator `active` is the live
+  population: every connection except REVOKED and those whose owner is inactive or pending
+  deletion (`lib/connections/health.ts`).
+  1. **Error share**: error ≥ 0.5 × active, with active ≥ 2 ⇒ FAILING, unless ONE
+     institution explains it (v2): it holds a strict majority of the errors AND, with its
+     connections set aside, the rest of the fleet no longer meets the same 0.5 share. Then
+     ⇒ DEGRADED, rule `institution-concentrated`, basis "6 of 10 connections in
+     provider-side error, all at 1 institution — institution-concentrated, not
+     provider-wide" (or "10 at 1 institution (1 of 10 connections elsewhere)"). So FAILING
+     needs errors at ≥ 2 institutions. A FAILING basis says "across N institutions".
+     Connections with no recorded institution are never assumed to share one; with no
+     institution split at all (an older payload), concentration is "not assessed", the
+     share alone decides, and the basis says so.
+  2. **Any error**: error > 0 (including a lone 1 of 1) ⇒ DEGRADED.
+  3. **Reauth wave**: reauth ≥ 0.5 × active, with active ≥ 4 ⇒ DEGRADED ("possible
+     provider-side reauth wave"). Reauth never fails a provider. v2 applies the same
+     concentration test to the words only: a wave one institution explains reads
+     "… all at 1 institution — institution-side reauth wave". The verdict does not move.
+  4. **Unclassified**: any unclassified connection ⇒ DEGRADED. PR #286: the basis names the
+     codes, sorted and capped at 3 ("+N more"); only code-shaped values are echoed, anything
+     else reads "non-code value".
+  5. **None** ⇒ no connection verdict; customers who must reconnect and REVOKED connections
+     are reported as neutral facts.
+- **Unknown population** (PR #286): without the per-source tally, no share is computed and
+  the basis says "connection population unavailable — share not computed".
+- **Identity tier (OPS).** The authority's per-source tally carries institutions as
+  anonymous refs (`institutionActive`, a ref per fault group); the rule sorts them by size
+  and keeps counts only. No institution name reaches the tally, the assessment, the basis,
+  the retrieval value or an alert. The operator opens Connection Health for the name.
+- **Alerts.** No alert reads this verdict: `provider-unhealthy` fires per connection from the
+  connection authority, so recovery and flap handling (#320) are unaffected.
+
+## AI & Costs: fleet spend status and call drilldown
+
+Rates, attribution and the cost freeze: [billing-and-provider-costs](billing-and-provider-costs.md).
+Every dollar here is a rate-card estimate, never a bill.
+
+**One spend status** (IMPLEMENTED, PR #281). `fleetSpendStatus()`
+(`lib/platform/ai/fleet-spend-status.ts`) is the single authority for the fleet's
+rolling-window AI spend and its share of the fleet alert threshold. The AI & Costs "Budget
+used" KPI and "Budget utilisation" card (`components/platform/leads/ai-costs-model.ts`,
+`AiCostsLead.tsx`) and the AI Budget widget (`components/platform/widgets/ai-budget-view.ts`)
+all derive from it, so no two tiles disagree about the same window. The status it returns:
+
+| Status | Meaning |
 |---|---|
-| Overview | alerts · **scheduler** · job health · provider health · resource freshness · rate limits · env status + Explore doorways |
-| Jobs | **scheduler** · job health |
-| **Refresh** *(2C-2)* | refresh summary · recent executions · account coverage |
-| Providers | provider health · **provider operations** *(2C-5)* · connection health · connection diagnostics · api usage · resource freshness · email delivery |
-| Operations · Alerts | manual operations / alerts |
-| History · AI · Costs | history · convergence · timeline · cost / api usage · ai trend / cost · ai trend |
+| `ESTIMATED` | Every customer call in the window was priced by the rate card. Utilisation = estimated spend ÷ threshold. |
+| `PARTIAL` | Some calls priced, some not. The priced figure is a lower bound ("at least"), and the unpriced calls are counted. |
+| `UNAVAILABLE` | Nothing priced (no calls, or none could be priced). No dollar figure and no percentage, never $0, with the reason. |
 
-`ops_scheduler` appears in two workspaces deliberately — Overview answers "is anything
-running at all", Jobs answers "what is scheduled". Only one workspace renders at a time,
-so no duplicate request occurs.
+`MEASURED` (billed cost from a provider invoice) is in the `SpendStatus` vocabulary but is
+**never produced**: the return type excludes it, because no invoice is read anywhere. A
+threshold of 0 or unset is "No threshold set" (utilisation null), never "0% of $0". The
+function is pure and display-only; the alert rule (`lib/platform/ai/spend-health.ts`) and
+the allowance are untouched.
 
-### Refresh read surfaces (OPS-2C-1)
+**24 h per-call drilldown** (IMPLEMENTED, PR #283; lookback PR #284). The budget KPI opens
+the customer calls in its exact rolling window.
 
-Five READ-gated routes over the OPS-2B read model, plus one inspection route:
+- **API:** `GET /api/platform/platform-ops/ai-budget/calls?until=&page=`
+  (`app/api/platform/platform-ops/ai-budget/calls/route.ts`), `PLATFORM_OPS` READ, never
+  cached. The loader (`lib/platform/ai/budget-calls.ts`) uses the same grouped read and the
+  same fold as the KPI, so the drilldown summary is the KPI. Pages of 25.
+- **Rows** (`lib/platform/ai/budget-calls-core.ts`): customer surfaces only. Each cost cell
+  is `PRICED`, `UNPRICED`, `NO_TOKENS` or `NOT_COUNTED` (failure facts such as FAILED,
+  TIMEOUT, RATE_LIMITED, QUOTA); only a priced call shows a dollar figure. Rows carry an
+  opaque customer reference (below), a provider error code but never a message, and no
+  prompt, conversation or request id.
+- **Deep link** (`components/platform/leads/ai-budget-calls-url.ts`): `?aicalls=budget`
+  opens the drawer, `&aiuntil=<epoch ms>` pins the window end to the KPI's `checkedAt` so a
+  refresh reopens the same 24 h, and `&aipage=` pages. Written with REPLACE intent through
+  the Space URL seam and parsed with the route's own parser (`parseBudgetCallsQuery`), so an
+  unknown value is dropped.
+- **Lookback:** `BUDGET_CALLS_MAX_LOOKBACK_MS` is 48 h (PR #284). An `until` older than that,
+  or more than a minute in the future, falls back to now.
 
-| Route | Serves |
+## Operator privacy: opaque customer references (PRIV-ref)
+
+IMPLEMENTED, PR #284.
+
+- **One definition.** `opaqueUserRef()` (`lib/platform/opaque-user-ref.ts`, server-only)
+  produces the `user #xxxxxxxx` reference every Platform Ops surface shows instead of a raw
+  identity: AI spend and the budget-calls drilldown, cost controls, policy-assignment
+  health, connection diagnostics, removed connections, provider cleanup, and the spend and
+  assignment alerts. The client-safe shape (prefix, 8 hex characters, parser) lives in
+  `lib/platform/opaque-user-ref-format.ts`.
+- **Mechanism.** The 8 hex characters are a truncated HMAC-SHA256 of the user id under a
+  key derived from the server's `NEXTAUTH_SECRET` with a fixed, versioned
+  domain-separation label. It replaced the old literal id-tail. It is stable across
+  surfaces and instances, so rows still correlate, but it cannot be computed or reversed
+  without the server key. Rotating the secret, or bumping the label, rotates every
+  reference. With no secret it fails closed to the word `customer`.
+- **Dedupe tokens.** Alert dedupe keys and Attention row ids use `opaqueDedupeToken()`: the
+  same 8 hex with the secret, otherwise a random per-process key, so a missing secret can
+  cause a duplicate notification but never suppress another customer's alert.
+- **Customer Success reverse lookup.** Only Customer Success may resolve identity. Pasting a
+  reference (or its bare 8 hex) into the CS customer search
+  (`app/api/platform/customer-success/customers/route.ts`, `CUSTOMER_SUCCESS` READ) calls
+  `resolveOpaqueRef` (`lib/platform/customer/customers.ts`): the newest
+  `REF_SEARCH_SCAN_CAP` (5,000) account ids are digested server-side and every match is
+  returned, since 32 bits can collide. The list says when nothing matched, and when the cap
+  was hit that an older account may hold the reference. No audit row (a read, like the
+  list).
+- **Rate limits.** The CS customer list is limited to 60 requests per minute per operator;
+  a reference search additionally spends a 20 per minute per-operator bucket.
+
+## Incident lifecycle (PB-1 Phase 1)
+
+IMPLEMENTED in PR #255 (merged 2026-11-03) unless marked otherwise. Design and open
+phases: [PB1-INCIDENT-LIFECYCLE](../plans/PB1-INCIDENT-LIFECYCLE.md).
+
+**Model** (`prisma/schema.prisma`):
+
+| Table | Role |
 |---|---|
-| `/refresh/summary` | execution outcomes + per-endpoint stage roll-up |
-| `/refresh/provider-operations` | per-(provider, operation) attempts, latency, attempt distribution |
-| `/refresh/coverage` | per-endpoint and per-(account, endpoint) coverage evidence |
-| `/refresh/failures` | failures grouped by the provider's own error vocabulary |
-| `/refresh/executions` | the **execution query seam** — bounded, keyset-paged rows |
-| `/refresh/executions/[id]/timeline` | one execution's ordered story (inspection) |
-| `/scheduler` *(2C-7)* | observed / expected / notes |
+| `SyncIssue` | One **episode** per `incidentKey` (`v1::provider::scope::domain::operation`, `lib/platform/incidents/identity.ts`). A partial unique index allows only one open episode per key. Carries `lifecycleState`, the resolution fields, `subjectUserId` and the cause fields. |
+| `SyncIssueOccurrence` | Each observation, with structured soft references (account, security, `jobRunId`). |
+| `SyncIssueEvent` | **Append-only** event history. The database stamps `at`, and the column-level INSERT excludes it, so events cannot be backdated. No UPDATE grant. fm_system's DELETE on events is used only by retention and account purge. |
+| `SyncIssueRelation` | Soft-reference links between incidents. They can point at an archived incident. |
+| `SyncIssueArchive` | A summary-only record of a pruned incident: ids, registry codes, timestamps, counts, and a code-only event timeline of at most 8 KB. |
 
-Shared query parsing lives in `lib/platform/refresh/request-params.ts`. **Scope fails
-closed:** an absent `plaidItemId` means platform-wide; a *present but empty* one means
-nothing. Widening on malformed input exposes data; narrowing only returns nothing.
+The three new tables have FORCE RLS: fm_system reads and writes, fm_backup has SELECT only,
+and fm_app and fm_auth get nothing. fm_app's existing column grant on `SyncIssue` (id, kind,
+resolved, createdAt, financialAccountId, plaidTransactionId) is unchanged, so it cannot read
+the new lifecycle or subject columns. Proven by rls:accept cases 42–48.
 
-**Audience is derived from the grant, never from the request.** Platform Operations reads
-as `operator`; the seam's `support` audience (item-scoped, free-text errors redacted in
-favour of the provider's structured codes) exists but has no caller yet.
+**States** (`LIFECYCLE_STATES`, `lib/platform/incidents/invariant.ts`, enforced by a DB
+CHECK): `ACTIVE · ACKNOWLEDGED · RECOVERING · STALE · RESOLVED`. `RESOLVED` must move
+together with `resolved`, and a resolved incident carries `resolvedAt` and a reason code.
+**Resolution kinds:** `AUTOMATIC_RECOVERY · OPERATOR_RESOLVED · SUBJECT_REMOVED`.
+`OPERATOR_RESOLVED` requires the operator and an audit id. Every code column holds a
+registry code (`^[A-Z0-9_]{2,64}$`, `lib/platform/incidents/codes.ts`), never free text.
 
-### Workspace session (OPS-2C-6)
+**Transitions written today:**
 
-`components/platform/workspace-session.tsx` — the workspace owns the operational session.
-Widgets in one workspace reading the same route share **one** request and therefore one
-operational moment. It consolidates *consumption*, never *authority*: no route merged, no
-aggregate DTO, no dashboard endpoint, each response stored verbatim under its own URL.
-The body is keyed by workspace id, so leaving and returning **refetches** — an operational
-read has no staleness window.
+- **Open / recur.** `recordIncidentObservation` (`lifecycle.ts`, reached through
+  `recordSyncIssue` in `lib/plaid/syncIssues.ts`) converges on the open episode or opens a
+  new one. A recurrence is a **new** episode linked by `previousIncidentId`. A resolved
+  row is never reopened. `OBSERVED` is written once, when the episode opens.
+  `nature === "event"` rows are evidence, stored as already closed, and can never be
+  resolved.
+- **Automatic recovery.** Evidence comes only from the typed builders
+  (`lib/platform/incidents/evidence.ts`). A skipped or unattempted step is never proof of
+  recovery.
+- **Subject removed.** `resolveIncidentsForRemovedSubjects` is called from
+  `lib/accounts/disconnect.ts`, `lib/plaid/disconnect.ts` and
+  `lib/account-deletion/purge.ts`. It closes with `SUBJECT_DELETED`, `SUBJECT_REVOKED`
+  or `SUBJECT_MISSING`, each in one transaction: a compare-and-set on the state it read,
+  which throws on 0 rows, then a `STATE_CHANGED` event. Restoring the account does not
+  reopen the episode.
+- **Event vocabulary** (`EVENT_TYPES`): `OBSERVED · STATE_CHANGED · CAUSE_HYPOTHESIZED ·
+  CAUSE_CONFIRMED · CAUSE_RETRACTED · ACTION_TAKEN · ACTION_OUTCOME · NOTE_CODE`. The
+  schema and codes exist for operator acknowledge, resolve, reopen and cause actions, but
+  their **writers are PLANNED** (PB-1 Phase 2+). So are persisting `ACKNOWLEDGED`,
+  `RECOVERING` and the read-time `STALE` predicate.
 
-Object-inspection reads (the execution timeline panel) deliberately stay independent: a
-workspace resource is a stable endpoint shared by many widgets; an inspection read is one
-object's identity, fetched on demand and discarded on close.
+**Retention** (`jobs/data-retention.ts` → `lib/platform/incidents/retention.ts`): a
+`SyncIssue` resolved more than 90 days ago is archived and deleted in the same
+transaction. The summary goes into `SyncIssueArchive`, the events are folded into its
+timeline, and then the events and the row are deleted. The rule fails closed if no
+archiver is wired. `SyncIssueArchive` and `SyncIssueRelation` are kept **13 months**
+(`INCIDENT_ARCHIVE_RETENTION_DAYS = 396`).
+
+**Purge on account deletion** (`lib/platform/incidents/purge.ts`): removes every
+incident row about the customer, including live episodes, occurrences, events, relations
+(either end) and archive rows. Rows are matched by `subjectUserId`, or for legacy rows by
+the customer's Items and accounts. The set is resolved before the account tail deletes
+those rows, and deleted inside the same destructive transaction. Provider-wide history
+with no customer subject is kept.
+
+## Platform intelligence (PB-1 Phase 2 and after)
+
+Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLANNED / PROPOSED. Plans:
+[PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md),
+[PB1-INCIDENT-LIFECYCLE](../plans/PB1-INCIDENT-LIFECYCLE.md) (§3, §12, §13).
+
+- **Order (owner, fixed):** data model first (Phase 1, above), deterministic
+  intelligence second, conversation and navigation last.
+- **IMPLEMENTED: incident-intelligence module** (PR #264; PR #287). Read-only, no
+  migration, no writes, no LLM. **Incident actions are no longer read-only** (PR #388): Platform Ops operators with WRITE access can acknowledge and manually resolve an incident from the drawer (reason required, audited, rate-limited; a recurrence opens a new episode). Customer Success stays read-only.
+  - **Pure core** `deriveIncidentVerdicts` (`lib/platform/incidents/intelligence/core.ts`)
+    is the one place an incident verdict is decided: row class, state, freshness, closure,
+    `brokenNow`, `alertable`, severity, spread (widespread at 2 or more live subjects per
+    provider/domain/operation), recurrence, recovery and operator actions. It applies the
+    canonical rules D1–D10 (`types.ts` header) and combines the existing authorities
+    (`classifySyncIssue`, `subjectVerdict`) rather than re-deriving them. Output never
+    carries `detail`, `plaidTransactionId` or raw evidence.
+  - **Read-time STALE rule** (`staleness.ts`): `current` inside the operation's window;
+    `unverified` outside it but attempted or skipped since (or evidence unreadable), visible
+    at lower severity; `stale` outside it and neither attempted nor skipped, which leaves
+    "broken now" and never fires the critical alert but is **not** resolved. Time alone
+    never resolves an incident. Windows are one constant set, `STALE_WINDOWS_MS`
+    (Plaid item, wallet, member-triggered). **Still open:** the values are proposed
+    defaults awaiting owner confirmation (Q2), and persisting `staleSince` is a later slice.
+  - **Audience tokens** (`audience.ts`): accessors take a minted, branded token, never a
+    string. `incidentAudienceFor(auth)` mints from the route's own
+    `requirePlatformAccess` / `requireFreshPlatformAccess` result (CUSTOMER_SUCCESS grant or
+    SYSTEM_ADMIN break-glass → CS tier; PLATFORM_OPS → Ops tier);
+    `systemIncidentAudience()` is for the alert engine only (statically pinned to
+    `lib/alerts/`). Only the CS tier carries `subjectUserId`; Ops and System verdicts have
+    no such key. An unminted or wrong-tier token is refused, never downgraded.
+  - **Loader and accessors** (`index.ts`): batched reads through `systemDb`, then the pure
+    core. Accessors: `brokenNow`, `needsVerification`, `history`, `forCustomer` (CS only),
+    `alertable` (System only), `detail`. Scan caps are reported, never silent; hitting the
+    attempt-evidence cap makes every row's evidence unknown rather than hiding rows.
+  - **PR #287:** an unattributed subject is `null`, never `""`, at every attribution rung,
+    and `forCustomer(token, "")` returns an empty list without scanning.
+- **IMPLEMENTED: parity harness** (PR #263, `lib/platform/incidents/parity/*`, test-only).
+  It reproduces every PB-1 §13.2 divergence from today's reader logic on a shared world,
+  then compares the module (through `module-adapter.ts`) with each legacy reader in that
+  reader's own sense of "open". An unlisted divergence fails, and each listed correction
+  must actually hold. This is the cutover gate.
+- **IMPLEMENTED: R1/R2 reader cutover** (PR #288): the CS incidents panel and the CS detail
+  loader read the module's verdicts.
+- **IMPLEMENTED: R3 convergence** (PR #310) and **R4 projection** (PR #325): convergence and the projection read module verdicts. **R5 alerts** (feed #325, fold and evaluation #332): incident alerts read module verdicts only and fire on `alertable && critical`. Their visible changes (D2/D2b/D3/D6/D7/D8/D10) are owner decisions for Production (release plan B10.3).
+- **IMPLEMENTED: R6a Ops attention** (PR #333): reads module `brokenNow`; unverified incidents rank one severity lower.
+- **IMPLEMENTED: R6b CS attention** (PR #336): attributes an incident to the customer it was observed for (`subjectUserId`) when recorded; older rows use the previous owner rule. **§13.1 is complete:** all six readers cut over with 0 parity divergences. The CS trend followed in #340 and the member feed in #339; three permanent named readers remain (below).
+
+  **The CS daily trend** now folds module verdicts: IMPLEMENTED (PR #340). PB-1's reader work is complete.
+
+  **Three permanent named readers** (pinned in `incident-boundary.test.ts` §11):
+  1. **`lib/plaid/backgroundHistorySync.ts`**: the control gate. Its open `MISSING_ACCOUNT` count gates recovery (pinned by PR #338; no runtime change).
+  2. **`getIncidentDetail`** (`lib/platform/incidents/projections.ts`): execution evidence only; it doesn't use incident state.
+  3. **The member tenant read** (`app/api/spaces/[id]/activity`, PR #339): open/closed comes from the module core under a MEMBER `CoreAudience`; the read stays under tenant RLS (`fm_app`).
+- **IMPLEMENTED, step 1 (PR #317):** a versioned metric-definition registry in code
+  (`lib/platform/intelligence/metrics/*`, modelled on `lib/usage/pricing.ts`), definitions
+  only; no surface reads it yet. **PROPOSED (plan), the rest:** the Platform UI, alerts and
+  any future AI all read the same definitions and permissioned readers. There is no AI-only pipeline and no second alert
+  engine. Permissions are enforced where the data is read. The layer is read-only first
+  (observe, then navigate). Acting needs separate authorization, confirmation and audit.
+  It also proposes a navigation registry derived from the workspace registry and
+  `lib/space/space-url.ts`.
+- **Conversation layer: PLANNED.** `/dashboard/platform/ai` is a placeholder today
+  (`components/platform/PlatformAiPlaceholder.tsx`).
+
+## Shipped operator surfaces
+
+| Surface | What it does | Where | Status |
+|---|---|---|---|
+| **Who needs help** (PB-4) | The Customer Success dashboard ranks customers needing attention by reason: broken connections, open incidents, policy-assignment problems including `unassigned` under fail-closed enforce. Fleet reads are capped, and the UI shows "≥N" when a cap is hit. The incident trend uses canonical episodes. | `lib/platform/customer/attention-core.ts`, `attention.ts`, `components/platform/leads/CustomerSuccessLead.tsx`, `app/api/platform/customer-success/customers/route.ts` | IMPLEMENTED, PR #224 |
+| **Beta Access request review** (PB-6) | Server-paged views `PENDING · APPROVED · DENIED · REDEEMED · ALL`, a `SUSPICIOUS` verdict filter, recordable risk verdicts, and separate actions for **Deny** and **Deny and block**. A plain deny never blocks. A failed blocklist read never fails the list (PR #230). | `app/api/platform/growth-revenue/requests/route.ts`, `lib/platform/growth/beta-request-list.ts`, `beta-risk-review.ts`, `beta-blocklist.ts`, `components/platform/growth/BetaRequestReview.tsx` | IMPLEMENTED, PRs #226, #230 |
+| **Onboarding timeline** (PB-7) | A per-customer CS onboarding timeline, a "recently joined" panel, and a Platform Ops new-connection import tile. An import that the resume job finished now reads RECOVERED instead of FAILED (fixed in the readers; ledger rows untouched). | `components/platform/widgets/CsOnboardingTimeline.tsx`, `lib/platform/customer/onboarding-core.ts`, `app/api/platform/customer-success/recently-joined/route.ts`, `app/api/platform/platform-ops/new-connection-imports/route.ts` | IMPLEMENTED, PRs #227, #231 |
+| **Merchant KPI drilldowns** (PB-9) | Each Merchant identity KPI (Merchants, Without a merchant, Merged, Dismissed) opens a permissioned, searchable, paginated table. The KPI and the table total come from one count function. Merchant detail is included, and Reconsider (WRITE, rate-limited) is available on dismissed pairs. | `lib/platform/merchant/records-query.ts`, `records.ts`, `reconsider.ts`, `components/platform/leads/MerchantRecords.tsx`, `app/api/platform/merchant-ops/records/route.ts`, `app/api/platform/merchant-ops/merchants/[id]/route.ts`, `app/api/merchant-ops/reconsider/route.ts` | IMPLEMENTED, PRs #262, #265 |
+
+## Presence, session and engagement (PB-10)
+
+**IMPLEMENTED: #274 (`ae85c16`) + follow-ups #276 (`c62e824`), develop / Preview. Follow-ups F3/F4 IMPLEMENTED (#278).** "Last active"
+used to be `UserSession.lastActiveAt`, which any authenticated request bumps, so an idle open
+tab looked active. PB-10 defines six facts once, in `lib/presence/definitions.ts`; every
+threshold lives in its exported `PRESENCE_CONFIG`:
+
+| Fact | Meaning | Source |
+|---|---|---|
+| **Last login** | Newest LOGIN audit row | `AuditLog` |
+| **Authenticated session** | A valid, unrevoked session row inside the SEC-010 window. It does not prove a browser is open; `lastActiveAt` means *session last used* | `UserSession` |
+| **Online presence** | A visible-tab heartbeat within the presence window, stamped with the server clock | `UserSession.lastPresenceAt` |
+| **Active now** | Fresh presence plus an interaction reported within the interaction window | `lastPresenceAt` + `lastInteractionAt` |
+| **Last active** | The last client-reported interaction. **Low trust** (client-asserted); it drives only the presence buckets and the Customer Success "last active ~" display | `UserSession.lastInteractionAt` |
+| **Meaningful engagement** | The server-side engagement predicate (engagement audit actions plus AI customer surfaces). Heartbeats, polling, cron, webhooks and the daily session marker never count | `loadEngagedUserIdsSince` |
+
+- **Heartbeat:** `POST /api/user/presence` (`app/api/user/presence/route.ts`). The body is
+  `{ "interacted": boolean }` only; anything else returns 400. It runs under the normal user
+  guard without touching session activity, has its own per-session rate limit keyed on a
+  token digest, and reads or stores no IP, user agent or page path.
+- **Client:** `components/presence/PresenceHeartbeat.tsx` (dashboard layout). It beats only
+  while the tab is visible, and stops on 401/403. A 429 or network failure keeps a real
+  interaction for the next beat (F1).
+- **IMPLEMENTED (#278):** F3: background polls and the session focus refetch no longer extend
+  the SEC-010 idle deadline (a server-confined allowlist). F4: visibility is presence, never
+  an interaction. Consequence: a tab left open but unused for 30 days now signs out
+  (intended SEC-010 policy).
+- **Schema:** migration `20261103130000_pb10_session_presence` adds two nullable columns to
+  `UserSession` (last value only, no history). They go with the session row through the
+  reaper, account purge and data export. Applied on Preview; **Production follows the
+  release process.**
+- **Readers:** Customer Success shows Active now / Online, idle / Offline / Unknown, a coarse
+  Last interaction bucket, Last login and Live sessions. Growth's returning-user and
+  Engaged · 7 d counts use the engagement predicate.
+- **Still open:** the owner decisions OD-1..OD-4 on who counts in the "active" populations
+  (see [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md)); the engineering renames and
+  the shared population module (`lib/platform/customer/population.ts`) are done.
+
+## Economics
+
+**Overview and the AI & Costs move: IMPLEMENTED (PR A, #314).** **Providers** (cost
+view) and **Entitlements** (cost by policy group, HYPOTHETICAL scenarios):
+IMPLEMENTED (PR B, #326). The distinct **Platform AI** category: IMPLEMENTED (PR C, draft).
+
+- **Navigation.** `platform-economics` is a Platform Operations workspace in the place
+  AI & Costs had (Operations · Providers · Economics · Policies · Incidents), with views
+  **Overview** (`economics-overview` lead) and **AI & Costs** (`ai`, the unchanged
+  `AiCostsLead` and its six hosted keys). Same `PLATFORM_OPS` grant; no new role.
+- **Deep links.** `platform-ai` and `platform-costs` are aliases of
+  `platform-economics` carrying the `ai` view, so `?workspace=platform-ai` (and the
+  `aicalls` / `aiuntil` / `aipage` drilldown) still opens AI & Costs, canonicalized in
+  place. Pinned in `components/space/shell/space-history.test.ts` (E1–E5) and
+  `lib/platform/workspaces.test.ts`.
+- **One reader.** `GET /api/platform/platform-ops/economics` (`PLATFORM_OPS` READ,
+  never cached) returns the `EconomicsSnapshot` from `lib/platform/economics/snapshot.ts`,
+  which composes the existing readers: `readSpendGroups` (AI ledger, all surfaces),
+  the Plaid census (`buildPlaidUsage`, present-during-cycle reading),
+  `loadEngagedUserIdsSince` (PB-10 engagement, never sessions) and `opaqueUserRef`.
+  The pure fold is `lib/platform/economics/snapshot-core.ts`.
+- **Figures** (current billing cycle = calendar month to date): operating cost; its AI,
+  providers and infrastructure split; active customers; cost per active customer
+  (operating cost ÷ engaged customers); revenue; margin. Plus AI cost over 7 / 30 / 90
+  UTC days with a daily series. Plaid is billed per Item-month, so it is never allocated
+  to days and the daily trend is AI only.
+- **Status per figure:** `MEASURED` only for counts (active customers); `ESTIMATED`
+  when every part was priced; `PARTIAL` when some part is unpriced or unmetered (a lower
+  bound, with the missing parts listed); `UNAVAILABLE` with a reason and a null value,
+  never $0. Operating cost is always `PARTIAL` today because infrastructure and other
+  providers are not metered. Revenue and margin are always `UNAVAILABLE`: "no billing
+  source".
+- **Drilldowns.** Each figure with records carries `drill.href` →
+  `GET /api/platform/platform-ops/economics/drill?figure=&window=&until=`. The figure's
+  value is defined as the sum of its drill rows (a count: the row count), computed from
+  the same inputs at the same window end, so a KPI and its list cannot disagree. The open
+  drill is in the URL (`?econ=<figure>.<window>&econuntil=`, workspace-scoped, REPLACE).
+- **Plaid Investments is not priced.** Plaid bills Investments per Item-month only once
+  the product is initialized (`billed_products`), not merely consented, and
+  `billed_products` is not stored. Consented Investments Item-months are counted and
+  named in `coverage.missing`; the Plaid figure is PARTIAL (S2 finding, PR B).
+- **Providers** (`GET …/economics/providers`, `providers-core.ts`): OpenAI from the AI
+  ledger, Plaid Item-months × rate, every other provider with recorded calls UNAVAILABLE
+  "not metered". Calls this cycle are MEASURED (ApiUsageCounter). Quota is "cap unknown"
+  for every provider. Each row links to Platform Operations › Providers for health;
+  Economics never shows a health verdict.
+- **Entitlements** (`GET …/economics/entitlements`, `entitlements-core.ts`): each
+  group's cost this cycle is the sum of its customers' attributable cost (customer-surface
+  AI + Plaid Transactions), grouped by current assignment. No row, or a retired group,
+  counts as the default group. Each group drills to its customers as opaque refs. AI
+  overhead, customer-surface calls with no user, and Items with no owner are a separate
+  "not attributed" figure, never spread across groups.
+- **Scenarios** (`GET …/economics/scenario?group=&allowance=`): HYPOTHETICAL and
+  read-only. They re-read the group's recorded customer AI spend with each customer-day
+  capped at the proposed daily allowance. Customers with their own allowance (an override,
+  or an overlay that sets one) are left uncapped. Nothing is written and no policy
+  changes (static pin in `lib/platform/economics/providers-entitlements.test.ts`).
+- **Platform AI** (PR C) is AI the platform invokes for an *operator*, never customer
+  spend. Exactly one such path is instrumented today: Comms Center authoring ("Polish with
+  Fourth Meridian AI", `lib/notifications/content/deps.ts`), recorded with
+  `surface: "comms_authoring"` (`COMMS_AUTHORING_SURFACE`). `PLATFORM_AI_SURFACES`
+  (`lib/platform/ai/spend-by-surface-core.ts`) is the single list. The spend fold gives it
+  its own `overhead.platform` bucket; it was previously in "Unattributed". Economics ›
+  Overview shows `platform_ai_cost` (cycle, plus 7 / 30 / 90 d) and lists it as its own
+  operating-cost row. AI & Costs shows a Platform AI card with spend, calls, failures,
+  latency p50/p95 and top model. Its records
+  (`GET …/economics/platform-ai?window=&until=&page=`) list every invocation (returned and
+  failed) with model, sub-surface, in/out/cached tokens, latency, outcome, cost and an
+  opaque operator ref (`operator #…`, the same keyed token, never a customer `user #` ref; provider error prose is reduced to a code or "error"); the sum of returned cost equals the KPI. A ratchet in
+  `lib/platform/economics/platform-ai.test.ts` fails if a new operator AI call site under
+  `lib/platform`, `lib/notifications`, `app/api/platform`, `jobs` or `lib/alerts` does not record a Platform AI
+  surface.
+- **Provider health stays in Platform Operations › Providers.** Configuration stays in
+  Policies; Economics reads it and never edits it.
+- All money shown stays an estimate, not a bill. See
+  [billing-and-provider-costs](billing-and-provider-costs.md) for the rate card,
+  attribution and the cost freeze. No billing or revenue data source exists.
 
 ## Known limitations
 
-- **`quota-low` alert rule is dormant.** The vocabulary exists (`ALERT_RULES`)
-  but `live: false` — there is no provider-quota authority anywhere; OXR's
-  `GET /api/usage.json` is the documented, uncalled path to populate it.
-- **Provider quota is always `null`.** By design (honest-null); the fields are
-  structurally ready but unpopulated.
-- **`manualRuns` metrics read `trigger === "manual"`.** Correct today, but only
-  the operations route produces such rows; jobs never manually run report `0`.
-- **`fetch-security-prices` is vendor-gated.** It is a successful no-op until a
-  price adapter is registered; freshness marks its empty archive `blocked`
-  (trust `unknown`) so alerting does not false-red.
-- **Manual operation kinds `refresh / retry / backfill / invalidate` are
-  reserved.** Only `run-now` and `dry-run` materialize into commands; each
-  reserved kind carries its precise unblock reason.
-- **Sub-daily jobs depend on the paid Vercel cron.** The multi-slot schedule is
-  gated by the plan tier, not by code.
+All verified on develop.
 
-### Gaps disclosed by OPS-2C (real, not implied away)
-
-- **Dispatcher invocations are not recorded.** `dispatchDueJobs` logs and returns; a slot
-  with no due jobs writes nothing. A "tick" is therefore **unobservable**, and the
-  scheduler surface says so rather than reporting job executions as ticks. A silent
-  dispatcher surfaces as `overdue`, not on the scheduler card. Making ticks observable
-  would require a new operational fact — out of scope for an observation slice.
-- **`resume-stale-imports` is scheduled outside the registry** (its own `*/5` Vercel
-  cron, ~288 runs/day). It writes `JobRun` rows but is absent from `SCHEDULED_JOBS`, so
-  `checkScheduledJobHealth` never sees it: **no health report, no alert coverage.**
-  Disclosed as an external cron, never folded in with registry jobs and never given a
-  fabricated health state. Registering it is a deliberate open decision.
-- **The four legacy per-job routes** (`/api/jobs/{sync-banks,fetch-fx-rates,
-  fetch-security-prices,process-deletions}`) execute job bodies with only `CRON_SECRET`,
-  bypassing the operations registry's confirm/audit/in-flight guarantees. Notably
-  `process-deletions` is in `EXCLUDED_TARGETS` as *"destructive, automatic-only"* yet its
-  route remains directly callable.
-- **The refresh ledger is still empty in development**, so every refresh surface renders
-  its unobserved state. Projection folding is unit-tested against fakes but has not run
-  over real non-empty ledger rows.
-- **No per-connection scoping in the UI.** The routes accept `plaidItemId`; no widget
-  passes one yet.
+- **`resume-stale-imports` is outside the registry.** It has its own `*/5` cron in
+  `vercel.json` and is absent from `SCHEDULED_JOBS`, so it gets no job-health report and
+  no alert coverage.
+- **Dispatcher wakes are not recorded.** A wake with no due jobs writes nothing, so a
+  silent dispatcher surfaces only as overdue jobs.
+- **Provider quota is honestly `null`.** No provider exposes a pollable quota this app
+  stores, and the `quota-low` alert rule is dormant.
+- **Two currently stale Production incidents stay as they are** until the Phase-2 shared
+  reader is cut over and shows them as stale, and an owner-approved closure runs (PR #255
+  description). The module exists (PR #264); R1–R6b are cut over (PRs #288, #310, #325, #332, #333, #336; §13.1 complete).
+- **Opaque references are 32 bits** and the CS reverse lookup scans only the newest
+  5,000 accounts; collisions are listed, not hidden, and a capped miss says so.
 
 ## Extension points
 
-- **Add a job** — one `SCHEDULED_JOBS` entry (idempotent body, dynamic import),
-  plus a `vercel.json` slot only if it needs a new fire time.
-- **Add a freshness resource** — one `ResourceFreshnessDescriptor` with a
-  `probe()`; the pure classifier already owns the semantics.
-- **Add a provider** — one `ProviderSpec` naming its producing job, usage key,
-  and which freshness authority feeds it.
-- **Add a manual operation** — register a target/kind in
-  `lib/platform/operations/registry.ts`; execution reuses `runJob`.
-- **Add an alert rule** — one `ALERT_RULES` entry plus (for a live rule) one
-  evaluator branch over an existing authority.
-- **Add a platform area** — one `PlatformArea` enum value + one `PLATFORM_AREAS`
-  metadata entry + re-run the idempotent seed.
+- **Add a job:** one `SCHEDULED_JOBS` entry with an idempotent body. Cadence comes from
+  the cadence policy, not from `vercel.json`.
+- **Add a section:** a `PLATFORM_AREAS` entry, a composition entry in
+  `PLATFORM_AREA_WORKSPACES` and a widget registration, then re-run the seed on every
+  environment.
+- **Add a workspace or view:** identity in `PLATFORM_WORKSPACES`, composition in
+  `PLATFORM_AREA_WORKSPACES`. A retired id gets an alias.
+- **Add an incident producer:** call `recordSyncIssue` with typed facts. Never write
+  `SyncIssue*` directly (pinned by `lib/platform/incidents/incident-boundary.test.ts`).
 
-## Why the architecture is this way
+## Why it is built this way
 
-The whole design crystallized around one incident: the platform could report a
-green FX job while the FX archive was cold, because job-execution success was
-being read as data health. The fix was to make **separation of authorities**
-structural — job health, content freshness, and provider health are three
-independent read models, and downstream layers *consume* rather than recompute
-them. Freshness derives health from `MAX(date)` alone and surfaces execution
-facts only beside it, so a false-green becomes visible instead of invisible.
-
-Everything else follows from wanting that separation to stay cheap and honest.
-Health is computed read-time over facts that already exist, so there are no
-counter tables to drift and every classifier is a pure function unit-testable
-with an injected fake client (the house pattern shared across `health.ts`,
-`resource-freshness.ts`, `provider-health.ts`, and the alert engine). The
-`JobRun` ledger is reused as the alert store and the in-flight lock rather than
-minting new tables, keeping the surface small. Manual operations route through
-the single `runJob` path so an operator action and a cron tick are the same
-execution with the same ledger evidence. And platform authorization is a
-separate axis from customer Space membership because operating the product is
-categorically not a tenant capability — conflating them would be a
-confused-deputy risk, so the two never mix.
+The design started from one incident: the platform reported a green FX job while the FX
+archive was cold. Since then, separating authorities has been structural. Health is
+computed at read time from facts that already exist, every classifier is a pure function
+with an injected client, and operator actions go through the same execution path as
+cron runs. The incident work applies the same rule: one writer, append-only evidence,
+registry codes instead of free text, and no data presented as proof of recovery unless
+it is.

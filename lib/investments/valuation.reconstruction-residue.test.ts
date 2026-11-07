@@ -3,7 +3,7 @@
  *
  * V26-INVESTMENTS-HISTORY — RECONSTRUCTION RESIDUE IS NOT A SHORT POSITION.
  *
- * The regression this pins is a real one, measured on a live Schwab account: its
+ * The regression this pins is a real one, measured on a live Example Brokerage account: its
  * backward reconstruction ran out of provider event history and produced NEGATIVE
  * opening quantities for six positions, each with `unexplainedOpeningQuantity ==
  * openingQuantity` (nothing explained) and `reconciliation` PARTIAL or FAILED.
@@ -36,7 +36,7 @@ const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 const ASOF = "2026-06-25";
 const USD = identityFxCtx("USD");
-const ACCT = "acct_schwab_llc";
+const ACCT = "acct_exbroker_llc";
 
 /**
  * The six positions from the incident, with the openings the reconstruction

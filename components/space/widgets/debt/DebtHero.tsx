@@ -34,15 +34,11 @@ import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
 import type { UtilizationLevel } from "@/lib/accounts/credit-utilization";
 
-/** The balance-history window delta, ready for the badge (snapshot basis). */
-export interface DebtWindowChange {
-  /** last − first over the in-window snapshot series (positive = debt grew). */
-  abs: number;
-  /** % of the opening balance, or null when the opening is 0/unknown. */
-  pct: number | null;
-  /** The window's opening date (formatted), for the "vs {date}" label. */
-  fromLabel: string;
-}
+// The balance-history window delta (snapshot basis) — computed, and gated on the
+// coverage floor (PB-8b), by debt-trend-points.ts `debtWindowChange`.
+import type { DebtWindowChange } from "./debt-trend-points";
+import { ESTIMATED_CHANGE_SUFFIX } from "@/lib/connections/balance-coverage.core";
+export type { DebtWindowChange };
 
 /**
  * v2.7 mobile/desktop parity — the utilization LEVEL in words (utilizationLevel's
@@ -71,6 +67,7 @@ export function DebtHero({
   today,
   historical,
   change,
+  changeWithheld = null,
   envelope,
   redactions,
   timePreset,
@@ -86,6 +83,9 @@ export function DebtHero({
   historical:     boolean;
   /** The balance-history window delta, or null when no window exists. */
   change:         DebtWindowChange | null;
+  /** PB-8b — why the window delta is withheld (its opening day is before a
+   *  liability's balance-history floor), or null. Said in place of the change. */
+  changeWithheld?: string | null;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
   envelope:       PerspectiveEnvelope;
   /** The lens verdict SENTENCE (prose only), or null. v2.7 parity: no longer
@@ -120,8 +120,8 @@ export function DebtHero({
         value={`${approx}${formatCurrency(kpis.totalDebt, currency)}`}
         valueTone="negative"
         change={!historical && change != null ? { abs: change.abs, pct: change.pct, goodDirection: "down" } : null}
-        noChangeLabel={historical ? "Change shown in the chart" : undefined}
-        range={historical ? "Current balances" : change != null ? `${change.fromLabel} → ${asOfShown}` : `As of ${asOfShown}`}
+        noChangeLabel={historical ? "Change shown in the chart" : changeWithheld ?? undefined}
+        range={historical ? "Current balances" : change != null ? `${change.fromLabel} → ${asOfShown}${change.estimated ? ESTIMATED_CHANGE_SUFFIX : ""}` : `As of ${asOfShown}`}
         currency={currency}
         talkSection="debt"
         talkPeriod={timePreset}
@@ -149,9 +149,11 @@ export function DebtHero({
                 pct={change.pct}
                 currency={currency}
                 goodDirection="down"
-                compareLabel={change.fromLabel}
+                compareLabel={change.estimated ? `${change.fromLabel}${ESTIMATED_CHANGE_SUFFIX}` : change.fromLabel}
                 className="!text-xs"
               />
+            ) : changeWithheld ? (
+              <span className="text-[11px] text-[var(--text-muted)]" data-change-withheld>{changeWithheld}</span>
             ) : (
               <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
             )

@@ -5,7 +5,7 @@ Date: 2026-10-16 (Asia/Kuwait). Status: implementation and permitted validation 
 ## Branch and recoverable history
 
 - Branch: `ui/full-platform-responsive-hardening`
-- Worktree: `/Users/chrstn/dev/FourthMeridian-ui`
+- Worktree: `/Users/devuser/dev/FourthMeridian-ui`
 - Previous visual checkpoint retained: `5f015c3a6490685e937a7e911cb609fd49ec7522`
 - Simplification checkpoint created before integration: `cc9c455` (four UI/component-test files).
 - Integration commit / tested application code: `1f9987f47c7b6437d94cbff39c42e2773af90f4f`
@@ -16,7 +16,7 @@ Date: 2026-10-16 (Asia/Kuwait). Status: implementation and permitted validation 
 
 Review URL: http://localhost:3001/dashboard/platform/PLATFORM_OPS?workspace=platform-policies
 
-The running listener is Next.js 16.2.7, PID 24386, cwd `/Users/chrstn/dev/FourthMeridian-ui`, started after integration and the successful local build. Authenticated GET `/api/platform/platform-ops/ai-cost-controls` returned 200. The browser renders the new Custom, Revert, enforcement and emergency controls. No environment or credential file was copied or modified; the process uses the existing Development configuration.
+The running listener is Next.js 16.2.7, PID 24386, cwd `/Users/devuser/dev/FourthMeridian-ui`, started after integration and the successful local build. Authenticated GET `/api/platform/platform-ops/ai-cost-controls` returned 200. The browser renders the new Custom, Revert, enforcement and emergency controls. No environment or credential file was copied or modified; the process uses the existing Development configuration.
 
 ## Implemented controls and actual backend capabilities
 

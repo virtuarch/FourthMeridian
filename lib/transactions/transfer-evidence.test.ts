@@ -58,7 +58,7 @@ test("payment-app evidence does NOT become an economic purpose (no P2P/spending 
 // ── CF-P1 — known payment-app brand names the RAIL over a generic account transfer ──
 
 test("CF-P1: Apple Cash OUT tagged ACCOUNT_TRANSFER → rail PAYMENT_APP, not DEPOSITORY", () => {
-  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -101.47, name: "APPLE CASH SENT MONEY" });
+  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -100, name: "APPLE CASH SENT MONEY" });
   assert.equal(ev.railType, "PAYMENT_APP");
   assert.equal(ev.venueClass, undefined);            // depository venue suppressed
   assert.equal(deriveTransferDisposition(ev), "PAYMENT_APP_MOVEMENT");  // was EXTERNAL_BANK_TRANSFER
@@ -71,7 +71,7 @@ test("CF-P1: Apple Cash IN (FROM_APPS) is unchanged — still rail PAYMENT_APP",
 });
 
 test("CF-P1: a NON-payment-app ACCOUNT_TRANSFER stays DEPOSITORY (no over-reach)", () => {
-  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -500, name: "Chase QuickPay to Savings" });
+  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -500, name: "Example Bank QuickPay to Savings" });
   assert.equal(ev.venueClass, "DEPOSITORY");
   assert.equal(ev.railType, undefined);
 });

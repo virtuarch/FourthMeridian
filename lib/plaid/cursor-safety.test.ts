@@ -57,7 +57,7 @@ function makeFakeDb(opts: {
 }) {
   const txns: Row[] = [];
   const item: Record<string, unknown> & { id: string; cursor: string | null } =
-    { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase", ...opts.itemExtra };
+    { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank", ...opts.itemExtra };
   const failPlan = opts.failPlan ?? new Map<string, number>();
   const cursorWrites: (string | null)[] = [];
   /** SyncIssue rows written through the INJECTED client (Phase 2 seam). */
@@ -103,9 +103,11 @@ function makeFakeDb(opts: {
       }))),
       // Phase 4 / 5A-1 — scoped auto-recovery. The authority now selects by
       // classification rather than a Json path, then resolves by id.
-      updateMany: async ({ where }: { where: { id?: { in: string[] } } }) => {
+      // P8 #1 — the resolver now writes per row (`id` is a string) inside its
+      // own CAS transaction; the bulk `{in}` form is kept for older callers.
+      updateMany: async ({ where }: { where: { id?: string | { in: string[] } } }) => {
         let count = 0;
-        const ids = where.id?.in ?? [];
+        const ids = typeof where.id === "string" ? [where.id] : where.id?.in ?? [];
         for (const [n, i] of syncIssues.entries()) {
           if (ids.includes(`si${n + 1}`) && !i.resolved) { i.resolved = true; count++; }
         }
@@ -117,7 +119,11 @@ function makeFakeDb(opts: {
     // syncTransactionsForItem passes `database` straight through to
     // recordSyncIssue, so the fake must satisfy the same contract the real
     // client does: incident recording never runs inside a caller transaction.
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
+    // P8 #1 — the incident lifecycle's OWN transition transaction (CAS +
+    // STATE_CHANGED) runs on this fake; the sync itself opens none.
+    async $transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn({ syncIssue: this.syncIssue, syncIssueEvent: { create: async () => ({ id: "ev1" }) } });
+    },
     plaidItem: {
       findUnique: async () => ({ ...item }),
       update: async ({ data }: { data: { cursor?: string | null } & Record<string, unknown> }) => {

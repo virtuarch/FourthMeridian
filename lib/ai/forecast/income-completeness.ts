@@ -9,11 +9,11 @@
  * On the live Space (2026-10-16) the primary payroll stream was CURRENT and
  * projection-eligible, but its amount authority refused a level after one
  * unusual paycheck. Every future paycheck was then excluded inside the fold
- * (lib/forecast/projection.ts), projected income fell from ~$31.7k to $0.65 of
+ * (lib/forecast/projection.ts), projected income fell from a five-figure sum to cents of
  * interest, and `project_cash` still returned `EVIDENCE_BASED_ESTIMATE` with the
  * sentence "future payroll is inferred from the observed deposit cadence" and
  * `incomeEventsCounted: 12`. The only trace was a grouped `excluded` note. The
- * model, holding a −$21k variance and no tool output that named its cause,
+ * model, holding a five-figure variance and no tool output that named its cause,
  * narrated unsupported causes and then asked the customer for their income —
  * which the platform already held.
  *
@@ -68,7 +68,7 @@ import { round2 } from '@/lib/money/round';
  * ordinary late paycheck (holiday shift, employer delay, provider lag past the
  * 3-day settlement tolerance); the second covers a biweekly stream a month
  * late or a monthly one skipped once. From the third the stream is behaving
- * like the measured discontinued case (Abacus: 15 unpaid slots), and the honest
+ * like the measured discontinued case (Employer B: 15 unpaid slots), and the honest
  * reading is LAPSED — disclosed, not counted, not blocking.
  */
 export const RECENT_SILENCE = { MAX_UNSATISFIED_OCCURRENCES: 2 } as const;
@@ -183,9 +183,10 @@ export interface IncomeCompletenessInput {
  * observed amount reaches this share of the cash the projection works with
  * (opening cash + counted income), or when it cannot be sized at all.
  *
- * MEASURED on the live Space (2026-10-16): the dropped payroll was 5 × $6,770.32
- * against ~$19.5k of opening cash — far above any threshold — while an
- * interest-like deposit with varying amounts adds $57.68 against ~$46k (0.13%).
+ * MEASURED on the live Space (2026-10-16), in illustrative round numbers: the
+ * dropped payroll was on the order of 5 × $6,000 against ~$25k of opening cash —
+ * far above any threshold — while an interest-like deposit with varying amounts
+ * added ~$50 against ~$50k (~0.1%).
  * A rule that flagged the second would mark nearly every projection incomplete
  * and train the reader to ignore the flag. 1% sits between them by an order of
  * magnitude on both sides; the floor keeps a near-empty account from flagging cents.

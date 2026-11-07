@@ -92,7 +92,7 @@ function ActiveUsersCard({ pa }: { pa: Fetched<ProductAnalyticsResponse> }) {
   return (
     <Block id="growth-active" label="Active accounts" className="min-w-0 lg:col-span-7"
       hint={<ProvenanceChip kind="MEASURED" />}
-      action={<Segmented label="Activity" value={series} onChange={setSeries} options={[{ id: "engaged", label: "Engaged" }, { id: "present", label: "Signed in" }]} />}>
+      action={<Segmented label="Activity" value={series} onChange={setSeries} options={[{ id: "engaged", label: "Engaged" }, { id: "present", label: "Present" }]} />}>
       <Surface className="flex-1 p-4 sm:p-5">
         {p ? (
           <>
@@ -100,8 +100,8 @@ function ActiveUsersCard({ pa }: { pa: Fetched<ProductAnalyticsResponse> }) {
               ariaLabel={series === "engaged" ? "Accounts with meaningful product activity per UTC day" : "Accounts with an authenticated session per UTC day"} />
             <Caption>
               {series === "engaged"
-                ? `${n(p.active.daily.engaged)} today · ${n(p.active.weekly.engaged)} this week · ${n(p.active.monthly.engaged)} in 30 d`
-                : `${n(p.active.daily.present)} today · ${n(p.active.weekly.present)} this week · ${n(p.active.monthly.present)} in 30 d`}
+                ? `${n(p.active.daily.engaged)} today · ${n(p.active.weekly.engaged)} in 7 d · ${n(p.active.monthly.engaged)} in 30 d (UTC days)`
+                : `${n(p.active.daily.present)} today · ${n(p.active.weekly.present)} in 7 d · ${n(p.active.monthly.present)} in 30 d (UTC days)`}
             </Caption>
           </>
         ) : <Loading f={pa} what="activity" />}

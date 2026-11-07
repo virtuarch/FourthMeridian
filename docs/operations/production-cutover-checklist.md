@@ -22,7 +22,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 | B2 | Migration names conform (DB-008) | `npx tsx scripts/audit-migration-names.ts` exit 0 (runs in CI too) | ENG | ☐ |
 | B3 | Drift assessment on Production, read-only, within 1 h of the migration step (cutover §6.11) | `npm run db:drift` with the env file pointed at Production's session pooler; output line attached | OWNER | ☐ |
 | B4 | Data preflight zeros on Production (null `financialAccountId` 0/0, `MerchantRule` scope 0, PLAID duplicates 0) | `scratchpad/prod-preflight.sql` (cutover §5 A2); counts attached | OWNER | ☐ |
-| B5 | **PG 17.6 / Supabase RLS rehearsal on a clone of Production's rows** (cutover §6.6): migrate the pending set, backfill, `audit:ci`, `rls:accept` 37/37 incl. the GRANT/POLICY census; `CREATE ROLE fm_backup … BYPASSRLS` succeeds as Supabase's `postgres` (rls-preview-cutover.md §: UNVERIFIED on Supabase) | `migration-safety.md` §2 record row attached | ENG drives, OWNER supplies the dump | ☐ |
+| B5 | **PG 17.6 / Supabase RLS rehearsal on a clone of Production's rows** (cutover §6.6): migrate the pending set, backfill, `audit:ci`, `rls:accept` 37/37 incl. the GRANT/POLICY census; `CREATE ROLE fm_backup … BYPASSRLS` succeeds as Supabase's `postgres` (rls-preview-cutover.md §: UNVERIFIED on Supabase) | [database-safety.md](database-safety.md) §3b record row attached | ENG drives, OWNER supplies the dump | ☐ |
 | B6 | Enum-value deferral honoured: no row uses `MERCHANT_OPS` before promotion; Merchant Ops Space seeded at step I only | `select count(*) from "Space" where area='MERCHANT_OPS'` = 0 before H | OWNER | ☐ |
 
 ## C. Backup, restore, rollback
@@ -33,7 +33,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 | C2 | `fm_backup` password set and stored; role shape verified | `select rolbypassrls, rolsuper, rolcanlogin from pg_roles where rolname='fm_backup'` → t,f,t | OWNER | ☐ |
 | C3 | Pre-cutover dump taken over the session pooler, sha256 recorded (cutover §5 A1) | `backups/production-…-pre-v26-<ts>.sql.sha256` | OWNER | ☐ |
 | C4 | **Timed restore rehearsal PASSED with RPO/RTO recorded** (G0) | `backup-restore-verification.md` §6 row: counts equal, health ok, login ok | OWNER (+ENG) | ☐ |
-| C5 | Rollback plan read and agreed: redeploy previous build for app faults (`vercel promote <prev>`), schema stays additive, fix-forward for policy faults, no `DISABLE ROW LEVEL SECURITY` | `migration-safety.md` §3; cutover §9 | OWNER | ☐ |
+| C5 | Rollback plan read and agreed: redeploy previous build for app faults (`vercel promote <prev>`), schema stays additive, fix-forward for policy faults, no `DISABLE ROW LEVEL SECURITY` | [database-safety.md](database-safety.md) §3b; cutover §9 | OWNER | ☐ |
 | C6 | Local-dump policy applied to every dump taken above (encrypted or deleted within 24 h) | `ls backups/` shows only `.gpg`/`.age` + `.sha256` | OWNER | ☐ |
 
 ## D. Deployment mapping and configuration
@@ -45,7 +45,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 | D3 | Staged deployment boots with strict mode and the three role URLs (cutover §5 G/G′): `db-authority` 200, strict, 3 roles, residue 0, RLS 56/56 (or the current count) | staged URL + owner session | OWNER | ☐ |
 | D4 | Staged-URL login with TOTP rehearsed on a non-alias host (cutover §6.7) | one login on the staged URL; session lands on that host | OWNER | ☐ |
 | D5 | `registration_mode` row = `invite_only` on Production (G0) | `select value from "PlatformSetting" where key='registration_mode'` | OWNER | ☐ |
-| D6 | Branch rulesets live on `main` and `v2.6` (G2) | `gh api /repos/virtuarch/FourthMeridian/rulesets \| jq length` ≥ 2; `branching-and-protection.md` §4.4 | OWNER | ☐ |
+| D6 | Branch rulesets live on `main` and `v2.6` (G2) | `gh api /repos/{owner}/{repo}/rulesets \| jq length` ≥ 2; `branching-and-protection.md` §4.4 | OWNER | ☐ |
 | D7 | Repository visibility decision recorded (SEC-018, G2) | written decision in STATUS §3 | OWNER | ☐ |
 
 ## E. Jobs, providers, monitoring, alerts

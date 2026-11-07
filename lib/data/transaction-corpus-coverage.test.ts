@@ -111,7 +111,7 @@ console.log("\n6. A WINDOW COVERING THE RECORD IS RECOGNIZABLE FROM THE RESULT")
 console.log("\n7. FILTERS DO NOT SHRINK THE SPAN TO THE MATCHING ROWS");
 {
   // `transactionCoverage` is structurally incapable of seeing rows, text, flow or
-  // category — its whole input is the window and the corpus. A 'coinbase' search
+  // category — its whole input is the window and the corpus. An 'exchange' search
   // that matches nothing reports the same span as one that matches everything,
   // because otherwise the metadata would shrink to the miss it exists to qualify.
   const src = readFileSync("lib/data/transaction-query-core.ts", "utf8");

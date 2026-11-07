@@ -21,12 +21,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 console.log("Generated names follow the first name");
 check("REGRESSION: Brandom's Space + Brandom→Brandon ⇒ Brandon's Space",
   followedPersonalSpaceName("Brandom's Space", "Brandom", "Brandon") === "Brandon's Space");
-check("uses the canonical possessive: Chri → Chris ⇒ Chris' Space",
-  followedPersonalSpaceName("Chri's Space", "Chri", "Chris") === "Chris' Space");
-check("from an s-name: Chris' Space + Chris→James ⇒ James' Space",
-  followedPersonalSpaceName("Chris' Space", "Chris", "James") === "James' Space");
-check("legacy unconditional 's form still counts as generated (Chris's Space)",
-  followedPersonalSpaceName("Chris's Space", "Chris", "Alex") === "Alex's Space");
+check("uses the canonical possessive: Jule → Jules ⇒ Jules' Space",
+  followedPersonalSpaceName("Jule's Space", "Jule", "Jules") === "Jules' Space");
+check("from an s-name: Jules' Space + Jules→James ⇒ James' Space",
+  followedPersonalSpaceName("Jules' Space", "Jules", "James") === "James' Space");
+check("legacy unconditional 's form still counts as generated (Jules's Space)",
+  followedPersonalSpaceName("Jules's Space", "Jules", "Alex") === "Alex's Space");
 check("legacy Dashboard form counts as generated",
   followedPersonalSpaceName("Brandom's Dashboard", "Brandom", "Brandon") === "Brandon's Space");
 check("registration's generator is the same function", generatedPersonalSpaceName(" Brandon ") === "Brandon's Space");

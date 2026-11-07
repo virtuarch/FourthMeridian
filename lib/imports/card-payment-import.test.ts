@@ -89,9 +89,9 @@ test('the same leg WITHOUT the rescue is UNKNOWN, never a fabricated REFUND (the
 // ── Descriptor format invariance, through the real parser ────────────────────
 
 for (const descriptor of [
-  'PAYMENT-THANK YOU',           // Chase pending (real)
-  'Payment Thank You-Mobile',    // Chase posted (real)
-  'MOBILE PAYMENT - THANK YOU',  // Amex posted (real)
+  'PAYMENT-THANK YOU',           // Example Bank pending (real)
+  'Payment Thank You-Mobile',    // Example Bank posted (real)
+  'MOBILE PAYMENT - THANK YOU',  // Example Card posted (real)
   'PAYMENT.THANK.YOU',
   'PAYMENT_THANK_YOU',
   'PAYMENT THANK YOU',
@@ -125,8 +125,8 @@ test('Description-only file: csv.ts duplicates the value into both fields — st
 test('Merchant + Description file: descriptor only in description is still found', () => {
   // The enrichment shape: a clean merchant with the raw descriptor beside it.
   const { row, category, flow } = importRow(
-    `Date,Merchant,Description,Amount\n2026-07-16,Chase Card Services,PAYMENT-THANK YOU,5000.00\n`, CARD);
-  assert.equal(row.merchant, 'Chase Card Services');
+    `Date,Merchant,Description,Amount\n2026-07-16,Example Bank Card Services,PAYMENT-THANK YOU,5000.00\n`, CARD);
+  assert.equal(row.merchant, 'Example Bank Card Services');
   assert.equal(row.description, 'PAYMENT-THANK YOU');
   assert.equal(category, 'Payment', 'combined merchant+description evidence contract');
   assert.equal(flow.flowType, 'DEBT_PAYMENT');
@@ -174,7 +174,7 @@ test('the same descriptor on a DEPOSITORY account is never rescued', () => {
 test('real refunds/credits on a liability inflow are NOT rescued', () => {
   // Real rows from the live corpus — positive, on a card, and not payments.
   for (const [merchant, amount] of [
-    ['Amazon SA', '49.01'], ['POINTS FOR AMEX TRVL', '684.46'],
+    ['Amazon SA', '49.01'], ['POINTS FOR EXAMPLE CARD TRVL', '684.46'],
     ['TSA Global Entry Fee Credit', '120.00'], ['AplPay TARGET', '108.89'],
   ] as const) {
     const { category } = importRow(`Date,Description,Amount\n2026-07-16,${merchant},${amount}\n`, CARD);

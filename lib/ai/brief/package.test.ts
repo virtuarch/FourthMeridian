@@ -46,10 +46,10 @@ const accounts = (over: Partial<AccountsSectionData> = {}): AccountsSectionData 
   totalsEstimated: false, totalsUnconverted: false,
   counts: { liquid: 1, investments: 1, digitalAssets: 1, realAssets: 0, liabilities: 1 },
   health: { errorCount: 1, staleCount: 0, needsReauthCount: 1,
-    errorAccountNames: ['Chase Checking'], staleAccountNames: [], needsReauthAccountNames: ['Chase Checking'] },
-  knowledgeGaps: [{ accountId: 'fa_card_1', accountName: 'Chase Sapphire', field: 'apr', label: 'APR', debtSubtype: 'credit_card' }],
+    errorAccountNames: ['Example Bank Checking'], staleAccountNames: [], needsReauthAccountNames: ['Example Bank Checking'] },
+  knowledgeGaps: [{ accountId: 'fa_card_1', accountName: 'Example Bank Card Product A', field: 'apr', label: 'APR', debtSubtype: 'credit_card' }],
   accounts: [
-    { id: 'fa_chk_1', name: 'Chase Checking', type: 'checking', institution: 'Chase Bank', balance: 18920.40,
+    { id: 'fa_chk_1', name: 'Example Bank Checking', type: 'checking', institution: 'Example Bank Bank', balance: 18920.40,
       currency: 'USD', reportingBalance: 18920.40, lastUpdated: '2026-09-13T06:00:00.000Z',
       balanceLastUpdatedAt: null, needsReauth: true, visibilityLevel: 'FULL' },
     { id: 'fa_hidden_2', name: 'Secret Brokerage', type: 'investment', institution: 'Hidden Bank', balance: 84300.10,
@@ -58,7 +58,7 @@ const accounts = (over: Partial<AccountsSectionData> = {}): AccountsSectionData 
   ] as unknown as AccountsSectionData['accounts'],
   accountListScope: 'FULL',
   accountIds: ['fa_chk_1', 'fa_hidden_2'],
-  trackedAccounts: [{ id: 'fa_chk_1', name: 'Chase Checking', type: 'checking', institution: 'Chase Bank', mask: '4321', visibility: 'FULL' }],
+  trackedAccounts: [{ id: 'fa_chk_1', name: 'Example Bank Checking', type: 'checking', institution: 'Example Bank Bank', mask: '4321', visibility: 'FULL' }],
   ...over,
 });
 
@@ -101,7 +101,7 @@ const assessment = {
       evidencePopulation: { kind: 'DEBT_ACCOUNTS', unit: 'accounts', count: 1, graded: 0 } },
     burden: { ratedOwed: 0, monthlyInterestIfCarried: null, monthlyIncome: 9620, monthlyExpenses: 6240.35, liquid: 18920.4,
       interestOfMonthlyIncomePct: null, interestOfMonthlyExpensesPct: null, owedOfLiquidPct: 16.97 } },
-  ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Chase Sapphire has no APR ($3,210.55)' }],
+  ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Example Bank Card Product A has no APR ($3,210.55)' }],
 } as unknown as FinancialAssessment;
 
 const holdings = {
@@ -162,7 +162,7 @@ console.log('\n2. freshness and data quality');
     && !('accountsWithSyncErrors' in pkg.freshness) && !('connectionsNeedingAttention' in pkg.freshness));
   check('the band is the OLDEST observation\'s (11 days ⇒ STALE)', pkg.freshness?.band === 'STALE', pkg.freshness?.band);
   check('knowledge gaps are account name + missing label only',
-    JSON.stringify(pkg.dataQuality.knowledgeGaps) === JSON.stringify([{ account: 'Chase Sapphire', missing: 'APR' }]));
+    JSON.stringify(pkg.dataQuality.knowledgeGaps) === JSON.stringify([{ account: 'Example Bank Card Product A', missing: 'APR' }]));
   check('ungraded carries section and reason, not prose', JSON.stringify(pkg.dataQuality.ungraded) === '[{"section":"debt","reason":"APR_MISSING"}]');
   check('unvalued positions counted', pkg.dataQuality.unvaluedPositions === 2);
   check('unidentified income share as a rounded percent', pkg.dataQuality.unidentifiedIncomeSharePct === 12.3);
@@ -229,14 +229,14 @@ console.log('\n5b. sources that need attention, named for qualification');
 {
   const dataHealth = {
     sources: [
-      { kind: 'BANK' as const, label: 'Chase', state: 'NEEDS_RECONNECT' as const, lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2, needsAttention: true, actionable: true },
-      { kind: 'BANK' as const, label: 'Amex', state: 'CURRENT' as const, lastUpdatedAt: '2026-09-13T09:00:00.000Z', accountCount: 1, needsAttention: false, actionable: true },
+      { kind: 'BANK' as const, label: 'Example Bank', state: 'NEEDS_RECONNECT' as const, lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2, needsAttention: true, actionable: true },
+      { kind: 'BANK' as const, label: 'Example Card', state: 'CURRENT' as const, lastUpdatedAt: '2026-09-13T09:00:00.000Z', accountCount: 1, needsAttention: false, actionable: true },
     ],
     groups: [], attention: 1,
   };
   const pkg = projectBriefPackage(inputs({ dataHealth }));
   check('only the source needing attention, with its state and day',
-    JSON.stringify(pkg.freshness?.staleSources) === JSON.stringify([{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }]));
+    JSON.stringify(pkg.freshness?.staleSources) === JSON.stringify([{ label: 'Example Bank', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }]));
   check('no staleSources key when every source is current',
     !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs({ dataHealth: { ...dataHealth, sources: [dataHealth.sources[1]], attention: 0 } })).freshness!));
   check('none when data health could not be read', !!pkg.freshness && !('staleSources' in projectBriefPackage(inputs()).freshness!));
@@ -334,25 +334,25 @@ console.log('\n8. claim-scoped evidence — a stale source qualifies only what i
     kind: 'BANK', label, state: 'CURRENT', lastUpdatedAt: '2026-09-13T06:00:00.000Z', accountCount: feeds.length,
     needsAttention: false, actionable: true, feeds, ...over });
   const dataHealth = { groups: [], attention: 1, sources: [
-    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
-    source('Chase', ['liquid', 'liabilities', 'bankingRows']),
-    source('American Express', ['liabilities', 'bankingRows']),
+    source('Example Brokerage', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
+    source('Example Bank', ['liquid', 'liabilities', 'bankingRows']),
+    source('Example Card', ['liabilities', 'bankingRows']),
     source('Ledger Wallet', ['digitalAssets'], { kind: 'WALLET' }),
   ] };
   const p = projectBriefPackage(inputs({ dataHealth, bankingPopulationKnown: true }));
   const e = p.claimEvidence!;
   check('the debt claim rests on the two card sources, both current ⇒ observed, no stale source attached',
-    e.debt?.sources === 2 && e.debt.completeness.tier === 'observed' && !e.debt.completeness.byComponent && !/Schwab/.test(JSON.stringify(e.debt)));
+    e.debt?.sources === 2 && e.debt.completeness.tier === 'observed' && !e.debt.completeness.byComponent && !/Example Brokerage/.test(JSON.stringify(e.debt)));
   check('liquid and cash flow likewise', e.liquid?.completeness.tier === 'observed' && e.cashFlow?.completeness.tier === 'observed');
   check('the SAME stale source qualifies investments, priced positions and net worth',
     [e.investments, e.pricedPositions, e.netWorth].every((c) => c?.completeness.tier === 'incomplete'
-      && c.completeness.byComponent?.['Charles Schwab'] === 'incomplete'));
+      && c.completeness.byComponent?.['Example Brokerage'] === 'incomplete'));
   check('when one source is behind, EVERY source of that claim is listed with its tier (M1 byComponent)',
     JSON.stringify(e.netWorth?.completeness.byComponent)
-      === '{"Charles Schwab":"incomplete","Chase":"observed","American Express":"observed","Ledger Wallet":"observed"}');
-  check('the reason names the source, its state and its date', /Charles Schwab \(NEEDS_RECONNECT, last updated 2026-08-10\)/.test(e.investments?.completeness.reason ?? ''));
+      === '{"Example Brokerage":"incomplete","Example Bank":"observed","Example Card":"observed","Ledger Wallet":"observed"}');
+  check('the reason names the source, its state and its date', /Example Brokerage \(NEEDS_RECONNECT, last updated 2026-08-10\)/.test(e.investments?.completeness.reason ?? ''));
   check('the global stale list says what it reaches — and only that',
-    JSON.stringify(p.freshness?.staleSources) === JSON.stringify([{ label: 'Charles Schwab', state: 'NEEDS_RECONNECT',
+    JSON.stringify(p.freshness?.staleSources) === JSON.stringify([{ label: 'Example Brokerage', state: 'NEEDS_RECONNECT',
       lastUpdated: '2026-08-10', affects: ['netWorth', 'investments', 'pricedPositions'] }]));
   check('each entry names the package paths it governs',
     !!(e.debt?.covers.includes('behavior.debtRate') && e.debt.covers.includes('recentChanges.*.debt')
@@ -361,18 +361,18 @@ console.log('\n8. claim-scoped evidence — a stale source qualifies only what i
     Object.values(e).every((c) => typeof c!.completeness.tier === 'string' && typeof c!.completeness.reason === 'string'));
 
   // A label is not an identity: two items at one institution, the stale one sorted first.
-  const twoChase = projectBriefPackage(inputs({ bankingPopulationKnown: true, dataHealth: { groups: [], attention: 1, sources: [
-    source('Chase', ['liabilities', 'bankingRows'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-09-03T04:00:00.000Z' }),
-    source('Chase', ['liquid', 'bankingRows']),
+  const twoExbank = projectBriefPackage(inputs({ bankingPopulationKnown: true, dataHealth: { groups: [], attention: 1, sources: [
+    source('Example Bank', ['liabilities', 'bankingRows'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-09-03T04:00:00.000Z' }),
+    source('Example Bank', ['liquid', 'bankingRows']),
   ] } }));
   check('two sources under one name: the stale row\'s `affects` comes from ITS source, not from a label lookup',
-    JSON.stringify(twoChase.freshness?.staleSources) === JSON.stringify([{ label: 'Chase', state: 'NEEDS_RECONNECT',
+    JSON.stringify(twoExbank.freshness?.staleSources) === JSON.stringify([{ label: 'Example Bank', state: 'NEEDS_RECONNECT',
       lastUpdated: '2026-09-03', affects: ['netWorth', 'debt', 'cashFlow'] }]));
-  check('…the claim it reaches keeps it marked, and the model\'s view names Chase once as out of date',
-    twoChase.claimEvidence?.cashFlow?.completeness.byComponent?.Chase === 'incomplete'
-      && JSON.stringify((modelView(twoChase) as { claimEvidence: Record<string, { outOfDate?: unknown }> }).claimEvidence.cashFlow.outOfDate)
-        === '[{"source":"Chase","lastUpdated":"2026-09-03"}]'
-      && twoChase.claimEvidence?.liquid?.completeness.tier === 'observed');
+  check('…the claim it reaches keeps it marked, and the model\'s view names Example Bank once as out of date',
+    twoExbank.claimEvidence?.cashFlow?.completeness.byComponent?.['Example Bank'] === 'incomplete'
+      && JSON.stringify((modelView(twoExbank) as { claimEvidence: Record<string, { outOfDate?: unknown }> }).claimEvidence.cashFlow.outOfDate)
+        === '[{"source":"Example Bank","lastUpdated":"2026-09-03"}]'
+      && twoExbank.claimEvidence?.liquid?.completeness.tier === 'observed');
 
   const noBanking = projectBriefPackage(inputs({ dataHealth })).claimEvidence!;
   check('banking population not read ⇒ the cash-flow claim has NO entry (not established is not stale)',
@@ -389,8 +389,8 @@ console.log('\n8b. the model\'s view — per claim, terse, and nothing Space-wid
     kind: 'BANK', label, state: 'CURRENT', lastUpdatedAt: '2026-09-13T06:00:00.000Z', accountCount: 1,
     needsAttention: false, actionable: true, feeds, ...over });
   const dataHealth = { groups: [], attention: 1, sources: [
-    source('Charles Schwab', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
-    source('Chase', ['liquid', 'liabilities', 'bankingRows']),
+    source('Example Brokerage', ['investments'], { state: 'NEEDS_RECONNECT', needsAttention: true, lastUpdatedAt: '2026-08-10T09:15:00.000Z' }),
+    source('Example Bank', ['liquid', 'liabilities', 'bankingRows']),
   ] };
   const full = projectBriefPackage(inputs({ dataHealth, bankingPopulationKnown: true }));
   const view = modelView(full) as { freshness?: unknown; claimEvidence: Record<string, { covers: string[]; tier: string; outOfDate?: unknown }> };
@@ -399,10 +399,10 @@ console.log('\n8b. the model\'s view — per claim, terse, and nothing Space-wid
   check('an observed claim is its paths and its tier, nothing to narrate',
     JSON.stringify(view.claimEvidence.debt) === JSON.stringify({ covers: full.claimEvidence!.debt!.covers, tier: 'observed' }));
   check('a claim that is behind names the source and since when — and only that',
-    JSON.stringify(view.claimEvidence.investments.outOfDate) === '[{"source":"Charles Schwab","lastUpdated":"2026-08-10"}]'
+    JSON.stringify(view.claimEvidence.investments.outOfDate) === '[{"source":"Example Brokerage","lastUpdated":"2026-08-10"}]'
       && view.claimEvidence.investments.tier === 'incomplete');
-  check('the stale source appears ONLY under the claims it feeds', !/Schwab/.test(JSON.stringify([view.claimEvidence.debt, view.claimEvidence.liquid, view.claimEvidence.cashFlow]))
-    && /Schwab/.test(JSON.stringify(view.claimEvidence.netWorth)));
+  check('the stale source appears ONLY under the claims it feeds', !/Example Brokerage/.test(JSON.stringify([view.claimEvidence.debt, view.claimEvidence.liquid, view.claimEvidence.cashFlow]))
+    && /Example Brokerage/.test(JSON.stringify(view.claimEvidence.netWorth)));
   check('the full package is untouched (digest, licence and evidence paths read it)',
     !!full.claimEvidence!.investments!.completeness.reason && !!full.freshness!.staleSources);
   check('what is serialized for the model IS the view', serializePackage(full) === JSON.stringify(view));

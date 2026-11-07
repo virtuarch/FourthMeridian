@@ -32,8 +32,11 @@ import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { CUSTOMER_SURFACES, isCustomerSurface, priceSpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
-import { buildAiSpendHealth, opaqueUserRef, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { buildAiSpendHealth, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { utcDayStart } from "@/lib/platform/ai/customer-spend-today";
+import { loadAiSpendThresholds, type ThresholdReadClient } from "@/lib/platform/ai/spend-thresholds";
+import { fleetCeilingState, fleetCeilingUsdOf } from "@/lib/platform/ai/fleet-ceiling.core";
 import {
   loadRecentAlertSummaries, loadResolvedControls, recentTriggersFor, type CostControlsReadClient,
 } from "@/lib/platform/ai/cost-controls";
@@ -95,7 +98,42 @@ export function surfacesOf(groups: readonly UserSpendGroup[]): SurfaceBudgetView
   return [...buckets.values()];
 }
 
-const pct = (n: number, d: number): number => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
+/**
+ * n as a percentage of d, one decimal. NULL when the denominator is not a
+ * positive number — a $0 (or unset) threshold or allowance has no share to
+ * report, and "0% of $0.00" would claim one. Callers: fleet utilization, each
+ * customer's allowance and alert utilization (all `number | null` on the wire).
+ */
+export const pct = (n: number, d: number): number | null => (Number.isFinite(d) && d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+
+/**
+ * PURE — THE fleet window fold, shared by the budget utilization read model AND
+ * the budget-calls drilldown (budget-calls.ts), so the drilldown's summary is
+ * the KPI's own computation over the same grouped read: customer surfaces only,
+ * folded by buildAiSpendHealth (the fold the `ai-spend-fleet-high` rule judges).
+ */
+export function buildFleetWindow(
+  windowGroups: readonly UserSpendGroup[],
+  thresholds: { fleetUsd: number; userUsd: number },
+  windowHours: number,
+  now: Date,
+  alertEnabled: boolean,
+): { health: ReturnType<typeof buildAiSpendHealth>; fleet: AiBudgetUtilization["fleet"]; bySurface: SurfaceBudgetView[]; unpriced: AiBudgetUtilization["unpriced"] } {
+  const health = buildAiSpendHealth(windowGroups.filter((g) => isCustomerSurface(g.surface)), thresholds, windowHours, now);
+  return {
+    health,
+    fleet: {
+      estimatedUsd: health.fleetUsd,
+      thresholdUsd: thresholds.fleetUsd,
+      alertEnabled,
+      utilizationPct: health.fleetUsd === null ? null : pct(health.fleetUsd, thresholds.fleetUsd),
+      invocations: health.customerInvocations,
+      customers: health.customers,
+    },
+    bySurface: surfacesOf(windowGroups),
+    unpriced: { invocations: health.unpricedInvocations, models: health.unpricedModels },
+  };
+}
 
 export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<AiBudgetUtilization> {
   const now = deps.now ?? new Date();
@@ -105,18 +143,20 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
   const controlsClient = deps.controls ?? (systemDb as unknown as CostControlsReadClient);
   const assignments = deps.assignments ?? (systemDb as unknown as AssignmentReadClient);
 
-  const [catalogue, controls, recent, windowGroups, todayGroups] = await Promise.all([
+  const [catalogue, controls, recent, windowGroups, todayGroups, spendSettings] = await Promise.all([
     (deps.loadCatalogue ?? loadPolicyGroupCatalogue)(),
     loadResolvedControls(controlsClient),
     loadRecentAlertSummaries(controlsClient),
     groups(since, now),
     groups(utcDayStart(now), now),
+    // SEC-AI-001 — the optional fleet ceiling, from the SAME settings read the fleet alert threshold uses.
+    loadAiSpendThresholds(controlsClient as unknown as ThresholdReadClient),
   ]);
 
   const thresholds = { fleetUsd: controls["fleetAlert.thresholdUsd"].value, userUsd: controls["userAlert.thresholdUsd"].value };
   // The SAME fold the fleet alert judges — customer surfaces only; the reader already filters them, the fold prices them.
-  const health = buildAiSpendHealth(windowGroups.filter((g) => isCustomerSurface(g.surface)), thresholds, windowHours, now);
-  const surfaces = surfacesOf(windowGroups);
+  const fleetWindow = buildFleetWindow(windowGroups, thresholds, windowHours, now, controls["fleetAlert.enabled"].value);
+  const surfaces = fleetWindow.bySurface;
   const overhead = surfaces.filter((s) => !s.customer).reduce(
     (acc, s) => ({ estimatedUsd: s.estimatedUsd === null ? acc.estimatedUsd : (acc.estimatedUsd ?? 0) + s.estimatedUsd, invocations: acc.invocations + s.invocations }),
     { estimatedUsd: null as number | null, invocations: 0 },
@@ -157,6 +197,8 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
     };
   });
 
+  const fleetCeilingUsd = spendSettings.fleetCeiling ? fleetCeilingUsdOf(spendSettings.fleetCeiling) : null;
+
   const recentAlerts = [...recentTriggersFor(AI_SPEND_RULE_IDS.fleet, recent, BUDGET_RECENT_ALERTS_CAP), ...recentTriggersFor(AI_SPEND_RULE_IDS.user, recent, BUDGET_RECENT_ALERTS_CAP)]
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
     .slice(0, BUDGET_RECENT_ALERTS_CAP);
@@ -164,18 +206,11 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
   return {
     checkedAt: now.toISOString(),
     windowHours,
-    fleet: {
-      estimatedUsd: health.fleetUsd,
-      thresholdUsd: thresholds.fleetUsd,
-      alertEnabled: controls["fleetAlert.enabled"].value,
-      utilizationPct: health.fleetUsd === null ? null : pct(health.fleetUsd, thresholds.fleetUsd),
-      invocations: health.customerInvocations,
-      customers: health.customers,
-    },
+    fleet: fleetWindow.fleet,
     overhead,
     customers,
     bySurface: surfaces,
-    unpriced: { invocations: health.unpricedInvocations, models: health.unpricedModels },
+    unpriced: fleetWindow.unpriced,
     recentAlerts,
     controls: {
       allowanceEnforced: controls["allowance.enforced"].value,
@@ -184,6 +219,11 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
       userAlertEnabled: controls["userAlert.enabled"].value,
       userAlertThresholdUsd: thresholds.userUsd,
       paused: controls["killSwitch.paused"].value,
+      fleetCeilingUsd,
+      fleetCeilingState: fleetCeilingState({
+        ceilingUsd: fleetCeilingUsd, allowanceEnforced: controls["allowance.enforced"].value,
+        fleetPricedUsd: fleetWindow.fleet.estimatedUsd, fleetInvocations: fleetWindow.fleet.invocations,
+      }),
     },
     estimateNote: ESTIMATE_NOT_BILLING,
   };

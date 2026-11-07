@@ -84,6 +84,24 @@ console.log("jobs");
   check("failing → FAILED", deriveJobs({ healthy: 3, running: 0, overdue: 1, failing: 1, dead: 0, neverRan: 0 }, null, now).state === "FAILED");
   check("dead → FAILED", deriveJobs({ healthy: 3, running: 0, overdue: 0, failing: 0, dead: 1, neverRan: 0 }, null, now).state === "FAILED");
   check("next slot 'not derivable' when null", deriveJobs({ healthy: 1, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0 }, null, now).facts.some((f) => f.label === "Next slot" && f.value === "not derivable"));
+
+  // Ops env-aware verdicts — a deployment with no scheduler (Preview).
+  {
+    const base = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 0 };
+    const prodLike = { ...base, healthy: 3, dead: 2, neverRan: 1 };
+    check("Production identical: an absent or zero notScheduled changes no byte of the jobs domain",
+      JSON.stringify(deriveJobs(prodLike, null, now)) === JSON.stringify(deriveJobs({ ...prodLike, notScheduled: 0 }, null, now)));
+    const preview = deriveJobs({ ...base, notScheduled: 15 }, null, now);
+    check("every job not scheduled → UNKNOWN (neutral), never FAILED, worded as the environment",
+      preview.state === "UNKNOWN" && /15 jobs are not scheduled in this environment/.test(preview.headline)
+        && preview.figure.value === "15 not scheduled" && preview.facts.some((f) => f.label === "Not scheduled in this environment" && f.value === "15"), JSON.stringify(preview));
+    const ranAndFailed = deriveJobs({ ...base, failing: 1, notScheduled: 14 }, null, now);
+    check("a job that ran and failed is still FAILED beside the neutral ones",
+      ranAndFailed.state === "FAILED" && /1 job failing or dead; 14 not scheduled in this environment\./.test(ranAndFailed.headline), ranAndFailed.headline);
+    const healthyBeside = deriveJobs({ ...base, healthy: 2, notScheduled: 13 }, null, now);
+    check("healthy jobs beside not-scheduled ones → HEALTHY over the recorded jobs only (2), the rest named",
+      healthyBeside.state === "HEALTHY" && healthyBeside.figure.value === "2 healthy" && /13 not scheduled/.test(healthyBeside.figure.qualifier));
+  }
 }
 
 console.log("ai / brief / plaid");
@@ -196,7 +214,7 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
 
   const inputs: PostureInputs = {
     alerts: { latest: latest(false), rulesRegistered: 2 },
-    providers: { checkedAt: now, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0 }, providers: [
+    providers: { checkedAt: now, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0, INSUFFICIENT_DATA: 0 }, providers: [
       { key: "PLAID", label: "Plaid", kind: "BANKING", trust: "OPERATIONAL", availability: 1, lastSuccessAt: null, lastFailureAt: null, latencyMs: null, quota: null, remainingQuota: null, coverage: null, coverageUnit: null, freshness: { state: "fresh", asOf: null, ageDays: null, source: "none", detail: "" }, syncFailures: 0, errorRate: null, callsToday: null, calls30d: null, notes: [] },
       { key: "OXR", label: "OXR", kind: "FX", trust: "FAILING", availability: 0, lastSuccessAt: null, lastFailureAt: null, latencyMs: null, quota: null, remainingQuota: null, coverage: null, coverageUnit: null, freshness: { state: "stale", asOf: null, ageDays: null, source: "none", detail: "" }, syncFailures: 3, errorRate: 1, callsToday: null, calls30d: null, notes: [] },
     ] },
@@ -216,6 +234,18 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
   const allDown = derivePosture({ alerts: null, providers: null, freshness: null, configuration: null });
   check("every loader failing → four Unavailable chips, none ok", allDown.every((c) => c.state === "unavailable" && c.tone === "muted"));
   check("empty registries → Unknown, never Fresh/Operational", derivePosture({ ...inputs, providers: { ...inputs.providers!, providers: [] }, freshness: { ...inputs.freshness!, resources: [] } }).slice(1, 3).every((c) => c.word === "Unknown"));
+
+  // Preview (no scheduler): a resource whose producing job is unscheduled reads not-refreshed — neutral.
+  {
+    const fx = inputs.freshness!.resources[0];
+    const nr = { ...fx, healthState: "not-refreshed" as const, trust: { level: "unknown" as const, caveats: ["Not refreshed in this environment"] } };
+    const prev = derivePosture({ ...inputs, freshness: { ...inputs.freshness!, resources: [nr, inputs.freshness!.resources[1]] } })[2];
+    check("freshness chip: not-refreshed (+ blocked) → 'Not refreshed here', muted, never Stale or Fresh",
+      prev.word === "Not refreshed here" && prev.tone === "muted" && /0 of 2 not fresh · 1 blocked · 1 not refreshed in this environment/.test(prev.count), JSON.stringify(prev));
+    const mixed = derivePosture({ ...inputs, freshness: { ...inputs.freshness!, resources: [nr, fx] } })[2];
+    check("…a genuinely stale resource beside it still leads (Stale)", mixed.word === "Stale" && mixed.tone === "warn");
+    check("Production (no not-refreshed): the chip is unchanged", JSON.stringify(derivePosture(inputs)[2]) === JSON.stringify(chips[2]) && !/not refreshed/.test(chips[2].count));
+  }
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

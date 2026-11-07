@@ -322,6 +322,7 @@ export const TRUST_WORD: Record<ProviderTrust, string> = {
   STALE:       "Stale data",
   FAILING:     "Failing",
   UNKNOWN:     "Unknown",
+  INSUFFICIENT_DATA: "Not enough data",
 };
 
 /** Ranking of a verdict lib/platform/provider-health.ts already reached. */
@@ -331,6 +332,7 @@ const TRUST_STATUS: Record<ProviderTrust, HealthStatus> = {
   STALE:       "critical",
   FAILING:     "critical",
   UNKNOWN:     "unknown",
+  INSUFFICIENT_DATA: "unknown",
 };
 
 export function providersView(d: ProviderHealthResponse): SourceView {
@@ -370,6 +372,7 @@ export const FRESHNESS_WORD: Record<FreshnessHealthState, string> = {
   stale: "Stale",
   empty: "Empty",
   idle:  "Idle",
+  "not-refreshed": "Not refreshed in this environment",
 };
 
 /**
@@ -384,6 +387,7 @@ const FRESHNESS_STATUS: Record<FreshnessHealthState, HealthStatus> = {
   idle:  "nominal",
   stale: "caution",
   empty: "critical",
+  "not-refreshed": "unknown",
 };
 
 export function freshnessView(d: ResourceFreshnessResponse): SourceView {

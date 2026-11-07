@@ -138,15 +138,15 @@ const SIMPLE_TEMPLATES: {
     senderKey: spaceInviteTemplate.sender,
     expectFrom: SUPPORT_FROM,
     rendered: spaceInviteTemplate.render({
-      spaceName: "Hogan Household",
-      inviterName: "Chris",
+      spaceName: "Example Household",
+      inviterName: "Jules",
       role: "MEMBER",
       inviteUrl: SPACE_INVITE_URL,
     }),
-    subject: (s) => s === "You've been invited to Hogan Household on Fourth Meridian",
+    subject: (s) => s === "You've been invited to Example Household on Fourth Meridian",
     content: [
-      { name: "names the inviter", ok: (t) => t.includes("Chris") },
-      { name: "names the Space", ok: (t) => t.includes("Hogan Household") },
+      { name: "names the inviter", ok: (t) => t.includes("Jules") },
+      { name: "names the Space", ok: (t) => t.includes("Example Household") },
       { name: "states the role (lowercased)", ok: (t) => t.includes("member") },
       { name: "contains the exact CTA link", ok: (t) => t.includes(SPACE_INVITE_URL) },
       { name: "carries no token (identity-gated acceptance)", ok: (t) => !t.includes("token=") },
@@ -180,18 +180,18 @@ check(
 // Full render: title + body + action link + the why-am-I-getting-this line.
 {
   const { subject, text, html } = notificationTemplate.render({
-    title: "We couldn't sync Chase",
+    title: "We couldn't sync Example Bank",
     body: "Your existing data is still available.",
     actionUrl: "https://app.fourthmeridian.com/dashboard/connections",
     category: "FINANCIAL",
     preferencesUrl: "https://app.fourthmeridian.com/dashboard/settings/notifications",
   });
-  check("subject is the notification title", subject === "We couldn't sync Chase");
+  check("subject is the notification title", subject === "We couldn't sync Example Bank");
   check("text carries the body", text.includes("Your existing data is still available."));
   check("text carries the action link (default label)", text.includes("View in Fourth Meridian:\nhttps://app.fourthmeridian.com/dashboard/connections"));
   check("text explains the preference provenance", /connection notification because email is turned on for Financial notifications/.test(text));
   check("footer links the real notification-settings page", text.includes("Manage notification settings: https://app.fourthmeridian.com/dashboard/settings/notifications"));
-  check("has an HTML part from the same blocks", typeof html === "string" && html.includes("We couldn&#39;t sync Chase"));
+  check("has an HTML part from the same blocks", typeof html === "string" && html.includes("We couldn&#39;t sync Example Bank"));
 }
 
 // Minimal render: title only — no dangling link line, no empty paragraphs.

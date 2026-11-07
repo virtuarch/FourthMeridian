@@ -16,6 +16,8 @@
  *   2. a UserSession row with that sessionToken exists and is not revoked;
  *   3. that row's userId EQUALS the token's id (ownership, not mere existence);
  *   4. the row's user exists, and its role is a known role;
+ *   5. the row's user is not DEACTIVATED and not SCHEDULED FOR DELETION
+ *      (`deactivatedAt` / `deletionScheduledAt` null — see "ACCOUNT LOCKOUT");
  * and the role AND the TOTP-enrolment requirement the application acts on are
  * the user's CURRENT state from the store (factsFromRow), never the token's
  * claims. (P1b: `requireTotpSetup` in the token is client-updatable through
@@ -33,6 +35,18 @@
  * granularity. A row missing either timestamp is malformed and refused. The
  * clock and both limits are injectable (`SessionLifetimePolicy`) so the rule is
  * provable with fixed clocks.
+ *
+ * ACCOUNT LOCKOUT. Deactivation (user, CS operator) and a deletion request set
+ * `deactivatedAt` (deletion also `deletionScheduledAt`) and THEN revoke every
+ * session as a separate, non-transactional step. A revoke that failed or was
+ * partial left those sessions live indefinitely — the row was never revoked,
+ * and the store proved them. The account state is now part of the proof:
+ * factsFromRow refuses a row whose user carries either timestamp, exactly as
+ * it refuses a revoked row (verdict "not-live"). It applies within the
+ * revocation cache's existing TTL (lib/session-cache.ts) — the same window a
+ * revoked row has, never a longer one. Reactivation / cancel-deletion clear the
+ * timestamps in authorize() BEFORE the new session row is minted, so a fresh
+ * login is proved live.
  *
  * FAILURE IS NOT TRUST. When the store cannot answer, the verdict is
  * INDETERMINATE (deny this request, keep the cookie — PROD-POOLER-AUTH-
@@ -81,7 +95,7 @@ export const SESSION_ROW_SELECT = {
   revokedAt:    true,
   createdAt:    true,
   lastActiveAt: true,
-  user:      { select: { id: true, role: true, totpEnabled: true } },
+  user:      { select: { id: true, role: true, totpEnabled: true, deactivatedAt: true, deletionScheduledAt: true } },
 } as const;
 
 /** SEC-010 — idle cut-off: no recorded activity for this long ⇒ the session is over. */
@@ -121,18 +135,101 @@ export function judgeSessionLifetime(
   return "LIVE";
 }
 
+/**
+ * LIVE SESSION — the ONE reporting definition of a "live" / "active" session,
+ * built from the SAME constants and the SAME comparisons `judgeSessionLifetime`
+ * and `factsFromRow` apply, so an operator count can never call a session live
+ * that the auth path would refuse (S3 finding, 2026-11-03: five-plus surfaces
+ * counted `revokedAt: null` alone, so idle / over-age rows read as live).
+ *
+ * A session is LIVE when ALL hold:
+ *   · not revoked                                   (`revokedAt` null);
+ *   · within the absolute lifetime                  (`now − createdAt    ≤ SESSION_ABSOLUTE_LIFETIME_MS`);
+ *   · within the idle timeout                       (`now − lastActiveAt ≤ SESSION_IDLE_TIMEOUT_MS`);
+ *   · the account is not locked out (ACCOUNT LOCKOUT, #291 — `deactivatedAt` and
+ *     `deletionScheduledAt` both null).
+ * The cut-offs are INCLUSIVE (`gte`) because judgeSessionLifetime expires only
+ * on a strict `>`: a row exactly at the limit is live on both paths.
+ *
+ * Census pin: lib/auth/live-session.test.ts — no userSession read outside this
+ * module may filter on a bare `revokedAt: null`.
+ */
+export function liveSessionCutoffs(now: Date, policy: Omit<SessionLifetimePolicy, "now"> = {}): { createdAfter: Date; activeAfter: Date } {
+  const t = now.getTime();
+  return {
+    createdAfter: new Date(t - (policy.absoluteMs    ?? SESSION_ABSOLUTE_LIFETIME_MS)),
+    activeAfter:  new Date(t - (policy.idleTimeoutMs ?? SESSION_IDLE_TIMEOUT_MS)),
+  };
+}
+
+/**
+ * The Prisma `where` (UserSessionWhereInput) for LIVE sessions, for counts,
+ * groupBys, aggregates and lists. `userWhere` narrows the owning user further
+ * (e.g. `{ role: "USER" }`) — it is merged with, never replaces, the lockout.
+ * Typed structurally so this module stays free of a Prisma import.
+ */
+export function liveSessionWhere<U extends object = Record<never, never>>(
+  now: Date,
+  extra: { userId?: string | { in: string[] }; userWhere?: U } = {},
+  policy: Omit<SessionLifetimePolicy, "now"> = {},
+) {
+  const { createdAfter, activeAfter } = liveSessionCutoffs(now, policy);
+  return {
+    ...(extra.userId !== undefined ? { userId: extra.userId } : {}),
+    revokedAt:    null,
+    createdAt:    { gte: createdAfter },
+    lastActiveAt: { gte: activeAfter },
+    // AUTH lockout (#291), deliberately both stamps — a session rule, NOT the Open-account population rule (lib/platform/customer/population.ts).
+    user:         { is: { ...(extra.userWhere ?? ({} as U)), deactivatedAt: null, deletionScheduledAt: null } },
+  };
+}
+
+/**
+ * The pure predicate over an in-memory row — same rule as liveSessionWhere.
+ * STRICT like factsFromRow: the owning user's lockout stamps must be present.
+ */
+export function isSessionLive(
+  row: { revokedAt?: unknown; createdAt?: unknown; lastActiveAt?: unknown;
+         user?: { deactivatedAt?: unknown; deletionScheduledAt?: unknown } | null },
+  now: Date,
+  policy: Omit<SessionLifetimePolicy, "now"> = {},
+): boolean {
+  if (!row || row.revokedAt !== null) return false;
+  if (judgeSessionLifetime(row, { ...policy, now: () => now.getTime() }) !== "LIVE") return false;
+  const user = row.user;
+  if (!user || typeof user !== "object") return false;
+  return user.deactivatedAt === null && user.deletionScheduledAt === null;
+}
+
+/**
+ * For a SESSION LIST (a user's own devices, or an admin's view of one user's):
+ * the row's own state, without the account lockout (that is a user-level fact
+ * the list's owner shows elsewhere). An unrevoked row past its lifetime is
+ * EXPIRED_NOT_REVOKED — it can no longer authenticate, and it is shown apart
+ * from live sessions rather than hidden or miscounted.
+ */
+export type SessionDisplayState = "LIVE" | "EXPIRED_NOT_REVOKED" | "REVOKED";
+export function sessionDisplayState(
+  row: { revokedAt?: unknown; createdAt?: unknown; lastActiveAt?: unknown },
+  now: Date,
+): SessionDisplayState {
+  if (row.revokedAt !== null && row.revokedAt !== undefined) return "REVOKED";
+  return judgeSessionLifetime(row, { now: () => now.getTime() }) === "LIVE" ? "LIVE" : "EXPIRED_NOT_REVOKED";
+}
+
 export interface SessionRowLike {
   userId?:       unknown;
   revokedAt?:    unknown;
   createdAt?:    unknown;
   lastActiveAt?: unknown;
-  user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown } | null;
+  user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown; deactivatedAt?: unknown; deletionScheduledAt?: unknown } | null;
 }
 
 /**
  * The facts a live session row proves, or null when it proves nothing:
- * absent, revoked, ownerless, inconsistent, carrying an unknown role, or past
- * its idle / absolute lifetime (SEC-010).
+ * absent, revoked, ownerless, inconsistent, carrying an unknown role, past
+ * its idle / absolute lifetime (SEC-010), or owned by a deactivated /
+ * deletion-scheduled account (ACCOUNT LOCKOUT).
  * Never throws — a malformed row is a refusal, not an exception.
  */
 export async function factsFromRow(
@@ -149,6 +246,15 @@ export async function factsFromRow(
   if (user.id !== row.userId) return null;
   if (typeof user.role !== "string" || !KNOWN_ROLES.includes(user.role)) return null;
   if (typeof user.totpEnabled !== "boolean") return null;
+  // ACCOUNT LOCKOUT — a deactivated or deletion-scheduled account proves no
+  // session, revoked or not. STRICT, like every other fact here: both keys must
+  // be PRESENT (SESSION_ROW_SELECT selects them) and each must be null or a Date.
+  // A row without them is malformed and refused — the lockout is never the one
+  // fact that fails open.
+  if (!("deactivatedAt" in user) || !("deletionScheduledAt" in user)) return null;
+  const isLockStamp = (v: unknown) => v === null || v instanceof Date;
+  if (!isLockStamp(user.deactivatedAt) || !isLockStamp(user.deletionScheduledAt)) return null;
+  if (user.deactivatedAt !== null || user.deletionScheduledAt !== null) return null;
   return {
     userId:           row.userId,
     role:             user.role,

@@ -2,7 +2,7 @@
 
 ## 1. Baseline gate (before any change)
 
-`npm run ci` (scripts/ci-local.ts: clean depth-1 copy of committed HEAD, throwaway `postgres:16`, Node 24.21.0) on `cde8fa0e25d2c744933109b41611d1dd65a1f9a8`, run 2026-10-22 from `/Users/chrstn/dev/FourthMeridian-remediation/base`. Log: `/Users/chrstn/dev/FourthMeridian-remediation/baseline-ci.log`.
+`npm run ci` (scripts/ci-local.ts: clean depth-1 copy of committed HEAD, throwaway `postgres:16`, Node 24.21.0) on `cde8fa0e25d2c744933109b41611d1dd65a1f9a8`, run 2026-10-22 from `/Users/devuser/dev/FourthMeridian-remediation/base`. Log: `/Users/devuser/dev/FourthMeridian-remediation/baseline-ci.log`.
 
 | Job | Step | Result |
 |---|---|---|
@@ -32,7 +32,7 @@ Filled at integration from `agent-reports/*.md` and re-run by the orchestrator o
 
 App production build: `npm run build` (prisma generate + `next build`, Next 16.3.8 Turbopack) on `01098bd` — **compiled successfully, 0 warnings**; 185 API routes; `/dashboard/credit` and `/api/plaid/sync` absent (log `…-remediation/build.log`).
 
-Green run at `4834697` (log `/Users/chrstn/dev/FourthMeridian-remediation/integration1e-ci.log`):
+Green run at `4834697` (log `/Users/devuser/dev/FourthMeridian-remediation/integration1e-ci.log`):
 
 | Job | Step | Result |
 |---|---|---|

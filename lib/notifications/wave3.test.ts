@@ -165,7 +165,7 @@ const itemClient: PlaidItemReadClient = {
   plaidItem: {
     async findUnique({ where }) {
       return where.id === "item_1"
-        ? { userId: "u1", institutionName: "Chase" }
+        ? { userId: "u1", institutionName: "Example Bank" }
         : null;
     },
   },
@@ -224,7 +224,7 @@ console.log("Wave 2 builders");
     id: "inv_1",
     status: "ACCEPTED",
     invitedById: "u_inviter",
-    space: { name: "Hogan Family" },
+    space: { name: "Example Family" },
     invitedUser: { name: "New Member", username: "newbie" },
   };
   const input = buildInviteAcceptedInput("space_1", "u_joiner", invite);
@@ -233,7 +233,7 @@ console.log("Wave 2 builders");
   check(
     "accepted: pointer contract honored (inviteId, spaceName, memberName)",
     input?.data?.inviteId === "inv_1" &&
-      input?.data?.spaceName === "Hogan Family" &&
+      input?.data?.spaceName === "Example Family" &&
       input?.data?.memberName === "@newbie",
   );
   check(
@@ -252,10 +252,10 @@ console.log("Wave 2 builders");
   );
 }
 {
-  const input = buildMemberRemovedInput("space_1", "u_removed", "u_admin", "Hogan Family");
+  const input = buildMemberRemovedInput("space_1", "u_removed", "u_admin", "Example Family");
   check("removed: maps to MEMBER_REMOVED", input?.type === "MEMBER_REMOVED");
   check("removed: recipient is the REMOVED user", input?.userId === "u_removed");
-  check("removed: carries the Space name", input?.data?.spaceName === "Hogan Family");
+  check("removed: carries the Space name", input?.data?.spaceName === "Example Family");
   check(
     "removed: self-removal → guard declines (MemberLeft territory)",
     buildMemberRemovedInput("space_1", "u_x", "u_x", "S") === null,
@@ -263,12 +263,12 @@ console.log("Wave 2 builders");
 }
 {
   const payload = { targetUserId: "u_target", oldRole: "MEMBER", newRole: "ADMIN" };
-  const input = buildRoleChangedInput("space_1", payload, "u_owner", "Hogan Family");
+  const input = buildRoleChangedInput("space_1", payload, "u_owner", "Example Family");
   check("roleChanged: maps to MEMBER_ROLE_CHANGED", input?.type === "MEMBER_ROLE_CHANGED");
   check("roleChanged: recipient is the TARGET user", input?.userId === "u_target");
   check(
     "roleChanged: pointer contract honored (spaceName, oldRole, newRole)",
-    input?.data?.spaceName === "Hogan Family" && input?.data?.oldRole === "MEMBER" && input?.data?.newRole === "ADMIN",
+    input?.data?.spaceName === "Example Family" && input?.data?.oldRole === "MEMBER" && input?.data?.newRole === "ADMIN",
   );
   check(
     "roleChanged: self-directed change → guard declines",
@@ -348,7 +348,7 @@ async function run(): Promise<void> {
   {
     // Defaults: SPACES in-app on, email off → row, no delivery.
     const { writeClient, rows, deliveries } = makeStore({ u_removed: "u@example.com" });
-    const input = buildMemberRemovedInput("space_1", "u_removed", "u_admin", "Hogan Family");
+    const input = buildMemberRemovedInput("space_1", "u_removed", "u_admin", "Example Family");
     const res = await createNotification(input!, { client: writeClient, prefClient: prefsWith([]) });
     check("chokepoint creates the row from a builder input", res.status === "created" && rows.length === 1);
     check("registry drives category/priority", rows[0]?.data.category === "SPACES" && rows[0]?.data.priority === "NORMAL");
@@ -387,7 +387,7 @@ async function run(): Promise<void> {
       "condition key + owner + institution from the item row",
       store.rows[0].dedupeKey === "SYNC_FAILED:item:item_1:open" &&
         store.rows[0].userId === "u1" &&
-        (store.rows[0].data.title as string).includes("Chase"),
+        (store.rows[0].data.title as string).includes("Example Bank"),
     );
 
     // …then by the manual refresh route, then by tomorrow's cron: suppressed.
@@ -443,7 +443,7 @@ async function run(): Promise<void> {
     const store = makeStore();
     const sent: string[] = [];
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       {
         client: store.writeClient,
         prefClient: prefsWith([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]),
@@ -458,7 +458,7 @@ async function run(): Promise<void> {
     // FINANCIAL in-app AND email off → nothing at all (the email preference decides the email).
     const store = makeStore();
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       { client: store.writeClient, prefClient: prefsWith([
         { category: "FINANCIAL", channel: "IN_APP", enabled: false },
         { category: "FINANCIAL", channel: "EMAIL", enabled: false },
@@ -470,7 +470,7 @@ async function run(): Promise<void> {
     // SYNC_FAILED defaults email ON (actionable) — delivery row via fake adapter.
     const store = makeStore();
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       {
         client: store.writeClient,
         prefClient: noPrefs,

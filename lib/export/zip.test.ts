@@ -41,7 +41,7 @@ function fixture(over: Partial<ExportData> & { files: string[] }): ExportData {
     transactions: [], holdings: [], snapshots: [],
     // W2 — the goals section was deleted from ExportData (Goals retired).
     creditHistory: [], auditHistory: [],
-    imports: { batches: [], mappingProfiles: [] }, aiAdvice: [], aiMemory: [], dailyBriefs: [],
+    imports: { batches: [], mappingProfiles: [] }, aiAdvice: [], aiMemory: [], dailyBriefs: [], syncIncidents: { live: [], archived: [] },
     ...rest,
   } as ExportData;
 }
@@ -59,7 +59,7 @@ async function main() {
   const lean = fixture({
     files: ["manifest.json", "data.json", "transactions.csv", "accounts.csv"],
     transactions: [{ id: "t1", accountId: "a1", spaceId: "s1", date: "2026-03-01", merchant: "X", description: "", category: "Dining", amount: -1, pending: false, currency: "USD" }] as unknown as ExportData["transactions"],
-    accounts: [{ id: "a1", name: "Checking", type: "checking", institution: "Chase", balance: 1, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" }] as unknown as ExportData["accounts"],
+    accounts: [{ id: "a1", name: "Checking", type: "checking", institution: "Example Bank", balance: 1, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" }] as unknown as ExportData["accounts"],
   });
   const leanNames = await namesOf(lean);
   check("always includes manifest.json + data.json", leanNames.includes("manifest.json") && leanNames.includes("data.json"));
@@ -70,7 +70,7 @@ async function main() {
   // With holdings present, holdings.csv ships.
   const withHoldings = fixture({
     files: ["manifest.json", "data.json", "holdings.csv"],
-    holdings: [{ id: "h1", accountId: "a2", symbol: "VTI", name: "Vanguard", quantity: 1, price: 1, value: 1, change24h: 0, isCash: false, currency: "USD", spaceId: "s1" }] as unknown as ExportData["holdings"],
+    holdings: [{ id: "h1", accountId: "a2", symbol: "VTI", name: "Institution B", quantity: 1, price: 1, value: 1, change24h: 0, isCash: false, currency: "USD", spaceId: "s1" }] as unknown as ExportData["holdings"],
   });
   const holdNames = await namesOf(withHoldings);
   check("includes holdings.csv when present", holdNames.includes("holdings.csv"));

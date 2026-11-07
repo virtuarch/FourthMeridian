@@ -216,7 +216,7 @@ export function jobLegend(view: JobCadenceView): CadenceLegendItem[] {
   ];
 }
 
-/** "Platform default" · "Override set 13 Sep 2026, 18:32 UTC by Chris" · "Default in force — stored override is invalid". */
+/** "Platform default" · "Override set 13 Sep 2026, 18:32 UTC by Jules" · "Default in force — stored override is invalid". */
 export function refreshProvenance(view: RefreshPolicyView, formatDate: (iso: string) => string): string {
   switch (view.effective.origin) {
     case "DEFAULT": return "Platform default";

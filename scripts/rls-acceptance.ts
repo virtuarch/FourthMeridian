@@ -30,6 +30,7 @@ import { randomBytes }             from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir }                  from "node:os";
 import { join }                    from "node:path";
+import { ACL_QUERY, diffAcl, parseAcl, renderRegrant } from "./lib/acl-core";
 
 const KEEP  = process.argv.includes("--keep");
 /**
@@ -372,8 +373,17 @@ async function main(): Promise<void> {
   // ── fm_auth: the pre-identity role must not be a way to reach money ───────
   authSurfaceProof(base);
 
+  // ── PB-1 Phase 1: the incident lifecycle tables are operator-only ─────────
+  incidentAclProof(base, appUrl);
+
+  // ── DB-010: AuditLog is append-only for the runtime operator role ─────────
+  auditLogAppendOnlyProof(base, appUrl);
+
   // ── backup completeness, and the failure mode it guards ───────────────────
-  backupProof(base, appUrl);
+  const dumpFile = backupProof(base, appUrl);
+
+  // ── DR: grants after a restore ─────────────────────────────────────────────
+  regrantProof(base, appUrl, dumpFile);
 
   if (TARGET_URL) psql(base, FIXTURE_CLEANUP, false);
 
@@ -467,6 +477,151 @@ function censusProof(ownerUrl: string): void {
  * fm_auth was never granted cannot be reached even if a policy is later written
  * carelessly. Absence of privilege outlives correctness of predicate.
  */
+/**
+ * Cases 42-48 — PB-1 Phase 1 (migration 20261103120000). The incident lifecycle
+ * data is OPERATOR-ONLY: tenants (fm_app) and the pre-identity role (fm_auth) can
+ * reach none of the new tables or the new SyncIssue columns; fm_system's event
+ * log is append-only and cannot be backdated; fm_backup can read for dumps.
+ */
+function incidentAclProof(ownerUrl: string, appUrl: string): void {
+  const NEW_TABLES = ["SyncIssueEvent", "SyncIssueArchive", "SyncIssueRelation"];
+  const NEW_SYNCISSUE_COLS = ["subjectUserId", "resolutionEvidence", "causeCode", "lifecycleState", "resolvedById"];
+
+  const authPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${authPw}';`);
+  const authUrl = withRole(ownerUrl, "fm_auth", authPw);
+  const sysPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_system LOGIN PASSWORD '${sysPw}';`);
+  const sysUrl = withRole(ownerUrl, "fm_system", sysPw);
+  const bkPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_backup LOGIN PASSWORD '${bkPw}';`);
+  const bkUrl = withRole(ownerUrl, "fm_backup", bkPw);
+
+  const reachable = (url: string, role: string) => NEW_TABLES.flatMap((t) => {
+    const r = role === "fm_app" ? asApp(url, "alice", `select count(*) from "${t}";`) : psql(url, `select count(*) from "${t}";`, false);
+    return deniedByGrant(r) ? [] : [`${t} (${r.err.split("\n")[0] || `returned ${r.out}`})`];
+  });
+  const appReach = reachable(appUrl, "fm_app");
+  check(42, "fm_app (tenant) cannot read ANY incident lifecycle table", appReach.length === 0, `reachable: ${appReach.join("; ")}`);
+  const authReach = reachable(authUrl, "fm_auth");
+  check(43, "fm_auth (pre-identity) cannot read ANY incident lifecycle table", authReach.length === 0, `reachable: ${authReach.join("; ")}`);
+
+  const colReach = NEW_SYNCISSUE_COLS.flatMap((c) => {
+    const r = asApp(appUrl, "alice", `select "${c}" from "SyncIssue" limit 1;`);
+    return deniedByGrant(r) ? [] : [`${c} (${r.err.split("\n")[0] || "readable"})`];
+  });
+  check(44, `fm_app cannot read the new SyncIssue columns (${NEW_SYNCISSUE_COLS.length} probed)`, colReach.length === 0, `readable: ${colReach.join("; ")}`);
+
+  // fm_system: append-only, DB-timestamped event log.
+  const id = `rls_evt_${randomBytes(4).toString("hex")}`;
+  const ins = psql(sysUrl, `insert into "SyncIssueEvent" (id, "incidentId", type, "actorKind") values ('${id}', 'rls_inc', 'OBSERVED', 'SYSTEM');`, false);
+  check(45, "fm_system can append an incident event (at is DB-generated)", ins.ok, ins.err.split("\n")[0]);
+  const upd = psql(sysUrl, `update "SyncIssueEvent" set type = 'NOTE_CODE' where id = '${id}';`, false);
+  check(46, "fm_system can NOT update an incident event (append-only)", deniedByGrant(upd), upd.err.split("\n")[0] || "update succeeded");
+  const back = psql(sysUrl, `insert into "SyncIssueEvent" (id, "incidentId", at, type, "actorKind") values ('${id}_b', 'rls_inc', '2000-01-01', 'OBSERVED', 'SYSTEM');`, false);
+  check(47, "fm_system can NOT supply `at` (no backdating)", deniedByGrant(back), back.err.split("\n")[0] || "backdated insert succeeded");
+
+  const bkReach = NEW_TABLES.flatMap((t) => { const r = psql(bkUrl, `select count(*) from "${t}";`, false); return r.ok ? [] : [`${t} (${r.err.split("\n")[0]})`]; });
+  check(48, "fm_backup CAN read every incident lifecycle table (complete dumps)", bkReach.length === 0, `denied: ${bkReach.join("; ")}`);
+
+  psql(ownerUrl, `delete from "SyncIssueEvent" where id like 'rls_evt_%';`, false);
+}
+
+/**
+ * Cases 49-56 — DB-010 / PRIV-005 (migration 20261103140000). AuditLog is
+ * append-only at the database for fm_system: UPDATE reaches only the three
+ * minimisation columns, and only on BETA_ACCESS_REQUESTED rows older than 90
+ * days whose post-image is minimised; DELETE reaches only product events older
+ * than 13 months. fm_app / fm_auth stay without UPDATE or DELETE, and the
+ * account purge's FK SET NULL still works. Design: docs/operations/database-safety.md §4e.
+ */
+function auditLogAppendOnlyProof(ownerUrl: string, appUrl: string): void {
+  const sysPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_system LOGIN PASSWORD '${sysPw}';`);
+  const sysUrl = withRole(ownerUrl, "fm_system", sysPw);
+  const authPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${authPw}';`);
+  const authUrl = withRole(ownerUrl, "fm_auth", authPw);
+
+  const CLEANUP = `delete from "AuditLog" where id like 'rls_al_%'; delete from "User" where id = 'rls_al_user';`;
+  psql(ownerUrl, CLEANUP, false);
+  // Fixtures, as the OWNER (RLS does not apply to setup). Ages are relative to now().
+  const seed = psql(ownerUrl, `
+    insert into "AuditLog" (id, action, metadata, "ipAddress", "userAgent", "createdAt") values
+      ('rls_al_login_fresh', 'LOGIN',                 '{"k":"orig"}'::jsonb, 'probe-net-1', 'UA/1', now()),
+      ('rls_al_beta_aged',   'BETA_ACCESS_REQUESTED', '{"k":"orig"}'::jsonb, 'probe-net-2', 'UA/1', now() - interval '91 days'),
+      ('rls_al_beta_aged2',  'BETA_ACCESS_REQUESTED', '{"k":"orig"}'::jsonb, 'probe-net-3', 'UA/1', now() - interval '91 days'),
+      ('rls_al_sad_fresh',   'SESSION_ACTIVE_DAY',    null, null, null, now()),
+      ('rls_al_login_old',   'LOGIN',                 null, null, null, now() - interval '14 months'),
+      ('rls_al_sad_old',     'SESSION_ACTIVE_DAY',    null, null, null, now() - interval '14 months');
+    insert into "User" (id, email, name, "updatedAt") values ('rls_al_user', 'rls-al@example.test', 'Audit Probe', now());
+    insert into "AuditLog" (id, "userId", action) values ('rls_al_user_1', 'rls_al_user', 'LOGIN'), ('rls_al_user_2', 'rls_al_user', 'SESSION_ACTIVE_DAY');`);
+  if (!seed.ok) {
+    for (const n of [49, 50, 51, 52, 53, 54, 55, 56]) check(n, "DB-010 AuditLog fixtures could be seeded", false, seed.err.split("\n")[0]);
+    return;
+  }
+  const owner = (q: string) => psql(ownerUrl, q, false).out.trim();
+  /** Affected-row count of a write, as fm_system (RETURNING needs only the SELECT policy). */
+  const sysCount = (stmt: string) => psql(sysUrl, `with w as (${stmt} returning 1) select count(*) from w;`, false);
+
+  // 49 — the column grant: identity / classification / time columns are immutable.
+  const immut = [`set action = 'TAMPERED'`, `set "userId" = null`, `set "createdAt" = now()`].map((set) => {
+    const r = psql(sysUrl, `update "AuditLog" ${set} where id = 'rls_al_login_fresh';`, false);
+    return deniedByGrant(r) ? null : `${set}: ${r.err.split("\n")[0] || "succeeded"}`;
+  }).filter(Boolean);
+  check(49, "fm_system can NOT update action / userId / createdAt on AuditLog (column grant)", immut.length === 0, immut.join("; "));
+
+  // 50 — a granted column on a row outside the minimisation predicate: 0 rows, unchanged.
+  const r50 = sysCount(`update "AuditLog" set metadata = '{"k":"tampered"}'::jsonb where id = 'rls_al_login_fresh'`);
+  const m50 = owner(`select metadata->>'k' from "AuditLog" where id = 'rls_al_login_fresh';`);
+  check(50, "fm_system UPDATE of metadata on a fresh non-intake row — 0 rows, the row unchanged",
+        r50.ok && r50.out === "0" && m50 === "orig", `count=${r50.out || r50.err.split("\n")[0]} metadata.k=${m50}`);
+
+  // 51 — the minimisation itself: a 91-day-old intake row, post-image minimised.
+  const r51 = sysCount(`update "AuditLog" set "ipAddress" = null, "userAgent" = null, metadata = '{"k":"orig","networkMinimisedAt":"x"}'::jsonb where id = 'rls_al_beta_aged'`);
+  const p51 = owner(`select coalesce("ipAddress",'-') || '|' || coalesce("userAgent",'-') from "AuditLog" where id = 'rls_al_beta_aged';`);
+  check(51, "fm_system minimises a 91-day-old BETA_ACCESS_REQUESTED row (ipAddress, userAgent → NULL) — 1 row",
+        r51.ok && r51.out === "1" && p51 === "-|-", `count=${r51.out || r51.err.split("\n")[0]} post=${p51}`);
+
+  // 52 — WITH CHECK: the post-image must be minimised.
+  const r52 = psql(sysUrl, `update "AuditLog" set "userAgent" = null where id = 'rls_al_beta_aged2';`, false);
+  const p52 = owner(`select "ipAddress" || '|' || coalesce("userAgent",'-') from "AuditLog" where id = 'rls_al_beta_aged2';`);
+  check(52, "fm_system UPDATE of an aged intake row leaving ipAddress non-null — rejected by WITH CHECK",
+        deniedByRls(r52) && p52 === "probe-net-3|UA/1", `${r52.err.split("\n")[0] || "update succeeded"} post=${p52}`);
+
+  // 53 — DELETE outside the retention predicate: fresh product event, aged non-product event.
+  const d53a = sysCount(`delete from "AuditLog" where id = 'rls_al_sad_fresh'`);
+  const d53b = sysCount(`delete from "AuditLog" where id = 'rls_al_login_old'`);
+  const left53 = owner(`select count(*) from "AuditLog" where id in ('rls_al_sad_fresh', 'rls_al_login_old');`);
+  check(53, "fm_system DELETE of a fresh SESSION_ACTIVE_DAY row and a 14-month-old LOGIN row — 0 rows each",
+        d53a.ok && d53a.out === "0" && d53b.ok && d53b.out === "0" && left53 === "2",
+        `fresh=${d53a.out || d53a.err.split("\n")[0]} oldLogin=${d53b.out || d53b.err.split("\n")[0]} surviving=${left53}`);
+
+  // 54 — the retention itself.
+  const d54 = sysCount(`delete from "AuditLog" where id = 'rls_al_sad_old'`);
+  const left54 = owner(`select count(*) from "AuditLog" where id = 'rls_al_sad_old';`);
+  check(54, "fm_system DELETE of a 14-month-old SESSION_ACTIVE_DAY row — 1 row",
+        d54.ok && d54.out === "1" && left54 === "0", `count=${d54.out || d54.err.split("\n")[0]} surviving=${left54}`);
+
+  // 55 — regression: the tenant and pre-identity roles still have no UPDATE / DELETE.
+  const probes55: Array<[string, { err: string }]> = [
+    ["fm_app UPDATE", asApp(appUrl, "alice", `update "AuditLog" set metadata = null where id = 'rls_al_login_fresh';`)],
+    ["fm_app DELETE", asApp(appUrl, "alice", `delete from "AuditLog" where id = 'rls_al_login_fresh';`)],
+    ["fm_auth UPDATE", psql(authUrl, `update "AuditLog" set metadata = null where id = 'rls_al_login_fresh';`, false)],
+    ["fm_auth DELETE", psql(authUrl, `delete from "AuditLog" where id = 'rls_al_login_fresh';`, false)],
+  ];
+  const open55 = probes55.filter(([, r]) => !deniedByGrant(r)).map(([k, r]) => `${k}: ${r.err.split("\n")[0] || "succeeded"}`);
+  check(55, "fm_app / fm_auth can NOT update or delete AuditLog (permission denied, unchanged)", open55.length === 0, open55.join("; "));
+
+  // 56 — the account purge's FK path: ON DELETE SET NULL still anonymises, rows survive.
+  const del56 = psql(ownerUrl, `delete from "User" where id = 'rls_al_user';`, false);
+  const left56 = owner(`select count(*) || '|' || count("userId") from "AuditLog" where id in ('rls_al_user_1', 'rls_al_user_2');`);
+  check(56, "migration principal DELETEs a User with audit rows — the rows survive with userId NULL (FK SET NULL)",
+        del56.ok && left56 === "2|0", `${del56.err.split("\n")[0] || "deleted"} rows|withUserId=${left56}`);
+
+  psql(ownerUrl, CLEANUP, false);
+}
+
 function authSurfaceProof(ownerUrl: string): void {
   const pw = randomBytes(18).toString("hex");
   psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${pw}';`);
@@ -511,7 +666,7 @@ function authSurfaceProof(ownerUrl: string): void {
  * So we prove BOTH directions: fm_backup produces a complete dump, and fm_app
  * demonstrably does not.
  */
-function backupProof(ownerUrl: string, appUrl: string): void {
+function backupProof(ownerUrl: string, appUrl: string): string | null {
   const live = Number(psql(ownerUrl, `select count(*) from "Transaction";`).out);
   const dir  = mkdtempSync(join(tmpdir(), "fm-rls-dump-"));
   workdir = dir;
@@ -543,6 +698,48 @@ function backupProof(ownerUrl: string, appUrl: string): void {
   check(29, "A dump taken as fm_app is REFUSED or silently partial — never complete",
         !b.ok || badRows < live,
         `live=${live}, in dump=${badRows} — a complete dump by the runtime role would mean RLS is not binding it`);
+  return g.ok ? good : null;
+}
+
+/**
+ * Cases 38-41 — DR: a restore from our --no-privileges backup carries NO GRANTs and
+ * its ledger is already at head, so nothing re-grants; `db:regrant` (scripts/lib/
+ * acl-core.ts) re-establishes them from this freshly migrated database as the
+ * reference (database-safety §4c, backup-restore-verification §4 step 3).
+ */
+function regrantProof(ownerUrl: string, appUrl: string, dumpFile: string | null): void {
+  if (!dumpFile) { check(38, "DR regrant: a complete dump to restore exists", false, "case 28 produced no dump"); return; }
+  const refName = new URL(ownerUrl).pathname.slice(1);
+  const rsName  = `${refName}_rg`;
+  const rsOwner = (() => { const u = new URL(ownerUrl); u.pathname = `/${rsName}`; return u.toString(); })();
+  const rsApp   = (() => { const u = new URL(appUrl);   u.pathname = `/${rsName}`; return u.toString(); })();
+  psql(ownerUrl, `DROP DATABASE IF EXISTS ${rsName};`, false);
+  const created = psql(ownerUrl, `CREATE DATABASE ${rsName};`, false);
+  if (!created.ok) { check(38, "DR regrant: scratch restore database created", false, created.err.split("\n")[0]); return; }
+  try {
+    const dumpSql = readFileSync(dumpFile, "utf8").split("\n").filter((l) => !l.startsWith("SET transaction_timeout")).join("\n");
+    const restored = psql(rsOwner, dumpSql, true);
+    const denied = asApp(rsApp, null, `select count(*) from "Instrument";`);
+    check(38, "DR: a --no-privileges restore leaves fm_app WITHOUT its grants (permission denied)",
+          restored.ok && deniedByGrant(denied), restored.ok ? denied.err.split("\n")[0] || "query succeeded" : restored.err.split("\n")[0]);
+
+    // A failed catalog read must fail the case, never read as "nothing missing".
+    const aclOf = (url: string) => { const r = psql(url, ACL_QUERY); if (!r.ok) throw new Error(`ACL query failed: ${r.err.split("\n")[0]}`); return parseAcl(r.out); };
+    const before = diffAcl(aclOf(ownerUrl), aclOf(rsOwner));
+    check(39, "DR: the regrant diff finds the missing privileges and no extra ones",
+          before.missing.length > 0 && before.extra.length === 0, `missing=${before.missing.length}, extra=${before.extra.length}`);
+
+    const applied = psql(rsOwner, ["BEGIN;", ...renderRegrant(before), "COMMIT;"].join("\n"), true);
+    const after = diffAcl(aclOf(ownerUrl), aclOf(rsOwner));
+    check(40, "DR: after applying the regrant the restore matches the reference exactly",
+          applied.ok && after.missing.length === 0 && after.extra.length === 0,
+          applied.ok ? `missing=${after.missing.length}, extra=${after.extra.length}` : applied.err.split("\n")[0]);
+
+    const ok = asApp(rsApp, null, `select count(*) from "Instrument";`);
+    check(41, "DR: fm_app can read reference data on the regranted restore", ok.ok, ok.err.split("\n")[0]);
+  } finally {
+    psql(ownerUrl, `DROP DATABASE IF EXISTS ${rsName} WITH (FORCE);`, false);
+  }
 }
 
 /**

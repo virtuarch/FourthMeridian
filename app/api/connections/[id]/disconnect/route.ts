@@ -91,7 +91,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     data: {
       userId:    user.id,
       action:    AuditAction.CONNECTION_DISCONNECTED,
-      metadata:  { institution, provider, accountCount: result.disconnectedAccountIds.length },
+      // PB-5 — `connectionId` names the connection, so Platform Ops' Removed
+      // list attributes this removal to the customer exactly rather than by
+      // owner + time proximity (rows written before it carry only the label).
+      metadata:  { institution, provider, accountCount: result.disconnectedAccountIds.length, connectionId: id },
       ipAddress: getClientIp(req),
     },
   }));

@@ -8,7 +8,7 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/repair-transfer-debt-payment.resync.test.ts
  *
- * Setup: a first sync persists the Amex-pull pair; the rows are then put back in
+ * Setup: a first sync persists the Example Card-pull pair; the rows are then put back in
  * the PRE-v2.7 shape the Production rows carry (classifier DEBT_PAYMENT/Payment,
  * PLAID_PFC_PRIMARY 0.8, v5) — the state the repair exists to fix — and the
  * repair is applied. Every scenario then re-syncs and asserts the row is still
@@ -59,7 +59,7 @@ async function world() {
   return { fake, client };
 }
 
-const NAME = "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER";
+const NAME = "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER";
 const LP: [string, string] = ["LOAN_PAYMENTS", "LOAN_PAYMENTS_OTHER_PAYMENT"];
 const ptx = (id: string, acct: string, amount: number, pfc: [string, string], name: string, over: R = {}) => ({
   transaction_id: id, account_id: acct, amount, date: "2026-10-23", authorized_date: "2026-10-23",

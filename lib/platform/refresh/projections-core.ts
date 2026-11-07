@@ -54,6 +54,8 @@ import type {
   ProjectionEnvelope,
 } from "@/lib/platform/refresh/types";
 import type { OperationalTier } from "@/lib/platform/history/types";
+// PB-7 — a reaped (stale) execution a later success for the same source superseded reads RECOVERED.
+import { recoveredExecutionIds } from "@/lib/platform/refresh/recovery-core";
 
 // ── Shared helpers (pure) ───────────────────────────────────────────────────────
 
@@ -120,6 +122,8 @@ export interface RefreshSummaryCore {
   byTrigger: Record<string, number>;
   byProfile: Record<string, number>;
   openExecutions: number;
+  /** PB-7 — FAILED rows that are reaped executions a later success superseded (still inside byStatus.FAILED). */
+  recovered: number;
   withParentJob: number;
   meanDurationMs: number | null;
   maxDurationMs: number | null;
@@ -169,6 +173,7 @@ export function buildRefreshSummary(
     byTrigger: tally(executions.map((e) => e.trigger)),
     byProfile: tally(executions.map((e) => e.profile)),
     openExecutions: countOpenExecutions(executions),
+    recovered: recoveredExecutionIds(executions).size,
     withParentJob: executions.filter((e) => e.parentJobRunId != null).length,
     meanDurationMs: meanOrNull(durations),
     maxDurationMs: maxOrNull(durations),
@@ -372,8 +377,10 @@ export function buildPipelineStatus(
       };
     })
     .sort((a, b) => a.network.localeCompare(b.network));
+  // PB-7 — a reaped execution a later success superseded is not a failure to list.
+  const recovered = recoveredExecutionIds(executions);
   const latestFailures = executions
-    .filter((e) => e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL")
+    .filter((e) => (e.overallStatus === "FAILED" || e.overallStatus === "PARTIAL") && !recovered.has(e.id))
     .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime() || (a.id < b.id ? 1 : -1))
     .slice(0, Math.max(0, failuresLimit));
   return {
@@ -382,6 +389,7 @@ export function buildPipelineStatus(
     kinds,
     networks,
     openExecutions: countOpenExecutions(executions),
+    recovered: recovered.size,
     latestFailures,
     tier: tierFor(executions.length, false),
   };
@@ -535,6 +543,8 @@ export function buildRefreshDailySeries(
   opts: { todayISO: string; capHit: boolean },
 ): RefreshDailySeriesCore {
   const byDay = groupBy(executions, (e) => utcDayOf(e.startedAt));
+  // PB-7 — judged over the WHOLE loaded set (the superseding success may start on a later day).
+  const recoveredIds = recoveredExecutionIds(executions);
   const loadedDays = [...byDay.keys()].sort();
   const oldestLoaded = opts.capHit && loadedDays.length ? loadedDays[0] : null;
 
@@ -547,7 +557,9 @@ export function buildRefreshDailySeries(
     const byStatus: Record<RefreshDailyStatus, number> = { SUCCEEDED: 0, PARTIAL: 0, FAILED: 0, SKIPPED: 0, RUNNING: 0 };
     const bySourceKind: Record<RefreshDailySourceKind, number> = { PLAID_ITEM: 0, WALLET: 0 };
     let admissionDenied = 0;
+    let recovered = 0;
     for (const r of rows) {
+      if (recoveredIds.has(r.id)) recovered += 1;
       if (r.overallStatus in byStatus) byStatus[r.overallStatus as RefreshDailyStatus] += 1;
       if (r.sourceKind in bySourceKind) bySourceKind[r.sourceKind as RefreshDailySourceKind] += 1;
       if (r.admissionReason != null) admissionDenied += 1;
@@ -555,7 +567,7 @@ export function buildRefreshDailySeries(
 
     const partial = oldestLoaded !== null && day === oldestLoaded;
     const settled = day < opts.todayISO && countOpenExecutions(rows) === 0 && !partial;
-    days.push({ day, total: rows.length, byStatus, bySourceKind, admissionDenied, settled });
+    days.push({ day, total: rows.length, byStatus, bySourceKind, admissionDenied, recovered, settled });
   }
 
   return {

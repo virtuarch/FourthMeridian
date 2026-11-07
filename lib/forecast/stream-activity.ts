@@ -7,12 +7,12 @@
  *
  * ── The two facts that are not one fact ─────────────────────────────────────
  * FORECAST-1 answers WHEN a stream would occur if it continues. It is a
- * calendar, and a calendar cannot know the job ended. Asked for September 2026,
+ * calendar, and a calendar cannot know the payments stopped. Asked for September 2026,
  * it will happily produce the 10th and the 25th for a payroll whose last
  * payment was in December.
  *
- *   Abacus payroll · 35 observations · SEMIMONTHLY on the 10th and 25th
- *   last settlement 2025-12-24 · nothing since · the job ended
+ *   Employer B payroll · 35 observations · SEMIMONTHLY on the 10th and 25th
+ *   last settlement months before the as-of · nothing since · the payer stopped
  *
  * The strength of that historical cadence is an argument for the SHAPE of the
  * schedule and no argument at all for its CONTINUATION. This module owns the
@@ -31,10 +31,11 @@
  * the same distinction `lib/freshness/observation.ts` draws when it refuses to
  * call ledger coverage "staleness".
  *
- * Measured on the real Space, this precondition is satisfied for the motivating
- * case and satisfied decisively: the very account that stopped paying Abacus
- * carries 180 further transactions and a ledger reaching 2026-08-25. The feed
- * was looking. The silence is about the job.
+ * Measured on the production case, this precondition is satisfied for the
+ * motivating case and satisfied decisively: the very account that stopped
+ * receiving the payroll kept reporting, with many further transactions and a
+ * ledger reaching to within days of the as-of. The feed was looking. The
+ * silence is about the income.
  *
  * ── What this module does NOT decide ────────────────────────────────────────
  * Not the amount, not the basis, not whether the stream is payroll rather than
@@ -193,9 +194,9 @@ const shift = addDays;
 /**
  * The scheduled occurrence a settlement satisfies, or null if it satisfies none.
  *
- * ⚠️ These are two facts and conflating them is a real, measured error. Abacus
- * is scheduled on the 10th and the 25th; its last payment settled 2025-12-24.
- * Treating that settlement as the schedule makes 2025-12-25 look like a MISSED
+ * ⚠️ These are two facts and conflating them is a real, measured error. Employer B
+ * is scheduled on the 10th and the 25th; its last payment settled on a 24th.
+ * Treating that settlement as the schedule makes that 25th look like a MISSED
  * occurrence when it is in fact the very payment observed — and FORECAST-1's
  * `missedSinceAnchor`, which counts from the settlement, reports exactly that
  * phantom. A business-day shift is evidence FOR the occurrence, never a
@@ -223,7 +224,7 @@ export function occurrenceSatisfiedBy(cadence: Cadence, settlementISO: string): 
  * ⚠️ This is the observation-relative measure the activity decision runs on.
  * FORECAST-1's `missedSinceAnchor` is NOT sufficient for it: that counts from
  * the settlement rather than the satisfied slot, and it counts occurrences the
- * ledger has not reached. On Abacus at 2026-08-27 it reports 17; the observable
+ * ledger has not reached. On the Employer B fixture it reports 17; the observable
  * truth is 15. Both of its errors overstate silence, so its verdict happened to
  * be right for the wrong reasons — which is not a property to build on.
  */

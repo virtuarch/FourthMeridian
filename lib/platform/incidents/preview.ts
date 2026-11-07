@@ -26,6 +26,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { getActiveIncidentPage } from "./projections";
+import type { CsToken, OpsToken } from "./intelligence";
 import {
   countBySeverity,
   sortIncidentsForOperator,
@@ -49,9 +50,12 @@ export const PREVIEW_LIMIT = 6;
 /**
  * Names for the subjects of the incidents actually being shown. Batched, and
  * scoped to the visible slice — there is no reason to name 200 institutions to
- * render six rows.
+ * render six rows. Also used by the Ops attention reader (PB-1 R6a), which hands
+ * it module verdicts (same three opaque fields).
  */
-async function resolveSubjects(views: IncidentView[]): Promise<Map<string, IncidentSubject>> {
+export async function resolveSubjects(
+  views: readonly Pick<IncidentView, "id" | "plaidItemId" | "financialAccountId">[],
+): Promise<Map<string, IncidentSubject>> {
   const itemIds = [...new Set(views.map((v) => v.plaidItemId).filter((x): x is string => !!x))];
   const acctIds = [...new Set(views.map((v) => v.financialAccountId).filter((x): x is string => !!x))];
 
@@ -94,8 +98,15 @@ async function resolveSubjects(views: IncidentView[]): Promise<Map<string, Incid
  * `activeTotal` counts every active incident the projection saw, not the six
  * rendered — an operator reading "2 shown" must still learn that eleven exist.
  */
-export async function getIncidentPreview(limit: number = PREVIEW_LIMIT): Promise<IncidentPreview> {
-  const { incidents, scanTruncated } = await getActiveIncidentPage(ACTIVE_SCAN_LIMIT);
+export async function getIncidentPreview(token: CsToken | OpsToken, limit: number = PREVIEW_LIMIT): Promise<IncidentPreview> {
+  return previewFromPage(await getActiveIncidentPage(token, ACTIVE_SCAN_LIMIT), limit);
+}
+
+/** The ordering + subject resolution over an already-read active page (the disposable-PG harness enters here). */
+export async function previewFromPage(
+  page: Awaited<ReturnType<typeof getActiveIncidentPage>>, limit: number = PREVIEW_LIMIT,
+): Promise<IncidentPreview> {
+  const { incidents, scanTruncated } = page;
   const ordered = sortIncidentsForOperator(incidents);
   const shown = ordered.slice(0, limit);
   const subjects = await resolveSubjects(shown);

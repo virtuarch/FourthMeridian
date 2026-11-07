@@ -119,7 +119,9 @@ function InspectionBody({ executionId }: { executionId: string }) {
 
   const e = data.detail.execution;
   const source = describeSource(e);
-  const statusToken = STATUS_TONE[e.overallStatus] ?? TONE_COLOR.muted;
+  // PB-7 — a reaped execution a later success for the same source superseded is RECOVERED.
+  const recovered = e.recoveredByExecutionId != null;
+  const statusToken = recovered ? TONE_COLOR.warn : STATUS_TONE[e.overallStatus] ?? TONE_COLOR.muted;
   const category = describeCategory(e.failureCategory);
   const last = data.context.lastSucceeded;
   const policy = data.context.policy;
@@ -132,7 +134,7 @@ function InspectionBody({ executionId }: { executionId: string }) {
           <KeyRow label="Source" value={`${source.label} (${source.kind})`} />
           {e.network && <KeyRow label="Network" value={e.network} />}
           <KeyRow label="Trigger" value={TRIGGER_WORD[e.trigger] ?? humanizeToken(e.trigger)} />
-          <KeyRow label="Status" value={<span style={{ color: statusToken }}>{humanizeToken(e.overallStatus)}</span>} />
+          <KeyRow label="Status" value={<span style={{ color: statusToken }}>{recovered ? "Recovered — this process ended mid-run; a later run for the same source succeeded" : humanizeToken(e.overallStatus)}</span>} />
           <KeyRow label="Started" value={utc(e.startedAt)} />
           <KeyRow label="Completed" value={e.completedAt ? utc(e.completedAt) : "not completed"} />
           <KeyRow label="Duration" value={formatDuration(e.durationMs)} />

@@ -106,7 +106,7 @@ const ACCOUNTS = [
   { id: "chk",  type: "checking" },   // liquid
   { id: "sav",  type: "savings" },    // liquid
   { id: "brk",  type: "investment" }, // asset
-  { id: "cb",   type: "crypto" },     // asset (Coinbase-like wallet)
+  { id: "cb",   type: "crypto" },     // asset (Example Exchange-like wallet)
   { id: "card", type: "debt" },       // liability
   { id: "loan", type: "debt" },       // liability
   // "ext" is deliberately absent → tierOf("ext") === "unknown" (external / not owned)
@@ -877,10 +877,10 @@ function seamFlowType(row: {
 }
 
 // Case 1 — pending payroll (Other / OTHER_OTHER / +) → INCOME after descriptor
-// resolution, and NEVER REFUND. The real Vectrus shape.
+// resolution, and NEVER REFUND. The real Employer A shape.
 {
-  const t = seamFlowType({ category: "Other", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
-    description: "VECTRUS SYSTEMS CORP PAYROLL SEC:PPD", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
+  const t = seamFlowType({ category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
+    description: "EMPLOYER A PAYROLL SEC:PPD", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
     accountType: "checking" });
   check("SR Case 1: pending payroll → INCOME (never REFUND)", t === "INCOME", `got ${t}`);
 }
@@ -913,11 +913,11 @@ function seamFlowType(row: {
 // Case 5 — settlement invariance: pending (Other/OTHER_OTHER) and posted
 // (INCOME/INCOME_WAGES) snapshots of the SAME event agree on the economic kind.
 {
-  const pending = seamFlowType({ category: "Other", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
-    description: "VECTRUS SYSTEMS CORP PAYROLL", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
+  const pending = seamFlowType({ category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
+    description: "EMPLOYER A PAYROLL", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
     accountType: "checking" });
-  const posted = seamFlowType({ category: "Income", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
-    description: "VECTRUS SYSTEMS CORP PAYROLL", pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES",
+  const posted = seamFlowType({ category: "Income", amount: 4928.40, merchant: "EMPLOYER A",
+    description: "EMPLOYER A PAYROLL", pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES",
     accountType: "checking" });
   check("SR Case 5: pending kind === posted kind (settlement invariance)",
     pending === posted && posted === "INCOME", `pending=${pending} posted=${posted}`);

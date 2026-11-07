@@ -8,13 +8,14 @@
  * ── The failure ─────────────────────────────────────────────────────────────
  * CF-6 made the evidence reachable and nothing said how it composes. A user's
  * "investments" spans two authorities the product keeps deliberately apart, and
- * the model was left to join them. Measured on the real Space at 93b46c0:
+ * the model was left to join them. The measured failure, shown here with
+ * synthetic figures of the same shape:
  *
- *     holdings.totalPortfolioValue  $23,943.30
- *     accounts.totalDigitalAssets   $19,014.63
- *     sum                           $42,957.92   ← overstates by $18,936.74
+ *     holdings.totalPortfolioValue  $24,900.01
+ *     accounts.totalDigitalAssets   $20,000.01
+ *     sum                           $44,900.02   ← overstates by $19,900.00
  *
- * That is the obvious addition to make, and it is wrong by 79%, because
+ * That is the obvious addition to make, and it is wrong by ~80%, because
  * `holdings_summary` is the canonical POSITION spine and already contains the
  * digital assets.
  *
@@ -41,15 +42,15 @@ function check(name: string, ok: boolean, detail?: string): void {
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
 
-/** The real Space's account payload, unless overridden. */
+/** A synthetic account payload (shaped like the production case), unless overridden. */
 function accounts(o: Partial<{
   totalInvestments: number; totalDigitalAssets: number;
   investments: number; digitalAssets: number;
   redactedCount: number; totalsUnconverted: boolean;
 }> = {}): AccountsSectionData {
   return {
-    totalInvestments:   o.totalInvestments   ?? 5006.557852,
-    totalDigitalAssets: o.totalDigitalAssets ?? 19014.62555862176,
+    totalInvestments:   o.totalInvestments   ?? 5000.006,
+    totalDigitalAssets: o.totalDigitalAssets ?? 20000.006,
     redactedCount:      o.redactedCount      ?? 0,
     totalsUnconverted:  o.totalsUnconverted  ?? false,
     counts: {
@@ -76,11 +77,11 @@ const DIG  = 'DIGITAL_ASSETS';
     comp(c, TRAD)?.state === ComponentState.ASSERTABLE
       && comp(c, DIG)?.state === ComponentState.ASSERTABLE);
   check('A: traditional is the ACCOUNT total, to the cent',
-    comp(c, TRAD)?.amount === 5006.56, String(comp(c, TRAD)?.amount));
+    comp(c, TRAD)?.amount === 5000.01, String(comp(c, TRAD)?.amount));
   check('A: digital is the ACCOUNT total, to the cent',
-    comp(c, DIG)?.amount === 19014.63, String(comp(c, DIG)?.amount));
+    comp(c, DIG)?.amount === 20000.01, String(comp(c, DIG)?.amount));
   check('B: the combined figure is the sum of the two',
-    c?.combined === 24021.19, String(c?.combined));
+    c?.combined === 25000.02, String(c?.combined));
 
   // The reconciliation a person actually performs: add the two numbers shown.
   check('B: combined reconciles to the components a reader can see',
@@ -93,13 +94,13 @@ const DIG  = 'DIGITAL_ASSETS';
 // The whole reason this module exists.
 {
   const c = compose();
-  const spineTotal = 23943.29869062176;   // holdings.totalPortfolioValue, measured
+  const spineTotal = 24900.006;   // holdings.totalPortfolioValue (synthetic; already contains digital)
   const trap = Math.round((spineTotal + comp(c, DIG)!.amount!) * 100) / 100;
 
   check('the spine total is NOT the combined figure',
     c!.combined !== Math.round(spineTotal * 100) / 100);
-  check('spine + digital overstates by ~$18.9k and is never produced',
-    Math.abs(trap - c!.combined!) > 18_000 && c!.combined === 24021.19,
+  check('spine + digital overstates by ~$19.9k and is never produced',
+    Math.abs(trap - c!.combined!) > 18_000 && c!.combined === 25000.02,
     `trap ${trap} vs correct ${c!.combined}`);
 
   // Structural: the composer must not read the spine at all.
@@ -140,7 +141,7 @@ const DIG  = 'DIGITAL_ASSETS';
   check('D: no digital-asset accounts ⇒ ABSENT, amount 0',
     comp(noCrypto, DIG)?.state === ComponentState.ABSENT && comp(noCrypto, DIG)?.amount === 0);
   check('D: …and the combined total is still allowed',
-    noCrypto?.combined === 5006.56, String(noCrypto?.combined));
+    noCrypto?.combined === 5000.01, String(noCrypto?.combined));
   check('D: …rendered as "none", never as an unknown',
     /Digital assets: none/.test(render(noCrypto, ConceptBreadth.BROAD)));
 
@@ -179,17 +180,17 @@ const DIG  = 'DIGITAL_ASSETS';
   const tradOnly = compose({ digitalAssets: 0, totalDigitalAssets: 0 });
   const g = render(tradOnly, ConceptBreadth.BROAD);
   check('G: traditional stated, digital proven empty, combined allowed',
-    /Traditional investments: \$5,006\.56/.test(g)
+    /Traditional investments: \$5,000\.01/.test(g)
       && /Digital assets: none/.test(g)
-      && /Combined investments: \$5,006\.56/.test(g));
+      && /Combined investments: \$5,000\.01/.test(g));
 
   // H — digital only, symmetric.
   const digOnly = compose({ investments: 0, totalInvestments: 0 });
   const h = render(digOnly, ConceptBreadth.BROAD);
   check('H: digital stated, traditional proven empty, combined allowed',
-    /Digital assets: \$19,014\.63/.test(h)
+    /Digital assets: \$20,000\.01/.test(h)
       && /Traditional investments: none/.test(h)
-      && /Combined investments: \$19,014\.63/.test(h));
+      && /Combined investments: \$20,000\.01/.test(h));
 }
 
 // ══ BREADTH — BROAD vs SPECIFIC ══════════════════════════════════════════════
@@ -239,7 +240,7 @@ const DIG  = 'DIGITAL_ASSETS';
 
   const trad = render(c, ConceptBreadth.TRADITIONAL_ONLY);
   check('D: a stocks question shows traditional only',
-    /Traditional investments: \$5,006\.56/.test(trad) && !/Digital assets:/.test(trad));
+    /Traditional investments: \$5,000\.01/.test(trad) && !/Digital assets:/.test(trad));
   check('D: …no combined total is offered',
     !/Combined investments/.test(trad),
     'a combined figure would answer a question that was not asked');
@@ -248,7 +249,7 @@ const DIG  = 'DIGITAL_ASSETS';
 
   const dig = render(c, ConceptBreadth.DIGITAL_ONLY);
   check('E: a crypto question shows digital only',
-    /Digital assets: \$19,014\.63/.test(dig) && !/Traditional investments:/.test(dig));
+    /Digital assets: \$20,000\.01/.test(dig) && !/Traditional investments:/.test(dig));
   check('E: …no combined total', !/Combined investments/.test(dig));
   check('E: …and securities are explicitly kept out',
     /do not fold traditional securities into the figures/.test(dig));

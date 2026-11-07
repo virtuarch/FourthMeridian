@@ -30,10 +30,14 @@ import {
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { AlertSyncIncident, SyncIncidentHealth } from "@/lib/alerts/authorities";
-import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
+import { foldSyncIncidents, type AlertFoldVerdict } from "@/lib/alerts/sync-incidents";
 import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
+
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -71,7 +75,7 @@ function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
   return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };
 }
 function aiSpend(o: Partial<AiSpendHealth>): AiSpendHealth {
-  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
+  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, maxUserDedupe: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
 }
 function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
@@ -93,10 +97,12 @@ const ALL_ON = () => true;
 console.log("registry");
 // Owner ruling (2026-10-30) — + policy-assignment-invalid (missing / invalid customer policy-group
 // assignments fail closed; the actionable operator alert). Ten rules, nine live.
-check("ten rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004 + policy-assignment-invalid)", ALERT_RULES.length === 10);
-check("nine live rules", ALERT_RULES.filter((r) => r.live).length === 9);
+// Quota/cost anomaly re-pin: + the three anomaly@1 rules (ai-spend-anomaly,
+// ai-spend-user-anomaly, plaid-call-anomaly), all live. Thirteen rules, twelve live.
+check("thirteen rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004 + policy-assignment-invalid + three anomaly@1 rules)", ALERT_RULES.length === 13);
+check("twelve live rules", ALERT_RULES.filter((r) => r.live).length === 12);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 10);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 13);
 check("sync-incident-critical reads the sync-incidents authority, live, on by default", ALERT_RULES.find((r) => r.id === "sync-incident-critical")?.authority === "sync-incidents" && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.live && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.defaultEnabled);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
 check("ai-spend-fleet-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!.description));
@@ -171,15 +177,15 @@ console.log("engine · provider-unhealthy");
   // rule id, so a second failing connection inside the 20 h window was silent.
   console.log("engine · provider-unhealthy · per connection (OBS-004)");
   const row = (id: string, healthState: HealthState, over: Partial<ConnectionHealthRow> = {}): ConnectionHealthRow => ({
-    source: "PLAID", id, label: "Chase Bank", status: "ERROR", errorCode: healthState === "ERROR" ? "ITEM_LOGIN_REQUIRED" : null, healthState,
-    lastSyncedAt: null, since: "2026-07-15T08:00:00.000Z", kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 30, neverSynced: false, availableActions: [], ...over,
+    source: "PLAID", id, label: "Example Bank Bank", status: "ERROR", errorCode: healthState === "ERROR" ? "ITEM_LOGIN_REQUIRED" : null, healthState,
+    lastSyncedAt: null, since: "2026-07-15T08:00:00.000Z", kind: "BANK", institution: "Example Bank", network: null, overdueAfterHours: 30, neverSynced: false, availableActions: [], ...over,
   });
   const withRows = (counts: Partial<Record<HealthState, number>>, rows: ConnectionHealthRow[], cap = 20): ConnectionHealthResult => ({ ...connHealth(counts), unhealthy: rows, cap });
   const two = evaluateAlertRules(outputs({ connectionHealth: withRows({ HEALTHY: 3, ERROR: 1, STALE: 1 }, [row("item_aaaaaa111111", "ERROR"), row("wallet_bbbbbb222222", "STALE", { source: "WALLET", kind: "WALLET" })]) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
   check("two unhealthy connections ⇒ two signals", two.length === 2);
   check("each keyed on its own connection id", two.map((s) => s.dedupeKey).sort().join(",") === "provider-unhealthy:item_aaaaaa111111,provider-unhealthy:wallet_bbbbbb222222");
   check("ERROR row critical, STALE row warning", two.find((s) => s.dedupeKey.endsWith("aaaaaa111111"))!.severity === "critical" && two.find((s) => s.dedupeKey.endsWith("bbbbbb222222"))!.severity === "warning");
-  check("summary names source/kind/state/code and an OPAQUE ref — never the institution", two.every((s) => !/Chase/.test(s.summary)) && /…111111 \(PLAID, BANK\) is ERROR \(ITEM_LOGIN_REQUIRED\)/.test(two[0].summary));
+  check("summary names source/kind/state/code and an OPAQUE ref — never the institution", two.every((s) => !/Example Bank/.test(s.summary)) && /…111111 \(PLAID, BANK\) is ERROR \(ITEM_LOGIN_REQUIRED\)/.test(two[0].summary));
   const firstDelivered = new Map([["provider-unhealthy:item_aaaaaa111111", NOW_MS - 2 * HOUR]]);
   const second = decideDeliveries(two, firstDelivered, NOW_MS);
   check("a SECOND connection failing inside the first's 20 h window is delivered on its own clock", second.toSend.length === 1 && second.toSend[0].dedupeKey.endsWith("bbbbbb222222") && second.suppressed.length === 1);
@@ -215,14 +221,32 @@ console.log("engine · sync-incident-critical (OBS-004)");
   check("a truncated scan is said in the summary", /may be a floor/.test(sig(health([inc("a")], true))[0].summary));
   check("legacy UPSERT_ERROR on the transactions domain reads by the same operator label", /Transaction persistence failed/.test(sig(health([inc("e", { kind: "UPSERT_ERROR" })]))[0].summary));
 
-  // The fold from the projection: state-filtered, opaque, nothing from detail.
+  // PB-1 R5 — the fold from the module's verdicts: alertable-filtered, opaque, nothing from detail.
+  const fv = (id: string, over: Partial<AlertFoldVerdict> = {}): AlertFoldVerdict => ({
+    id, kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", domain: "transactions", severity: "critical",
+    alertable: true, lastSeenAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 1, ...over,
+  });
   const folded = foldSyncIncidents([
-    { id: "x1", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "active", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 1 },
-    { id: "x2", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "recovered", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: null, occurrenceCount: 1 },
-    { id: "x3", kind: "BALANCE_TX_MISMATCH", plaidItemId: null, state: "evidence", classification: { domain: "reconciliation", severity: "warning", nature: "event", customerActionable: false, cursorBlocking: false }, lastOccurredAt: null, occurrenceCount: 0 },
+    fv("x1"),
+    fv("x2", { alertable: false, lastSeenAt: "2026-07-16T06:00:00.000Z" }), // recovering / stale / removed — the module said not alertable
+    fv("x3", { kind: "BALANCE_TX_MISMATCH", plaidItemId: null, domain: "reconciliation", severity: "warning", alertable: false, occurrenceCount: 0 }),
   ], true, NOW);
-  check("fold keeps ACTIVE only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
-  check("fold carries no classification object, no detail, no label", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]));
+  check("fold keeps the module's ALERTABLE verdicts only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
+  check("fold carries the module's severity / domain / lastSeenAt verbatim", folded.active[0].severity === "critical" && folded.active[0].domain === "transactions" && folded.active[0].lastOccurredAt === "2026-07-16T07:00:00.000Z");
+  check("fold carries no classification object, no detail, no label, no alertable flag", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]) && !("alertable" in folded.active[0]));
+  // S2 (R5 review) — the slice's key set IS the fold's fixed field list. Adding a field to AlertSyncIncident
+  // (or to the fold's copy) fails here AND at compile time, so any widening of the alert payload is a reviewed change.
+  const ALERT_SYNC_INCIDENT_KEYS = ["id", "plaidItemId", "kind", "domain", "severity", "lastOccurredAt", "occurrenceCount"] as const;
+  type PinnedKey = (typeof ALERT_SYNC_INCIDENT_KEYS)[number];
+  const sliceKeysExact: [keyof AlertSyncIncident] extends [PinnedKey] ? ([PinnedKey] extends [keyof AlertSyncIncident] ? true : never) : never = true;
+  check("AlertSyncIncident's key set equals the fold's fixed field list (a new field is a reviewed change)",
+    sliceKeysExact && Object.keys(folded.active[0]).sort().join(",") === [...ALERT_SYNC_INCIDENT_KEYS].sort().join(","), Object.keys(folded.active[0]).join(","));
+  {
+    // Extra verdict fields (label, subjectUserId on a wider tier) never cross the fold.
+    const wide = { ...fv("x4"), label: "Some Bank — failed", subjectUserId: "u_1" } as AlertFoldVerdict;
+    const out = foldSyncIncidents([wide], false, NOW).active[0];
+    check("fold copies an allowlist: a wider verdict's label / customer id never reach the slice", !JSON.stringify(out).includes("Some Bank") && !JSON.stringify(out).includes("u_1"));
+  }
 }
 
 // ── Engine: ai-failing ───────────────────────────────────────────────────────────
@@ -250,10 +274,10 @@ console.log("engine · ai-spend");
 {
   const sig = (o: Partial<AiSpendHealth>) =>
     evaluateAlertRules(outputs({ aiSpend: aiSpend(o) }), ALL_ON).filter((s) => s.kind === "ai-spend-fleet" || s.kind === "ai-spend-user");
-  check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user …abc123", customers: 3, customerInvocations: 40 }).length === 0);
+  check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user #3fa9c21b", customers: 3, customerInvocations: 40 }).length === 0);
   check("nothing priced and nothing unpriced (empty window) ⇒ no signal", sig({}).length === 0);
 
-  const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user …abc123", customers: 5, customerInvocations: 120 });
+  const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user #3fa9c21b", customers: 5, customerInvocations: 120 });
   check("fleet at the threshold ⇒ ONE warning on the per-day fleet key", fleet.length === 1 && fleet[0].severity === "warning" && fleet[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-16");
   check("fleet summary names the estimated USD and the threshold", /\$10\.00/.test(fleet[0].summary) && /threshold of \$10/.test(fleet[0].summary) && /estimate, not a bill/.test(fleet[0].summary));
   check("fleet summary carries no unpriced line when everything was priced", !/unpriced/.test(fleet[0].summary));
@@ -261,21 +285,21 @@ console.log("engine · ai-spend");
   check("fleet just under twice ⇒ still a warning", sig({ fleetUsd: 19.99 })[0]?.severity === "warning");
   check("fleet just under the threshold ⇒ no signal", sig({ fleetUsd: 9.99 }).length === 0);
 
-  const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user …abc123", customers: 2, customerInvocations: 30 });
-  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-user-high:user:2026-07-16:abc123");
-  check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user …abc123/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
-  check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user …abc123" })[0]?.severity === "critical");
+  const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user #3fa9c21b", customers: 2, customerInvocations: 30 });
+  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-user-high:user:2026-07-16:3fa9c21b");
+  check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user #3fa9c21b/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
+  check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user #3fa9c21b" })[0]?.severity === "critical");
   check("a lone breacher's summary does not claim company", !/customers are at or above/.test(user[0].summary));
-  const crowd = sig({ fleetUsd: 4, maxUserUsd: 3.5, maxUserRef: "user …abc123", customers: 4, customersAtOrOverThreshold: 3, customerInvocations: 30 });
+  const crowd = sig({ fleetUsd: 4, maxUserUsd: 3.5, maxUserRef: "user #3fa9c21b", customers: 4, customersAtOrOverThreshold: 3, customerInvocations: 30 });
   check("several customers at or over the per-user threshold ⇒ ONE signal that names the largest and says how many are over",
-    crowd.length === 1 && /user …abc123/.test(crowd[0].summary) && /3 customers are at or above it/.test(crowd[0].summary));
-  check("per-user just under the threshold ⇒ no signal", sig({ maxUserUsd: 2.99, maxUserRef: "user …abc123" }).length === 0);
+    crowd.length === 1 && /user #3fa9c21b/.test(crowd[0].summary) && /3 customers are at or above it/.test(crowd[0].summary));
+  check("per-user just under the threshold ⇒ no signal", sig({ maxUserUsd: 2.99, maxUserRef: "user #3fa9c21b" }).length === 0);
 
   // ⚠️ FAIL CLOSED. An unpriced invocation fires on its own, whatever the dollars say.
-  const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user …abc123", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
+  const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user #3fa9c21b", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
   check("any unpriced invocation ⇒ a warning even when spend is far under both thresholds", unpriced.length === 1 && unpriced[0].severity === "warning" && unpriced[0].dedupeKey === "ai-spend-fleet-high:unpriced:2026-07-16");
   check("the unpriced summary counts them, names the model and says not counted / see rate card", /3 invocation\(s\) on unpriced models \(OPENAI:gpt-7-preview\)/.test(unpriced[0].summary) && /not counted; see rate card/.test(unpriced[0].summary));
-  const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
+  const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user #3fa9c21b", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
   check("fleet breach + unpriced ⇒ two independent breaches, and the fleet summary carries the unpriced line", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2 && /not counted; see rate card/.test(both.find((s) => s.dedupeKey.includes(":fleet:"))!.summary));
   check("no dollar value in any dedupe key", [...fleet, ...user, ...unpriced, ...both].every((s) => !/\$|\d+\.\d{2}/.test(s.dedupeKey)));
 
@@ -288,7 +312,7 @@ console.log("engine · ai-spend");
   check("the next UTC day is a new breach key", nextDay[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-17" && decideDeliveries(nextDay, new Map([[fleet[0].dedupeKey, NOW_MS]]), NOW_MS + 24 * HOUR).toSend.length === 1);
 
   // AI COST CONTROLS — each rule is independently enable-able through the engine's existing key; disabling one changes evaluation only.
-  const bothBreach = { fleetUsd: 12, maxUserUsd: 4, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] };
+  const bothBreach = { fleetUsd: 12, maxUserUsd: 4, maxUserRef: "user #3fa9c21b", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] };
   const onlyUser = (id: string) => id === "ai-spend-user-high";
   const onlyFleet = (id: string) => id === "ai-spend-fleet-high";
   const userOnly = evaluateAlertRules(outputs({ aiSpend: aiSpend(bothBreach) }), onlyUser);
@@ -380,7 +404,7 @@ console.log("history derivation");
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
   // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
-  check("a view per rule", views.length === 10);
+  check("a view per rule", views.length === 13);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -429,7 +453,7 @@ async function orchestratorTests() {
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
   // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
-  check("per-rule outcomes list all ten rules", s1.rules.length === 10);
+  check("per-rule outcomes list all thirteen rules", s1.rules.length === 13);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -504,7 +528,7 @@ async function orchestratorTests() {
   }
   check("start-write failed ⇒ no email sent", sent.length === before);
   check("start-write failed ⇒ skipped + LEDGER_WRITE_FAILED with the breach count", broken.deliveryStatus === "skipped" && broken.undelivered?.reason === "LEDGER_WRITE_FAILED" && broken.undelivered.breaches === 2);
-  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 10); // owner ruling 2026-10-30: ten rules
+  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 13); // owner ruling 2026-10-30: ten rules; + three anomaly@1 rules
   const healthyLedger = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => false });
   check("start-write ok ⇒ delivery proceeds", healthyLedger.deliveryStatus === "sent" && sent.length === before + 1);
 }
@@ -525,7 +549,13 @@ console.log("doctrine");
   check("orchestrator consumes the OPS-5 resource-freshness authority", /checkResourceFreshness/.test(runSrc));
   check("orchestrator consumes the AI failure authority (OPERATIONALIZATION P0)", /getAiFailureHealth\(/.test(runSrc));
   check("orchestrator consumes the AI spend authority (BETA C7)", /getAiSpendHealth\(24\)/.test(runSrc));
-  check("orchestrator consumes the incident projection (OBS-004) — never a SyncIssue row", /getActiveIncidentPage\(/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
+  // PB-1 R4 — DELIBERATE PIN UPDATE (was: /getActiveIncidentPage\(/). The engine now reads the
+  // intelligence module's alertable set with the SYSTEM token; the "never a SyncIssue row" half is unchanged.
+  // PB-1 R5 — TIGHTENED (was: required /incidentViewOf/). The fold reads the module's verdicts directly:
+  // no projection view, no IncidentView `state`, so nothing in lib/alerts can re-derive open/closed.
+  check("orchestrator consumes the incident intelligence module's alertable set (OBS-004, PB-1 R4/R5) — never a SyncIssue row",
+    /incidentAccessors\.alertable\(systemIncidentAudience\(\)/.test(runSrc) && /foldSyncIncidents\(page\.items, page\.truncated/.test(runSrc)
+    && !/incidentViewOf|incidents\/projections/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
   check("the engine judges against the thresholds the authority carried, never a literal of its own",
     /spend\.thresholds\.fleetUsd/.test(evaluateSrc) && /spend\.thresholds\.userUsd/.test(evaluateSrc) && !/ai_spend_alert/.test(evaluateSrc));
   check("the thresholds are resolved through the platform-settings descriptors (validated, default on missing or invalid)",

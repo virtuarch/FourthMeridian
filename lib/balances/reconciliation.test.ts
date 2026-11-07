@@ -7,9 +7,9 @@
  * pending evidence, because the identities are only worth anything if they hold
  * against actual provider data. The three that matter:
  *
- *   CHASE COLLEGE   5,106.77 + (−4,000.00) − 1,106.77 =     0.00  → EXACT
- *   Amex HYSA       6,315.04 +      0.00   − 2,315.04 = 4,000.00  → a real hold
- *   Chase card      562.37 owed + 77.60 charges vs a 33,700 limit → 37.55 residual
+ *   EXAMPLE BANK EVERYDAY   5,106.77 + (−4,000.00) − 1,106.77 =     0.00  → EXACT
+ *   Example Card HYSA       6,315.04 +      0.00   − 2,315.04 = 4,000.00  → a real hold
+ *   Example Bank card      562.37 owed + 77.60 charges vs a 33,700 limit → 37.55 residual
  */
 
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
@@ -53,9 +53,9 @@ const pend = (sum: number, count = 1, ids: string[] = ["t1"]): PendingContributi
 
 // ── The three named cases ────────────────────────────────────────────────────
 
-console.log("1. Chase checking — the depository identity, EXACT");
+console.log("1. Example Bank checking — the depository identity, EXACT");
 {
-  const b = build({ id: "chase-chk", type: "checking", balance: 5_106.77, available: 1_106.77 });
+  const b = build({ id: "exbank-chk", type: "checking", balance: 5_106.77, available: 1_106.77 });
   const r = reconcileAccount(b, pend(-4_000));
   check("basis is DEPOSITORY", r.basis === "DEPOSITORY");
   check("predicted = observed + Σpending = 1,106.77", near(r.predicted!.amount, 1_106.77));
@@ -69,7 +69,7 @@ console.log("1. Chase checking — the depository identity, EXACT");
   check("one pending row was counted, once", r.pending.count === 1 && r.pending.transactionIds.length === 1);
 }
 
-console.log("2. Amex HYSA — an unexplained hold, reported not invented");
+console.log("2. Example Card HYSA — an unexplained hold, reported not invented");
 {
   const b = build({ id: "hysa", type: "savings", balance: 6_315.04, available: 2_315.04 });
   const r = reconcileAccount(b, NO_PENDING);
@@ -84,7 +84,7 @@ console.log("2. Amex HYSA — an unexplained hold, reported not invented");
   check("the label does not read as an error", RECONCILIATION_LABEL.PARTIALLY_ATTRIBUTED === "Partly unexplained");
 }
 
-console.log("3. Chase credit card — the LIABILITY identity, derived separately");
+console.log("3. Example Bank credit card — the LIABILITY identity, derived separately");
 {
   const b = build({ id: "cc", type: "debt", balance: 562.37, available: 33_022.48, creditLimit: 33_700 });
   const r = reconcileAccount(b, pend(-77.60, 3, ["a", "b", "c"]), 33_700);
@@ -95,7 +95,7 @@ console.log("3. Chase credit card — the LIABILITY identity, derived separately
 
   // v2.6-L4E — the SIGNED balance is the input to the credit-line identity.
   // `amountOwed`'s clamp is right for debt exposure and wrong here: an OVERPAID
-  // card has MORE line available. The live Chase card went to −68.78 after a
+  // card has MORE line available. The live Example Bank card went to −68.78 after a
   // $650 payment posted, and the clamped form understated implied credit by
   // exactly that amount.
   const overpaid = build({ id: "cc-credit", type: "debt", balance: -68.78, available: 32_466.14, creditLimit: 33_700 });
@@ -118,9 +118,9 @@ console.log("3. Chase credit card — the LIABILITY identity, derived separately
   check("...and is NOT what was used", !near(r.unexplained!, wrong));
 }
 
-console.log("3b. Amex Platinum — a charge card with no usable limit");
+console.log("3b. Example Card Platinum — a charge card with no usable limit");
 {
-  const b = build({ id: "amex", type: "debt", balance: 203.25, available: 0, creditLimit: 0 });
+  const b = build({ id: "excard", type: "debt", balance: 203.25, available: 0, creditLimit: 0 });
   const r = reconcileAccount(b, pend(0, 2, ["x", "y"]), 0);
   check("basis is still REVOLVING_CREDIT", r.basis === "REVOLVING_CREDIT");
   check("a zero limit is not a ceiling — state is UNAVAILABLE", r.state === "UNAVAILABLE");
@@ -273,7 +273,7 @@ console.log("Reachable totals — unknowns are excluded and COUNTED, never zeroe
 
 console.log("The live Space total — ledger vs reachable");
 {
-  // CHASE COLLEGE, CHASE SAVINGS, Amex Rewards Checking, Amex HYSA.
+  // EXAMPLE BANK EVERYDAY, EXAMPLE BANK SAVINGS, Example Card Rewards Checking, Example Card HYSA.
   const ledger = 5_106.77 + 2_000.03 + 252.32 + 6_315.04;
   const t = totalReachableCash([
     { accountId: "1", reachable: 1_106.77, unexplained: 0 },

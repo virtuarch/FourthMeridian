@@ -127,7 +127,7 @@ console.log("13. inputTotals reported for diagnostics");
   check("nonCash total = 700", Math.abs(r.inputTotals.nonCash - 700) < 1e-6);
 }
 
-console.log("14. real Schwab LLC shape reconciles to OBSERVED (validation only)");
+console.log("14. real Example Brokerage LLC shape reconciles to OBSERVED (validation only)");
 {
   const r = reconcileBrokerageCash(input({ accountBalance: 4005.08, holdings: [
     h({ institutionValue: 3993.43 }), h({ isCash: true, institutionValue: 11.65 }),

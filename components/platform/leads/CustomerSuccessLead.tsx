@@ -17,6 +17,12 @@
  *   < lg
  *     hero → KPIs → needs help → the list → ONE group (Onboarding · Sync issues).
  *
+ * PB-4 — WHO, NOT JUST HOW MANY. Each "Who needs help, and why" row is a
+ * control: it asks the hosted Customers list to filter to that reason
+ * (cs-attention-link.ts) and scrolls to it, so the operator sees WHICH
+ * customers, with their reasons, in the audited list. The overview stays
+ * counts-only. Offered only when the list is hosted for this viewer.
+ *
  * Not shown, because no authority exists: support tickets, health scores.
  */
 
@@ -36,10 +42,13 @@ import { ShareBars } from "../charts/ShareBars";
 import { cohortLayout } from "../charts/heatmap-model";
 import { ONBOARDING_SHORT, cohortCellText, describeCohortCell } from "./growth-model";
 import {
-  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, attentionBars, csHero, healthItems, incidentBars, stageBars,
+  CS_POPULATION_PENDING_NOTE, CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
   type CsWindow,
 } from "./customer-success-model";
 import type { ReactNode } from "react";
+import type { AttentionFilter } from "@/lib/platform/customer/overview-types";
+import { requestCustomerAttentionFilter } from "./cs-attention-link";
+import { CsRecentlyJoinedPanel } from "./CsRecentlyJoinedPanel";
 
 const n = (v: number) => v.toLocaleString("en-US");
 type Group = "onboarding" | "issues";
@@ -57,6 +66,8 @@ export interface CsLeadSurfaceProps {
   onOpenWorkspace: (id: string) => void;
   group?: Group;
   onGroup?: (g: Group) => void;
+  /** PB-7 — the "Recently joined (14 d)" panel; present only when the audited list is hosted. */
+  recentlyJoined?: ReactNode;
 }
 
 export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
@@ -65,6 +76,8 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
   const only = (g: Group) => (group === g ? "" : "max-lg:hidden");
   const health = o ? healthItems(o) : [];
   const cohorts = o ? cohortLayout(o.onboarding.rows, o.onboarding.stages.map((s) => ({ key: s.key, label: ONBOARDING_SHORT[s.key] ?? s.label, shown: true }))) : null;
+  // PB-4 — reasons link to the list only when the list is hosted here (its READ decides).
+  const showWho = p.customerList ? (filter: AttentionFilter) => { requestCustomerAttentionFilter(filter); goToSection("cs-customers"); } : null;
   const totals = o ? o.incidents.days.reduce((a, d) => ({ opened: a.opened + d.opened, resolved: a.resolved + d.resolved }), { opened: 0, resolved: 0 }) : null;
 
   return (
@@ -89,9 +102,20 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
           hint={<span className="text-[11px] text-[var(--text-faint)]">Now</span>}>
           <Surface className="flex flex-1 flex-col justify-center p-4 sm:p-5">
             {o ? (
-              o.customers.active === 0 ? <ChartMessage>No active customers</ChartMessage> : (
-                <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"
-                  denominator={`of ${n(o.customers.active)} active customers · one customer can have several reasons`} />
+              o.customers.active === 0 ? <ChartMessage>No open customer accounts</ChartMessage> : (
+                <>
+                  <ShareBars items={attentionBars(o)} ariaLabel="Open customer accounts needing help, by reason" noun="customer"
+                    denominator={`of ${n(o.customers.active)} open customer accounts · one customer can have several reasons`}
+                    {...(showWho ? { onSelect: (key: string) => showWho(key as AttentionFilter), selectLabel: (b: { label: string; count: number }) => `Show the ${n(b.count)} customer${b.count === 1 ? "" : "s"}: ${b.label}` } : {})} />
+                  {o.attention.floor && <Caption>{"Counts are at least (≥) — a fleet read reached its row cap"}</Caption>}
+                  <Caption>{CS_POPULATION_PENDING_NOTE}</Caption>
+                  {showWho && o.attention.customers > 0 && (
+                    <button type="button" onClick={() => showWho("any")} data-attention-any
+                      className="mt-2 inline-flex min-h-11 items-center self-start text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
+                      {`Show all ${atLeast(o.attention.customers, o.attention.floor === true)} who need help in the list`}
+                    </button>
+                  )}
+                </>
               )
             ) : <Loading f={p.f} what="who needs help" />}
           </Surface>
@@ -117,6 +141,9 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
         <section id="cs-customers" aria-label="Customers" className="min-w-0 scroll-mt-20" data-customer-list-slot>{p.customerList}</section>
       )}
 
+      {/* PB-7 — recently joined (identities come from the CS READ route, never the overview DTO). */}
+      {p.recentlyJoined}
+
       {/* < lg — one group at a time. */}
       <div className="flex justify-center lg:hidden">
         <Segmented label="Analytics" value={group} onChange={(g) => p.onGroup?.(g)}
@@ -128,8 +155,8 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
         <Block id="cs-stages" label="Where customers are" className="min-w-0 lg:col-span-5"
           hint={<span className="text-[11px] text-[var(--text-faint)]">Furthest stage reached</span>}>
           <Surface className="flex-1 p-4 sm:p-5">
-            {o ? <ShareBars items={stageBars(o)} ariaLabel="Active customers by the furthest onboarding stage reached" noun="customer"
-              denominator={`of ${n(o.customers.active)} active customers · strict funnel, now`} /> : <Loading f={p.f} what="onboarding stages" />}
+            {o ? <ShareBars items={stageBars(o)} ariaLabel="Open customer accounts by the furthest onboarding stage reached" noun="customer"
+              denominator={`of ${n(o.customers.active)} open customer accounts · strict funnel, now`} /> : <Loading f={p.f} what="onboarding stages" />}
           </Surface>
         </Block>
         <Block id="cs-friction" label="Onboarding friction by registration week" className="min-w-0 lg:col-span-7">
@@ -138,7 +165,7 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
               o.onboarding.rows.some((r) => r.size > 0) ? (
                 <>
                   <HeatGrid layout={cohorts} rowHeight={26} labelWidth={74} domainMax={1} cellText={cohortCellText} legend={{ low: "0%", high: "100%" }}
-                    ariaLabel="Share of each registration week's active customers that got through each onboarding stage"
+                    ariaLabel="Share of each registration week's open customer accounts that got through each onboarding stage"
                     describe={(r, c, cell) => describeCohortCell(o.onboarding.rows[r], o.onboarding.stages[c].label, cell, "customers")} />
                   <Caption>A pale cell is where a week&apos;s customers stall · as of today</Caption>
                 </>
@@ -197,6 +224,7 @@ export function CustomerSuccessLead({ renderHosted, hasHosted, onOpenWorkspace }
   const f = useSharedWidgetFetch<CsOverviewResponse>(`/api/platform/customer-success/overview?window=${period}`);
   return (
     <CustomerSuccessLeadSurface f={f} period={period} onPeriod={setPeriod} onOpenWorkspace={onOpenWorkspace} group={group} onGroup={setGroup}
-      customerList={hasHosted(CUSTOMER_LIST_KEY) ? renderHosted(CUSTOMER_LIST_KEY, onOpenWorkspace) : null} />
+      customerList={hasHosted(CUSTOMER_LIST_KEY) ? renderHosted(CUSTOMER_LIST_KEY, onOpenWorkspace) : null}
+      recentlyJoined={hasHosted(CUSTOMER_LIST_KEY) ? <CsRecentlyJoinedPanel /> : null} />
   );
 }

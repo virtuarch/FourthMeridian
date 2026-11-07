@@ -28,12 +28,13 @@ const STATE_LABEL: Record<FreshnessHealthState, string> = {
   stale: "Stale",
   empty: "Empty",
   idle: "Idle",
+  "not-refreshed": "Not refreshed in this environment",
 };
 
 /** Colour of the status pill — green fresh, amber idle, red for the problems. */
 function stateColor(state: FreshnessHealthState): string {
   if (state === "fresh") return "var(--success-400, #4ade80)";
-  if (state === "idle") return "var(--text-muted)";
+  if (state === "idle" || state === "not-refreshed") return "var(--text-muted)";
   return "var(--danger-400, #f87171)";
 }
 

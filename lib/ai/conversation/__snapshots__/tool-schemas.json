@@ -346,7 +346,7 @@
       "type": "function",
       "function": {
         "name": "get_net_worth_history",
-        "description": "Net worth and its components over time, and what they CHANGED by across the requested range — `change` gives the measured movement of net worth, liquid, investments, digital assets and debt between the first and last observation. Use it for \"what changed\", \"why did my net worth move\", \"how does this compare with a month ago\". `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today's unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone — there is deliberately no field called \"cash\". Ask for `granularity: \"monthly\"` to get one point per calendar month. A point whose net worth could not be established is returned as null WITH a reason; read `coverage` before describing older history as fact. For an EXACT date — the first or last time something crossed a number, a highest or a lowest — use `find_in_balance_history` instead: a long series here is downsampled and the day you need may not be in it.",
+        "description": "Net worth and its components over time, and what they CHANGED by across the requested range — `change` gives the measured movement of net worth, liquid, investments, digital assets and debt between the first and last observation. Use it for \"what changed\", \"why did my net worth move\", \"how does this compare with a month ago\". `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today's unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone — there is deliberately no field called \"cash\". Ask for `granularity: \"monthly\"` to get one point per calendar month. A point whose net worth could not be established is returned as null WITH a reason; read `coverage` before describing older history as fact. A point with `partial: true` lies before the balance-history floor: the metrics it names in `partialMetrics` are null because they are NOT KNOWABLE that day (not zero) — never state, estimate or subtract them; `estimated: true` means a debt is held at today's balance. For an EXACT date — the first or last time something crossed a number, a highest or a lowest — use `find_in_balance_history` instead: a long series here is downsampled and the day you need may not be in it.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -380,7 +380,7 @@
       "type": "function",
       "function": {
         "name": "find_in_balance_history",
-        "description": "The EXACT date and amount for a question about one balance over time — the first or last time it crossed a number, and its highest or lowest point. Use it for \"when did I first hit zero\", \"when did my debt first fall below 1,000\", \"when was the last time X was zero\", \"what was my highest debt\", \"my lowest cash balance\", \"when did I cross above/below\". ALWAYS use this rather than reading dates off a series yourself: it checks every observation in the range, while a long history series is downsampled and may not even contain the day you need. Returns the matching observation, the observation before it, and the coverage it searched.",
+        "description": "The EXACT date and amount for a question about one balance over time — the first or last time it crossed a number, and its highest or lowest point. Use it for \"when did I first hit zero\", \"when did my debt first fall below 1,000\", \"when was the last time X was zero\", \"what was my highest debt\", \"my lowest cash balance\", \"when did I cross above/below\". ALWAYS use this rather than reading dates off a series yourself: it checks every observation in the range, while a long history series is downsampled and may not even contain the day you need. Returns the matching observation, the observation before it, and the coverage it searched. Days before the balance-history floor are NOT KNOWABLE and are not searched (`coverage.observationsPartial`); an answer flagged `estimated` includes a debt held at today's balance.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1737,7 +1737,7 @@
             },
             "statedAs": {
               "type": "string",
-              "description": "The user's own words for this, or a faithful one-sentence paraphrase. Required."
+              "description": "The user's own words for this, quoted exactly from what they wrote in this conversation (an excerpt of at least 3 words, never a paraphrase), including the amount when one is stored. Required — a write whose words or amount the user did not say is refused."
             },
             "goal": {
               "type": "object",

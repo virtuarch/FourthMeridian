@@ -7,7 +7,9 @@
  *   cohort / policy          CustomerCohort, CustomerPolicyAssignment → resolver
  *   beta lifecycle           BetaAccessRequest(+Event), AuditLog emailStatus
  *   Spaces                   SpaceMember × Space
- *   last active              UserSession.lastActiveAt (LOGIN audit as fallback)
+ *   presence / last active   PB-10: UserSession.lastPresenceAt / lastInteractionAt (heartbeat,
+ *                            lib/presence/definitions.ts) — NOT lastActiveAt (session last used)
+ *   last login               newest LOGIN audit row
  *   connections + health     PlaidItem, Connection → deriveConnectionHealthState
  *   first connection         min(PlaidItem, wallet Connection, MANUAL FinancialAccount).createdAt (BETA: manual included)
  *   roll-up (BETA §8)        AI turns + est. USD 30 d · Items · last engaged · funnel stage (customer-core projectRollup)
@@ -21,8 +23,10 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { AuditAction } from "@/lib/audit-actions";
 import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
+import { createIncidentAccessors, incidentReaderFor, type CsToken } from "@/lib/platform/incidents/intelligence";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { assignableGroups } from "@/lib/entitlements/policy-groups";
@@ -37,6 +41,9 @@ import {
   type ActivityView, type AiUsageView, type CustomerConnectionView, type CustomerCohortView, type CustomerIdentity,
   type CustomerPolicyView, type CustomerRollup, type CustomerSpaceView, type IncidentsView, type LifecycleView, type OperatorActionView,
 } from "./customer-core";
+// PB-7 — the Onboarding timeline (same audited profile, same gate).
+import { buildOnboardingTimeline, type OnboardingTimeline } from "./onboarding-core";
+import { loadImportsForOwners } from "@/lib/platform/onboarding/import-facts";
 
 export const AI_WINDOW_DAYS = 30;
 const RECENT_EXECUTIONS = 20;
@@ -70,6 +77,8 @@ export interface CustomerDetail {
   ai: AiUsageView;
   /** BETA — the same five fields the list row carries (design §8). */
   rollup: CustomerRollup;
+  /** PB-7 — registration → first session → per-connection import → first AI turn / Brief. Counts, kinds, timestamps only. */
+  onboarding: OnboardingTimeline;
   operatorActions: OperatorActionView[];
   actions: CustomerActionsView;
   checkedAt: string;
@@ -80,7 +89,15 @@ const CONNECTION_ACTIONS = [
   AuditAction.OPERATOR_REFRESH_ALL,
 ];
 
-export async function getCustomerDetail(userId: string, client = systemDb, now: Date = new Date()): Promise<CustomerDetail | null> {
+/** Rows the CS panel's incident scan reads (open rows only); a full scan is reported as a floor (D5). */
+const INCIDENT_SCAN = 50;
+
+/**
+ * @param incidentToken  the CUSTOMER_SUCCESS audience token the ROUTE minted from
+ *   its own guard result (incidentAudienceFor) — incidents are read only through
+ *   the intelligence module, which verifies it before reading anything.
+ */
+export async function getCustomerDetail(userId: string, incidentToken: CsToken, client = systemDb, now: Date = new Date()): Promise<CustomerDetail | null> {
   const user = await client.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, name: true, username: true, role: true, createdAt: true, emailVerifiedAt: true, deactivatedAt: true,
@@ -88,16 +105,17 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   });
   if (!user) return null;
 
-  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
+  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, livePresence, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
     loadEffectiveEntitlements(client, userId, entitlementLoadOptions()),
     client.customerCohort.findMany({ where: { userId }, orderBy: { joinedAt: "asc" }, select: { cohort: true, joinedAt: true, source: true } }),
     client.betaAccessRequest.findUnique({ where: { email: user.email },
       select: { id: true, status: true, createdAt: true, decidedAt: true, invitedAt: true, inviteExpiresAt: true, redeemedAt: true } }),
     client.spaceMember.findMany({ where: { userId },
       select: { role: true, status: true, joinedAt: true, space: { select: { id: true, name: true, type: true, category: true, archivedAt: true, deletedAt: true } } } }),
-    client.userSession.aggregate({ where: { userId }, _max: { lastActiveAt: true }, _min: { createdAt: true } }),
+    client.userSession.aggregate({ where: { userId }, _max: { lastInteractionAt: true }, _min: { createdAt: true } }),
     client.auditLog.findFirst({ where: { userId, action: AuditAction.LOGIN }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    client.userSession.count({ where: { userId, revokedAt: null } }),
+    client.userSession.count({ where: liveSessionWhere(now, { userId }) }),
+    client.userSession.aggregate({ where: liveSessionWhere(now, { userId }), _max: { lastPresenceAt: true } }),
     client.plaidItem.findMany({ where: { userId }, orderBy: { createdAt: "asc" },
       select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true, createdAt: true, investmentsConsent: true } }),
     client.connection.findMany({ where: { userId, provider: { notIn: ["PLAID", "MANUAL", "CSV"] } }, orderBy: { createdAt: "asc" },
@@ -119,7 +137,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   })).map((a) => a.financialAccountId);
 
   const since = new Date(now.getTime() - AI_WINDOW_DAYS * 86_400_000);
-  const [events, inviteAudit, issues, executions, webhooks, invocations, userActions, connectionActions] = await Promise.all([
+  const [events, inviteAudit, incidentList, executions, webhooks, invocations, userActions, connectionActions] = await Promise.all([
     client.betaAccessRequestEvent.findMany({ where: { email: user.email }, orderBy: { receivedAt: "asc" }, select: { receivedAt: true, source: true } }),
     // PR B — two rows: an issuance row and its EMAIL_OUTCOME can share a
     // millisecond, and the outcome (written after the send) wins that tie.
@@ -129,15 +147,14 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       orderBy: { createdAt: "desc" }, take: 2, select: { createdAt: true, metadata: true, action: true },
     }).then((rows) => rows.find((r) => r.createdAt.getTime() === rows[0].createdAt.getTime() && r.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME) ?? rows[0] ?? null)
       : Promise.resolve(null),
-    client.syncIssue.findMany({
-      where: { resolved: false, OR: [{ plaidItemId: { in: itemIds } }, { financialAccountId: { in: accountIds } }] },
-      orderBy: { lastOccurredAt: "desc" }, take: 50,
-      select: { id: true, provider: true, kind: true, plaidItemId: true, financialAccountId: true, firstOccurredAt: true, lastOccurredAt: true, createdAt: true, resolved: true },
-    }),
+    // PB-1 Phase 2 (R1/R2) — the customer's incidents through the ONE intelligence
+    // module: D4 attribution (manual accounts included), D1/D2/D2b/D10 verdicts.
+    createIncidentAccessors(incidentReaderFor(client)).forCustomer(incidentToken, userId, { limit: INCIDENT_SCAN, now, openOnly: true }),
     client.refreshExecution.findMany({
       where: { OR: [{ plaidItemId: { in: itemIds } }, { sourceRef: { in: accountIds } }] },
       orderBy: { startedAt: "desc" }, take: RECENT_EXECUTIONS,
-      select: { id: true, sourceKind: true, plaidItemId: true, sourceRef: true, trigger: true, profile: true, overallStatus: true, startedAt: true, durationMs: true, failureCategory: true },
+      // PB-7 — errorSummary is read only to recognise a reaped row (recovery-core); it is never projected.
+      select: { id: true, sourceKind: true, plaidItemId: true, sourceRef: true, trigger: true, profile: true, overallStatus: true, startedAt: true, durationMs: true, failureCategory: true, errorSummary: true },
     }),
     client.plaidWebhookEvent.findMany({
       where: { plaidItemId: { in: itemIds } }, orderBy: { receivedAt: "desc" }, take: RECENT_WEBHOOKS,
@@ -160,6 +177,9 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     }),
   ]);
 
+  // Broken now only (the panel lists what needs attention; stale-unverified is not).
+  const issues = incidentList.items.filter((v) => v.brokenNow);
+
   // SEC-PLAT-3 (owner ruling P-4) — this profile is the authorized, AUDITED
   // detail (the route records CUSTOMER_PROFILE_VIEWED before returning it), so
   // the customer's own open incidents may name the affected account in full.
@@ -178,7 +198,10 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     ...connectionActions.filter((a) => !seen.has(a.id) && actionTouchesItems(a, itemSet)),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, OPERATOR_ACTIONS).map(projectOperatorAction);
 
-  const catalogue = await loadPolicyGroupCatalogue();
+  const [catalogue, imports] = await Promise.all([
+    loadPolicyGroupCatalogue(),
+    loadImportsForOwners([userId], now, client),
+  ]);
   const inviteMeta = (inviteAudit?.metadata ?? null) as { emailStatus?: unknown } | null;
   const connected = firstConnectedAt(plaid, wallets, manualAssets);
   const lastEngagedAt = lastEngagements.reduce<Date | null>((best, r) => (!best || r.at > best ? r.at : best), null);
@@ -195,9 +218,12 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       registeredAt: user.createdAt, firstConnectedAt: connected,
     }),
     spaces: projectSpaces(memberships),
-    activity: projectActivity({ lastSessionActiveAt: sessions._max.lastActiveAt, lastLoginAt: lastLogin?.createdAt ?? null, activeSessions }),
+    activity: projectActivity({
+      presence: { lastPresenceAt: livePresence._max.lastPresenceAt, lastInteractionAt: sessions._max.lastInteractionAt },
+      lastLoginAt: lastLogin?.createdAt ?? null, activeSessions, now,
+    }),
     connections: projectConnections(plaid, wallets, { bank: staleWindowMs(policies.BANK), wallet: staleWindowMs(policies.WALLET) }, now.getTime()),
-    incidents: projectIncidents(issues, executions, webhooks, accountLabels),
+    incidents: projectIncidents(issues, executions, webhooks, accountLabels, { truncated: incidentList.truncated }),
     ai: projectAiUsage(invocations, AI_WINDOW_DAYS),
     rollup: projectRollup({
       invocations30d: invocations.filter((i) => i.surface !== null && ENGAGEMENT_AI_SURFACES.includes(i.surface)),
@@ -208,6 +234,12 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
         firstSession: sessions._min.createdAt, firstConnection: connected,
         firstAiTurn: firstAiTurn?.occurredAt ?? null, firstBriefView: firstBriefView?.createdAt ?? null,
       },
+    }),
+    onboarding: buildOnboardingTimeline({
+      user: { createdAt: user.createdAt, emailVerifiedAt: user.emailVerifiedAt },
+      request: request ? { invitedAt: request.invitedAt, redeemedAt: request.redeemedAt } : null,
+      firstSessionAt: sessions._min.createdAt, firstAiTurnAt: firstAiTurn?.occurredAt ?? null, firstBriefAt: firstBriefView?.createdAt ?? null,
+      banks: imports.items, wallets: wallets.map((w) => ({ id: w.id, provider: String(w.provider), createdAt: w.createdAt })), floor: imports.floor,
     }),
     operatorActions,
     actions: {

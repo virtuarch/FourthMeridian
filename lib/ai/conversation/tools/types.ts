@@ -30,6 +30,7 @@ import type { MemoryClient } from '../memory-store';
  */
 import type { ReadClient } from '@/lib/db/tenant-context';
 import type { AiPhaseRunner } from '@/lib/ai/tenant-phase';
+import type { BalanceCoverageRead } from '@/lib/connections/balance-coverage.core';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ export interface ToolContext {
    * before an absence contract exists would convert a refusal into a confident
    * false statement to the user. Separately, a chat turn makes up to six model
    * calls, so a tenant transaction cannot span one. The MECHANISM is in place; the
-   * authority moves in a later slice. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
+   * authority moves in a later slice. See docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard.
    *
    * Narrower than `memoryClient` in intent and wider in type: `ReadClient` has no
    * `$transaction`, so no tool can open a transaction of its own.
@@ -105,6 +106,13 @@ export interface ToolContext {
    * could be set: it is constructed where the session is, from `requireUser()`.
    */
   phase?: AiPhaseRunner;
+  /**
+   * PB-8c — the Space's balance-history floors, read by the surface that opened
+   * the transcript in a phase of its OWN (engine.ts → readBalanceCoverage), never
+   * on this call's transaction. Never rejects: a failed read is BALANCE_COVERAGE_UNAVAILABLE (fail CLOSED; null means "nothing to cover"). Absent on a
+   * context built without the engine: see get_net_worth_history.
+   */
+  balanceCoverage?: () => Promise<BalanceCoverageRead>;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
   /**

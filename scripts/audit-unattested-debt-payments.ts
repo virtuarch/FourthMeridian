@@ -8,7 +8,7 @@
  * hold, buckets them, and quantifies each bucket. It changes nothing and
  * recommends nothing in code.
  *
- * Run: npx tsx --env-file=.env.local scripts/audit-unattested-debt-payments.ts
+ * Run: npx tsx --env-file=.env.local scripts/audit-unattested-debt-payments.ts --space-name=<Space name>
  */
 
 import { db } from "@/lib/db";
@@ -33,7 +33,10 @@ async function main() {
   const liqCtx = tierResolver(accounts.map((a) => ({ id: a.id, type: a.type })));
   const liabilities = accounts.filter((a) => a.type === "debt");
 
-  const space = (await db.space.findFirst({ where: { name: "Chris' Space" }, select: { id: true } }))!;
+  const spaceArg = process.argv.find((a) => a.startsWith("--space-name="));
+  const spaceName = spaceArg ? spaceArg.slice("--space-name=".length) : "";
+  if (!spaceName) { console.error("Usage: tsx scripts/audit-unattested-debt-payments.ts --space-name=<Space name>"); process.exit(1); }
+  const space = (await db.space.findFirst({ where: { name: spaceName }, select: { id: true } }))!;
   const raw = await db.transaction.findMany({
     where: {
       deletedAt: null, flowType: { not: "INVESTMENT" },

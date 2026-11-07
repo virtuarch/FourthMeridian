@@ -103,7 +103,7 @@ export async function getInvestmentsTimeMachine(
   // quantity BACKWARD, so an account connected in 2026 had its positions priced
   // across 2025 as though they had always been held.
   //
-  // Measured on Chris' Space at 2025-11-03: the `Individual` account contributed
+  // Measured on Jules' Space at 2025-11-03: the `Individual` account contributed
   // $2,482.12 — six positions, seven months before its first ownership evidence —
   // and that was the entire gap between the headline ($32,820.13) and the chart,
   // panel and snapshot, which all agreed at $30,338.00.

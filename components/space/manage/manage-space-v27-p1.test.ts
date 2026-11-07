@@ -32,7 +32,7 @@ const HOST = code("components/dashboard/SpaceDashboard.tsx");
 
 console.log("1. one name, everywhere");
 {
-  check("the Preview legacy row: stored \"Chris's Dashboard\" is shown as \"Chris' Space\"", displaySpaceName("Chris's Dashboard") === "Chris' Space");
+  check("the Preview legacy row: stored \"Jules's Dashboard\" is shown as \"Jules' Space\"", displaySpaceName("Jules's Dashboard") === "Jules' Space");
   check("General starts from the DISPLAYED name (it used to show the raw stored string)",
     /const shownName = displaySpaceName\(space\.name\);/.test(GEN) && /useState\(shownName\)/.test(GEN) && !/useState\(space\.name\)/.test(GEN));
   check("dirty/send compare against the displayed name; name sent only when changed (no silent legacy rewrite)",

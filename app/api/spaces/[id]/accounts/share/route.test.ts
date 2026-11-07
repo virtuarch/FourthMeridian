@@ -23,7 +23,7 @@ const share = (by: Person | null, spaceId: string, body: unknown) =>
 const unshare = (by: Person | null, spaceId: string, financialAccountId: string) =>
   invoke(DELETE, request(`/api/spaces/${spaceId}/accounts/share`, { method: "DELETE", cookie: by ? w.as[by].cookie : null, body: { financialAccountId } }), { id: spaceId });
 const account = (owner: Person, over: Record<string, unknown> = {}) =>
-  fake.seed("FinancialAccount", { ownerUserId: w.ids[owner], name: `${owner}'s Chase Checking`, type: "checking", ...over }).id as string;
+  fake.seed("FinancialAccount", { ownerUserId: w.ids[owner], name: `${owner}'s Example Bank Checking`, type: "checking", ...over }).id as string;
 const link = (spaceId: string, fa: string) => fake.one("SpaceAccountLink", { spaceId, financialAccountId: fa });
 
 async function main() {
@@ -39,13 +39,13 @@ async function main() {
     const l = link(w.S, fa)!;
     t.check("an ACTIVE FULL link added by the sharer (first link ⇒ HOME)", l.status === "ACTIVE" && l.visibilityLevel === "FULL" && l.addedByUserId === w.ids.member && l.kind === "HOME", l);
     const audit = fake.one("AuditLog", { action: "ACCOUNT_SHARED" })!;
-    t.check("ACCOUNT_SHARED audit in S naming the account (FULL visibility)", audit.spaceId === w.S && (audit.metadata as Record<string, unknown>).accountName === "member's Chase Checking");
+    t.check("ACCOUNT_SHARED audit in S naming the account (FULL visibility)", audit.spaceId === w.S && (audit.metadata as Record<string, unknown>).accountName === "member's Example Bank Checking");
     const fb = account("viewer");
     const v = await share("viewer", w.S, { financialAccountId: fb, visibilityLevel: "BALANCE_ONLY" });
     t.check("a VIEWER may share their own account (policy: account:share is VIEWER+)", v.status === 201);
     const vAudit = fake.rows("AuditLog", { action: "ACCOUNT_SHARED" }).find((a) => (a.metadata as Record<string, unknown>).financialAccountId === fb)!;
     t.check("BALANCE_ONLY: the audit stores a GENERIC account name, never the real one",
-      !JSON.stringify(vAudit.metadata).includes("Chase") && (vAudit.metadata as Record<string, unknown>).visibilityLevel === "BALANCE_ONLY", vAudit.metadata);
+      !JSON.stringify(vAudit.metadata).includes("Example Bank") && (vAudit.metadata as Record<string, unknown>).visibilityLevel === "BALANCE_ONLY", vAudit.metadata);
     t.check("sharing into a second Space ⇒ kind SHARED", (await share("owner", w.P, { financialAccountId: account("owner") })).status === 201
       && await (async () => { const id = fake.rows("FinancialAccount", { ownerUserId: w.ids.owner })[0].id as string; await share("owner", w.S, { financialAccountId: id }); return link(w.S, id)!.kind === "SHARED"; })());
   }

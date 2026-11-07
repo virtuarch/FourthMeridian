@@ -35,7 +35,7 @@ function envelopeRow(id: string, minsAgo: number, input: Parameters<typeof build
 }
 
 const OP = { userId: "op_000001", via: "PLATFORM_GRANT" as const, area: "PLATFORM_OPS" };
-const label = (id: string) => (id === "op_000001" ? "chris" : id === "op_000002" ? "Dana Ops" : null);
+const label = (id: string) => (id === "op_000001" ? "jules" : id === "op_000002" ? "Dana Ops" : null);
 
 async function main() {
   console.log("1. the ruling: platform objects in, security events out");
@@ -48,6 +48,8 @@ async function main() {
     // PLATFORM-SEC-1 adds the fleet-run intent row (PLATFORM_OPERATION_REQUESTED), a JOB target.
     const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "PLATFORM_OPERATION_REQUESTED", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
       "PLATFORM_POLICY_CHANGED", "PLATFORM_POLICY_RESET", "CONNECTION_RESYNC_TRIGGERED", "CONNECTION_REAUTH_REQUESTED",
+      // PB-5: an operator removed ONE connection (PLAID_ITEM / CONNECTION target).
+      "CONNECTION_REMOVED_BY_OPERATOR", "CONNECTION_REMOVAL_REQUESTED",
       "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL",
       // A connection action (D6): resuming ONE wallet connection's history.
       "WALLET_HISTORY_RESUMED",
@@ -74,7 +76,7 @@ async function main() {
       metadata: { actorType: "PLATFORM_OPERATOR", result: "SUCCESS", target: { kind: "USER", id: "u1" } } };
     check("an admitted action with a non-platform target kind is refused", !admitsFeedRow(wrongKind));
     const legacy: OperatorFeedRowLike = { id: "a5", action: AuditAction.CONNECTION_RESYNC_TRIGGERED, createdAt: at(5), performedByAdminId: "op_000001",
-      metadata: { institution: "Chase", result: "SUCCESS" } };
+      metadata: { institution: "Example Bank", result: "SUCCESS" } };
     check("a pre-envelope resync row (no target) is admitted on its action", admitsFeedRow(legacy));
     const legacyCadence: OperatorFeedRowLike = { id: "a6", action: AuditAction.JOB_CADENCE_CHANGED, createdAt: at(6), performedByAdminId: "op_000001", metadata: {} };
     check("a cadence change without an envelope is refused (the envelope has always existed for it)", !admitsFeedRow(legacyCadence));
@@ -92,7 +94,7 @@ async function main() {
       detail: { started: 2, cooldown: 1 },
     });
     const item = projectOperatorFeedItem(refreshAll, label("op_000001"));
-    check("operator is the resolved label", item.operator === "chris");
+    check("operator is the resolved label", item.operator === "jules");
     check("Refresh All target is OPAQUE (user …last6), never the customer's username", item.target === "user …123456");
     check("action label from the table", item.actionLabel === "Refreshed a customer's authorities");
     check("reason CODE only", item.reasonCode === "SUPPORT_REQUEST");
@@ -107,10 +109,10 @@ async function main() {
     check("a job run carries jobRunId + the Jobs workspace; result word preserved", ri.evidence.jobRunId === "run_000000abc123" && ri.evidence.workspace === "platform-jobs" && ri.result === "FAILURE" && ri.target === "job …-banks");
 
     const legacy: OperatorFeedRowLike = { id: "r3", action: AuditAction.CONNECTION_RESYNC_TRIGGERED, createdAt: at(3), performedByAdminId: "op_000002",
-      metadata: { institution: "Chase", email: "someone@example.com", result: "SUCCESS" } };
+      metadata: { institution: "Example Bank", email: "someone@example.com", result: "SUCCESS" } };
     const li = projectOperatorFeedItem(legacy, label("op_000002"));
     check("legacy row: institution token as target, the name fallback as operator, and the email in metadata never surfaces",
-      li.target === "Chase" && li.operator === "Dana Ops" && !/@/.test(JSON.stringify(li)));
+      li.target === "Example Bank" && li.operator === "Dana Ops" && !/@/.test(JSON.stringify(li)));
   }
 
   console.log("\n4. the feed: ordering kept, depth stated, refused rows dropped, empty is honest");
@@ -140,13 +142,13 @@ async function main() {
       },
       async operators(ids) {
         asked.ids = ids;
-        return [{ id: "op_000001", username: "chris", name: "Chris H", ...({ email: "chris@example.com" } as object) }];
+        return [{ id: "op_000001", username: "jules", name: "Jules E", ...({ email: "jules@example.com" } as object) }];
       },
     };
     const feed = await loadOperatorFeed({ readers });
     check("rows are asked for exactly the allowlist at OPERATOR_FEED_DEPTH", asked.actions?.join() === PLATFORM_OPS_FEED_ACTIONS.join() && asked.take === OPERATOR_FEED_DEPTH);
     check("operators resolved for the acting ids only", asked.ids?.join() === "op_000001");
-    check("username first; an email on the identity row never reaches the payload", feed.items[0].operator === "chris" && !/@/.test(JSON.stringify(feed)));
+    check("username first; an email on the identity row never reaches the payload", feed.items[0].operator === "jules" && !/@/.test(JSON.stringify(feed)));
     check("checkedAt is the reader's clock", feed.checkedAt === NOW.toISOString());
   }
 

@@ -60,14 +60,14 @@ check("merchant preserved", rows[0]?.merchant === "Coffee Bar");
 
 // ── Other serialisers produce headered, non-empty CSV ─────────────────────────
 const accounts = [
-  { id: "a1", name: "Checking", type: "checking", institution: "Chase", balance: 100, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" },
+  { id: "a1", name: "Checking", type: "checking", institution: "Example Bank", balance: 100, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" },
 ] as unknown as ExportAccount[];
 const accountsCsv = toAccountsCsv(accounts);
 check("accounts.csv has id + balance headers", accountsCsv.split("\n")[0]?.includes("id") === true && accountsCsv.includes("balance"));
 
 const holdings: ExportHolding[] = [
   // A canonical, fully-valued position (native value + FX-converted reporting value).
-  { id: "a2:i-vti", accountId: "a2", symbol: "VTI", name: "Vanguard", quantity: 3,
+  { id: "a2:i-vti", accountId: "a2", symbol: "VTI", name: "Institution B", quantity: 3,
     price: 250, value: 750, currency: "USD", reportingValue: 600, reportingCurrency: "GBP",
     costBasis: 500, isCash: false, spaceId: "s1", source: "canonical" },
   // An UNVALUED canonical position — retained, value/price BLANK (never 0).
@@ -164,6 +164,43 @@ check("snapshots.csv has net_worth header", snapshotsCsv.split("\n")[0]?.include
   // The export must never silently correct history.
   check("no stored value was rewritten across any row",
     rows.every((r, i) => r.total_crypto === String((statusRows[i] as unknown as { totalCrypto: number }).totalCrypto)));
+}
+
+// ── FM-AUDIT-022 — an unvalued wallet is never exported as 0 ────────────────
+//
+// An export outlives the UI that would qualify a figure, so a structural 0 for a
+// wallet with no value becomes a false value in the user's own file. The row is
+// kept, `balance` is BLANK and `valuation_status` says why. Column order is
+// pinned: the status column is appended LAST, nothing else moves.
+{
+  const ACCOUNTS_COLUMNS_BEFORE = [
+    "id", "name", "type", "institution", "balance", "currency", "credit_limit",
+    "interest_rate", "minimum_payment", "last_updated", "space_id", "space_name",
+  ];
+  const valued = { id: "a1", name: "Checking", type: "checking", institution: "Bank", balance: 100.5,
+    currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" };
+  const unvalued = { id: "w1", name: "Wallet", type: "crypto", institution: "", balance: null,
+    valuationStatus: "not_yet_valued", currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z",
+    spaceId: "s1", spaceName: "Personal" };
+  const csv = toAccountsCsv([valued, unvalued] as unknown as ExportAccount[]);
+  const lines = csv.split(/\r?\n/);
+  check("accounts.csv column order: every prior column in place, valuation_status appended last",
+    lines[0] === [...ACCOUNTS_COLUMNS_BEFORE, "valuation_status"].join(","), lines[0]);
+  const parsedRows = Papa.parse<Record<string, string>>(csv, { header: true, skipEmptyLines: true }).data;
+  check("unvalued row: balance cell EMPTY (never 0)", parsedRows[1]?.balance === "", JSON.stringify(parsedRows[1]?.balance));
+  check("unvalued row: valuation_status = not_yet_valued", parsedRows[1]?.valuation_status === "not_yet_valued");
+  check("unvalued row: retained with its identity", parsedRows[1]?.id === "w1" && parsedRows[1]?.type === "crypto");
+  check("no `0` balance anywhere for the unvalued row", !/^w1,Wallet,crypto,,0[,.]/.test(lines[2] ?? ""), lines[2]);
+  // The valued row's pre-existing cells are byte-identical to the prior writer;
+  // the only change is the appended (empty) status cell.
+  const priorValuedLine = Papa.unparse([{
+    id: "a1", name: "Checking", type: "checking", institution: "Bank", balance: 100.5, currency: "USD",
+    credit_limit: "", interest_rate: "", minimum_payment: "", last_updated: "2026-03-01T00:00:00.000Z",
+    space_id: "s1", space_name: "Personal",
+  }], { escapeFormulae: true }).split(/\r?\n/)[1];
+  check("valued row: byte-identical prior cells + one empty trailing status cell",
+    lines[1] === `${priorValuedLine},`, `${lines[1]} vs ${priorValuedLine},`);
+  check("valued row: valuation_status empty", parsedRows[0]?.valuation_status === "" && parsedRows[0]?.balance === "100.5");
 }
 
 // ── SEC-004 — CSV formula injection ─────────────────────────────────────────

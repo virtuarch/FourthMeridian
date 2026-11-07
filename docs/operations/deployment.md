@@ -85,7 +85,7 @@ DATABASE_URL="postgresql://..." DIRECT_URL="postgresql://..." npx prisma studio
 ## Step 3 — Connect GitHub to Vercel
 
 1. Go to [vercel.com](https://vercel.com) → **Add New Project**
-2. Import the `virtuarch/fintracker` GitHub repo
+2. Import the `<owner>/fintracker` GitHub repo
 3. Framework preset: **Next.js** (auto-detected)
 4. Build command: `prisma generate && next build` ← already set in `package.json`
 5. Install command: `npm install` (default)

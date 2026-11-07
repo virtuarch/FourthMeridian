@@ -18,8 +18,8 @@
  *   2. PLATFORM_AREA_WORKSPACES — THE single composition owner. It answers, from
  *      one place, "which Workspaces does each Platform area expose, in what order,
  *      and which section-widgets does each render?" This replaces "everything
- *      lands in one Overview grid": Platform Operations decomposes into four
- *      workspaces (Operations · Providers · AI & Costs · Policies), each with named VIEWS,
+ *      lands in one Overview grid": Platform Operations decomposes into its
+ *      workspaces (Operations · Providers · Economics · Policies · Incidents), each with named VIEWS,
  *      each a real Workspace rendered in the shared SpaceShell workspace slot.
  *      The other areas (Security/Growth/Customer-Success) keep a single Overview
  *      workspace (behavior-preserving) — decomposition is demand-pulled per area.
@@ -79,13 +79,15 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-providers", kind: "standard", domain: "platform",
     label: "Providers", icon: "PlugZap",
   },
-  // OPS-6D — the AI operations console (usage volume + trend + estimated cost).
-  "platform-ai": {
-    id: "platform-ai", kind: "standard", domain: "platform",
-    // P-10 — AI usage AND the economics console in one workspace (the former
-    // "Economics" tab, platform-costs, merged here). PLATFORM OPS PHASE 1 UX —
-    // relabelled "AI & Costs" (owner brief); its two VIEWS split usage from spend.
-    label: "AI & Costs", icon: "Sparkles",
+  // PLATFORM ECONOMICS (owner priority #6) — the top-level Economics section:
+  // Overview (operating cost, its AI / providers / infrastructure split, cost per
+  // active customer, the 7/30/90-day trend, revenue + margin UNAVAILABLE) and
+  // AI & Costs (the former "platform-ai" workspace, now a VIEW of this one — the
+  // retired id resolves here through PLATFORM_WORKSPACE_ALIASES, view-carrying,
+  // so every ?workspace=platform-ai deep link still opens AI & Costs).
+  "platform-economics": {
+    id: "platform-economics", kind: "standard", domain: "platform",
+    label: "Economics", icon: "Receipt",
   },
   // PLATFORM OPS PHASE 1 UX — "platform-jobs" and "platform-refresh" are no
   // longer workspace identities: Jobs and Pipeline are VIEWS of Operations
@@ -145,8 +147,12 @@ export interface PlatformWorkspaceView {
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
 export type PlatformViewLead =
   | "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant"
+  // Platform Economics — one lead per view (Overview · Providers · Entitlements; AI & Costs reuses "ai-costs").
+  | "economics-overview" | "economics-providers" | "economics-entitlements"
   // Customer Success › Communications Center — one lead per view.
-  | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences";
+  | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences"
+  // PB-1 2B — the incidents workspace, one lead per tier (Ops identity-free; CS names the customer).
+  | "incidents-ops" | "incidents-cs";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -221,10 +227,14 @@ export function platformViewTarget(workspaceId: string, viewId: string): string 
  */
 export const PLATFORM_WORKSPACE_ALIASES: Readonly<Record<string, { readonly workspaceId: string; readonly viewId?: string }>> = {
   "platform-trends":  { workspaceId: "platform-overview" },
-  // PLATFORM OPS VISUAL SPEC §5 — AI & Costs is ONE analytical dashboard; the
-  // former "costs" view (Plaid usage + operational cost) is in its drawers, so
-  // the retired economics id lands on that dashboard.
-  "platform-costs":   { workspaceId: "platform-ai" },
+  // PLATFORM ECONOMICS — AI & Costs moved under Economics as its "ai" VIEW. The
+  // former workspace id keeps opening exactly that dashboard (and its
+  // ?aicalls/aiuntil/aipage drilldown, which is workspace-scoped and survives
+  // the in-place canonicalization), and so does the older "platform-costs"
+  // (PLATFORM OPS VISUAL SPEC §5 — Plaid usage + operational cost live in the
+  // AI & Costs drawers).
+  "platform-ai":      { workspaceId: "platform-economics", viewId: "ai" },
+  "platform-costs":   { workspaceId: "platform-economics", viewId: "ai" },
   "platform-jobs":    { workspaceId: "platform-overview", viewId: "jobs" },
   "platform-refresh": { workspaceId: "platform-overview", viewId: "pipeline" },
 };
@@ -293,20 +303,32 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
           hosted: ["ops_provider_health", "ops_provider_operations", "ops_resource_freshness", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"] },
       ],
     }),
-    // ── AI & Costs (P-10) — PLATFORM OPS VISUAL SPEC §5: ONE analytical
-    // dashboard (components/platform/leads/AiCostsLead.tsx): estimated-spend
-    // hero (billed = Unknown) · daily spend · cost by surface · tokens &
-    // invocations · cost by provider · budget utilisation · customers · the
-    // Economics (Phase 3) slot. The former AI and Costs views' widgets are
-    // HOSTED unchanged in its drawers (Invocations · Daily Brief · Usage ledger
-    // · Budget & controls · Plaid & operational cost), so the second tab row is
-    // gone; the retired "costs" view id falls back to this one (and the
-    // platform-costs alias lands here). Composition only — no second spend engine.
+    // ── Economics (owner priority #6) — "what does running the platform cost,
+    // per customer, and what can we NOT see?" Four views, each a lead, no
+    // section key of its own (Providers + Entitlements arrived in PR B):
+    //   overview  components/platform/leads/EconomicsOverviewLead.tsx — ONE
+    //             server reader (lib/platform/economics/snapshot.ts) composing
+    //             the existing AI / Plaid / engagement readers; every figure is
+    //             MEASURED / ESTIMATED / PARTIAL / UNAVAILABLE with coverage and
+    //             freshness, and opens its own records. Revenue and margin are
+    //             UNAVAILABLE (no billing source).
+    //   ai        AI & Costs, moved here UNCHANGED (PLATFORM OPS VISUAL SPEC §5:
+    //             ONE analytical dashboard, components/platform/leads/
+    //             AiCostsLead.tsx, its former widgets HOSTED in drawers —
+    //             Invocations · Daily Brief · Usage ledger · Budget & controls ·
+    //             Plaid & operational cost). Its view id stays "ai" and the
+    //             retired platform-ai / platform-costs ids alias to it.
+    // Provider HEALTH stays in Providers; configuration stays in Policies.
     withViews({
-      workspaceId: "platform-ai",
+      workspaceId: "platform-economics",
       views: [
+        { id: "overview", label: "Overview", lead: "economics-overview", sections: [] },
         { id: "ai", label: "AI & Costs", lead: "ai-costs", sections: [],
           hosted: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops", "ops_plaid_usage", "ops_cost"] },
+        // PR B — provider COST (health stays in Providers) and cost by policy group
+        // with read-only HYPOTHETICAL allowance scenarios (configuration stays in Policies).
+        { id: "providers", label: "Providers", lead: "economics-providers", sections: [] },
+        { id: "entitlements", label: "Entitlements", lead: "economics-entitlements", sections: [] },
       ],
     }),
     // ── Policies (formerly "Controls") — declared policy. ONE section,
@@ -330,6 +352,23 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
         { id: "defaults", label: "Platform defaults", sections: [{ key: "ops_policies", variant: "defaults" }] },
         { id: "alerts", label: "Alerts", sections: ["ops_alerts"] },
         { id: "emergency", label: "Emergency controls", sections: [{ key: "ops_policies", variant: "emergency" }] },
+      ],
+    }),
+    // ── Incidents (PB-1 2B) — "what is broken, since when, why, and what happened?"
+    // Every sync incident through the ONE intelligence module (Ops token —
+    // identity-free): the list (filterable, paged, every row opens the detail
+    // drawer: verdict + why, the append-only timeline, evidence digest, affected
+    // subjects, related / recurring incidents, archive state, the existing
+    // resync / reauth actions) and the 13-month history. Each VIEW is one status
+    // preset — exactly one accessor's filter — so the Operations "broken now"
+    // figure opens the default view and the two read the same query. Lead-only:
+    // no section key, nothing to seed.
+    withViews({
+      workspaceId: "platform-incidents",
+      views: [
+        { id: "open", label: "Broken now", lead: "incidents-ops", sections: [] },
+        { id: "verify", label: "Needs verification", lead: "incidents-ops", sections: [] },
+        { id: "history", label: "History", lead: "incidents-ops", sections: [] },
       ],
     }),
   ],
@@ -377,7 +416,19 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       workspaceId: "platform-overview",
       views: [{ id: "overview", label: "Customers", lead: "customer-success", sections: [], hosted: ["cs_customers"] }],
     }),
-    { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
+    // PB-1 2B — the first view keeps the existing preview widget (cs_sync_issues,
+    // unchanged; its reader is cut over separately); Broken now / Needs
+    // verification / History are the investigation lead over the intelligence
+    // module with the CS token (the attributed customer may appear here only).
+    withViews({
+      workspaceId: "platform-incidents",
+      views: [
+        { id: "summary", label: "Summary", sections: ["cs_sync_issues"] },
+        { id: "open", label: "Broken now", lead: "incidents-cs", sections: [] },
+        { id: "verify", label: "Needs verification", lead: "incidents-cs", sections: [] },
+        { id: "history", label: "History", lead: "incidents-cs", sections: [] },
+      ],
+    }),
     // COMMUNICATIONS CENTER (owner-approved, 2026-10-31) — four views, each a
     // LEAD over the Comms Center read API and nothing else: no section key, no
     // DB row, no seeding (the leads self-fetch; the server routes gate on

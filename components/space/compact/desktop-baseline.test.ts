@@ -42,8 +42,8 @@ const RAIL = ["Overview", "Activity", "Accounts", "Transactions", "Members"].map
 const debt = (id: string, name: string, balance: number, over: Partial<DebtPerspectiveAccount> = {}): DebtPerspectiveAccount =>
   ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
 const DEBTS: DebtPerspectiveAccount[] = [
-  debt("c1", "Sapphire", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),
-  debt("c2", "Freedom", -300, { debtSubtype: "credit_card", creditLimit: 5000 }),
+  debt("c1", "Card Product A", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),
+  debt("c2", "Card Product B", -300, { debtSubtype: "credit_card", creditLimit: 5000 }),
   debt("l1", "Auto loan", -14000, { debtSubtype: "auto_loan", interestRate: 6.5 }),
   debt("l2", "Mortgage", -280000, { debtSubtype: "mortgage", interestRate: 5.1 }),
   debt("o1", "IOU", -500),
@@ -64,7 +64,7 @@ const ACCOUNTS = [{ id: "chk", type: "checking" }, { id: "card", type: "debt" }]
 
 const RENDERS: Record<string, () => string> = {
   "SpaceShell (customer, Overview)": () => renderToStaticMarkup(createElement(SpaceShell, {
-    title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
+    title: "Jules's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
     railOptions: RAIL, activeTab: "OVERVIEW", onSelectTab: () => {}, mobileOptimized: true,
     children: createElement("p", null, "content"),
   } as never)),

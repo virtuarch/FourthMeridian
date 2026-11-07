@@ -61,7 +61,7 @@ async function main(): Promise<void> {
 // ── 1. The legitimate DF-4 shape: ONE row, observed twice ──────────────────
 console.log("1. A DF-4 re-key — one live row observed under two provider ids");
 {
-  // This is the measured Amex "Uber" −7.12 shape: Plaid delivered `xDPnbp5g…`
+  // This is the measured Example Card "Uber" −7.12 shape: Plaid delivered `xDPnbp5g…`
   // and then `JMBKp97L…` for the same row; the sync adopted rather than
   // duplicated, so one row carries two observations.
   const obs = [

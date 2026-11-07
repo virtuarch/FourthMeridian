@@ -17,12 +17,12 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const src = (over: Partial<DataSourceView>): DataSourceView => ({
-  kind: "BANK", label: "Chase", state: "CURRENT", lastUpdatedAt: "2026-10-28T00:00:00Z",
+  kind: "BANK", label: "Example Bank", state: "CURRENT", lastUpdatedAt: "2026-10-28T00:00:00Z",
   accountCount: 1, needsAttention: false, actionable: true, feeds: ["liquid", "bankingRows"], ...over,
 } as DataSourceView);
 
 const bank = src({});
-const card = src({ label: "Amex", feeds: ["liabilities", "bankingRows"] });
+const card = src({ label: "Example Card", feeds: ["liabilities", "bankingRows"] });
 const wallet = src({ kind: "WALLET", label: "BTC", feeds: ["digitalAssets"] });
 const house = src({ kind: "MANUAL", label: "Home", feeds: ["realAssets"] });
 const ALL: PerspectiveKey[] = ["netWorth", "assets", "debt", "cash", "investments", "cashFlow", "spending"];
@@ -52,7 +52,7 @@ console.log("why it is empty");
   check("reconnect-needed card ⇒ FAILED on Debt", classifyPerspectiveEmpty("debt", [src({ state: "NEEDS_RECONNECT", feeds: ["liabilities"] })], false).reason === "FAILED");
   check("a failing WALLET does not make Debt look failed (scoped by population)",
     classifyPerspectiveEmpty("debt", [card, src({ kind: "WALLET", state: "SYNC_INCOMPLETE", feeds: ["digitalAssets"] })], false).reason === null);
-  check("failed sources are reported by grant-filtered label only", JSON.stringify(classifyPerspectiveEmpty("cash", [src({ state: "CONNECTION_ERROR" })], false).sources) === JSON.stringify([{ label: "Chase", state: "CONNECTION_ERROR", lastUpdatedAt: "2026-10-28T00:00:00Z", actionable: true }]));
+  check("failed sources are reported by grant-filtered label only", JSON.stringify(classifyPerspectiveEmpty("cash", [src({ state: "CONNECTION_ERROR" })], false).sources) === JSON.stringify([{ label: "Example Bank", state: "CONNECTION_ERROR", lastUpdatedAt: "2026-10-28T00:00:00Z", actionable: true }]));
 }
 
 console.log("populations");
@@ -71,7 +71,8 @@ console.log("copy and route");
   check("route: any ACTIVE member, GET only, the Brief's own loader, no-store",
     /requireSpaceAction\(spaceId, "perspective:read"\)/.test(route) && /loadSpaceDataHealth\(tx/.test(route) && /no-store/.test(route) && !/export (const|async function) (POST|PUT|PATCH|DELETE)/.test(route));
   // 2026-10-28: + valuationCoverage (dates and asset symbols only — valuation-coverage.core.ts).
-  check("route returns sources + valuationCoverage only (no accounts, balances or ids)", /NextResponse\.json\(\{ sources: health\.sources, valuationCoverage \}/.test(route));
+  // PB-8: + balanceCoverage (balance floors, dates only — balance-coverage.core.ts).
+  check("route returns sources + balanceCoverage + valuationCoverage only (no accounts, balances or ids)", /NextResponse\.json\(\{ sources: health\.sources, balanceCoverage, valuationCoverage \}/.test(route));
 }
 
 if (failures > 0) { console.error(`\nperspective-empty-state: ${failures} failed.`); process.exit(1); }

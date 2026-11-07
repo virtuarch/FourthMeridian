@@ -115,10 +115,29 @@ console.log('2. system instruction');
   check('no worked example', !/for example|e\.g\.|example:/i.test(SYSTEM_INSTRUCTION));
   check('no phrase table', !/say "|respond with "|use the phrase/i.test(SYSTEM_INSTRUCTION));
   // The goldens evaluate behaviour; their wording must not become the prompt.
-  const goldens = read('docs/plans/AI-CONVERSATION-GOLDENS.md');
+  // The golden conversations themselves are kept in private records (they were
+  // written against a personal Space; docs/plans/AI-CONVERSATION-GOLDENS.md is a
+  // stub), so the hermetic guard runs against what the tree keeps of them: the
+  // probe conversations drawn from them.
+  const probeText = read('scripts/ai-baseline/probes.ts');
+  const leaks = (instruction: string, probes: string): boolean =>
+    instruction.split('\n').filter((l) => l.trim().length > 30).some((s) => probes.includes(s.trim()));
   const sentences = SYSTEM_INSTRUCTION.split('\n').filter((l) => l.trim().length > 30);
-  check('no sentence of the instruction appears in the goldens',
-    sentences.every((s) => !goldens.includes(s.trim())));
+  check('the overlap guard has something to compare (non-empty on both sides)',
+    sentences.length > 0 && PROBES.some((p) => p.turns.some((t) => t.trim().length > 30)));
+  check('no sentence of the instruction appears in the probe conversations',
+    !leaks(SYSTEM_INSTRUCTION, probeText));
+  // ⚠️ MUTATION SELF-CHECK. The guard above must be able to fail: a probe line
+  // carrying an instruction sentence, or an instruction carrying a probe line,
+  // each trips it. Without this a broken split or an empty read passes silently.
+  {
+    const probeLine = PROBES.flatMap((p) => p.turns).find((t) => t.trim().length > 30 && probeText.includes(t))!;
+    const instructionLine = sentences[0]!;
+    check('mutation: a probe line edited to carry an instruction sentence trips the guard',
+      leaks(SYSTEM_INSTRUCTION, probeText.replace(probeLine, instructionLine.trim())));
+    check('mutation: an instruction edited to carry a probe line trips the guard',
+      leaks(`${SYSTEM_INSTRUCTION}\n${probeLine}`, probeText));
+  }
   check('names no financial figure', !/\$|\d{3,}/.test(SYSTEM_INSTRUCTION));
 }
 
@@ -999,7 +1018,7 @@ console.log('13k. composition is not change — the tool names match the capabil
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner
 // "your biggest". On a 173-row month that answered from 58% of the data, and on a
 // 144-row spending population it is the difference between a $680 Shein purchase
-// and a $5,306 payroll deposit. Raising the page would move the cliff, not remove
+// and a $5,520 payroll deposit. Raising the page would move the cliff, not remove
 // it — the ranking now pages the keyset cursor to exhaustion.
 // ⚠️ THE ONLY ASYNC SECTION, so it runs inside an IIFE — the house pattern is a
 // top-level script and tsx compiles these to CJS, where top-level await is not

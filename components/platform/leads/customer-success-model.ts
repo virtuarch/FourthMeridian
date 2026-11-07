@@ -12,6 +12,7 @@ import type { BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import type { DayBar, Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import type { HeroModel } from "../ops-visual/HealthHero";
 import type { ShareBar } from "../charts/ShareBars";
+import { CUSTOMER_POPULATION_POLICY, pendingDefinitionNote } from "@/lib/platform/customer/population";
 
 export type CsWindow = "30" | "90";
 
@@ -20,6 +21,8 @@ export const CUSTOMER_LIST_KEY = "cs_customers";
 export const INCIDENTS_WORKSPACE = "platform-incidents";
 
 const n = (v: number) => v.toLocaleString("en-US");
+/** S2 — a count from a capped read is a floor: "≥N" (the active-incident scan's "+" pattern, spelled out). */
+export const atLeast = (v: number, floor: boolean) => `${floor ? "≥" : ""}${n(v)}`;
 const hhmm = (iso: string) => `Checked ${new Date(iso).toISOString().slice(11, 16)} UTC`;
 const reason = (f: Fetched<unknown>, what: string) => (f.loading ? `Reading ${what}…` : `${what} unavailable${f.error ? ` — ${f.error}` : ""}`);
 
@@ -28,6 +31,12 @@ export function connectedCount(o: CsOverviewResponse): number {
   const i = o.stages.findIndex((s) => s.key === "firstConnection");
   return i < 0 ? 0 : o.stages.slice(i).reduce((a, s) => a + s.count, 0);
 }
+
+/**
+ * OD-2 / OD-4 — who counts as a customer waits on the owner. Shown beside the
+ * customer counts so the undecided definition is visible, never silently chosen.
+ */
+export const CS_POPULATION_PENDING_NOTE = pendingDefinitionNote(CUSTOMER_POPULATION_POLICY.operators, CUSTOMER_POPULATION_POLICY.testAccounts);
 
 export function csKpis(f: Fetched<CsOverviewResponse>): Kpi[] {
   const o = f.data;
@@ -38,7 +47,7 @@ export function csKpis(f: Fetched<CsOverviewResponse>): Kpi[] {
   const connected = connectedCount(o);
   return [
     { key: "customers", label: "Customers", value: n(o.customers.active), sub: `${n(o.customers.deactivated)} deactivated` },
-    { key: "help", label: "Need help", value: n(o.attention.customers), sub: o.customers.active ? `of ${n(o.customers.active)} customers` : "no customers",
+    { key: "help", label: "Need help", value: atLeast(o.attention.customers, o.attention.floor === true), sub: o.customers.active ? `of ${n(o.customers.active)} customers` : "no customers",
       tone: o.attention.customers > 0 ? "warn" : undefined },
     { key: "connected", label: "First connection", value: o.customers.active ? `${Math.round((connected / o.customers.active) * 100)}%` : "—",
       sub: `${n(connected)} of ${n(o.customers.active)} · strict funnel` },
@@ -52,20 +61,20 @@ export function csHero(f: Fetched<CsOverviewResponse>): HeroModel {
     title: "Customer Success",
     dot: false,
     provenance: "MEASURED",
-    verdict: { word: !o ? "—" : o.attention.customers === 0 ? "No one needs help" : `${n(o.attention.customers)} need${o.attention.customers === 1 ? "s" : ""} help`, tone: "muted" },
+    verdict: { word: !o ? "—" : o.attention.customers === 0 ? "No one needs help" : `${atLeast(o.attention.customers, o.attention.floor === true)} need${o.attention.customers === 1 && !o.attention.floor ? "s" : ""} help`, tone: "muted" },
     checked: o ? hhmm(o.checkedAt) : null,
-    caption: o ? `of ${n(o.customers.active)} active customers · reasons below, the list beneath` : reason(f, "customer figures"),
+    caption: o ? `of ${n(o.customers.active)} open customer accounts · reasons below, the list beneath` : reason(f, "customer figures"),
     kpis: csKpis(f),
     kpiLabels: { first: "Customers and help", second: "Connection and issues", all: "Customer Success figures" },
   };
 }
 
-/** Help reasons as shares of ACTIVE customers (a customer can have several). */
+/** Help reasons as shares of OPEN customer accounts (a customer can have several). */
 export function attentionBars(o: CsOverviewResponse): ShareBar[] {
   return o.attention.reasons.map((r) => ({ key: r.key, label: r.label, count: r.count, share: o.customers.active ? r.count / o.customers.active : null }));
 }
 
-/** Where active customers are now: the furthest stage reached through, as shares of active customers. */
+/** Where open customer accounts are now: the furthest stage reached through, as shares of them. */
 export function stageBars(o: CsOverviewResponse): ShareBar[] {
   return o.stages.map((s) => ({ key: s.key, label: s.label, count: s.count, share: o.customers.active ? s.count / o.customers.active : null }));
 }

@@ -1,5 +1,8 @@
 # P1 runbook: historical transfer repair in Production (2026-10-27)
 
+> **Owner:** Session 1 · **Status:** BLOCKED · **Updated:** 2026-11-02 · **PRs:** —
+> Current state (2026-11-02): never executed. It is pending owner decision D11 (approve dry run `--expect=16`, then apply). It moves to `docs/operations/runbooks/` in a later PR.
+
 **Status: READY, NOT AUTHORIZED.** This runbook describes a write to Production. Do not run any `--apply` step until the owner has given separate, written authorization for this specific run (see §1). Nothing in this document has been run against Production.
 
 **Script:** `scripts/repair-transfer-debt-payment.ts`, which uses:
@@ -55,7 +58,7 @@ The 0.2 signature is not a silent assertion. It derives `needsClassification = U
 
 ## 1. Prerequisites (every one of these is required)
 
-1. **Owner authorization.** A written approval from the owner for *this* Production apply, with a ticket or issue id (for example `FM-OPS-142` or `virtuarch/FourthMeridian#NN`). That id becomes `--i-have-owner-approval=<ticket>` and is recorded in the report and the restore file. Approval to "fix the Amex rows" in general is not authorization for this run.
+1. **Owner authorization.** A written approval from the owner for *this* Production apply, with a ticket or issue id (for example `FM-OPS-142` or `FourthMeridian#NN`). That id becomes `--i-have-owner-approval=<ticket>` and is recorded in the report and the restore file. Approval to "fix the Amex rows" in general is not authorization for this run.
 2. **Production runs v2.7 code containing PR #58 or later.** This is required, not optional.
    - On v2.6 (main `43768b5`), the sync's ownership gate preserves `flowType` but **not** the category. The next `modified[]` re-delivery would put `Payment` back next to `TRANSFER`.
    - v2.6 also has no sync-time pass to correct a pending row's posted successor.

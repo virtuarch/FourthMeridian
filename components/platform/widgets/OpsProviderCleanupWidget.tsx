@@ -82,7 +82,7 @@ export function OpsProviderCleanupWidget({ section, access }: { section: Platfor
       // being REVOKED, which it already was before the retry.
       setOutcome((o) => ({
         ...o,
-        [plaidItemId]: body?.confirmed ? "Confirmed" : body?.skipped === "ITEM_GONE" ? "Item gone" : "Still owed",
+        [plaidItemId]: body?.confirmed ? "Confirmed" : body?.skipped === "ITEM_GONE" ? "Item gone" : body?.skipped === "IN_PROGRESS" ? "Removal in progress" : "Still owed",
       }));
       await rereadStatus();
     } catch {
@@ -132,7 +132,7 @@ export function OpsProviderCleanupWidget({ section, access }: { section: Platfor
                 <div key={o.plaidItemId} className="flex flex-col gap-1 rounded-lg border border-[var(--border-hairline)] p-2.5">
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-[var(--text-primary)]">{o.institution ?? "(unknown institution)"}</span>
-                    <span className="text-[11px] tabular-nums text-[var(--text-muted)]">owner …{o.ownerRef}</span>
+                    <span className="text-[11px] tabular-nums text-[var(--text-muted)]">owner {o.ownerRef}</span>
                   </div>
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-[var(--text-muted)]">
                     {/* The distinction, in the UI, in words. */}
@@ -144,8 +144,9 @@ export function OpsProviderCleanupWidget({ section, access }: { section: Platfor
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="font-mono text-[10px] text-[var(--text-muted)]">{o.plaidItemId}</span>
-                    {!o.itemGone && !canWrite && <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>{OPS_CLEANUP_READ_ONLY_LINE}</span>}
-                    {!o.itemGone && canWrite && (
+                    {o.inProgress && <span className="text-[10px] text-[var(--text-muted)]" data-in-progress>Removal in progress — retry is held for 15 minutes.</span>}
+                    {!o.itemGone && !o.inProgress && !canWrite && <span className="text-[10px] text-[var(--text-muted)]" data-read-only-line>{OPS_CLEANUP_READ_ONLY_LINE}</span>}
+                    {!o.itemGone && !o.inProgress && canWrite && (
                       <button
                         type="button"
                         onClick={() => retry(o.plaidItemId)}

@@ -24,8 +24,9 @@
 import "server-only";
 import { db, systemDb } from "@/lib/db";
 import { buildFunnel, firstConnections, type FunnelInputs } from "@/lib/platform/growth/product-analytics-core";
-import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
+import { loadEngagedUserIdsSince, loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import type { FunnelStage } from "@/lib/platform/growth/product-analytics-types";
+import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 
 const DAY_MS = 86_400_000;
 
@@ -43,7 +44,7 @@ export interface ActivationFunnel {
   totalUsers: number;
   verified: number;
   activated: number;  // ≥1 session ever
-  returning7: number; // users older than 7d with a session in the last 7d
+  returning7: number; // users older than 7d with MEANINGFUL ENGAGEMENT in the last 7d (PB-10; lib/presence/definitions.ts)
   verifyRate: number | null;
   activationRate: number | null;
 }
@@ -130,9 +131,11 @@ function realReaders(now: Date): GrowthReaders {
       const rows = await db.userSession.groupBy({ by: ["userId"], _count: { _all: true } });
       return rows.length;
     },
+    // PB-10 — "returning" = MEANINGFUL ENGAGEMENT in the window (lib/presence/definitions.ts),
+    // not UserSession.lastActiveAt: that clock moves on any authenticated request, so an idle
+    // open tab (focus refetch, polling) counted as a returning user.
     async returningUsers(activeSince, createdBefore) {
-      const recent = await db.userSession.findMany({ where: { lastActiveAt: { gte: activeSince } }, select: { userId: true }, distinct: ["userId"] });
-      const ids = recent.map((r) => r.userId);
+      const ids = [...(await loadEngagedUserIdsSince(systemDb, activeSince))];
       if (ids.length === 0) return 0;
       return db.user.count({ where: { id: { in: ids }, createdAt: { lt: createdBefore } } });
     },
@@ -199,7 +202,8 @@ export async function getBetaInvitationLifecycle(
 export async function getGrowthFunnel(deps: { now?: Date; readers?: GrowthReaders } = {}): Promise<GrowthFunnel> {
   const now = deps.now ?? new Date();
   const r = deps.readers ?? realReaders(now);
-  const weekAgo = new Date(now.getTime() - 7 * DAY_MS);
+  // rolling — see PLATFORM-INTELLIGENCE X5: 7 × 24 h back from now, NOT 7 UTC days ("Returning (7d)").
+  const weekAgo = new Date(now.getTime() - ENGAGEMENT_WINDOW_DAYS.wau * DAY_MS);
 
   const [beta, redeemedActivated, total, verified, activated, returning7, facts] = await Promise.all([
     r.betaByStatus(),

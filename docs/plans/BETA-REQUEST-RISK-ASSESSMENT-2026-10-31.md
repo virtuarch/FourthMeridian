@@ -1,5 +1,8 @@
 # Beta-Request Risk — Abuse Assessment and Signal Design (2026-10-31)
 
+> **Owner:** Session 2 · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #159, #216 (B9), #226, #230
+> Current state (2026-11-02): detection, verdict and block shipped to Production in B9 (#216). The PB-6 review UI (#226/#230) is on develop and becomes DONE when B10 ships it. The body's "nothing implemented" line describes 2026-10-31.
+
 Owner directive: *Beta Request Risk Intelligence* (Session 2).
 Status: **read-only assessment.** Nothing has been implemented yet.
 Production has not been inspected: no Production credentials are available to this session. §5 gives the read-only query for the owner to run, or to authorise.

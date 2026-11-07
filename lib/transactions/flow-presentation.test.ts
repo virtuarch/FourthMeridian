@@ -42,7 +42,7 @@ test("interest earned is not earned income", () => {
 });
 
 test("salary stays earned income, and stays positive", () => {
-  const r = describeRowNature({ flowType: "INCOME", incomeSubtype: "SALARY", amount: 5286.4 });
+  const r = describeRowNature({ flowType: "INCOME", incomeSubtype: "SALARY", amount: 4928.15 });
   assert.equal(r.nature, "EARNED_INCOME");
   assert.equal(r.tone, "positive");
 });
@@ -69,7 +69,7 @@ test("a transfer is directed by the sign of its amount, and is never a gain", ()
 });
 
 test("an owned counterparty makes it an INTERNAL transfer, in either direction", () => {
-  // The $4,000 Amex HYSA row: TRANSFER, counterparty CHASE COLLEGE (owned).
+  // The $4,000 Example Card HYSA row: TRANSFER, counterparty EXAMPLE BANK EVERYDAY (owned).
   const into = describeRowNature({ flowType: "TRANSFER", amount: 4000, hasOwnedCounterparty: true });
   assert.equal(into.nature, "INTERNAL_TRANSFER");
   assert.equal(describeRowNature({ flowType: "TRANSFER", amount: -4000, hasOwnedCounterparty: true }).nature, "INTERNAL_TRANSFER");

@@ -44,9 +44,13 @@ console.log("Security reader — counts only, no identity, no metadata load");
 console.log("Customer Success reader — counts only, no subject, no detail");
 {
   const s = code("lib/platform/customer/incidents-daily.ts");
-  check("selects exactly three timestamps", /select: \{ createdAt: true, firstOccurredAt: true, resolvedAt: true \}/.test(s));
+  // PB-4 → PB-1 Phase 3 — the series reads the incident-intelligence module's window (no direct SyncIssue
+  // read, no select of its own) and folds verdicts to instants in incident-trend-core.ts.
+  check("reads no SyncIssue row itself (no findMany / select here)", !/syncIssue\.findMany|select:/.test(s));
   check("never touches detail, account, item, kind or subject", !/detail|financialAccount|plaidItem|kind|subject|incidentKey/.test(s.replace(/import[^;]+;/g, "")));
-  check("fm_system reader with a row cap and a floor flag", /systemDb\.syncIssue\.findMany/.test(s) && /take: INCIDENTS_DAILY_ROW_CAP/.test(s) && /floor:/.test(s));
+  // PB-1 Phase 3 — DELIBERATE PIN UPDATE (was: getIncidentEpisodeTimeline(since, INCIDENTS_DAILY_ROW_CAP, systemDb)).
+  check("module window reader (route token, identity-free fold) with a row cap and a floor flag",
+    /incidentAccessors\.window\(incidentToken, \{ from: since, to: now \}, \{ limit: INCIDENTS_DAILY_ROW_CAP, now \}\)/.test(s) && /floor: scanTruncated/.test(s) && /scanTruncated = page\.truncated/.test(s));
   const r = code("app/api/platform/customer-success/incidents-daily/route.ts");
   check("route: CUSTOMER_SUCCESS READ, GET only, no-store", /requirePlatformAccess\("CUSTOMER_SUCCESS", "READ"\)/.test(r) && !/export async function (POST|PUT|PATCH|DELETE)/.test(r) && /no-store/.test(r));
 }

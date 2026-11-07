@@ -18,7 +18,7 @@ import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireUser } from "@/lib/session";
 import { parseUserAgent } from "@/lib/ua-parser";
-import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-history";
+import { SECURITY_HISTORY_ACTIONS, securityHistoryEventDetail, securityHistoryEventLabel } from "@/lib/security-history";
 
 const HISTORY_LIMIT = 50;
 
@@ -48,7 +48,11 @@ export async function GET() {
     return {
       id:        r.id,
       action:    r.action,
-      label:     securityHistoryLabel(r.action),
+      // PB-5 — an operator removal reads "Removed by Fourth Meridian support ·
+      // <reason category>"; label and detail read only reasonCategory /
+      // institution, never an operator field.
+      label:     securityHistoryEventLabel(r.action, r.metadata),
+      detail:    securityHistoryEventDetail(r.action, r.metadata),
       createdAt: r.createdAt,
       ipAddress: r.ipAddress,
       parsed:    parseUserAgent(r.userAgent ?? ""),

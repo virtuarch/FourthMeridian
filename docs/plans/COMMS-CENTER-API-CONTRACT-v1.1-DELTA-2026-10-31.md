@@ -28,7 +28,7 @@
 **What this is.** A **delta** on `docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md` (cited as **v1 §n**), including its v1.0.1–v1.0.3 notes. v1.0.3 was read from `origin/feat/comms-a2b-policy` (PR #177, not yet merged into `develop`). Whatever this delta does not restate, v1 still governs: vocabulary, list and series conventions, the PII rule, the delivery vocabulary, the mutation envelope and the read APIs. Where the two disagree, **this delta wins**, and every such override is listed in §0.2.
 
 **Basis.**
-- Worktree `/Users/chrstn/dev/FM-commsdoc`, branch `docs/comms-contract-v1.1`, cut from `origin/develop` `61ba9a5`. PR #177 files were read with `git show origin/feat/comms-a2b-policy:<path>`.
+- Worktree `/Users/devuser/dev/FM-commsdoc`, branch `docs/comms-contract-v1.1`, cut from `origin/develop` `61ba9a5`. PR #177 files were read with `git show origin/feat/comms-a2b-policy:<path>`.
 - Static reading only: no database, no network beyond the `git fetch` the brief asked for, no build and no tests.
 - Code citations are `file:line` against `61ba9a5` unless they are marked `#177`.
 - Everything new here is **PROPOSED**. There is no migration and no route yet.

@@ -79,6 +79,8 @@ export const TRIGGER_KEYS = [
   "wallet.sync.failed",
   "account.registered",
   "platform.grant.created", "platform.grant.reinstated", "platform.grant.level_changed", "platform.grant.revoked",
+  // PB-5 (owner-approved 2026-11-01)
+  "connection.removed_by_operator",
   // PROPOSED (no emitter; listed so the vocabulary is stable)
   "plaid.item.webhook_pending_expiration",
   "beta.invitation.expiring", "beta.program.status_changed",

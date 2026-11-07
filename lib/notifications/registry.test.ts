@@ -237,6 +237,8 @@ const WIRED = new Set<string>([
   "WALLET_SYNC_FAILED",       // lib/crypto/wallet-sync-notifications.ts (syncWalletByChain)
   "PLATFORM_ACCESS_GRANTED",  // lib/notifications/platform-access.ts (admin platform-grants POST)
   "PLATFORM_ACCESS_REVOKED",  // lib/notifications/platform-access.ts (admin platform-grants PATCH)
+  // PB-5 (owner-approved 2026-11-01) — the operator Remove connection.
+  "CONNECTION_REMOVED_BY_SUPPORT", // lib/platform/connections/operator-removal.ts
 ]);
 check("only ACCOUNT_WELCOME never releases its dedupe key",
   entries.filter(([, e]) => e.dedupeNeverReleases).map(([k]) => k).join() === "ACCOUNT_WELCOME");

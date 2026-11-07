@@ -53,7 +53,7 @@ import {
 } from "@/lib/space/use-platform-workspace-navigation";
 import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight, ChevronLeft } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, Receipt, ArrowRight, ChevronLeft } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
@@ -72,10 +72,14 @@ import { OperationsLead } from "./leads/OperationsLead";
 import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
 import { AiCostsLead } from "./leads/AiCostsLead";
+import { EconomicsOverviewLead } from "./leads/EconomicsOverviewLead";
+import { EconomicsProvidersLead } from "./leads/EconomicsProvidersLead";
+import { EconomicsEntitlementsLead } from "./leads/EconomicsEntitlementsLead";
 import { GrowthLead } from "./leads/GrowthLead";
 import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
 import { MerchantLead } from "./leads/MerchantLead";
+import { OpsIncidentsLead, CsIncidentsLead } from "./incidents/IncidentsLead";
 import { CommsLibraryLead } from "./comms/LibraryView";
 import { confirmLeaveCommsContent } from "./comms/unsaved-content";
 import { CommsAutomationsLead } from "./comms/AutomationsView";
@@ -220,6 +224,10 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   pipeline:   PipelineLead,
   providers:  ProvidersLead,
   "ai-costs": AiCostsLead,
+  // Platform Economics › Overview (lib/platform/economics/snapshot.ts).
+  "economics-overview": EconomicsOverviewLead,
+  "economics-providers": EconomicsProvidersLead,
+  "economics-entitlements": EconomicsEntitlementsLead,
   policies:   PoliciesLead,
   growth:     GrowthLead,
   security:   SecurityLead,
@@ -230,6 +238,9 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   "comms-automations": CommsAutomationsLead,
   "comms-delivery":    CommsDeliveryLead,
   "comms-preferences": CommsPreferencesLead,
+  // PB-1 2B — the incidents workspace (one lead per tier; the view is the status preset).
+  "incidents-ops":     OpsIncidentsLead,
+  "incidents-cs":      CsIncidentsLead,
 };
 
 /**
@@ -288,7 +299,7 @@ const NO_HOSTED_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, Receipt,
 };
 
 interface Props {
@@ -347,8 +358,14 @@ function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id:
  * Atlas SegmentedControl (the same primitive as the rail), at the top of the
  * workspace body at every width. Below lg it scrolls horizontally (the
  * primitive's own overflow) and every segment is a ≥44px touch target; at lg+
- * it is the compact control. Exported for the render test.
+ * it is the compact control. Below sm the segments tighten their horizontal
+ * padding (px-4 → px-2.5) so a four-view strip such as Economics (Overview ·
+ * AI & Costs · Providers · Entitlements) fits a 375px viewport without a hidden
+ * last tab; longer strips still scroll, with the active tab scrolled into view.
+ * Exported for the render test (platform-view-switcher.test.ts).
  */
+export const PLATFORM_VIEW_SWITCHER_CLASS = "max-lg:[&>button]:min-h-11 max-sm:[&>button]:px-2.5";
+
 export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLabel }: {
   views: readonly PlatformWorkspaceView[];
   activeView: string;
@@ -363,7 +380,7 @@ export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLab
         value={activeView}
         onChange={onSelect}
         touchOptimized
-        className="max-lg:[&>button]:min-h-11"
+        className={PLATFORM_VIEW_SWITCHER_CLASS}
       />
     </div>
   );
@@ -410,6 +427,7 @@ export function PlatformWorkspaceBody({
   access = READ_ONLY_ACCESS,
   lead,
   hosted = NO_HOSTED_KEYS,
+  viewId,
 }: {
   sectionKeys: readonly PlatformViewSection[];
   doorways?:   readonly string[];
@@ -423,6 +441,8 @@ export function PlatformWorkspaceBody({
   lead?:       PlatformViewLead;
   /** The view's HOSTED keys — rendered only when the lead asks (drawers / detail). */
   hosted?:     readonly string[];
+  /** PB-1 2B — the open view's id, for a lead shared by several views (the incidents presets). */
+  viewId?:     string;
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
   const Lead = lead ? PLATFORM_VIEW_LEADS[lead] : null;
@@ -450,7 +470,7 @@ export function PlatformWorkspaceBody({
     <div className="flex flex-col gap-8 md:gap-10 pb-16">
       {Lead && (
         <WorkspaceSessionProvider>
-          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} />
+          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} viewId={viewId} />
           {rows.length > 0 && (
             <div className="flex flex-col gap-8 md:gap-10">
               {rows.map(({ row }) => {
@@ -565,6 +585,12 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   // equal, text-only columns so every workspace fits a 375 px phone (the icons
   // stay on the desktop sidebar rows, resolved there from the same icon name).
   const railOptions: SpaceShellRailOption[] = available.map((w) => ({ id: w.key, label: w.label }));
+  // PB-3 (owner addendum 2026-11-01) — navigation only where there is somewhere
+  // to go: an operator who can reach ONE workspace of this area (Growth &
+  // Revenue and Merchant Ops have only Overview; a narrower grant can leave any
+  // area with one) gets no single-item rail and no single-row sidebar list. The
+  // URL contract (?workspace= / ?view=) and every deep link are unchanged.
+  const multiWorkspace = available.length > 1;
 
   const active = composition.find((w) => w.workspaceId === activeTab) ?? composition[0];
   // The open VIEW of the active workspace (its default when the hook's view
@@ -621,8 +647,8 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   );
   const openWorkspaceId = active?.workspaceId ?? activeTab;
   useEffect(() => {
-    publishWorkspaceNav({ items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab });
-  }, [publishWorkspaceNav, workspaceItems, openWorkspaceId, setActiveTab]);
+    publishWorkspaceNav(multiWorkspace ? { items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab } : null);
+  }, [publishWorkspaceNav, multiWorkspace, workspaceItems, openWorkspaceId, setActiveTab]);
   useEffect(() => () => publishWorkspaceNav(null), [publishWorkspaceNav]);
 
   return (
@@ -633,6 +659,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
       // rail shows only below lg (the exact complement of the sidebar's
       // `hidden … lg:block`), so exactly one switcher shows at any width.
       railVisibility="belowLg"
+      hideLoneRail
       title={spaceName}
       titleAccessory={<PlatformSpaceSwitcher spaces={grantedSpaces} currentArea={area} />}
       // it2 — one compact title line (name · switcher · access chip), no meta
@@ -688,6 +715,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
             onOpen={setActiveTab}
             lead={activeViewDef?.lead}
             hosted={activeViewDef?.hosted}
+            viewId={activeViewDef?.id}
           />
         </div>
       ) : (

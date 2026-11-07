@@ -91,15 +91,35 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
  * RESERVATION_UNAVAILABLE (503 + Retry-After): the signal ages out and clears on
  * recovery. Nothing was spent.
  */
-export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED";
+/**
+ * FLEET_CEILING_REACHED (SEC-AI-001) — an OPTIONAL fleet ceiling is set and the
+ * fleet's trailing-window spend plus the turns in flight has reached it
+ * (lib/platform/ai/fleet-ceiling.core.ts). Not this customer's allowance, so it
+ * takes the transient path — the existing "briefly unavailable" copy, 503 +
+ * Retry-After — and adds nothing user-facing beyond the reason code. Never
+ * produced while no ceiling is set.
+ */
+export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED" | "FLEET_CEILING_REACHED";
 
-/** The two transient refusals: retryable, 503, Retry-After. */
+/** The transient refusals: retryable, 503, Retry-After. */
 export function isRetryableAllowanceReason(reason: AllowanceReason): boolean {
-  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED";
+  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED" || reason === "FLEET_CEILING_REACHED";
 }
 
 /** Seconds a client should wait before retrying a RESERVATION_UNAVAILABLE refusal. */
 export const RESERVATION_RETRY_AFTER_SECONDS = 15;
+
+/**
+ * SEC-AI-001 (S2 ruling c) — FLEET_CEILING_REACHED is judged over a ROLLING 24 h
+ * window, which no 15 s retry can cure: a fixed 300 s. The other transient
+ * reasons keep RESERVATION_RETRY_AFTER_SECONDS.
+ */
+export const FLEET_CEILING_RETRY_AFTER_SECONDS = 300;
+
+/** The Retry-After for a retryable refusal reason. */
+export function retryAfterSecondsFor(reason: AllowanceReason): number {
+  return reason === "FLEET_CEILING_REACHED" ? FLEET_CEILING_RETRY_AFTER_SECONDS : RESERVATION_RETRY_AFTER_SECONDS;
+}
 
 /**
  * How the in-flight reservation was judged:
@@ -248,7 +268,10 @@ export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: fal
     return {
       error: allowanceUnavailableSentence(surfaceLabel),
       code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
-      retryable: true, retryAfterSeconds: RESERVATION_RETRY_AFTER_SECONDS,
+      // SEC-AI-001 — for FLEET_CEILING_REACHED this body carries the generic copy and
+      // the reason code only: `spentUsd` / `allowanceUsd` are the CUSTOMER's own
+      // figures (as for every transient refusal), never a fleet figure.
+      retryable: true, retryAfterSeconds: retryAfterSecondsFor(v.reason),
     };
   }
   const error = v.reason === "UNPRICED_MODEL"

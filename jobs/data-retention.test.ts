@@ -10,9 +10,11 @@ import { readFileSync } from "node:fs";
 import {
   runDataRetention, retentionCutoffFor, RETENTION_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
   uaFamily, networkDigest, resolveNetworkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
-  BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES,
+  BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES, INCIDENT_ARCHIVE_RETENTION_DAYS,
+  sessionReapWhere,
   type RetentionClient, type RetentionTable,
 } from "@/jobs/data-retention";
+import { SESSION_ABSOLUTE_LIFETIME_MS, SESSION_IDLE_TIMEOUT_MS, isSessionLive } from "@/lib/auth/session-proof";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -42,7 +44,7 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
   });
 }
 
-function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { failOn?: RetentionTable } = {}) {
+function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { failOn?: RetentionTable; noArchiver?: boolean } = {}) {
   const data = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, [...(tables[r.table] ?? [])]])) as Record<RetentionTable, Row[]>;
   const calls: Array<{ table: string; op: string; where: Record<string, unknown> }> = [];
   const client = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, {
@@ -58,7 +60,19 @@ function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { fail
       return { count: before - data[r.table].length };
     },
   }])) as unknown as RetentionClient;
-  return { client, data, calls };
+  // PB-1 Phase 1 — the archive-then-delete prune (lib/platform/incidents/retention.ts), faked:
+  // archives exactly the rows it deletes, under the same predicate.
+  const archived: string[] = [];
+  if (!opts.noArchiver) {
+    client.archiveAndPruneSyncIssues = async (ids, where) => {
+      calls.push({ table: "syncIssue", op: "archive+delete", where });
+      const doomed = data.syncIssue.filter((row) => ids.includes(row.id) && matches(row, where));
+      archived.push(...doomed.map((d) => d.id));
+      data.syncIssue = data.syncIssue.filter((row) => !doomed.includes(row));
+      return doomed.length;
+    };
+  }
+  return { client, data, calls, archived };
 }
 
 const quiet = <T,>(fn: () => Promise<T>) => {
@@ -75,6 +89,10 @@ async function main() {
       days.userSession === 30 && days.aiInvocation === 90 && days.jobRun === 90 && days.refreshExecution === 60 && days.providerCall === 60
       && days.plaidWebhookEvent === 30 && days.syncIssue === 90 && days.apiUsageCounter === 90 && days.betaAccessRequest === 180
       && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90 && days.automationRun === 90 && days.commsProviderEvent === 90, JSON.stringify(days));
+    check("PB-1 Phase 1: incident archive + relations kept 13 months (396 d)",
+      days.syncIssueArchive === 396 && days.syncIssueRelation === 396 && INCIDENT_ARCHIVE_RETENTION_DAYS === 396, JSON.stringify(days));
+    check("PB-1 Phase 1: the SyncIssue rule archives before it deletes; no other rule does",
+      RETENTION_RULES.filter((x) => x.archiveBeforeDelete).map((x) => x.table).join() === "syncIssue");
     check("cutoff is exactly N days before now", retentionCutoffFor({ days: 30 }, NOW).getTime() === daysAgo(30).getTime());
   }
 
@@ -83,7 +101,7 @@ async function main() {
     const { client, data } = makeClient({
       userSession: [
         { id: "s-old-revoked", revokedAt: daysAgo(31) }, { id: "s-new-revoked", revokedAt: daysAgo(29) },
-        { id: "s-live-old", revokedAt: null, createdAt: daysAgo(400) },
+        { id: "s-live-old", revokedAt: null, createdAt: daysAgo(80), lastActiveAt: daysAgo(1) },
       ],
       aiInvocation: [{ id: "ai-old", occurredAt: daysAgo(91) }, { id: "ai-new", occurredAt: daysAgo(89) }],
       jobRun: [{ id: "j-old", startedAt: daysAgo(91), status: "succeeded" }, { id: "j-old-running", startedAt: daysAgo(91), status: "running" }, { id: "j-new", startedAt: daysAgo(10), status: "failed" }],
@@ -125,6 +143,30 @@ async function main() {
     check("CommsProviderEvent > 90 d deleted (Comms Center C); 89 d and recent kept", left("commsProviderEvent") === "cpe-edge,cpe-new", left("commsProviderEvent"));
     check("totals add up (1+1+1+1+1+1+2+1+3+1+1+1)", r.totalDeleted === 15, `${r.totalDeleted}`);
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
+  }
+
+  console.log("\nPB-1 Phase 1 — archive-on-prune and the 13-month incident summaries");
+  {
+    const { client, data, calls, archived } = makeClient({
+      syncIssue: [
+        { id: "si-old", resolved: true, resolvedAt: daysAgo(91), updatedAt: daysAgo(91) },
+        { id: "si-open", resolved: false, resolvedAt: null, updatedAt: daysAgo(500) },
+      ],
+      syncIssueArchive: [{ id: "ar-old", archivedAt: daysAgo(397) }, { id: "ar-edge", archivedAt: daysAgo(395) }],
+      syncIssueRelation: [{ id: "rel-old", createdAt: daysAgo(397) }, { id: "rel-new", createdAt: daysAgo(10) }],
+    });
+    await quiet(() => runDataRetention(client, NOW));
+    const left = (t: RetentionTable) => data[t].map((x) => x.id).sort().join();
+    check("the resolved episode is ARCHIVED and deleted together; the open one is untouched",
+      archived.join() === "si-old" && left("syncIssue") === "si-open", `${archived} / ${left("syncIssue")}`);
+    check("the SyncIssue rule never issues a bare deleteMany", !calls.some((c) => c.table === "syncIssue" && c.op === "delete"));
+    check("archive rows > 13 months deleted; 395 d kept", left("syncIssueArchive") === "ar-edge", left("syncIssueArchive"));
+    check("relations > 13 months deleted; recent kept", left("syncIssueRelation") === "rel-new", left("syncIssueRelation"));
+
+    const noArch = makeClient({ syncIssue: [{ id: "si-old", resolved: true, resolvedAt: daysAgo(91), updatedAt: daysAgo(91) }] }, { noArchiver: true });
+    const r2 = await quiet(() => runDataRetention(noArch.client, NOW));
+    check("FAIL CLOSED: with no archiver wired, no SyncIssue row is deleted and the rule reports an error",
+      noArch.data.syncIssue.length === 1 && !!r2.syncIssue.error, JSON.stringify(r2.syncIssue));
   }
 
   console.log("\nowner P2-1 — the hashed beta blocklist and its sealed evidence (stored deadlines, not ages)");
@@ -174,6 +216,61 @@ async function main() {
     const w = rule.where(daysAgo(90), NOW) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
     check("the where(cutoff) itself excludes RUNNING runs and runs with SCHEDULED, SENDING or FAILED items",
       w.status?.not === "RUNNING" && [...(w.items?.none?.status?.in ?? [])].sort().join() === "FAILED,SCHEDULED,SENDING", JSON.stringify(w));
+  }
+
+  console.log("\nDB-009 + S2 (#374) — sessions: revoked OR expired more than 30 days ago");
+  {
+    const MS = 86_400_000;
+    const idleD = SESSION_IDLE_TIMEOUT_MS / MS, absD = SESSION_ABSOLUTE_LIFETIME_MS / MS;
+    const { client, data } = makeClient({
+      userSession: [
+        // DB-009, unchanged: revoked 31 d ago (otherwise still in lifetime) → reaped.
+        { id: "revoked-31", revokedAt: daysAgo(31), createdAt: daysAgo(40), lastActiveAt: daysAgo(31) },
+        // Idle-expired: last active idle+31 d ago ⇒ expired 31 d ago → reaped.
+        { id: "idle-expired-31", revokedAt: null, createdAt: daysAgo(idleD + 40), lastActiveAt: daysAgo(idleD + 31) },
+        // Idle-expired only 29 d ago → kept (inside the 30-day grace).
+        { id: "idle-expired-29", revokedAt: null, createdAt: daysAgo(idleD + 40), lastActiveAt: daysAgo(idleD + 29) },
+        // Absolute-expired: created absolute+31 d ago, active yesterday ⇒ expired 31 d ago → reaped.
+        { id: "abs-expired-31", revokedAt: null, createdAt: daysAgo(absD + 31), lastActiveAt: daysAgo(1) },
+        // Absolute-expired 29 d ago → kept.
+        { id: "abs-expired-29", revokedAt: null, createdAt: daysAgo(absD + 29), lastActiveAt: daysAgo(1) },
+        // Live → never reaped.
+        { id: "live", revokedAt: null, createdAt: daysAgo(absD - 1), lastActiveAt: daysAgo(idleD - 1) },
+        // Revoked 29 d ago but expired 31+ d ago → reaped by its expiry (dead and past the grace either way).
+        { id: "revoked-29-expired-31", revokedAt: daysAgo(29), createdAt: daysAgo(absD + 31), lastActiveAt: daysAgo(absD + 31) },
+        // Exactly at the boundary (expiry instant = cutoff): not yet past the grace → kept.
+        { id: "idle-boundary", revokedAt: null, createdAt: daysAgo(idleD + 40), lastActiveAt: daysAgo(idleD + 30) },
+      ],
+    });
+    const r = await quiet(() => runDataRetention(client, NOW));
+    const left = data.userSession.map((x) => x.id).sort().join();
+    check("revoked >30 d reaped as before; idle- and absolute-expired >30 d reaped; expired <30 d, boundary and live kept",
+      left === "abs-expired-29,idle-boundary,idle-expired-29,live", left);
+    check("the deleted count is reported", r.userSession.deleted === 4 && r.userSession.exhausted === true, JSON.stringify(r.userSession));
+
+    // Live is NEVER reaped: sweep a grid of (createdAt, lastActiveAt) ages around both limits.
+    const where = sessionReapWhere(retentionCutoffFor({ days: 30 }, NOW));
+    const ages = [0, 1, idleD - 1, idleD, idleD + 1, idleD + 29, idleD + 30, idleD + 31, absD - 1, absD, absD + 1, absD + 30, absD + 31, 400];
+    let liveReaped = 0, mismatched = 0;
+    for (const c of ages) for (const a of ages) {
+      if (a > c) continue; // lastActiveAt is never before createdAt
+      const row = { id: "g", revokedAt: null, createdAt: daysAgo(c), lastActiveAt: daysAgo(a), user: { deactivatedAt: null, deletionScheduledAt: null } };
+      const reaped = matches(row, where);
+      if (reaped && isSessionLive(row, NOW)) liveReaped++;
+      // Expiry instant (the earlier of the two limits) more than 30 d before now must be reaped.
+      // (the EARLIER expiry instant is the LARGER age)
+      const expiryAgeD = Math.max(a - idleD, c - absD);
+      if (expiryAgeD > 30 && !reaped) mismatched++;
+      if (expiryAgeD <= 30 && reaped) mismatched++;
+    }
+    check("grid: no live session matches the reaper; reaped ⇔ expired more than 30 d ago", liveReaped === 0 && mismatched === 0, JSON.stringify({ liveReaped, mismatched }));
+
+    const src = readFileSync("jobs/data-retention.ts", "utf8");
+    check("the reaper derives its cut-offs from session-proof (liveSessionCutoffs), never a copy of the numbers",
+      /liveSessionCutoffs\(cutoff\)/.test(src) && !/(24\s*\*\s*60\s*\*\s*60\s*\*\s*1000|2592000000|7776000000|90\s*\*\s*DAY_MS)/.test(src));
+    const { client: dc, data: dd } = makeClient({ userSession: [{ id: "x", revokedAt: null, createdAt: daysAgo(400), lastActiveAt: daysAgo(400) }] });
+    const dry = await quiet(() => runDataRetention(dc, NOW, undefined, { dryRun: true }));
+    check("dryRun counts an expired session and deletes nothing", dry.userSession.deleted === 1 && dd.userSession.length === 1);
   }
 
   console.log("\nbatching and isolation");

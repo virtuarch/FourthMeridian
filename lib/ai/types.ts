@@ -26,6 +26,7 @@ import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
+import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -183,6 +184,13 @@ export interface AssemblerOptions {
     /** Short human label for provenance (e.g. "January 2026 · Other"). */
     label?: string;
   };
+  /**
+   * PB-8c — the Space's balance-history floors, for the snapshot assembler's
+   * change gate. Read by the CALLER in a phase of its own (never on the
+   * assembler's client: a failed statement would abort a shared transaction).
+   * Absent / null ⇒ every change comparable (fail-open, byte-identical payload).
+   */
+  balanceCoverage?: BalanceCoverageRead;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +559,13 @@ export interface AccountsSectionData {
    * "approximate".
    */
   totalsUnconverted:  boolean;
+  /**
+   * FM-AUDIT-022 — crypto wallets EXCLUDED from the totals above because they
+   * have no value (unpriced, or never observed). Never valued at 0 or at a
+   * stale stored balance: the digital-asset total (and so assets / net worth)
+   * is an honest PARTIAL. OMITTED when nothing was excluded.
+   */
+  totalsUnvaluedCount?: number;
   counts: {
     liquid:       number;
     investments:  number;
@@ -1439,7 +1454,8 @@ export interface SnapshotDataPoint {
   netWorth:     number | null;
   totalAssets:  number | null;
   liabilities:  number; // `debt` column — positive absolute value
-  liquid:       number; // cash + savings
+  /** checking + savings on `SnapshotSectionData.liquidBasis` (ALL_CASH: restricted INCLUDED — FIN-005). */
+  liquid:       number;
   investments:  number; // `stocks` column
   digitalAssets: number | null; // `crypto` column — null when unassertable
   cashOnHand:   number;
@@ -1516,7 +1532,18 @@ export interface SnapshotSectionData {
     pct:       number | null;
     abs:       number;
     preset:    string;
+    /** PB-8c — an endpoint includes a held-flat (estimated) debt: state it as estimated. */
+    estimated?: true;
   } | null;
+  /**
+   * PB-8c — present when `canonicalChange` is null because its window crosses the
+   * balance-history floor (balance-coverage.core `changeComparability`): the
+   * opening day is missing accounts that have no history that far back, so the
+   * difference would be those accounts arriving, not a change. The model states
+   * `message` ("history is partial before <date>"), never a figure. Absent
+   * otherwise (byte-identical payloads).
+   */
+  canonicalChangeUnavailable?: WithheldChange;
   /**
    * W3 — the LIABILITIES change over the same product-defined window, from the
    * same authority (`canonicalWindowChange`), so the debt trend never again
@@ -1534,7 +1561,32 @@ export interface SnapshotSectionData {
     pct:       number | null;
     abs:       number;
     preset:    string;
+    /** PB-8c — see `canonicalChange.estimated`. */
+    estimated?: true;
   } | null;
+  /** PB-8c — as `canonicalChangeUnavailable`, for the liabilities change. */
+  liabilitiesChangeUnavailable?: WithheldChange;
+  /**
+   * PB-8c — present when the history starts before the balance-history floor:
+   * points dated before `before` do not include every account, so no change may
+   * be measured across that date. Absent when history is complete.
+   */
+  partialHistory?: { before: string; note: string };
+  /**
+   * S2 sweep — the balance-history coverage read FAILED: no floor is known, so
+   * every change above is withheld (BALANCE_HISTORY_UNREADABLE) and the points are
+   * unvouched. Absent when coverage was read (or there was nothing to cover).
+   */
+  balanceHistoryCompleteness?: { state: 'UNAVAILABLE'; note: string };
+  /**
+   * FIN-005 — the basis of every point's `liquid` and `netLiquid`. ALL_CASH:
+   * restricted (HSA, retirement) INCLUDED; the accounts section's `totalLiquid`
+   * EXCLUDES it, so no change may be stated between them. UNRESTRICTED (FIN-E
+   * part 2): every row recorded its restricted share and the points EXCLUDE it,
+   * on `totalLiquid`'s basis. Optional only for fixtures predating it.
+   */
+  liquidBasis?:     'ALL_CASH' | 'UNRESTRICTED';
+  liquidBasisNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

@@ -39,7 +39,7 @@ export function GrowthSignupsWidget({ section }: { section: PlatformSection }) {
             <WidgetStat value={pct(data.activatedEver, data.totalUsers)} label="Activated" />
           </div>
           <p className="text-xs text-[var(--text-secondary)] mt-1">
-            {data.active7} active this week · {data.totalUsers} total users
+            {data.active7} engaged · 7 d · {data.totalUsers} total users
           </p>
           <p className="text-[10px] text-[var(--text-muted)]">Signups &amp; activation only — no revenue data source until billing (v3.0).</p>
         </>

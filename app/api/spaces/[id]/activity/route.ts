@@ -69,7 +69,7 @@ import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
 import { normalizeImportBatchEvent }    from "@/lib/activity/normalize-import-batch";
 import { normalizeSyncIssueEvent }      from "@/lib/activity/normalize-sync-issue";
-import { classifySyncIssue }            from "@/lib/platform/sync-issue-semantics";
+import { memberIncidentEvents }         from "@/lib/activity/member-incidents";
 import { displayActivityAccountName }   from "@/lib/activity/account-name-privacy";
 import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
 
@@ -569,9 +569,17 @@ export const GET = withApiHandler(async (
     .map(normalizeImportBatchEvent)
     .filter((e): e is TimelineEvent => e !== null);
 
-  const syncEvents = syncIssues
-    .map(({ plaidTransactionId, ...row }) =>
-      normalizeSyncIssueEvent(row, classifySyncIssue({ kind: row.kind, plaidTransactionId }).customerActionable))
+  // PB-1 Phase 3 — open/closed is the intelligence module's PURE core over the
+  // rows read above as the member (lib/activity/member-incidents.ts; S2-approved):
+  // a real incident, broken now and member-actionable. The tenant read is
+  // unchanged (same RLS select, no new grant); nothing here runs as fm_system.
+  // The normalizer keeps the member copy and its kind gate.
+  const byId = new Map(syncIssues.map((r) => [r.id, r] as const));
+  const syncEvents = memberIncidentEvents(syncIssues, new Date())
+    .map((e) => {
+      const row = byId.get(e.id)!;
+      return normalizeSyncIssueEvent({ id: e.id, kind: e.kind, resolved: row.resolved, createdAt: new Date(e.at) });
+    })
     .filter((e): e is TimelineEvent => e !== null);
 
   // ── Merge all three normalized arrays, sort newest-first, single cap ───────

@@ -206,10 +206,6 @@ export async function loadInvestmentsSpaceData(
     getCurrentPositions(client, scope, options),
     resolveScopeDivergence(client, scope),
   ]);
-  const accountIds = [...new Set(positions.rows.map((r) => r.accountId))];
-  const accountNames = await resolveAccountNames(client, accountIds);
-  const current = assembleCurrentPortfolio(positions, accountNames);
-
   // Historical slice through the SAME A10 binding the /time-machine route uses —
   // scoped identically to the current read, so both views cover the same accounts.
   const historical = options.history
@@ -221,7 +217,12 @@ export async function loadInvestmentsSpaceData(
       })
     : null;
 
-  const data = assembleInvestmentsSpaceData({ current, historical });
+  // PB-11 M7 — names for every account either allocation (current, historical) buckets by.
+  const accountIds = [...new Set([...positions.rows, ...(historical?.holdings ?? [])].map((r) => r.accountId))];
+  const accountNames = await resolveAccountNames(client, accountIds);
+  const current = assembleCurrentPortfolio(positions, accountNames);
+
+  const data = assembleInvestmentsSpaceData({ current, historical, accountNames });
 
   // The account ledger (Space reads only). Holdings counts come from the SAME
   // current-positions read above — enrichment, never added to a balance.

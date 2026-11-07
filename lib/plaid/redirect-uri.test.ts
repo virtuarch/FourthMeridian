@@ -83,7 +83,7 @@ console.log("6. Whitespace around an override is trimmed, not sent");
 
 console.log("7. THE INCIDENT: a stale override that disagrees is reported LOUDLY");
 {
-  const STALE = "https://fintracker1-abc123-virtuarchs-projects.vercel.app/plaid-oauth-return";
+  const STALE = "https://fintracker1-abc123-example-team-projects.vercel.app/plaid-oauth-return";
   const r = buildPlaidRedirectUri({ explicit: STALE, appUrl: PROD });
   check("override still wins (precedence stays predictable)", r.uri === STALE, String(r.uri));
   check("drift IS reported", typeof r.drift === "string" && r.drift.length > 0);

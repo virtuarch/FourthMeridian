@@ -38,6 +38,9 @@ export const SUPPRESSION_REASONS = [
   // Comms Center A-2b (O-10): the per-recipient email storm limit
   // (lib/notifications/delivery/storm.ts) — over the limit, or the count unreadable.
   "RATE_LIMITED", "RATE_LIMIT_UNVERIFIED",
+  // PB-5 — a type whose EMAIL leg is built but shipped OFF by a code constant
+  // (registry `emailShippedOff`; e.g. CONNECTION_REMOVED_BY_SUPPORT).
+  "SHIPPED_OFF",
 ] as const;
 export type SuppressionReason = (typeof SUPPRESSION_REASONS)[number];
 

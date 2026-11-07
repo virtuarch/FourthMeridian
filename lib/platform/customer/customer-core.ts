@@ -25,6 +25,12 @@ import { explainEntitlement, type EffectiveEntitlements, type FailClosedReason }
 import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { deriveConnectionHealthState, type HealthState } from "@/lib/connections/health";
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
+import { recoveredExecutionIds } from "@/lib/platform/refresh/recovery-core";
+import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
+import {
+  PRESENCE_LABELS, derivePresenceState, lastActiveBucket,
+  type LastActiveBucket, type PresenceClocks, type PresenceState,
+} from "@/lib/presence/definitions";
 import {
   ENGAGEMENT_AI_SURFACES, FUNNEL_STAGE_LABELS, furthestStage, stageReachedAt,
 } from "@/lib/platform/growth/product-analytics-core";
@@ -175,19 +181,34 @@ export function projectSpaces(rows: readonly MembershipRow[]): CustomerSpaceView
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 
+/**
+ * PB-10 — the customer's activity, as the SIX separate facts of
+ * lib/presence/definitions.ts (never one conflated clock):
+ *   presence      Active now / Online, idle / Offline / Unknown — from the
+ *                 visible-tab heartbeat clocks (lastPresenceAt, lastInteractionAt)
+ *   lastActive    a COARSE bucket of the newest reported interaction — never the
+ *                 raw beat timestamp (operators see "within 5 min", "today")
+ *   lastLoginAt   the newest LOGIN audit row (a real sign-in time is fine to show)
+ *   activeSessions valid sessions — NOT proof any browser is open
+ * UserSession.lastActiveAt (session last USED — background polls and focus
+ * refetches included) is deliberately NOT an input: it is SEC-010's clock.
+ * lastInteractionAt is client-asserted (low trust): presence + this display only.
+ */
 export interface ActivityView {
-  lastActiveAt: string | null;
-  /** Which authority answered: the throttled session clock, the LOGIN audit row, or nothing. */
-  lastActiveSource: "SESSION" | "LOGIN" | "NONE";
+  presence: PresenceState;
+  presenceLabel: string;
+  lastActive: { bucket: LastActiveBucket; label: string };
   lastLoginAt: string | null;
   activeSessions: number;
 }
 
-export function projectActivity(args: { lastSessionActiveAt: Date | null; lastLoginAt: Date | null; activeSessions: number }): ActivityView {
-  const session = args.lastSessionActiveAt; const login = args.lastLoginAt;
-  const best = session && (!login || session >= login) ? { at: session, src: "SESSION" as const }
-    : login ? { at: login, src: "LOGIN" as const } : null;
-  return { lastActiveAt: iso(best?.at ?? null), lastActiveSource: best?.src ?? "NONE", lastLoginAt: iso(login), activeSessions: args.activeSessions };
+export function projectActivity(args: { presence: PresenceClocks; lastLoginAt: Date | null; activeSessions: number; now: Date }): ActivityView {
+  const presence = derivePresenceState(args.presence, args.now);
+  return {
+    presence, presenceLabel: PRESENCE_LABELS[presence],
+    lastActive: lastActiveBucket(args.presence.lastInteractionAt, args.now),
+    lastLoginAt: iso(args.lastLoginAt), activeSessions: args.activeSessions,
+  };
 }
 
 // ── Connections & health ──────────────────────────────────────────────────────
@@ -243,31 +264,54 @@ export function firstConnectedAt(
 
 // ── Incidents ─────────────────────────────────────────────────────────────────
 
-export interface SyncIssueFacts { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: Date | null; lastOccurredAt: Date | null; createdAt: Date; resolved: boolean }
-export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: Date; durationMs: number | null; failureCategory: string | null }
+/**
+ * PB-1 Phase 2 (R1) — the panel reads incident VERDICTS from the intelligence
+ * module (CS tier), never raw SyncIssue rows. "Open" is the module's
+ * `brokenNow` (D1: derived state; D2/D2b: removed subjects closed; D10: a
+ * stale-unverified row is not broken now) — never `resolved = false`.
+ */
+export type IncidentVerdictFacts = Pick<CsIncidentVerdict,
+  "id" | "provider" | "kind" | "plaidItemId" | "financialAccountId" | "firstSeenAt" | "lastSeenAt" | "brokenNow" | "state" | "freshness">;
+export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: Date; durationMs: number | null; failureCategory: string | null;
+  /** PB-7 — read ONLY to recognise a reaped (stale) row; never projected. */
+  errorSummary?: string | null }
 export interface WebhookFacts { receivedAt: Date; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }
 
 export interface IncidentsView {
   open: { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: string | null; lastOccurredAt: string | null;
     /** SEC-PLAT-3 — the affected account, named in full (audited profile only); null when the incident has no account or it is unresolved. */
-    account: string | null }[];
-  recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null }[];
+    account: string | null;
+    /** PB-1 — active | acknowledged | recovering (the broken-now states). */
+    state: CsIncidentVerdict["state"];
+    /** PB-1 D10 — `unverified`: past its window, attempted or skipped since, not proven to succeed. */
+    freshness: CsIncidentVerdict["freshness"] }[];
+  /** PB-1 D5 — the incident scan hit its cap: `open` is a floor. */
+  openTruncated: boolean;
+  recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null;
+    /** PB-7 — a reaped (stale) execution a later success for the same source superseded: show "recovered", not "failed". */
+    recovered: boolean }[];
   recentWebhooks: { receivedAt: string; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }[];
 }
 
 export function projectIncidents(
-  issues: readonly SyncIssueFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
+  issues: readonly IncidentVerdictFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
   accountLabels: ReadonlyMap<string, string> = new Map(),
+  opts: { truncated?: boolean } = {},
 ): IncidentsView {
+  // PB-7 — judged over the loaded rows (newest first, so a superseding success is in the set).
+  const recovered = recoveredExecutionIds(executions.map((e) => ({ ...e, errorSummary: e.errorSummary ?? null })));
   return {
-    open: issues.filter((i) => !i.resolved).map((i) => ({
+    open: issues.filter((i) => i.brokenNow).map((i) => ({
       id: i.id, provider: i.provider, kind: i.kind, plaidItemId: i.plaidItemId, financialAccountId: i.financialAccountId,
-      firstOccurredAt: iso(i.firstOccurredAt ?? i.createdAt), lastOccurredAt: iso(i.lastOccurredAt ?? i.createdAt),
+      firstOccurredAt: i.firstSeenAt, lastOccurredAt: i.lastSeenAt,
       account: (i.financialAccountId && accountLabels.get(i.financialAccountId)) || null,
+      state: i.state, freshness: i.freshness,
     })),
+    openTruncated: opts.truncated === true,
     recentExecutions: executions.map((e) => ({
       id: e.id, sourceKind: e.sourceKind, plaidItemId: e.plaidItemId, sourceRef: e.sourceRef, trigger: e.trigger, profile: e.profile,
       overallStatus: e.overallStatus, startedAt: e.startedAt.toISOString(), durationMs: e.durationMs, failureCategory: e.failureCategory,
+      recovered: recovered.has(e.id),
     })),
     recentWebhooks: webhooks.map((w) => ({
       receivedAt: w.receivedAt.toISOString(), webhookType: w.webhookType, webhookCode: w.webhookCode, handling: w.handling,

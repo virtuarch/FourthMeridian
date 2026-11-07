@@ -53,7 +53,9 @@ export interface AsOfAccountInput {
   type:        string;         // checking | savings | debt | investment | crypto | other | …
   balance:     number;         // current balance = end-of-day(today)
   debtSubtype: string | null;  // gates revolving-card reconstruction (see isReconstructableCard)
-  creditLimit: number | null;  // the only stored revolving-credit signal on null-subtype debt
+  creditLimit: number | null;  // a stored revolving-credit signal on null-subtype debt
+  /** PB-8 — Plaid's subtype ("credit card" walks without a limit). See isReconstructableCard. */
+  providerSubtype?: string | null;
   /** Earliest defensible date (YYYY-MM-DD): max(account.createdAt, link.createdAt). */
   floorISO:    string;
 }

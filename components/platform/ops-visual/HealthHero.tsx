@@ -46,6 +46,12 @@ export interface HeroModel {
   dot?: boolean;
   /** What KIND of figure the hero is (a chip beside the label), when it is not a verdict. */
   provenance?: ProvenanceKind;
+  /**
+   * A short scope note beside the label, when the KPIs below cover a different
+   * window than the hero figure (AI & Costs: "Budget tiles cover the last 24 h"
+   * next to the 30 d spend). Absent ⇒ nothing renders (every other hero unchanged).
+   */
+  scopeNote?: string;
   /** The two compact KPI strips' and the desktop tiles' accessible names. */
   kpiLabels?: { first: string; second: string; all: string };
   /**
@@ -92,6 +98,7 @@ export function HealthHero({ model }: { model: HeroModel }) {
         <div className={COMPACT_HERO_ROWS[0]}>
           <p className="shrink-0 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{title}</p>
           {model.provenance && <ProvenanceChip kind={model.provenance} />}
+          {model.scopeNote && <span className="min-w-0 truncate text-[10px] text-[var(--text-faint)]" data-hero-scope-note>{model.scopeNote}</span>}
           <span className="ml-auto min-w-0 truncate text-[11px] tabular-nums text-[var(--text-muted)]">{checked ?? ""}</span>
         </div>
         <div className={`${COMPACT_HERO_ROWS[1]} gap-2.5`}>
@@ -150,6 +157,7 @@ export function HealthHero({ model }: { model: HeroModel }) {
           <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{title}</p>
           {checked && <span className="text-[11px] tabular-nums text-[var(--text-muted)]">{checked}</span>}
           {model.provenance && <ProvenanceChip kind={model.provenance} />}
+          {model.scopeNote && <span className="text-[11px] text-[var(--text-muted)]" data-hero-scope-note>{model.scopeNote}</span>}
         </div>
         <div className="mt-2 flex items-center gap-3">
           {dot && <Dot tone={verdict.tone} size={12} />}

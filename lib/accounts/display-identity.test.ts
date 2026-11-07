@@ -3,8 +3,8 @@
  *
  * One account, one name — and the guards that keep it that way.
  *
- * The live defect: a Chase card rendered "CREDIT CARD" on Cash Flow and
- * "Ultimate Rewards®" on the Credit page. Both were real columns on one row.
+ * The live defect: a Example Bank card rendered "CREDIT CARD" on Cash Flow and
+ * "Example Rewards®" on the Credit page. Both were real columns on one row.
  *
  * Also carries the completed-TRUTH-10 authority guards (merged from
  * lib/accounts/display-identity.authority.test.ts): the five-site convergence
@@ -23,9 +23,9 @@ import {
 } from "./display-identity";
 
 /** The exact live row that produced the divergence. */
-const CHASE_CARD = {
+const EXBANK_CARD = {
   name: "CREDIT CARD", plaidName: "CREDIT CARD",
-  officialName: "Ultimate Rewards®", displayName: null,
+  officialName: "Example Rewards®", displayName: null,
 };
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
@@ -46,11 +46,11 @@ const walk = (d: string, out: string[] = []): string[] => {
 
 test("1. one account id resolves to exactly one display name", () => {
   // Every surface calls the same function on the same row, so it cannot differ.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
-  assert.equal(resolveAccountIdentity(CHASE_CARD).basis, "OFFICIAL_NAME");
-  assert.equal(resolveAccountIdentity(CHASE_CARD).isUserNamed, false);
+  assert.equal(accountDisplayName(EXBANK_CARD), "Example Rewards®");
+  assert.equal(resolveAccountIdentity(EXBANK_CARD).basis, "OFFICIAL_NAME");
+  assert.equal(resolveAccountIdentity(EXBANK_CARD).isUserNamed, false);
   // Repeated calls are stable — no clock, no randomness, no order dependence.
-  assert.equal(accountDisplayName(CHASE_CARD), accountDisplayName({ ...CHASE_CARD }));
+  assert.equal(accountDisplayName(EXBANK_CARD), accountDisplayName({ ...EXBANK_CARD }));
 });
 
 test("1b. the precedence is user > official > provider > stored, and records which answered", () => {
@@ -93,7 +93,7 @@ test("3. descriptors never become account names", () => {
 // ── 4 ────────────────────────────────────────────────────────────────────────
 
 test("4. an institution name is never substituted for an account name", () => {
-  // "Chase" names a bank that may hold five accounts. It is context, not identity.
+  // "Example Bank" names a bank that may hold five accounts. It is context, not identity.
   const code = strip(read("lib/accounts/display-identity.ts"));
   assert.ok(!/institution/i.test(code.replace(/institutionName\s+who holds it/g, "")),
     "the authority consults an institution");
@@ -106,11 +106,11 @@ test("4. an institution name is never substituted for an account name", () => {
 
 test("5. a nickname overrides ONLY when explicitly configured", () => {
   // `displayName` IS the nickname — a user-editable override, null until set.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
-  assert.equal(accountDisplayName({ ...CHASE_CARD, displayName: "Travel card" }), "Travel card");
-  assert.equal(resolveAccountIdentity({ ...CHASE_CARD, displayName: "Travel card" }).isUserNamed, true);
+  assert.equal(accountDisplayName(EXBANK_CARD), "Example Rewards®");
+  assert.equal(accountDisplayName({ ...EXBANK_CARD, displayName: "Travel card" }), "Travel card");
+  assert.equal(resolveAccountIdentity({ ...EXBANK_CARD, displayName: "Travel card" }).isUserNamed, true);
   // Clearing it falls back — it never strands the account nameless.
-  assert.equal(accountDisplayName({ ...CHASE_CARD, displayName: "" }), "Ultimate Rewards®");
+  assert.equal(accountDisplayName({ ...EXBANK_CARD, displayName: "" }), "Example Rewards®");
 });
 
 // ── 6 · 7 · 8 ────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ test("9. the mask is disambiguation, never identity", () => {
   assert.equal(formatAccountMask(null), null);
   assert.equal(formatAccountMask("  "), null);
   // It is not blended into the name.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
+  assert.equal(accountDisplayName(EXBANK_CARD), "Example Rewards®");
 });
 
 test("10. the authority has no runtime dependencies", () => {
@@ -169,16 +169,16 @@ test("10. the authority has no runtime dependencies", () => {
 // ── sorting (v2.6-TRUTH-10b) ────────────────────────────────────────────────
 
 test("11. accounts order by the name a user SEES, not the stored one", () => {
-  // The live case: "CREDIT CARD" displays "Ultimate Rewards®" and belongs LAST
+  // The live case: "CREDIT CARD" displays "Example Rewards®" and belongs LAST
   // among the debt accounts, not fourth.
   const rows = [
     { id: "a", name: "Beacon Mortgage" },
-    { id: "b", name: "CREDIT CARD", officialName: "Ultimate Rewards®" },
+    { id: "b", name: "CREDIT CARD", officialName: "Example Rewards®" },
     { id: "c", name: "Example CU Credit Card" },
   ];
   const sorted = [...rows].sort(compareAccountsByDisplayName);
   assert.deepEqual(sorted.map((r) => accountDisplayName(r)),
-    ["Beacon Mortgage", "Example CU Credit Card", "Ultimate Rewards®"]);
+    ["Beacon Mortgage", "Example CU Credit Card", "Example Rewards®"]);
   // The stored order would have put it in the middle.
   assert.notDeepEqual(sorted.map((r) => r.id), [...rows].sort((x, y) => x.name.localeCompare(y.name)).map((r) => r.id));
 });
@@ -215,8 +215,8 @@ test("13. snapshot summation order is NOT re-sorted", () => {
 //                                       AI drilldown, reading a `select` that
 //                                       fetched only those two columns — so the
 //                                       authority was structurally unable to
-//                                       answer even if called. A Chase card the
-//                                       whole product calls "Ultimate Rewards®"
+//                                       answer even if called. A Example Bank card the
+//                                       whole product calls "Example Rewards®"
 //                                       was narrated to the model as "CREDIT CARD".
 //   lib/investments/connection-import-accounts.ts
 //                                       a correct-but-duplicated four-rung copy.
@@ -314,7 +314,7 @@ test("TRUTH-10: no account read selects SOME name columns but not all four", () 
     `\n\nSpread ACCOUNT_NAME_SELECT instead. A partial select makes ` +
     `accountDisplayName() unable to answer, and it degrades SILENTLY — the call ` +
     `site looks correct. This is precisely how the AI drilldown kept narrating ` +
-    `"CREDIT CARD" for an account every other surface calls "Ultimate Rewards®".`,
+    `"CREDIT CARD" for an account every other surface calls "Example Rewards®".`,
   );
 });
 

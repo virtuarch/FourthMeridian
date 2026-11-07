@@ -28,9 +28,17 @@ function makeRow() {
   const client: PlaidItemSyncLockClient = {
     plaidItem: {
       async updateMany({ where, data }) {
-        const w = where as { OR?: Array<{ syncLockedAt: null | { lte: Date } }>; syncLockedAt?: Date };
-        if (w.OR && !w.OR.some((c) => (c.syncLockedAt === null ? row.syncLockedAt === null
-          : row.syncLockedAt !== null && row.syncLockedAt.getTime() <= c.syncLockedAt.lte.getTime()))) return { count: 0 };
+        // P2 — the OR is either the claim's syncLockedAt condition or the
+        // success-release's syncIncompleteAt condition; evaluate whichever column it names.
+        type Cond = { syncLockedAt?: null | { lte: Date }; syncIncompleteAt?: null | { lt: Date } };
+        const w = where as { OR?: Cond[]; syncLockedAt?: Date };
+        const holds = (c: Cond) => {
+          const col = "syncIncompleteAt" in c ? "syncIncompleteAt" : "syncLockedAt";
+          const cur = row[col];
+          if (col === "syncLockedAt") { const v = c.syncLockedAt!; return v === null ? cur === null : cur !== null && cur.getTime() <= v.lte.getTime(); }
+          const v = c.syncIncompleteAt!; return v === null ? cur === null : cur !== null && cur.getTime() < v.lt.getTime();
+        };
+        if (w.OR && !w.OR.some(holds)) return { count: 0 };
         if (w.syncLockedAt instanceof Date && (row.syncLockedAt === null || row.syncLockedAt.getTime() !== w.syncLockedAt.getTime())) return { count: 0 };
         Object.assign(row, data);
         return { count: 1 };
@@ -58,8 +66,11 @@ async function main() {
     check("A's fenced release leaves B's lock intact", row.syncLockedAt?.getTime() === tokenB!.getTime());
     check("…and says so", warned);
     check("a third caller is still refused while B holds the lease", (await claimPlaidItemSyncLockAt("i", client)) === null);
-    await releasePlaidItemSyncLock("i", true, client, tokenB!);
-    check("B's own release clears it", row.syncLockedAt === null && row.syncIncompleteAt === null);
+    const rel = await releasePlaidItemSyncLock("i", true, client, tokenB!);
+    // P2 — the third caller's refused claim stamped the marker DURING B's lease,
+    // so B's successful release frees the lock but keeps that pending signal.
+    check("B's own release clears its lock", row.syncLockedAt === null);
+    check("…and keeps the marker the refused third caller stamped during B's lease", row.syncIncompleteAt !== null && rel.pendingSignal);
   }
   {
     const { row, client } = makeRow();

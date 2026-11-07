@@ -150,6 +150,11 @@ export function previewCases(): PreviewCase[] {
     }));
   }
 
+  // PB-5 — a connection removed by support (synthetic id + institution; never the operator or reason).
+  cases.push(notificationCase("notification--connection-removed-by-support", "CONNECTION_REMOVED_BY_SUPPORT", {
+    connectionId: "preview-item", institutionName: "Example Bank", provider: "PLAID",
+  }));
+
   // Welcome (one-time): with and without a first name. The link carries no token.
   const dashboardUrl = `${PREVIEW_APP_BASE}/dashboard`;
   cases.push(pc("welcome--named", "welcome", { firstName: "Alex", dashboardUrl }));
@@ -175,6 +180,19 @@ export function previewCases(): PreviewCase[] {
       { title: "job-health:sync-banks", severity: "critical", summary: "sync-banks has not completed in 26 hours" },
       { title: "connection-health", severity: "warning", summary: "3 connections need attention" },
     ],
+  }));
+  cases.push(pc("platform-alert--resolved", "platform-alert", {
+    evaluatedAtISO: at.toISOString(),
+    alerts: [],
+    resolved: {
+      ruleId: "job-failing", ruleTitle: "Scheduled job failing", dedupeKey: "job-failing:sync-banks",
+      firstFiredAtISO: new Date(at.getTime() - 3 * 60 * 60 * 1000).toISOString(), clearedAtISO: at.toISOString(), durationLabel: "3 h",
+    },
+  }));
+  cases.push(pc("platform-alert--flapping", "platform-alert", {
+    evaluatedAtISO: at.toISOString(),
+    alerts: [],
+    flapping: { ruleId: "job-failing", ruleTitle: "Scheduled job failing", dedupeKey: "job-failing:sync-banks", recoveries: 2, threshold: 2, windowHours: 24, stableAfterEvaluations: 8 },
   }));
   cases.push(pc("smoke", "smoke", { note: "preview" }));
 

@@ -210,7 +210,9 @@ export type OperatorTargetKind =
   | "COMMS_TEMPLATE"
   // Comms Center B2 — one automation (its id), and one test send ("<key>:<channel>").
   | "COMMS_AUTOMATION"
-  | "COMMS_TEST_SEND";
+  | "COMMS_TEST_SEND"
+  // PB-1 S6 — one sync incident (SyncIssue.id): acknowledge / operator resolve.
+  | "SYNC_INCIDENT";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -278,6 +280,11 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // Resuming a wallet's history spends a shared provider budget on a customer's
   // connection outside its automatic schedule; it carries a reason.
   AuditAction.WALLET_HISTORY_RESUMED,
+  // PB-1 S6 (S2 ruling) — acknowledging or manually resolving an incident
+  // changes what every operator surface (and, for a resolve, the member feed's
+  // `resolved`) shows; both carry a reason.
+  AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
+  AuditAction.SYNC_INCIDENT_RESOLVED,
   // SEC-PLAT-2 — platform-wide signup / product switches, revoking a sent
   // invitation, and cross-tenant merchant merge decisions are consequential and
   // now carry a reason. Approve / deny / resend / direct invite stay
@@ -303,6 +310,10 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_ABUSE_EVIDENCE_DELETED,
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
+  AuditAction.MERCHANT_MERGE_RECONSIDERED,
+  // PB-5 — removing a customer's connection is irreversible at the provider.
+  AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
+  AuditAction.CONNECTION_REMOVAL_REQUESTED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
   // shape in P1; adding a reason there is P2 (the surface is SYSTEM_ADMIN-only).
 ]);

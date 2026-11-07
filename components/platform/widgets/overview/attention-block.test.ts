@@ -45,13 +45,13 @@ const inputs: AttentionInputs = {
   connections: {
     total: 3, counts: { HEALTHY: 1, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 1, REVOKED: 0 },
     unhealthy: [
-      { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+      { source: "PLAID", id: "item_err", label: "Example Bank", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
       { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null, kind: "WALLET", institution: null, network: "ETH", overdueAfterHours: 6, neverSynced: false, availableActions: [] },
     ],
     retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
   },
   jobs: { jobs: [{ job: "sync-banks", status: "failing", expectedEveryHours: 24, consecutiveFailures: 3, lastStartedAt: AGO(6), lastFailureAt: AGO(6), lastFailureSummary: "Plaid timed out" }] },
-  providers: { checkedAt: NOW, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0 }, providers: [] },
+  providers: { checkedAt: NOW, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0, INSUFFICIENT_DATA: 0 }, providers: [] },
   resources: { checkedAt: NOW, allFresh: true, resources: [] },
   alerts: {
     latest: { evaluatedAtISO: AGO(2), deliveryStatus: "sent", counts: { evaluated: 1, live: 1, enabled: 1, firing: 1, delivered: 1, suppressed: 0 },
@@ -59,7 +59,7 @@ const inputs: AttentionInputs = {
     titles: { "job-failing": "Repeated job failures" },
   },
   incidents: {
-    items: [{ id: "inc_a", label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking", domain: "transactions", severity: "critical", state: "active", firstOccurredAt: AGO(100), lastOccurredAt: AGO(2), occurrenceCount: 4, occurrenceCountKnown: true, recovery: "automatic-available", refreshExecutionId: "exec_abc123" }],
+    items: [{ id: "inc_a", label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Example Bank · Checking", domain: "transactions", severity: "critical", effectiveSeverity: "critical", freshness: "current", state: "active", brokenNow: true, firstOccurredAt: AGO(100), lastOccurredAt: AGO(2), occurrenceCount: 4, occurrenceCountKnown: true, refreshExecutionId: "exec_abc123" }],
     activeTotal: 1, truncated: false,
   },
 };
@@ -157,7 +157,7 @@ function main() {
     const partial = response({}, { ...inputs, jobs: null, incidents: null });
     const { html, text } = render(partial);
     check("alert names the readers that could not be asked", /role="alert"/.test(html) && text.includes("2 authorities could not be asked (job-health, incidents)"), text);
-    check("the other rows still render", text.includes("Chase"));
+    check("the other rows still render", text.includes("Example Bank"));
     const emptyButFailed = response({}, { connections: { total: 0, counts: { HEALTHY: 0, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: null, providers: null, resources: null, alerts: null, incidents: null });
     const r2 = render(emptyButFailed);
     // Owner ruling (2026-10-30) — the unread policy-assignments authority is named too (6 of 7 failed).
@@ -181,7 +181,7 @@ function main() {
     const ro = render(response(), { canWrite: false });
     check("READ: no Resync / Request reauthorization button", !/aria-label="Resync /.test(ro.html) && !/aria-label="Request reauthorization /.test(ro.html));
     const rw = render(response(), { canWrite: true });
-    check("WRITE: Resync and Request reauthorization render for the Plaid ERROR row", /aria-label="Resync Chase"/.test(rw.html) && /aria-label="Request reauthorization Chase"/.test(rw.html));
+    check("WRITE: Resync and Request reauthorization render for the Plaid ERROR row", /aria-label="Resync Example Bank"/.test(rw.html) && /aria-label="Request reauthorization Example Bank"/.test(rw.html));
     check("WRITE: a wallet row gets no Plaid write", !/aria-label="Resync Wallet/.test(rw.html));
     check("run-now renders as a doorway to Jobs, never a POST", /Run from Jobs/.test(rw.text) && !/run-now/.test(strip("components/platform/widgets/overview/AttentionBlock.tsx").replace(/"run-now"/g, "")));
     check("the only POSTs are the two existing connection routes", /connections\/\$\{action\.connectionId\}\/\$\{path\}/.test(strip("components/platform/widgets/overview/AttentionBlock.tsx")));
@@ -190,8 +190,8 @@ function main() {
   console.log("8. evidence");
   {
     const { html } = render(response());
-    check("an execution opens the inspection panel", /aria-label="Inspect execution …abc123 for Chase · Checking"/.test(html));
-    check("a doorway is labelled from the registry", /Open Providers — evidence for Chase/.test(html) && /Open Jobs — evidence for sync-banks/.test(html));
+    check("an execution opens the inspection panel", /aria-label="Inspect execution …abc123 for Example Bank · Checking"/.test(html));
+    check("a doorway is labelled from the registry", /Open Providers — evidence for Example Bank/.test(html) && /Open Jobs — evidence for sync-banks/.test(html));
     const unwired = render(response(), { wired: false });
     check("unwired host: doorways become plain labels, the inspect button stays", !/Open Providers — evidence/.test(unwired.html) && /Inspect execution/.test(unwired.html));
   }
@@ -209,7 +209,7 @@ function main() {
   {
     const { html } = render(response(), { canWrite: true });
     check("no email-shaped string in the markup", !/[\w.+-]+@[\w-]+\.[\w.]+/.test(html));
-    check("the Plaid row identifies by institution, the wallet by an opaque tail", html.includes("Chase") && html.includes("Wallet …abc123"));
+    check("the Plaid row identifies by institution, the wallet by an opaque tail", html.includes("Example Bank") && html.includes("Wallet …abc123"));
     const src = strip("components/platform/widgets/overview/AttentionBlock.tsx");
     check("exactly one read, a string literal", (src.match(/useWidgetFetch</g) ?? []).length === 1 && src.includes('useWidgetFetch<AttentionResponse>("/api/platform/platform-ops/attention")'));
     check("no sort in the block (one ordering authority)", !/\.sort\(/.test(src));
@@ -252,8 +252,8 @@ function main() {
     check("…and its rows are absent, the others present", !/AI failure ×/.test(partial.text) && partial.text.includes("item …zz9988"));
 
     // NEEDS_REAUTH mirrors the severity table's row with a connection reference.
-    const reauth = render(response({}, inputs, { ...impactInputs, connections: { ...inputs.connections!, unhealthy: [...inputs.connections!.unhealthy, { source: "PLAID", id: "item_reauth1", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth"] }] } }));
-    check("a NEEDS_REAUTH connection is an impact row with an opaque connection reference", reauth.text.includes("connection …eauth1") && reauth.text.includes("Connection · Wells Fargo") && /Open Providers — evidence for Connection · Wells Fargo/.test(reauth.html), reauth.text);
+    const reauth = render(response({}, inputs, { ...impactInputs, connections: { ...inputs.connections!, unhealthy: [...inputs.connections!.unhealthy, { source: "PLAID", id: "item_reauth1", label: "Institution D", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth"] }] } }));
+    check("a NEEDS_REAUTH connection is an impact row with an opaque connection reference", reauth.text.includes("connection …eauth1") && reauth.text.includes("Connection · Institution D") && /Open Providers — evidence for Connection · Institution D/.test(reauth.html), reauth.text);
 
     // Floors are captioned inside the group.
     const floored = render(response({}, inputs, { ...impactInputs, refresh: { ...impactInputs.refresh!, more: true } }));

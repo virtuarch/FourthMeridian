@@ -7,7 +7,7 @@
 - **`main` / Production was never deployed or merged.**
 - The only Production changes were the two approved items in §5.
 
-Claude 2's full section is in [OVERNIGHT-2026-10-31-SESSION2-HANDOFF.md](OVERNIGHT-2026-10-31-SESSION2-HANDOFF.md). The live checklist is `/Users/chrstn/dev/OVERNIGHT-2026-10-31-CHECKLIST.md`.
+Claude 2's full section is in [OVERNIGHT-2026-10-31-SESSION2-HANDOFF.md](OVERNIGHT-2026-10-31-SESSION2-HANDOFF.md). The live checklist is `/Users/devuser/dev/OVERNIGHT-2026-10-31-CHECKLIST.md`.
 
 ---
 

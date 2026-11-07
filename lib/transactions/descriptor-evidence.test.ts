@@ -76,8 +76,8 @@ function flowOf(r: Row): FlowType {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const pendingPayroll: Row = {
-    category: "Other", amount: 5286.63,
-    merchant: "VECTRUS SYSTEMS", description: "VECTRUS SYSTEMS CORP PAYROLL SEC:PPD",
+    category: "Other", amount: 4928.40,
+    merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL SEC:PPD",
     pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", accountType: "checking",
   };
   const category = resolveCategory(pendingPayroll);
@@ -141,13 +141,13 @@ function flowOf(r: Row): FlowType {
   // must land on the SAME economic kind — INCOME — never REFUND for one and
   // INCOME for the other. Pending is a settlement state, not an economic type.
   const pending: Row = {
-    category: "Other", amount: 5286.63,
-    merchant: "VECTRUS SYSTEMS", description: "VECTRUS SYSTEMS CORP PAYROLL",
+    category: "Other", amount: 4928.40,
+    merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL",
     pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", accountType: "checking",
   };
   const posted: Row = {
-    category: "Income", amount: 5286.63,
-    merchant: "VECTRUS SYSTEMS", description: "VECTRUS SYSTEMS CORP PAYROLL",
+    category: "Income", amount: 4928.40,
+    merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL",
     pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES", accountType: "checking",
   };
   check("Case 5: pending payroll is INCOME", flowOf(pending) === "INCOME", `got ${flowOf(pending)}`);
@@ -207,7 +207,7 @@ check("isPayrollIncomeDescriptor matches a real payroll word",
 
 // A descriptor-blind view of the rescued Income row: the classifier's own reason.
 {
-  const c = classifyFlow({ category: "Income", amount: 5286.63 });
+  const c = classifyFlow({ category: "Income", amount: 4928.40 });
   check("classifier stays descriptor-blind: rescued Income → CATEGORY_FLOW_VALUE (not DESCRIPTOR_EVIDENCE)",
     c.reason === "CATEGORY_FLOW_VALUE", `got ${c.reason}`);
 }
@@ -228,8 +228,8 @@ function writeFieldsFor(r: Row, descriptorRescued: boolean) {
 }
 
 {
-  const payroll: Row = { category: "Other", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
-    description: "VECTRUS SYSTEMS CORP PAYROLL SEC:PPD", accountType: "checking" };
+  const payroll: Row = { category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
+    description: "EMPLOYER A PAYROLL SEC:PPD", accountType: "checking" };
   const rescued = resolveCategory(payroll) === "Income";
   check("payroll row rescues to Income", rescued);
   const wf = writeFieldsFor(payroll, rescued);

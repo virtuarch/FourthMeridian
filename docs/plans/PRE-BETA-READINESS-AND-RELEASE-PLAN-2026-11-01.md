@@ -1,5 +1,7 @@
 # Fourth Meridian: final pre-beta readiness and Production release plan (2026-11-01)
 
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #206–#219, #223
+
 **Authors.** Session 1 (coordinator) and Session 2. Each session independently cross-reviewed the other's conclusions, and the disagreements are reconciled in §8.
 
 **Scope.** This document answers two owner directives of 2026-11-01:
@@ -366,12 +368,12 @@ Read-only throughout: no code, data, settings or deployments were changed. I rea
 
 | Item | develop | main / Prod | Evidence |
 |---|---|---|---|
-| P0 cash ($29,751.76 reported vs $22,303.68 accessible) | Fixed | **Fixed in code on main** | Owner-approved contract implemented in 257703a, PR #56 f84feac (an ancestor of 6a1ed44). Also #63 a8e61e9 and #64 0a62f59 (cutover marker). Production `NEXT_PUBLIC_ADJUSTED_CASH_BASIS_CUTOVER=2026-10-27` was set before the build (memory note on the release). The test fixture goes from 29,751.76 reported to 25,429.09 adjusted; accessible 22,303.68 plus holds 3,125.41. Tests: `lib/balances/adjusted-balance.test.ts`, `adjusted-basis.test.ts`. The doc `P0-CASH-ADJUSTED-BALANCE-CONTRACT` still says "PROPOSAL ONLY", which is out of date. **No post-release reconciliation of the live Production figures is documented.** |
-| Amex `LOAN_PAYMENTS` transfers stored as DEBT_PAYMENT | Forward fix in place | Forward fix on main; **16-row historical repair NOT applied** | 4febb33 (the sync writes TRANSFER_AUTHORITY) and 7d94dee (repair script). Tests: `transfer-authority-sync.test.ts` (17), `repair-transfer-debt-payment.test.ts` (114), `.resync.test.ts` (25). The repair candidate set is 16 rows, −$24,372.67 (`P1-PRODUCTION-REPAIR-CANDIDATES`). Money totals are unaffected; filters, the category chip and stored labels are wrong. Release notes list "16-row repair" as excluded. |
+| P0 cash (reported cash exceeded accessible cash) | Fixed | **Fixed in code on main** | Owner-approved contract implemented in 257703a, PR #56 f84feac (an ancestor of 6a1ed44). Also #63 a8e61e9 and #64 0a62f59 (cutover marker). Production `NEXT_PUBLIC_ADJUSTED_CASH_BASIS_CUTOVER=2026-10-27` was set before the build (memory note on the release). Ledger cash exceeded the institution balance by the in-flight transfer amount plus holds; the adjusted basis corrects it (exact figures in the owner's private record). Tests: `lib/balances/adjusted-balance.test.ts`, `adjusted-basis.test.ts`. The doc `P0-CASH-ADJUSTED-BALANCE-CONTRACT` still says "PROPOSAL ONLY", which is out of date. **No post-release reconciliation of the live Production figures is documented.** |
+| Amex `LOAN_PAYMENTS` transfers stored as DEBT_PAYMENT | Forward fix in place | Forward fix on main; **16-row historical repair NOT applied** | 4febb33 (the sync writes TRANSFER_AUTHORITY) and 7d94dee (repair script). Tests: `transfer-authority-sync.test.ts` (17), `repair-transfer-debt-payment.test.ts` (114), `.resync.test.ts` (25). The repair candidate set is 16 rows (`P1-PRODUCTION-REPAIR-CANDIDATES`; amounts in the owner's private record). Money totals are unaffected; filters, the category chip and stored labels are wrong. Release notes list "16-row repair" as excluded. |
 | FIN-001 (one late paycheck drops all payroll under a complete label) | Resolved | On main | 07d59a8, b04e4f1 (both ancestors of main). Test: `lib/ai/forecast/income-completeness.test.ts`, `fin001-wiring.test.ts`. |
 | FIN-002 (user correction can't change flowType on rows carrying a Plaid category) | Resolved for new corrections | On main | f51ed98, 33cb67f. The register says "pre-fix rows: owner decision", so rows corrected before the fix still carry the old economics. |
 | FIN-003/007/009/011 | Resolved | On main | 66ed6bf, 5e59c89 and 7cad17e, db5ee8d, ff2480f |
-| FIN-004/005/006/008/010 | Deferred or partial | Same | FIN-005 is only partial (dad72a6): restricted cash in liquidity history still doesn't match the hero figure. |
+| FIN-004/005/006/008/010 | Deferred or partial | Same | FIN-005: **2026-11-03: FIXED on develop**: part 1 (#311, labels; Brief and AI withhold the cross-basis change) + part 2 (#323, `restrictedCash` column written by every snapshot writer). Past rows need the owner-gated repair (B10.5). |
 | Owner valuation-coverage ruling (balance ≠ price ≠ valuation; never $0) | Implemented (#122 6adf014, `planDayPersistence`, #173/#183/#185) | **Not on main** | Main has only the older V26-CRYPTO-STATUS-1 model, and `planDayPersistence` / membership guard are absent. Main has **no ERC-20/SPL holdings code at all**: no `alchemy_getTokenBalances` or `getTokenAccountsByOwner` call. A grep found no disclosure that tokens are excluded, so on Production wallet values are native-coin only and tokens are left out silently. |
 | Understated-but-"supported" snapshot rows (P1) | Correct; throughput FAIL | Not on main | Preview QA Space (cmvrmtwtr…): 367 rows from 2025-10-28 to 2026-10-30. **0 rows with crypto = $0 and no status**. 58 `supported` (08-31 to 10-27), **307 `unavailable`** (2025-10-28 to 2026-08-30, stamped pending revaluation, crypto values kept), and 10-29 refused. So **84% of the year is not asserted** and is waiting on revaluation. |
 | Liquidity access (HSA/restricted) | Present | On main (130946c v2.7-P3) | — |
@@ -432,12 +434,12 @@ Read-only throughout: no code, data, settings or deployments were changed. I rea
 6. Coinbase: wait for Plaid, or fall back to direct read-only Coinbase API keys.
 
 Key files:
-- `/Users/chrstn/dev/FourthMeridian/docs/plans/P0-CASH-ADJUSTED-BALANCE-CONTRACT-2026-10-27.md` (its header is out of date)
-- `/Users/chrstn/dev/FourthMeridian/docs/plans/P1-PRODUCTION-REPAIR-CANDIDATES-2026-10-27.md`
+- a local path (not committed) (its header is out of date)
+- a local path (not committed)
 - `docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md` and `docs/plans/OVERNIGHT-2026-10-31-CONSOLIDATED-REPORT.md` (on develop)
-- `/Users/chrstn/dev/FourthMeridian/docs/audits/pre-beta-2026-10/remediation/01-FINDINGS-REGISTER.md`
+- a local path (not committed)
 
-The only file I created is the read-only query helper `/private/tmp/claude-501/-Users-chrstn-dev-FourthMeridian/4945e35a-1c27-44f6-a1a3-b060cda74b0f/scratchpad/q.sh`.
+The only file I created is the read-only query helper a local scratchpad (not committed).
 
 ---
 
@@ -536,7 +538,7 @@ Promoting develop needs 9 migrations, including 4 comms tables, plus 2–3 Produ
 | External dead-man monitor on `/api/health` | **No evidence it exists.** The runbook assumes one | `docs/operations/runbooks/alerting-dead-evaluator.md:4`; gate G3 still open |
 | Sentry | `NEXT_PUBLIC_SENTRY_DSN` set on Production and Preview; Production boot requires it. **Event delivery never verified** | Vercel env; `instrumentation.ts` |
 | Production backups | One logical cutover dump (`prod-20261023T034601Z`, sha 7c9a01b3…), restored locally (doc 26 C1). A daily physical backup was observed 10-27 16:16Z. **PITR status unknown for Production** (Preview: Pro plan, 7 daily backups, PITR DISABLED as of 10-22). **The restore-rehearsal table in §6 of `backup-restore-verification.md` reads "_none yet_"**, so no RPO/RTO is recorded | doc 26 §C1; memory (prod release); remediation doc 11 G0c |
-| Preview backups | `db:migrate:safe` dumps verified per migration on 10-31 (consolidated report §3). 8+ plaintext dumps sit in `/Users/chrstn/dev/FM-migrate1/backups/` and 31 in `backups/`, so the local-dump policy (DB-007 §7) is unenforced | filesystem |
+| Preview backups | `db:migrate:safe` dumps verified per migration on 10-31 (consolidated report §3). 8+ plaintext dumps sit in a local path (not committed) and 31 in `backups/`, so the local-dump policy (DB-007 §7) is unenforced | filesystem |
 | Purge correctness | Census test fails the build on any unclassified user column. Comms ledger and automation rows are anonymised (`purge.ts:494-531`). `BetaAccessRequest` and its events are deleted by email | `purge-census.test.ts`, `purge.test.ts` (+73 lines on develop) |
 | Deletion and retention jobs | `process-deletions`; retention runs inside `purge-trash` via `runDataRetention` (90-day comms, AI and JobRun rows; 180-day beta events). **Never run on Preview** (crons are off). One Preview account has been scheduled for deletion since 10-29 and was never purged | Preview `User.deletionScheduledAt`; JobRun has no rows for these jobs |
 | Production deletion | Main's purge lacks the comms steps, but it does not need them because main has no comms tables. **No evidence that a Production purge has ever run** | no Production DB access |
@@ -719,7 +721,7 @@ Cut points are develop first-parent merge SHAs. That works only from `296516c` (
   - `/dashboard/brief` is not opened.
 - **Rollback:** Vercel rollback to `dpl_GvqxKYoYfxwxS2VGhf5ddmd8zx3t` (`4dda8dc`); fallback `dpl_DySEgBLcpbzzRPYZQm1xaDrVWKdq`. Leave the DB in place. Reverse migration 1 with the UPDATE in its file only if the owner wants; the `historyCheckpoint` column stays.
 
-The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn-dev-FourthMeridian/4945e35a-1c27-44f6-a1a3-b060cda74b0f/scratchpad` (no secrets).
+The Vercel helper and fetched HTML are in a local scratchpad (not committed) (no secrets).
 ---
 
 ## Addendum: B9 progress (2026-11-01)
@@ -731,8 +733,8 @@ The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn
 | #160 | Turnstile fail-closed rework | S1: MERGE-WITH-NITS (42 mutations; 2 P2 test gaps to close: register action pin, dry-run rollup) | S2 adding tests, then merge |
 | #203 | 4 server-side analytics events + privacy disclosure | S2: MERGE | **MERGED 94271a4** |
 | #204 | Option (b): DENIED + SUSPICIOUS can't be approved or invited (owner-approved) | S1: MERGE-WITH-NITS; fixed in 70a527f | **MERGED ac275d7** |
-| (pending) | Hashed blocked-identifier mechanism (owner P2-1 ruling); **adds a migration, so B9 becomes a migrating batch** | design approved by S1 | S2 building |
-| (pending) | Snapshot-consistent db:backup verifier (avoids future cron pauses) | — | S2 building |
+| #207 | Hashed blocked-identifier mechanism (owner P2-1 ruling); **adds migration `20261101120000`, so B9 is a migrating batch** | S1: MERGE at cee8d55 (live PG16 concurrency: deadlocks fixed and verified; 30/30 mutations) | S2 merging |
+| #205 | Snapshot-consistent db:backup verifier + empty-mid-block parser fix (no cron pause needed for B2+) | S1: MERGE at 98589c2 (live-tested) | **MERGED d6934ad** |
 
 **B9 env hard preconditions (updated):** both Turnstile keys plus the allowed apex host; **`BETA_BLOCKLIST_HMAC_KEY_V1` + `BETA_BLOCKLIST_HMAC_KEY_VERSION`** (without them, Production refuses issuance and deny rolls back). Owner to confirm the 2-year block retention.
 
@@ -747,7 +749,7 @@ The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn
 
 | Step | Result |
 |---|---|
-| prod.env | Present, permissions 600, gitignored. Target ref `qirfzvvaeddukjiphims` = `fourth-meridian-production`. Both URLs use the session pooler on 5432 as `postgres` |
+| prod.env | Present, permissions 600, gitignored. Target ref (ref omitted) = `fourth-meridian-production`. Both URLs use the session pooler on 5432 as the database owner role |
 | Pre-checks | PG 17.6. All 4 app tables owned by postgres. All existing policies PERMISSIVE. Schema ACL recorded. No leftover role |
 | Grant | Applied as approved, in one transaction, run via local psql with the owner-supplied credentials (same SQL as the approved file) |
 | Q1 | 20 PENDING; 0 decided, invited or redeemed; 0 created since 10-31 08Z |
@@ -766,7 +768,7 @@ The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn
 | Original config | crons enabled, enabledAt 1792764879692, disabledAt null, 2 definitions, deployment dpl_GvqxKYoY |
 | Pause | Disabled 01:46Z via project Cron Jobs settings. API shows disabledAt set. 0 running. **The 01:50 slot produced no JobRun** (27151 rows; last 01:45:49) |
 | Backup | **PASS:** strict row-for-row check across 54 non-empty tables, 18.0 MB |
-| Encryption | AES-256-CBC, PBKDF2 600k iterations. Key generated randomly and stored only in the owner's login Keychain as "FourthMeridian prod backup B1". File `~/FourthMeridian-prod-backups/fm-prod-preB1-2026-11-01T0151Z.sql.enc` (dir 700, file 600). Plaintext sha256 `c32a125d6b94881486e5e5c892ce81fe98db6544016bb6500eca38ff7a02cb6e`; ciphertext sha256 `67c7c8335a00aa3d40a1e4e784242aa0c78ef9f4ee25792419c9fe89acf04f11`. **Round-trip decrypt with the key read back from the Keychain matched.** Plaintext removed with `rm -P`. Retain until 2026-12-01 |
+| Encryption | AES-256-CBC, PBKDF2 600k iterations. Key generated randomly and stored only in the owner's login Keychain. File a local encrypted file (dir 700, file 600). Plaintext sha256 `c32a125d6b94881486e5e5c892ce81fe98db6544016bb6500eca38ff7a02cb6e`; ciphertext sha256 `67c7c8335a00aa3d40a1e4e784242aa0c78ef9f4ee25792419c9fe89acf04f11`. **Round-trip decrypt with the key read back from the Keychain matched.** Plaintext removed with `rm -P`. Retain until 2026-12-01 |
 | Migrations | `db:migrate:safe`: db-guard, then its own strict backup (PASS, removed with `rm -P`), then deploy. Applied growth_rename and connection_history_checkpoint. `migrate status` up to date (137). Growth Space renamed; `Connection.historyCheckpoint` exists (nullable text) |
 | Env | `WALLET_TOKEN_CAPTURE_ENABLED=false` set on Production. No `*_BACKFILL_ENABLED`, `SPL_HISTORY_ENABLED` or `ERC20_HISTORY_ENABLED` in Production |
 | Promotion PR | #206 `release/batch-1` @ 296516c → main |
@@ -811,8 +813,889 @@ Independent re-check:
 | Smoke | /api/health ok, db ok, overdueJobs 0; dispatch and alert evaluation 02:15Z; backstop every 5 min. /login 200, /request-access 200, apex 200, / → 307. No Turnstile on /login (no CAPTCHA change) |
 | Post-deploy jobs (cf93e90) | sol-history-backfill (owner manual run) succeeded `{enabled:false, …all zeros}`, a disabled no-op. fetch-fx-rates (owner manual run) succeeded, inserted 24. resume-stale-imports succeeded |
 | Rollback | Vercel rollback to `dpl_GvqxKYoYfxwxS2VGhf5ddmd8zx3t` (4dda8dc); schema stays (additive) |
-| Independent verification | Session 2: pending |
+| Independent verification | **Session 2 PASS**: Trusted health success; 0 5xx (1 h); Platform Ops 2.0 renders; Policies show Beta Default v1 unchanged (10/25 connections, $5/$20 AI, 3/10 exports); fail-closed and TOTP confirmed dormant; no System Admin lockout; 03:45 dispatch ran on dpl_7f5p. **Owner note:** assign Beta to the owner account before ever setting `POLICY_ASSIGNMENT_FAIL_CLOSED=enforce`. Cleanup: prod.env removed (rm -P), worktree and release branch removed |
 
 **Remaining owner items for B1:** visual check of Connections, and that Platform shows "Growth". Platform Spaces 2.0 is B3, so it is not expected to change yet.
 
 **B2 tree rule (Session 2 / owner):** B2's promotion tree = 3849ab6's tree plus exactly the 25bf587 lockfile hunk. From B3 on, tree equality is exact.
+
+---
+
+## Batch 2 package (prepared 2026-11-01; NOT approved, awaiting S2 review then owner)
+
+**What it is**
+- **Cut SHA:** `3849ab61d51b5896f32ec1bcdcd5c583fef88070`, plus `cherry-pick -x 25bf587`. Simulated as `79a5fb3`.
+- **Tree rule (owner, Session 2):** the B2 tree equals 3849ab6's tree plus exactly `package-lock.json | 6 +++---`. VERIFIED by simulation: diff vs 3849ab6 is that hunk only. `git merge-tree origin/main(cf93e90) 79a5fb3` gives `8738a7c2…`, identical to the head tree.
+- **Contents:** #131–#142.
+  - Platform Ops 2.0.
+  - **System Admin bypass obeys DISABLE_SYSTEM_ADMIN (#131)**, closing P1-4.
+  - Fail-closed policy assignment (dormant while the env var is unset).
+  - Policy-group editor; Beta policy reconciliation tool (an operator act only).
+- **CI at 3849ab6:** test, audits, drift guard and Trusted health = success. The dependency audit is expected to pass with the pick; it must be re-run on the release PR.
+
+**Migration:** `20261030120000_policy_group_editor`. Additive.
+- Two tables, PolicyGroup and PolicyGroupVersion, with RLS enabled and forced, a fm_system policy, and fm_backup SELECT. anon, authenticated and service_role are revoked.
+- It seeds the built-in `BETA_FULL_ACCESS_V1` row and version 1 (POLICY_ROLLOUT). No customer rows are touched.
+- Preview applied it on 10-30, but **without db:migrate:safe** (memory). Preview ledger shows `finished`, 1 step, not rolled back.
+- Production ledger 137 → 138.
+
+**Seeds:** none. `lib/platform/policy.ts` and the registry are unchanged vs main.
+
+**Env**
+- New code reads `POLICY_ASSIGNMENT_FAIL_CLOSED` and `OPERATOR_TOTP_ENFORCEMENT`. Both are **unset in Production** (Preview/develop only), so both stay dormant: no fail-closed policy, no operator TOTP.
+- The owner is the sole operator (owner ruling), so this is accepted.
+
+**DISABLE_SYSTEM_ADMIN check**
+- It exists in Production as a sensitive value (unreadable).
+- On main, `=== "true"` already refuses System Admin login (`lib/auth.ts:257`). So B2's #131 fix can only affect a System Admin session issued **before** the switch was flipped, which is exactly its purpose.
+- **No lockout risk from B2.**
+
+**Customer-visible effects:** operator surfaces only (Platform Ops 2.0). Customers see no change. Customer policy resolution is unchanged while fail-closed is unset (Production has 0 CustomerPolicyAssignment rows).
+
+**Backup procedure (CHANGE vs B1; owner approval needed)**
+- B2's own `db:migrate:safe` at 3849ab6 still runs the **old** live-count verifier, which failed under cron writes in B1.
+- **Proposed:**
+  1. Owner re-supplies a local credentials file (not committed) (it was removed after B1).
+  2. Take the backup with **develop's snapshot-consistent `db:backup`** (#205 + #209). Its first real run on Preview at 02:51Z **passed**: 67 tables matched in the dump's own snapshot, 284 s, no race.
+  3. Encrypt with the B1 Keychain plan, in the owner's Keychain.
+  4. In a clean B2 worktree, run `db-guard --mode=migrate-deploy`, then `prisma migrate deploy`, then `migrate status`. This is the same guard and deploy as `db:migrate:safe`; only the backup step uses the newer verifier.
+- **No cron pause needed.**
+- **Alternative:** repeat B1's cron pause and use B2's own `db:migrate:safe` unchanged.
+
+**Verification checklist**
+- `migrate status` 138; the PolicyGroup row `BETA_FULL_ACCESS_V1` exists; RLS forced on both tables.
+- Health ok; Trusted health green on main; 0 5xx for 30 minutes.
+- Platform Ops 2.0 renders for the owner. The kill-switch behaviour is unit-tested (`platform-sec-1.test.ts`); no live flip.
+- The env report has no fail lines (the salts are B6).
+- Crons enabled and bound to the new deployment.
+- `WALLET_TOKEN_CAPTURE_ENABLED` still false.
+
+**Rollback:** Vercel rollback to `dpl_CSnXauJZ4hareQ3aTVPnuPggDNYA` (B1, cf93e90). The schema stays (additive); B1 code ignores the PolicyGroup tables.
+
+**B2 independent review (Session 2): APPROVE FOR OWNER DECISION, with C1–C4.**
+
+What Session 2 verified:
+- The seed JSON is pinned to `catalogue.ts BETA_FULL_ACCESS_V1` by `policy-group-migration.test.ts`, and **no Beta values change**, so customers' effective entitlements are byte-identical.
+- 0 assignments is safe: unassigned users resolve to the seeded isDefault group, and the code catalogue remains the fallback.
+- No seeds or config are needed (`policy.ts` is unchanged; the operations registry change is code-only).
+- No lockout risk: the owner's everyday (non-admin) account.
+
+Conditions on the split backup/migrate procedure:
+- **C1:** the backup and the guard+deploy load the same env file; record each step's printed target identity and abort if they differ.
+- **C2:** hard `&&` gate. Deploy only after the backup's "verified … in the dump's own snapshot" line AND the Keychain round-trip pass.
+- **C3:** the backup runs minutes before deploy. `migrate status` is 137 with 1 pending before, and 138 up to date after.
+- **C4:** the release PR's dependency audit must pass. A new high advisory means STOP.
+
+Checklist additions:
+- Platform Ops → Policies shows the Beta values unchanged, with isDefault=true on BETA_FULL_ACCESS_V1.
+- The env report shows the two new flags as unset/dormant, not fail.
+
+### B2 deployed (2026-11-01)
+
+| Item | Result |
+|---|---|
+| Release commit | `79a5fb3` = 3849ab6 + `cherry-pick -x 25bf587`. Diff vs 3849ab6 is exactly `package-lock.json \| 6 +++---` (owner-approved B2 tree rule) |
+| CI #210 | test ×2 PASS, including the dependency audit; audits and drift guard PASS |
+| Preflight | prod.env 600 / gitignored / ref (ref omitted); 137 applied, 1 pending |
+| Backup (snapshot-consistent, develop tool, **no cron pause**) | Verified across 54 non-empty tables in the dump's own snapshot `0000002D-0000AF8C-1`. AES-256, owner's Keychain. Plaintext sha256 `19920b96d05c53feead6b12e00442864e6fcc0098e8c585c1dd27f746bcebb49`; ciphertext `e68228e75b9d6b0f43f41ca09c49e9b62b84e2b9201bf0fbff6770761e98e85a`. File a local encrypted file. Round trip OK; plaintext removed with `rm -P`; retain to 2026-12-01 |
+| C1 same target | backup = guard = the session pooler |
+| Migration | `20261030120000_policy_group_editor` applied. 138, up to date |
+| Seed check | PolicyGroup BETA_FULL_ACCESS_V1: isDefault, builtIn, v1. Values identical to the code catalogue. RLS enabled and forced on both tables. 0 CustomerPolicyAssignment rows |
+| Merge | #210 → main **0ec380c**; main tree = reviewed `8738a7c2…` |
+| Deployment | **dpl_7f5punfMsVdswbAxR6Si2pFW7Bzy** READY → app.fourthmeridian.com; crons bound |
+| Main checks | CI success; Trusted deployment health success |
+| Env | WALLET_TOKEN_CAPTURE_ENABLED=false; POLICY_ASSIGNMENT_FAIL_CLOSED and OPERATOR_TOTP_ENFORCEMENT unset; no backfill flags |
+| Jobs on 0ec380c | resume-stale-imports succeeded at 03:35:50, 03:40:50 and 03:45:49 |
+| Rollback | dpl_CSnXauJZ4hareQ3aTVPnuPggDNYA (B1, cf93e90); schema additive |
+| Independent verification | **Session 2 PASS**: Trusted health success; 0 5xx (1 h); Platform Ops 2.0 renders; Policies show Beta Default v1 unchanged (10/25 connections, $5/$20 AI, 3/10 exports); fail-closed and TOTP confirmed dormant; no System Admin lockout; 03:45 dispatch ran on dpl_7f5p. **Owner note:** assign Beta to the owner account before ever setting `POLICY_ASSIGNMENT_FAIL_CLOSED=enforce`. Cleanup: prod.env removed (rm -P), worktree and release branch removed |
+
+### B3 deployed (2026-11-01)
+
+| Item | Result |
+|---|---|
+| Release | PR #211 @ `9281ad5` (contains 25bf587, so **exact tree equality and no exception**); merged as **b35a6eb**; main tree = `a4b020e5…` |
+| CI | test ×2 PASS (dependency audit success in both); audits and drift guard PASS. On main: CI success, Trusted deployment health success |
+| Migrations | none (138) |
+| Deployment | **dpl_Ev92iBskTWS2NMSL1Q1crfPwRq3N** READY → app.fourthmeridian.com; crons bound; health ok |
+| Independent verification | **Session 2 PASS.** 0 5xx (1 h). Platform Spaces 2.0 (CS, Growth, Merchant Ops, Security Ops) render with no missing-table errors. Connections renders. **Net Worth (owner, All):** history starts 2025-11-02, inside the CoinGecko window, so no pre-floor days. No $0 crypto days; Investments band renders; hollow points are the "rebuilt" tier |
+| WEALTH_REGENERATION_ENABLED | UNKNOWN (sensitive). Behaviourally immaterial for the current cohort (no pre-floor days in the series) |
+| Pending | sync-banks (~05:40Z) and sync-crypto (~08:10Z) on b35a6eb must succeed within budget; the latter also closes the B1 token-capture check (Session 2) |
+| New pre-existing UX finding (not B3) | The Investments completeness chip reads "Valuation unavailable" (`lib/perspectives/envelope.ts:304`, tier "unknown" label) while its detail says all 13 holdings are valued. P2/P3 |
+| Rollback | dpl_7f5punfMsVdswbAxR6Si2pFW7Bzy (B2, 0ec380c) |
+
+**B4/5 package independent review (Session 2): APPROVE**, gated on fresh release-PR CI.
+- **Ordering is a single point of failure.** Migration 5 must precede the code; otherwise `lifecycleSource ≠ DB` makes every billable decision POLICY_UNAVAILABLE, a fleet-wide freeze. So **migrate status = 140 must be verified before merging #212.**
+- **Cost Freeze:** no row means MISSING, so OFF.
+- **Branded emails:** fall back to `https://fourthmeridian.com`; assets and legal pages are live.
+- **Invitations:** validity defaults to 7 days.
+- **Bulk approve:** none until B9 (no badge).
+- **Migrations:** additive only.
+
+**Post-deploy additions:**
+- Policies shows Beta lifecycle ACTIVE and Cost Freeze OFF.
+- The next sync-banks and sync-crypto succeed with **no POLICY_UNAVAILABLE / COST_FREEZE / PLAN_RESTRICTION skips** (a skip means STOP).
+- One AI or Brief path works without a "paused" refusal.
+
+**Cluster recommendation (owner decision):** mark all 13 SUSPICIOUS (reason ABUSE) and deny all 13, so B9's backfill blocks all 13 mailboxes, not only hzupno. Reversible by a newer verdict.
+
+**Cluster execution plan (owner-approved; runs after B4/5 is verified)**
+- **All 13** get a SUSPICIOUS verdict (reason ABUSE) plus deny. B9's backfill and preserve-evidence both require DENIED + latest SUSPICIOUS.
+- **hzupno** (the earliest) is additionally captured via B9 preserve-evidence, as the single evidence row.
+- The other 7 are untouched. No emails.
+
+**Retention deadlines (`jobs/data-retention.ts:72-75`)**
+- The **13 DENIED** are purged by `decidedAt` + 180 d, so from about **2027-04-30**. B9, the blocklist backfill and hzupno's evidence capture must all happen before then.
+- **Owner item:** the **7 PENDING** are purged by `createdAt` + 180 d, starting **2027-01-22** (the oldest, created 07-26). Decide them before then, or accept that they expire silently.
+
+---
+
+## Post-B9 engineering backlog (owner-queued 2026-11-01; NOT part of the B3–B9 scope)
+
+| # | Item | Owner requirements | Production |
+|---|---|---|---|
+| PB-1 | **Platform Ops incident lifecycle reliability** | Phases 0–10 per the owner directive: inventory, RCA, state machine, evidence-based reconciliation, operator ack/resolve/reopen, "broken now" vs history UX, Preview cron parity, historical reconciliation dry run (owner approval required), implementation and tests on develop/Preview, S2 review. Phase 0 (read-only code mapping) started. Read-only Production access is via a temporary restricted role (owner-approved, SQL subject to S2 review), after B9 | Separate approval |
+| PB-2 | **Connections page actions** | Replace the three upper-right actions with two compact ones: "+ Connect" (a dropdown, popover or mobile sheet listing Plaid/bank and crypto wallet options) and "+ Add Manual Asset" (existing flow). Preserve every provider workflow, onboarding, permissions and function. Desktop and mobile; no bulky toolbar | Separate approval |
+| PB-3 | **Platform Spaces navigation** | Remove single-item "Overview" rails. Audit each Platform Space; give compact, consistent navigation only where several real pages exist. Preserve routing, authorization, deep links and desktop/mobile behaviour. No decorative or empty tabs. **Coordinate with PB-1's UX** so they don't conflict | Separate approval |
+
+**Process for all three:** inspect Production UI and code plus Preview first; implement and test on develop/Preview; Session 2 independent review.
+
+**Owner clarifications (2026-11-01, later):**
+
+**Priority order after B9 is verified:** PB-1 incident reliability (Priority 1), PB-2 Connections actions (Priority 2), PB-3 Platform Spaces navigation (Priority 3). Develop and Preview are autonomous with S2 review. **Production needs separate authorization.**
+
+**PB-1 correlation rules:**
+- Correlate each incident with the exact operation, resource, provider and subsequent execution history.
+- "Up to date" on a connection is NOT proof that every associated operation succeeded:
+  - a balance refresh does not resolve an investment-data persistence failure;
+  - a wallet balance sync does not resolve a historical-price or valuation failure;
+  - a successful retry of the SAME operation is valid recovery evidence.
+- Classify each incident as: still exists / verified resolved / recurred / insufficient recent evidence.
+- Never close an incident because it is old. Preserve failure history while showing current status.
+- **Initial cases:** Schwab "Investment data persistence failed" (since 07-30, 5×) and self-custodied wallet "Reading the market price" (since 08-19, 1×).
+- Investigate why the current lifecycle fails to reconcile them.
+- Read-only Production access only, via the approved temporary restricted role after S2 reviews the SQL. **No Production data modifications.**
+
+**Bot requests, intended final state:**
+- All 13 classified SUSPICIOUS and DENIED; none in the pending queue.
+- Exactly ONE separate historical evidence example: the earliest (hzupno), captured via B9 preserve-evidence. It is historical evidence, not an active case.
+- The other 12 are not evidence examples, but their identifiers stay protected by the B9 blocklist.
+- The 7 others are untouched. No emails.
+- Keep audit records and blocklist identifiers under the approved retention policy. No premature deletion of anything needed for backfill, legal retention or audit integrity.
+
+**When the owner returns, report:**
+- the furthest safely completed B4–B9 milestone;
+- remaining blockers;
+- the incident investigation's initial findings;
+- PB-2 and PB-3 tracked.
+
+### PB-1 Phase 0 findings (read-only code mapping, 2026-11-01; develop 4b904d4 vs main b35a6eb; incident code is identical on both)
+
+- **One automatic resolver only:** `resolveByAutomaticRecovery` (`lib/platform/incidents/lifecycle.ts:485`), reached from `syncTransactionsForItem` completion.
+  - It closes only episodes that are condition-nature, in the `transactions` domain, with `detail.cursorBlocking === true`.
+  - `retireItemSyncFailure` and `retireOpenNotification` retire Notification rows only, never SyncIssue.
+- **No resolver** for INVESTMENT_DATA_PERSISTENCE_FAILED, IMPORT_ROLLBACK_FAILED or WALLET_SYNC_FAILED. `sync-issue-semantics.ts:556-583` says "stays active until one exists". Wallet episodes have `plaidItemId` null, so the Plaid-scoped resolver can't reach them. **This explains both owner cases:** Schwab investment persistence (07-30) and the wallet price read (08-19).
+- **Legacy rows** (pre-cursor-safety, or `incidentKey` null) never auto-resolve.
+- **NEEDS_REAUTH and ERROR items never sync** (cron, webhook and resume only touch ACTIVE items), so their incidents never see success evidence unless the user reconnects.
+- **Removed connections stay "active":** the orphan check (`projections.ts:99-117`) tests row existence, not `PlaidItem.status=REVOKED` or `FinancialAccount.deletedAt`. Disconnect retires neither SyncIssue nor the SYNC_FAILED notification.
+- **No age window on "active":** the overview, Incidents and CS lists use `resolved:false`.
+  - The `sync-incident-critical` alert re-pages every 20 hours on any active critical episode, however old.
+  - CS customer detail uses raw `resolved:false` with no derived state, so it **disagrees with the overview**.
+- **Unresolved SyncIssue rows are never deleted.** Their evidence expires first: RefreshExecution and ProviderCall at 60 days, webhook events at 30. Old open incidents end up pointing at deleted evidence.
+- **No operator acknowledge, resolve or reopen exists.** `resolutionKind` has only `AUTOMATIC_RECOVERY`.
+- **Possible NULLS-FIRST issue:** the 200-row active scan is ordered by `lastOccurredAt desc`, so null legacy rows may fill it first. Unverified.
+- **Preview has no crons by design** (Vercel runs crons on Production only; docs agree). No job refuses non-Production.
+  - Paid or notifying jobs without a cost guard: `plaid-removal-retry`, `evaluate-alerts`, `notification-retry`.
+  - The recipient guard and Cost Freeze would protect a Preview schedule (develop only).
+- **Restricted-grant column list drafted.**
+  - Include: SyncIssue (minus raw `detail`), SyncIssueOccurrence, PlaidItem (minus `encryptedToken`, cursors, `externalItemId`), Connection (minus `credential` and the address), AccountConnection, FinancialAccount (id, type, deletedAt), RefreshExecution, RefreshEndpointResult, ProviderCall, PlaidWebhookEvent, JobRun, plus filtered AuditLog, Notification and User id/role views.
+  - Exclude: emails, names, tokens, IPs, free text.
+
+### B4/5 deployed and verified; cluster action executed (2026-11-01)
+
+| Item | Result |
+|---|---|
+| Release | #212 @ bc2e8ae (exact tree), merged as **1866f4c**. Main CI and Trusted health success |
+| Migrations | 4 and 5 applied, **140 verified BEFORE merge**. Beta lifecycle ACTIVE, costFrozen false, no `platform_cost_frozen` row |
+| Backup | Snapshot-verified (56 tables), AES-256 owner's Keychain, plaintext sha256 `420b02dd55b20af7923d4b19e9659d1fe04f845c82ac3ad254036c222a5b301a`, ciphertext `d421038b3771ea268e9d8b1d4c74b45719b9d25814e336d559dc8d85d8615586`, a local encrypted file |
+| Deployment | **dpl_2fiFDhEP86zUd4umPtGJiU7NbGiw**, crons bound |
+| Independent verification | **Session 2 PASS.** 0 5xx and 0 freeze/paused log lines. The live gate read shows lifecycle ACTIVE, globalCostFrozen false, effectiveRestriction null, billablePolicyReadable true. The catalogue source is DB. The beta queue renders. **Pending:** the sync-banks (~05:40Z) and sync-crypto (~08:10Z) billable proofs |
+| **Cluster action** (owner-approved, run by Session 1 in the owner's Production session) | Pre-check asserted **exactly 13** suffix matches out of 20 pending, all PENDING, every createdAt hour matching the masked evidence. Each got POST risk-review `{SUSPICIOUS, ABUSE}` (200), then POST deny (200), **13/13**, no stop. **DB verify:** 13 DENIED (all cluster), 0 DENIED outside it, 7 PENDING untouched, 13 SUSPICIOUS verdicts, 13 BETA_REQUEST_RISK_REVIEWED + 13 BETA_ACCESS_DENIED audit rows, 0 invite tokens. **No emails** (deny is silent). hzupno will be captured via preserve-evidence after B9; blocklist backfill runs after B9 (before 2027-04-30) |
+
+**B6 review correction (S2):** #173 revaluation is **code shipped, inert while `SOL_BACKFILL_ENABLED` is unset** (sol-history-backfill returns DISABLED first). The earlier "runtime revaluation of derived rows" line applies only once the owner enables the worker.
+
+**B6 post-deploy checklist additions:**
+- the env report shows both salts as pass;
+- sol-history-backfill reports DISABLED;
+- no provider-traffic spike;
+- no unexpected `RATE_LIMIT_UNVERIFIED`.
+- Expected and not a regression: the #172 reaper may finalise stale RUNNING executions on the first wake.
+
+**Cluster action, independent verification (Session 2): PASS.**
+- Queue counts: pending 7, denied 13, approved 0, redeemed 0. Invitations 0.
+- The 7 PENDING are exactly the plausibly-genuine set (5ys0fv, 972sb1, f22fnt, j7mf0z, jsuu70, tpknbw, yw52au).
+- The operator-action feed alternates RISK_REVIEWED (ABUSE) → ACCESS_DENIED.
+- No invitations or emails.
+- All 13 are DENIED + SUSPICIOUS, ready for the B9 backfill and hzupno preserve-evidence.
+
+**B3 record correction:** `WEALTH_REGENERATION_ENABLED` is **ON** in Production. Determined behaviourally: the 02:15Z sync-crypto logged `[wealth-regen] … crypto price backfill — planned 2`, and regeneration runs only when the flag is "true". B3's verified outcome stands: no visible change, because the owner's history starts 2025-11-02.
+
+**B7 package independent review (Session 2): APPROVE** after B6 is verified.
+- **(a) No mass-send on deploy:**
+  - Welcome is sent only on register or first verify, dedup-once, no backfill.
+  - Platform-access is sent only on new grant changes.
+  - Wallet-failure needs a sustained run of failures for 24 h or more (wallets are syncing).
+  - Plaid re-login is sent only on a new webhook transition (0 items need re-auth).
+  - The digest is OFF.
+- **(b)** Migration 8's constant DEFAULT is metadata-only.
+- **(c)** comms-automations completes with ACTIVATION_DISABLED and sends nothing.
+- **(d) MATERIAL: #183/#185 is LIVE in Production** because regeneration is ON. Each sync-crypto runs planRevaluation, then stampOwedHolders, then rebuild. Both owner crypto holders are "owed": the price floor is 2025-10-24 and the earliest snapshot is 2025-11-02.
+  - **Expected:** after the first B7 sync-crypto, parts of the owner's crypto history may read unavailable or partial until chunked rebuilds catch up. Values are kept, never $0. This is the plan's P1-12/P1-13.
+  - **Monitoring and STOP trigger:** check the first 2 post-B7 sync-crypto runs (`holderRevaluation` owed/revalued/chunksRebuilt/deferred, duration within budget, no PARTIAL or timeout) and the owner's Net Worth chart.
+  - **If, after 2 passes, revalued = 0 and chunksRebuilt = 0 while rows are stamped, or a run times out, STOP and escalate** (owner options: accept slow convergence, or set `WEALTH_REGENERATION_ENABLED=false` temporarily).
+
+### B6 deployed and verified (2026-11-01)
+
+| Item | Result |
+|---|---|
+| Release | #213 @ ff6176e (exact tree), merged as **e01d20f**. Main CI and Trusted health success |
+| Env | `SECURITY_IDENTIFIER_HASH_SALT` and `COMMS_RECIPIENT_HASH_SALT` installed in Production. Sensitive, CSPRNG 256-bit, never printed; names only recorded |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `4ab5ed018e4da2fd48d2761fb4e75e3166b1ce9758e415145069f8418e6489be`; ciphertext `39b2eb16d03c19c88634101ca1bdebbb52f482c6e176769c399b45a8a4048000`. File a local encrypted file |
+| Migration | `comms_delivery_ledger` applied, **141**. RLS forced on CommsDelivery and CommsDeliveryDaily. fm_system D/I/S, fm_backup S |
+| Deployment | **dpl_HFaXu7RKroLspcC5h1yzVZjUG3Jh**, crons bound |
+| Independent verification | **Session 2 PASS (complete).** 0 5xx; 0 RATE_LIMIT_UNVERIFIED, freeze or provider-spike lines. **Env report pass 19 / warn 0 / fail 0, with both salts pass.** Platform Ops and Connections render. sol-history-backfill confirmed inert at the 06:30 run (stoppedBecause DISABLED, 0 provider lines) |
+| Rollback | dpl_2fiFDhEP86zUd4umPtGJiU7NbGiw (B4/5) |
+
+**B8 package independent review (Session 2): APPROVE** after B7 is verified.
+- No behaviour change for live customer sends: the Idempotency-Key is sent only when the automation engine passes one; storm and create are unchanged.
+- `?only=` has no effect on the cron.
+- Migration 9's index on the tiny CommsDelivery table is fine.
+- No misleading "measured" state.
+- **Expected:** the env report moves to warn 1 (`RESEND_WEBHOOK_SECRET` unset, webhook deferred by the owner), by design.
+
+**Post-deploy:**
+- env report fail 0 / warn 1;
+- `POST /api/webhooks/resend` returns 503;
+- comms-automations COMPLETE with note ACTIVATION_DISABLED.
+
+### B7 deployed (2026-11-01)
+
+| Item | Result |
+|---|---|
+| Release | #214 @ ec54c25 (exact tree), merged as **3b35d09**. Main CI and Trusted health success |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `a434d451c1698a17b5b8ed361cba010295a74634af07ccceb5403bca900d4633`; ciphertext `b0cac0e31bd7ce3c9efff46410944544c1872b54181fe82c2a6513a8f5ddb2ca`. File a local encrypted file |
+| Migrations | 7 and 8 applied, **143**. RLS forced on all 6 new tables. CommsDelivery.mode NOT NULL DEFAULT 'LIVE' |
+| Deployment | **dpl_9PhMLSiKmGXMwmL7rnJbEjH12Sem**, crons bound |
+| Independent verification | **Session 2 PASS (observable).** 0 5xx; **0 email-send log lines**. Dispatch considers 15 jobs (comms-automations registered). comms-automations succeeded as a no-op. CS → Communications renders (Automations read-only, none) |
+| **Decisive check: FAILED, STOP (escalated to owner)** | The 08:15Z wake on dpl_9PhM, checked by Session 2. **Passed:** BTC and SOL synced 2/2. SOL token step SKIPPED (DISABLED), 0 provider calls. No POLICY_UNAVAILABLE, COST_FREEZE or PLAN_RESTRICTION skips. `[wealth-regen]` ran. Dispatch 3 jobs, 0 failed. Health ok. Net Worth renders (value unchanged). **Failed:** `revaluation owed 2, revalued 0, deferred 2 (skipped: wake time)` in a ~12 s wake. |
+| Root cause (deterministic) | `jobs/sync-crypto.ts:277` anchored the deadline to the earliest JobRun of *any* job in the last 300 s. resume-stale-imports (its own */5 cron at :x0:49/:x5:49) always had a run ~280 s before each :x0:29/:x5:29 dispatch, so deadline = 08:10:49 + 260 s = 08:15:09, before the job began. Since #183/#185 the owed holders are stamped `unavailable` (values kept) before that check, so they are never rebuilt. Headline values are unaffected; historical crypto days stay flagged unavailable. sol-history-backfill has the same anchor but is inert (SOL_BACKFILL_ENABLED unset). Pass 2 (~14:15Z) cannot differ, so STOP was applied early. |
+| Fix (owner approval needed) | **PR #217 → develop, not merged.** Both jobs anchor to `currentBudgetStartedAtMs()` (the dispatch wake instant runJob already carries), falling back to the run's start. New `jobs/wake-deadline-anchor.test.ts`; price-gap pin updated; tsc clean. **Session 2: APPROVE @ 6900b92**, conditional on CI test, Architecture audits and Public site going green. S2's sweep found no other any-job wake inference; the Deployment-health failure is the known site-Preview 401. S2's post-promotion check: first dispatched sync-crypto logs revalued > 0 or chunksRebuilt > 0, no "skipped: wake time", no PARTIAL, dispatch well under 300 s. Owner options: (a) approve #217 → develop → Preview → hotfix to main; (b) accept the flag until fixed; (c) set WEALTH_REGENERATION_ENABLED=false (Production env change, owner only). |
+| Rollback | dpl_HFaXu7RKroLspcC5h1yzVZjUG3Jh (B6) |
+
+### B7 hotfix deployed (2026-11-01 16:00Z) — owner directive "Unblock and complete B7–B9"
+
+| Item | Result |
+|---|---|
+| Owner authorization | 2026-11-01 directive: #217 approved, subject to the final diff matching the reviewed fix, green CI and Session 2's verification |
+| Fix | #217 → develop, merged as **1909909** (6900b92 fix + 241a466 behavioural test). Session 2 APPROVE at both commits. The test drives the real `revalueHoldersAfterPriceGaps`: the old anchor reproduces Production (owed 2, revalued 0, skippedForTime); the fix rebuilds both holders |
+| Promotion | `hotfix/b7-wake-anchor` from exactly **3b35d09**, `cherry-pick -x` of both commits → **PR #218** → main **503bbdf** (`--match-head-commit 7ba3c1e`). `git diff 3b35d09 503bbdf` sha256 `658dcc08…` = the #217 diff (4 files, +119/−7). Session 2 independently confirmed the diff and approved the plan |
+| CI | test ×2 (Typecheck + Dependency audit high+ success), Architecture audits ×2 (REQUIRED tier), Public site ×2, drift guard all green. Site-Preview smoke 401 is known noise |
+| Migrations | None. Production ledger read directly (`_prisma_migrations`, READ ONLY): **144 rows, all finished, none rolled back**; latest `20261031230000_comms_provider_events` 06:30:25Z (B8). Note: Prisma 5.22 `migrate status` printed a bare "up to date" from the 143-migration tree, so the ledger count is the evidence |
+| Backup | Not required (no schema change) |
+| Deployment | **dpl_HyzPBNVcWbg9cXPZapkTNRd8nqDW**, READY @ 503bbdf. Crons bound (dispatch */15, resume-stale-imports */5). `/api/health` ok, db ok, overdueJobs 0. Main CI success; Trusted deployment health success. Main post-deploy smoke: HTTP 401 Deployment Protection on the raw vercel.app URL (app not reached; no bypass header) |
+| Rollback | dpl_9PhMLSiKmGXMwmL7rnJbEjH12Sem (B7) |
+| **Production verification — PASS (20:24Z)** | First dispatched sync-crypto after the deploy: JobRun …6uct5f, 20:15:29Z, deploymentSha 503bbdf, outcome **COMPLETE**, 2 attempted / 2 synced / 0 failed / 0 deferred, partialReasons []. **Revaluation owed 2, revalued 2, chunksRebuilt 119, skippedForTime false**, 0 failures. Job 17.8 s; dispatch ≈ 18 s (budget 300 s). The exact bug shape was present: resume-stale-imports …9iu3sv started 20:10:49Z, 280 s earlier, and no longer blocked. Close coverage COVERED for BTC + SOL; SOL tokens SKIPPED (DISABLED), 0 provider calls; no new provider spend. SpaceSnapshot (the only crypto Space, counts/ratios only): 32 rows since Oct 1, **0 zero-crypto, 0 zero-NW**; day-over-day NW ×1.0011, crypto ×1.0029. `/api/health` ok, overdueJobs 0. Verified independently by Session 1 (DB, READ ONLY) and Session 2 (logs + health) |
+| Earlier gate (superseded) | The 14:15Z wake found both wallets "not due" by seconds and did no revaluation, so the decision moved to the 20:15Z run |
+| Follow-up (P3, after B9) | Job cadence (6 h) and per-wallet freshness (6 h) coincide at the boundary, so wallets sync every ~12 h in practice. Fix: a small tolerance in the per-wallet due check |
+
+**B9 preparation (in progress)**
+- `BETA_BLOCKLIST_HMAC_KEY_V1` (CSPRNG, sensitive) and `BETA_BLOCKLIST_HMAC_KEY_VERSION=v1` installed in **Production** and **Preview (develop)**, a separate key per environment, never printed (16:0xZ).
+- Privacy policy Effective **November 1, 2026** (owner-approved): **PR #219** → develop. Wording verified against the code; both copies identical; `TERMS_VERSION` → 2026-11-01.
+- **B9 re-cut to `7be29f3`** (16:1xZ): 1c05fcd + #217 (merge 1909909) + #219 (merge 7be29f3); release/batch-9 fast-forwarded; PR #216. **Session 2: APPROVE as a package.** Delta = exactly the two reviewed patches (non-legal diff `658dcc08…` = the hotfix; legal files `5c85233a…` = 6fdad06). No new migration vs 1c05fcd (145 total; the only one beyond main is `20261101120000_beta_blocked_identifiers`). S2's dry merge simulation: main 503bbdf ⊕ release/batch-8 → tree 04fc23fe (= B8 cut + the 4 hotfix files only); ⊕ 7be29f3 → tree `934a26df` = 7be29f3^{tree} (exact). To be re-verified on the real merges.
+- **Session 2 note on the privacy date:** if B9 reaches Production on or after Nov 2, the policy would describe product-event practices as effective before the code ships. Owner decision whether to move the date to the actual promotion date (one line).
+- **Turnstile: EXTERNAL DEPENDENCY.** No keys in local secure files or Vercel (any scope). Cloudflare is not signed in on Chrome; no Cloudflare CLI or token exists. Signing in on the owner's behalf is not permitted. B9 cannot deploy to Production without the keys (fail-closed; not weakened).
+
+**B9 package independent review (Session 2): APPROVE**, subject to the hard preconditions.
+- **Cut bumped to `1c05fcd`** (develop tip; adds #209, a test-only change to `scripts/db-backup.test.ts`). Exact tree vs B8. PR #216 updated.
+- **Turnstile hosts (revises R-c):** the widget renders **only on app.fourthmeridian.com**. The apex /request-access is a hand-off page with no widget. The app host is allowlisted via `NEXT_PUBLIC_APP_URL`, so `TURNSTILE_ALLOWED_HOSTNAMES` is not needed (or set it to `app.fourthmeridian.com` only).
+  - **Do NOT set `NEXT_PUBLIC_SITE_URL`:** it is the domain-split routing switch.
+  - Cloudflare widget domains: `app.fourthmeridian.com` and `preview-app.fourthmeridian.com`.
+  - The site key is build-inlined, so it is set before the B9 build.
+- **Customer-visible on deploy:**
+  - the Turnstile widget on /request-access and /register;
+  - the login step-up after 3 failures;
+  - the AI copy;
+  - Help & support and the Plaid support address;
+  - **the public privacy policy gains the "Product usage" bullet** (the marketing site rebuilds when main moves). **Owner decision before B9: the Effective date.** Also confirm the site project's Ignored Build Step builds for it.
+- **Preview validation before Production:**
+  - set the keys on Preview/develop and redeploy;
+  - request-access from preview-app returns 200 and stores the request;
+  - **a POST with no token returns 400**;
+  - register with an approved Preview test invite;
+  - login step-up after 3 bad attempts, then the correct password + token succeeds.
+- **Production post-deploy:**
+  - the widget shows on app /request-access;
+  - an anonymous POST to `/api/access-request` with no token returns **400**;
+  - /login loads; the owner can sign in.
+- **Post-B9:**
+  - blocklist backfill: CONTROL + reason via the owner operator account, dry run expecting `wouldCreate: 13`, then execute;
+  - **hzupno preserve-evidence needs the owner's own Production System Admin session** (`requireFreshSystemAdmin`). It is an owner action, due before ~2027-04-30. It is impossible while `DISABLE_SYSTEM_ADMIN=true`.
+
+### B8 migration applied (2026-11-01 06:30Z); merge held for the 08:10Z B7 revaluation result
+
+| Item | Result |
+|---|---|
+| CI #215 @ 0f59435 | test ×2 PASS (dependency audit success in both); audits, drift guard and Trusted health PASS |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `8c08417aa7c9ff7f4591375cfa26b677a175272475e3bad857c5c342ff075205`; ciphertext `fd39edab7c1a9eecda79991fe1da67b0a0cc80279950cdb8d891d4c6fb620180`. File a local encrypted file |
+| Migration | `comms_provider_events` applied, **144**. RLS forced on CommsProviderEvent; `CommsDelivery.deliveredAt` nullable |
+| Merge | ~~Held, B7 STOP~~ → resumed 20:24Z after the B7 PASS. **Revalidated against final main:** release/batch-8 = 0f59435 + `--no-ff` merge of 503bbdf → **95ff61b**. `0f59435..95ff61b` = only the 4 hotfix files, byte-identical (cmp) to `3b35d09..503bbdf`. `503bbdf..95ff61b` = B8's own 81 files (+4757/−287), the same as the reviewed cut. Local wake-deadline-anchor, price-gap and tsc all exit 0. Session 2 re-APPROVED 95ff61b (merge only `--match-head-commit 95ff61b`; migration not rerun; ledger already 144) |
+| CI #215 @ 95ff61b | test ×2 (Typecheck + Dependency audit high+ success), Architecture audits REQUIRED ×2, Public site ×2, drift guard, both Vercel builds green. Preview Deployment-health = the known 401 (app not reached) |
+| Preflight (20:3xZ, READ ONLY) | The tree's 144 migration names == the Production ledger's 144 finished, non-rolled-back names (diff empty). **Nothing applied or rerun; no backup needed** |
+| Merged (20:35Z) | main **f759c82** (parents 503bbdf, 95ff61b); main^{tree} == 95ff61b^{tree} = `04fc23fe` (= S2's simulation) |
+| Deployed | **dpl_9rDG2puRfercjhyspeAY4M7gMCvp** READY, production, aliased app.fourthmeridian.com. Crons bound. `/api/health` 20:37Z ok, db ok, overdueJobs 0. Main CI success 41347577026; Trusted health success 41347577122; post-deploy smoke 41347780731 = raw-URL 401 only. Rollback: dpl_HyzPBNVcWbg9cXPZapkTNRd8nqDW |
+| **Production verification — PASS (Session 2, about 21:40Z)** | env-status 19 pass / **1 warn (RESEND_WEBHOOK_SECRET only)** / 0 fail; anonymous POST /api/webhooks/resend → **503**; comms-automations 21:15:29Z succeeded, ACTIVATION_DISABLED; dispatch 20:45/21:00 no-op, 21:15/21:30 1 job each, 0 failed; resume */5 and sol-history-backfill succeeding; 5xx = S2's deliberate probe only; health ok, overdueJobs 0. Resend webhook stays deferred (not a blocker). release/batch-8 deleted (fully merged) |
+| Observation (not B8, post-B9) | 20:44Z /api/plaid/exchange-token after() history sync timed out at 300 s (invitee Wells Fargo). Response was already 200; resume-stale-imports completed it 20:55:49Z. Consider capping mid-pagination restarts inside the after() budget |
+| B9 forecast | main f759c82 ⊕ 7be29f3 → `934a26df` = 7be29f3^{tree} (git merge-tree), unchanged |
+
+### B9 Turnstile Preview validation (2026-11-01 21:10–21:35Z)
+
+| Item | Result |
+|---|---|
+| Keys | Owner created separate Turnstile widgets for Production and Preview and installed `NEXT_PUBLIC_TURNSTILE_SITE_KEY` + `TURNSTILE_SECRET_KEY` directly in Vercel. First scoped to Development by mistake, corrected to **Preview (develop)** at about 21:15Z; Production at 21:05Z. Presence verified by name and scope only; values never read. `NEXT_PUBLIC_SITE_URL` untouched |
+| Vercel "Needs attention" | `WALLET_TOKEN_CAPTURE_ENABLED=false` (Production, plain type, set by Session 1 as a kill switch). Not secret; intended value. Optional: convert to Encrypted |
+| Preview redeploy | develop **7be29f3** (= B9 cut) rebuilt → fintracker1-mt7lt5xn1 READY, aliased preview-app.fourthmeridian.com |
+| Rendering | /request-access: Cloudflare api.js loaded, `window.turnstile` present, response field present, visible "Verify you are human" widget (interactive). Not clicked by Claude (CAPTCHA completion is off-limits) |
+| Fail-closed (server) | access-request: missing, empty, forged, non-string and 2100-char tokens → **400** each. register (terms accepted): missing, forged → **400**. Rejecting a forged token proves enforced mode (secret live, siteverify consulted). No 503 |
+| Login step-up | 3 credentials-callback failures for a nonexistent probe identifier → pre-login `captchaRequired` false, false, **true** (threshold 3). Owner session unaffected |
+| Open | Valid-token success path: one owner submission on preview-app (Claude cannot solve the challenge). Reused and expired tokens: unit-test coverage only |
+| Session 2 | Evidence sent for B9 review at about 21:35Z |
+
+### B9 Preview completion (2026-11-01 21:53–22:45Z)
+
+| Item | Result |
+|---|---|
+| Valid-token path | Owner's real submission on preview-app 21:53:21Z → 200 with "[captcha] Turnstile verification enforced" (S2, from logs). Owner's earlier 21:28 attempts got 429: the per-IP access-request limit (5 / 15 min) had been used up by Session 1's 5 failure probes from the same IP. Runbook note: probe from a different IP, or leave the window to expire |
+| Gap found (S2) | Preview lacked B9's migration: "BetaBlockedIdentifier does not exist", blocklist read treated as UNAVAILABLE (intake fails open by design) |
+| Preview migration | Guarded `db:migrate:safe` (worktree at 7be29f3). Backup `postgres-2026-11-01T21-55-49-471Z.sql`, verified across 67 tables, sha256 843d98a3…. Applied `20261101120000_beta_blocked_identifiers` → ledger **145**. RLS enabled + forced on BetaBlockedIdentifier and BetaAbuseEvidence (1 policy each); grants fm_system + fm_backup SELECT only. S2 ACCEPTED |
+| Blocklist retest | (a) new submission 22:25Z → requests 5→6, no read failure. (b) owner Deny 22:25:39Z (no block, correct without a verdict) + SUSPICIOUS verdict 22:42:26Z via the real risk-review route (owner's console: no verdict UI exists) → BETA_IDENTIFIER_BLOCKED, ACTIVE block 1 (v1). (c) resubmission 22:44:46Z → BETA_INTAKE_BLOCKED_DROPPED +1, requests unchanged, identical confirmation. **PASS** |
+| Privacy date | Owner (via S2): the effective date is the release date. #223 (4fc436a) → develop **9b78674**: "November 2, 2026" in both copies (identical) + TERMS_VERSION 2026-11-02. S2 APPROVED the re-cut. release/batch-9 = PR #216 head = 9b78674; expected main tree `f759b2e9…`. Deploy must land on 2026-11-02 UTC |
+| UX gaps (→ PB-6) | No UI lists denied requests and none sets a risk verdict; "Deny" vs "Deny and block" needs to be explicit |
+
+### B9 deployed (2026-11-02 00:01–00:20Z)
+
+| Item | Result |
+|---|---|
+| Gates | Preview complete (Turnstile fail-closed + valid path; blocklist retest PASS); S2 APPROVED re-cut 9b78674 and the Prod SQL/runner (amended grant + RLS checks); clock ≥ 00:00Z Nov 2 (effective date) |
+| Preflight 00:01:09Z | Tree 145 / ledger 144; tree−ledger = exactly `20261101120000_beta_blocked_identifiers`; ledger−tree = ∅. #216 CI on 9b78674 green (Typecheck, Dependency audit, REQUIRED audits); Deployment health = Preview 401 only |
+| Backup | Verified across 60 non-empty tables in the dump's own snapshot `0000001E-0000D583-1`. Plaintext sha256 `8ffccf7cc7b124541eb114db4dabdcd02ba71cbb48e5596f56f371f4c547efcc` = decrypted (round trip OK, owner's Keychain); ciphertext `8389ea525c3cd58cdb68e9244e3ac93ae3b585f4c2df1a7c75cf7de56f1c1a74`; file a local encrypted file; plaintext removed with `rm -P`; retain to 2026-12-01 |
+| Migration | Guard target = backup target. `20261101120000_beta_blocked_identifiers` applied → ledger **145**, 0 rolled back. RLS enabled + forced on both tables, 1 policy each (`fm_system_all`, {fm_system}, ALL). Grants fm_system + fm_backup SELECT + owner only; **no anon / authenticated / PUBLIC / service_role**. 0 / 0 rows |
+| Merge | `--match-head-commit 9b78674` → main **dc76711** (parents f759c82, 9b78674); tree `f759b2e9…` = 9b78674^{tree} (exact) |
+| Deploy | **dpl_GE3DzKwyfXLgiWDUe84H6bPav8nR** READY ~00:13Z Nov 2, app.fourthmeridian.com; crons bound; health ok, overdueJobs 0. Main CI success 41365983422; Trusted health success 41365983470; post-deploy smoke = raw-URL 401 only (app + site). Rollback dpl_9rDG2puR (B8; the schema change is additive, so code rollback is safe) |
+| Session 1 smoke | Prod access-request missing / forged token → **400** (enforced, not 503). fourthmeridian.com/privacy shows "Effective November 2, 2026" |
+| Pending | Session 2 Production verification; owner's real request on app.fourthmeridian.com/request-access (final valid-path check). Post-B9: PB-7 real-case RefreshExecution read (SQL S2-approved) |
+
+### B9 closed + bot blocklist (2026-11-02 00:15–01:20Z)
+
+| Item | Result |
+|---|---|
+| Session 2 verification | **PASS**: tree exact, alias → dpl_GE3Dz…, missing-token 400, widget renders (owner Chrome), env-status 20 pass / 2 warn / 0 fail, privacy Nov 2 + TERMS_VERSION 2026-11-02, login works, health ok, 0 5xx |
+| Owner final check | Real request on app /request-access: POST 200 ×2 (01:06:55Z, 01:07:41Z) with "[captcha] Turnstile verification enforced": the Prod widget's hostname and action are accepted. **B9 fully closed** |
+| New env warn | BETA_INTAKE_HASH_KEY_V1 (new with B9). Installed: a separate CSPRNG key per environment (Prod + Preview develop, sensitive, never printed) + VERSION=v1. Takes effect on the next deploy; the digest is computed at retention time (jobs/data-retention.ts:221–229), so nothing is lost before then |
+| Bot blocklist precheck | denied_suspicious 13, unblocked 13, pending 7, active blocks 0, evidence 0; exactly 1 hzupno id |
+| Backfill (owner's Prod console, fresh GROWTH_REVENUE CONTROL) | Dry run: wouldCreate 13 / candidates 13. Execute: **created 13**, failed 0, batch `e246c93f-8621-40be-adb5-adee677e9073` (13 distinct canonical mailboxes). No emails; 7 pending untouched |
+| Post-check | denied_suspicious 13, **unblocked 0**, pending 7, **active blocks 13**, evidence 0 |
+| hzupno evidence | First attempt from the owner's everyday account → 403 (the route requires SYSTEM_ADMIN by design). Owner re-ran it from the separate System Admin account: **200**, evidence `…6roeb`, captured 01:19:29Z, reason ABUSE, retainUntil **2029-11-01**. DISABLE_SYSTEM_ADMIN not touched |
+| Final post-check | denied_suspicious 13, unblocked 0, pending 7, active blocks 13, **evidence 1**. Directive item 6 complete |
+
+## B10 release package (prepared 2026-11-03; Production actions require owner approval)
+
+*Prepared at Session 1's request from read-only git and GitHub data (develop `f0405e1`, main `dc76711`). Nothing was merged, deployed or migrated, and no Production or Preview system was touched. This package is a plan: **every step below needs the owner's explicit B10 approval.***
+
+**Baseline.** Main is still B9 (`dc76711`). The B10a candidate, #268 (`release/batch-10a`, OPEN, not merged), contains develop through PB-7 (`5642bb5`) plus a cherry-pick of #231: #220, #221, #222, #224, #226, #227, #229, #230 and #231. Those PRs are covered by #268 and are not repeated below. If #268 ships first, they are on main and the rollback target moves from B9 to the B10a deployment (not yet recorded). Nothing merged to develop after the cut is on main.
+
+**B10 readiness status (2026-11-04):** rollback rehearsal PASS 79/79 (synthetic, local throwaway PG; B10.6); FIN-E F1 fixed (#411) with real-PG parity (#413); no open S2 blockers on tree content; remaining items are owner decisions (B10.4 non-reversible list incl. F2/FIN-A2, B10.5, deployment, migrations, key rotation); exact cut SHA needs S2 tree review at promotion.
+
+### B10 cut ruling (S2, 2026-11-04)
+
+1. **Candidate cut SHA** = develop HEAD **immediately before** the B11 conversations PR (PR B) merges: **TBD at the PR B merge**. It must include #411 and #413. In the cut but inert in Production: #415, #416, #417, #418, #423, #426, #427, #432 (docs, the operator privacy hint, and Platform AI changes, which stay off in Production). Also in the cut, and **visible** in Production: #419 (the Providers tile shows "—" with a reason when no provider is assessed; B10.3).
+2. **B10 promotes from a release branch at that SHA**, never from develop HEAD. Any later B10-scoped fix comes only by an explicit cherry-pick PR with S2 review. **Check:** the release branch's `prisma/migrations` holds exactly the B10 set (five new versus `main`) and no B11 migration.
+3. **Rehearsal evidence must match the cut.** B10.6 ran on develop `3b37796` plus #409 and #413. If the cut differs in runtime files outside Platform AI and docs, re-run the rehearsal on the cut (79/79) before promotion.
+4. **Preview caveat:** once the B11 conversations migration is applied on Preview, Preview no longer mirrors B10 Production's schema; B10 Preview validation evidence predates **<date: TBD when applied>**.
+
+### Owner decisions (2026-11-04)
+
+| # | Decision | Scope and limits |
+|---|---|---|
+| 1 | **Repository privacy:** the owner will make the repository private this weekend | Until then, sanitisation and independent review continue. No history rewrite, visibility change or destructive cleanup without the owner. **Tree sanitisation is not remediation of historical exposure** (see the repository-history item in B10.5) |
+| 2 | **#385 (B10a-r2)** approved for **final release preparation** | Deployment needs a separate, explicit owner approval at the release gate |
+| 3 | **Platform AI (#395)** approved to prepare and enable on **Preview only**, after verification | **Production activation is prohibited** |
+| 4 | **Production read-only reports** (the B10.5 decision report) approved to execute | Subject to S2 verifying the target identity, the bounds, no side effects and no sensitive output. **No B10.5 repairs** |
+| 5 | **Full B10:** continue preparation, including Preview validation and a Production-like rollback rehearsal | Deployment, migrations, key rotation and every B10.5 repair stay owner-gated |
+| — | **Do not invite beta users** | Standing until the owner says otherwise |
+
+### B10.0 B10a-r2: the migration-free alternative (#385; OWNER APPROVAL REQUIRED)
+
+**What it is.** PR #385 (`release/batch-10a-r2` at `dc81a7e`, draft against `main`) is a release branch that S2 reviewed as an exact tree and **approved**. It is an alternative to promoting the full develop tree. **Never merge #385 without the owner.**
+
+**Contents.** The #268 (B10a) base, plus:
+
+| Tranche | PRs |
+|---|---|
+| B (correctness and safety) | #300, #369, #347, #348, #356, #352, #357, #360, #364, #374, #377 |
+| S (security) | #256, #291 (without its PB-10 test hunk) |
+| C (connections and snapshots) | #233, #234, #295, #301, #302 |
+| V (provider verdicts) | #282, #285, #286 |
+
+**Excluded.** O (#262, which needs #225) and the #284 chain (#284 and everything that depends on it, such as #315, #324, #320 and #329). Every gated group (PB-1, PB-5, PB-8, PB-10, Economics, the metric registry) and all five migrations stay out.
+
+**Visible changes.**
+- V: provider-verdict semantics (provider-outcome@1, provider-connection@1; B10.3).
+- #301: unvalued wallets are left out of totals and counted.
+- #302: today's snapshot may read as an estimate while a bank balance is stale.
+- #256: TOTP codes are single-use.
+- #291: a locked (deactivated or deletion-scheduled) account loses its live sessions.
+
+**No migrations; no non-reversible effects; rollback = redeploy B9.** Verified on the branch: no migration directory beyond `main`; encryption writes stay v2 unless a rotation is in progress (#364), and none is; the session reaper (#378) is not included; IP minimisation (#374) stays off by default.
+
+**The owner's choice:** **(1)** r2 now, then full B10 later; **or (2)** full B10 (B10.1–B10.5). **Owner decision 2026-11-04:** #385 is approved for final release preparation; deployment needs a separate explicit owner approval at the release gate.
+
+### B10.1 Candidate PRs (merged to develop after the B10a cut, `5642bb5..f0405e1`)
+
+**SAFE TO PROMOTE.** These have no migration and no schema change.
+
+| PR | Title | Why it is safe |
+|---|---|---|
+| #233 | A Plaid webhook skipped during an in-flight sync is no longer erased | Lock/marker logic only; no schema change. #268 deferred it to a later candidate |
+| #234 | Fence the engine's final marker write; document accepted clock skew | Follow-up to #233; same files, no schema change |
+| #256 | Single-use TOTP codes at login (SEC-012) | Uses the existing `RateLimit` table and grants; no migration |
+| #258 | `db:regrant`: restore GRANTs after a `--no-privileges` restore | Adds a script only. Running it against Production is gated separately by the owner |
+| #262 | PB-9: Merchant Identity KPIs drill into their records | Read-only tables behind the existing MERCHANT_OPS permission |
+| #265 | PB-9 follow-up: rate-limit Reconsider; records search stays letters-only | Adds a rate limit; no data change |
+| #281 | AI & Costs: one authority for fleet spend status | Presentation-side tile wording |
+| #283 | AI & Costs: budget KPI drills into its 24 h calls | New read-only, PLATFORM_OPS READ route |
+| #282 | Ops: environment-aware job verdicts + provider-outcome@1 | Verdict rules only. On Production the job output is byte-identical (the scheduler reads as present) |
+| #285 | Provider trust: connection scope (provider-connection@1) + Preview freshness | Verdict rules only |
+| #286 | provider-connection@1: name unclassified codes; say when no share is computed | Basis wording and pins; no verdict change |
+| #284 | PRIV-ref: the opaque customer reference is a keyed digest | No schema or env change (reuses an existing required server secret). The reference format changes, see B10.3. **Dependency:** #284 edits removed-connections files that #225 introduced, so promoting it without #225 needs a rebuilt cherry-pick |
+| #238 | Test fixtures: real cash figures replaced with synthetic data | Test-only |
+| #239 | UI-hardening output goes to `tmp/`, not `docs/plans` | Local tooling only |
+| #291 | Deactivated or deletion-scheduled account proves no session (P1 security; merged after `f0405e1`) | No migration or schema change: the session proof also reads the user's existing `deactivatedAt` / `deletionScheduledAt`, so a lockout refuses even if the revoke failed. **Dependency check** (its diff applied to the B10a cut `5642bb5`): every runtime file applies cleanly; the only failure is a fixture hunk in `lib/auth/presence-scope.test.ts`, a test file added by PB-10 (#274). If PB-10 ships, nothing to do; if PB-10 is excluded, drop that test hunk |
+| #300 | FM-AUDIT-025 parser + FM-AUDIT-053: CoinGecko daily-close shift; BTC multiaddr invalid-as-zero (merged after `f0405e1`) | No migration or schema change. **Dependency check:** its diff applies cleanly to the B10a cut, and no file it touches was changed by a gated PR. It fixes the parser only: closes already stored in the price archive stay shifted until the owner-gated archive repair (see B10.3) |
+| #369 | FM-AUDIT-053 unconfirmed half: xpub balances are confirmed-only (multiaddr for discovery; Esplora `chain_stats` per active address) | **Travels with #300 (SAFE).** Applies after #300; only its audit-doc hunk conflicts at the cut (docs-only). S2 verified that every code hunk applies on `5642bb5` + #300. No gated overlap; symbol scan clean; no migration |
+| #374 | IP / user-agent minimisation, engineering half | **SAFE.** Off by default (`NETWORK_ID_MINIMISATION_MODE`), so no behaviour change; no migration, no cron. Dependency check: code applies cleanly at `5642bb5`; docs hunks are post-cut-only (`database-safety.md` conflicts, `PLATFORM-INTELLIGENCE.md` absent at the cut). The census test's registered columns (`AuditLog.ipAddress` / `userAgent` / `metadata.key`, `UserSession.ipAddress` / `userAgent`, `RateLimit.key`) all exist in the cut schema. The policy SQL is doc-only (`docs/operations/data-retention.md`) |
+| #377 | Beta-risk network signal uses the keyed beta-intake digest instead of MD5 over the IP | **SAFE** (independent of #374). Dependency check: applies cleanly at `5642bb5`; its `observability-privacy.test.ts` hunk applies despite later Economics edits; the digest helpers (`jobs/data-retention`) and `BETA_INTAKE_HASH_KEY_*` exist at the cut; symbol scan clean. No migration. No visible change. Internal: if `BETA_INTAKE_HASH_KEY` rotates, older digests stop grouping (they refuse rather than mis-group) |
+| #315 | Optional fleet AI daily spend ceiling (SEC-AI-001), off by default | No migration (a new `PlatformSetting` key, `ai_fleet_daily_ceiling_usd_24h`, empty by default). **Dependency check** (diff applied to the B10a cut `5642bb5`): only `lib/platform/ai/ai-budget.ts` fails, on #283/#284 changes. It imports `lib/platform/opaque-user-ref.ts` (added by #284) and `fleet-spend-status.ts` (#281). Needs #281, #283 and #284, all SAFE, so it inherits #284's #225 caveat |
+| #324 | Quota/cost anomaly alert rules (anomaly@1): `ai-spend-anomaly`, `ai-spend-user-anomaly`, `plaid-call-anomaly`, warning severity | No migration. **Dependency check:** `lib/alerts/evaluate.ts` and `lib/platform/ai/spend-health.ts` fail, on #315 and #284 changes. Needs #315 and #284 (SAFE; #284's #225 caveat applies) |
+| #320 | Platform alert recovery notifications (resolved / flapping emails) | No migration. **Dependency check** (B10a cut `5642bb5`, with the asserted-path scan): `lib/alerts/evaluate.ts`, `latest-evaluation.ts` and `run.ts` build on #324 (and so #315/#284). `lib/email/preview.ts` and `lib/notifications/catalog/definitions.ts` were also changed by #225 (PB-5), but #320's hunks there apply cleanly to the cut, so there's no #225 dependency of its own. Needs #324 → #315 → #284 (SAFE; #284's #225 caveat applies) |
+| #329 | Stable-again alert email and widget state the flap's peak severity (follow-up to #320) | No migration. **Dependency check:** all six files build on #320 (and `evaluate.ts` on #324/#315/#284). Needs #320, so SAFE with the same chain |
+| #306 | CI: the test runner names every failed check in a failed file's report | Test tooling only (`scripts/run-tests.ts`, a new helper); no app runtime effect. No file it touches was changed by a gated PR |
+| #347 | AI ledger `errorCode` accepts only code-shaped values (fix at source) | No migration. **Dependency check:** applies cleanly to the B10a cut; no file it touches was changed by a gated PR; symbol scan clean |
+| #348 | SEC-AI-006: AI memory writes require exact user-turn evidence | No migration. **Dependency check:** applies cleanly to the B10a cut; its hunk in the tool-schema snapshot does not depend on #272's change there; symbol scan clean. Memory writes stay off by default (opt-in `memoryWrites`) |
+| #356 | Follow-up to #348: k-suffix lookbehind (one character) + 3 tests | **Travels with #348 (SAFE).** Touches only `memory-model.ts` and #348's test file; no migration |
+| #357 | Encryption keyring + key-rotation tooling (PRIV-004, step a) | **SAFE (#357 + #360 + #364 travel together).** No migration. Dependency check: the whole diff applies cleanly to the B10a cut (including `lib/env.ts`, `lib/plaid/encryption.ts`, CI and `package.json`); every registered encrypted field (`PlaidItem.encryptedToken`, `User.totpSecret` / `dateOfBirthEncrypted`, `Connection.credential`, `BetaAbuseEvidence.sealedPayload`) exists in the cut schema. Adds CI step "Encryption key rotation suite" and AuditLog action `ENCRYPTION_KEY_ROTATED` (a string, no schema). With #364, writes stay v2 (readable by B9) until a rotation begins |
+| #360 | Ciphertext census honours the registry's WALLET exclusion | **Travels with #357 (SAFE).** It modifies only #357's files; no migration |
+| #364 | Encryption writes stay v2 unless a rotation is in progress | **Travels with #357 (SAFE).** Modifies only #357/#360 files; no migration. It vendors B9's `encryption.ts` verbatim as a test fixture (`lib/plaid/__fixtures__/encryption-b9.ts`) and proves B9 reads every write made without a rotation. Writes are v3 only while a distinct `ENCRYPTION_KEY_PREVIOUS` is set. `--apply` without a rotation is a no-op ("no rotation in progress — nothing to do", no audit row) |
+| #352 | Platform mutating routes: 30/min per operator per route on the 17 unlimited handlers; census test with an empty allowlist | No migration. **Dependency check:** applies cleanly to the B10a cut (its `provider-cleanup` hunk does not need #225; the `access` hunk does not need #291). The census walks the route tree it runs in, and every route that exists at the cut is either limited by #352 or unchanged since the cut, so it passes without the gated routes |
+| #302 | FIN-C (FM-AUDIT-021 + 022): a stale bank balance writes today's snapshot as an estimate; an unvalued wallet stamps it incomplete (merged after #307) | No migration. **Dependency check:** its diff applies cleanly to the B10a cut. PB-8 (#232) touched `regenerate-history.ts` in between, but #302's hunk there uses `floorByAccount`, which already exists at the cut. It needs #301 (`unvaluedCount`), which is in SAFE. Past rows frozen as observed stay frozen (B10.5) |
+| #301 | FM-AUDIT-022 (FIN-B): unpriced or never-observed wallets are excluded from totals and disclosed as a count (merged after `f0405e1`) | No migration or schema change. **Dependency check:** its diff applies cleanly to the B10a cut. The new symbols it uses (`unvaluedAccountCount`, `unvaluedWarning`, `resolveWalletBalance`) are added by #301 itself; the rest exist at the cut. PB-8 (#232/#266/#267) touched `WealthWorkspace.tsx` and `lib/ai/types.ts` in between, but #301's hunks there add only its own count and field |
+| #295 | FM-AUDIT-023 exchange half: a null Plaid current balance keeps the prior balance and clock (merged after `f0405e1`) | No migration or schema change. **Dependency check:** its diff applies cleanly to the B10a cut, and the helpers its test imports are either already at the cut (`planBalanceWrite`) or added by #295 itself. PB-8 (#232) also touched `lib/plaid/refresh.ts`, but #295 does not depend on that change |
+
+**GATED.** Each of these needs an owner precondition or decision before Production.
+
+| PR | Title | Gate |
+|---|---|---|
+| #298 | DB-010: AuditLog append-only at the database for `fm_system` | **Migration** `20261103140000_db010_auditlog_append_only` (B10.2): owner approval required for Production. Merged (S2 approved); applied and verified on Preview (B10.2) |
+| #316 | FIN-A2 (FM-AUDIT-023 new-row half): an unobserved balance on a new account is excluded, not $0 | **Migration 4** `20261103150000_fin_a2_balance_observed` (B10.2): owner approval for Production. **Dependency check** (diff applied to the B10a cut `5642bb5`): fails broadly. It builds on #301 and #295 (safe), #307 (PB-8), PB-8's `backfill.ts` / `refresh.ts` (#232), PB-1's `lib/platform/incidents/lifecycle.ts` and `syncIssues.ts` (#255), and the PB-1/PB-10 schema. In practice it ships only in the full develop tree (the recommended tree) |
+| #323 | FIN-005 part 2 (FIN-E): `SpaceSnapshot.restrictedCash` written by every snapshot writer; history reads unrestricted cash when every row in the window has it | **Migration 5** `20261103160000_fin_e_restricted_cash` (B10.2): owner approval for Production. **Full tree only.** Dependency check (B10a cut `5642bb5`, including the asserted-path scan): it builds on #311 (PB-8), #307 (PB-8), #316 (migration 4), #302 and #301, and on the PB-1/PB-10/FIN-A2 schema; its tests extend #311's and #302's test files |
+| #411 | FIN-E F1: the live snapshot writer reads `providerSubtype`, so today's row gets the correct `restrictedCash` | **Travels with #323 (full tree)**; it modifies `lib/snapshots/space-accounts.ts` on #301/#316 context. No migration. Visible change in B10.3 |
+| #312 | FIN-006: brokerage holdings refresh on the cron and webhook pipelines | **Travels with #316 (full tree).** Dependency check (diff applied to the B10a cut `5642bb5`): `lib/plaid/refresh.ts` fails (its context includes #316's `resolveBalanceUnobservedIssue` import, and #232/#295 changed the file), and `webhook-sync.ts` fails on #233's changes (safe). No migration. **Cost:** more automatic Production Plaid holdings calls, but only on Items where Investments is already billed, so cost-neutral under per-Item-month billing (see B10.5 for the owner decision on uninitialized Items) |
+| #317 | Platform Intelligence: versioned metric-definition registry (definitions only) | **Travels with PB-1 + PB-10 (+ #281/#282/#285); test-coupled, no runtime effect.** In practice, full tree only. The code applies cleanly to the B10a cut, but each registry entry names its source functions and routes, and `registry.test.ts` asserts they exist: the incident intelligence core, index and staleness modules, the two incidents routes (PB-1, #264/#296), `lib/presence/definitions.ts` (PB-10, #274), the provider verdicts (#282/#285) and `fleet-spend-status.ts` (#281). In any tree missing those, it fails its own tests. Nothing outside the module imports it. No migration |
+| #321 | Comment-only note in `lib/platform/intelligence/metrics/access.ts` (break-glass scope is definitions-only) | **Travels with #317: PB-1 + PB-10 (+ #281/#282/#285); test-coupled, no runtime effect.** The file is created by #317 |
+| #255 | PB-1 Phase 1: incident data model, removed-connection closure, archive + purge | **PB-1 migration.** It needs `20261103120000_pb1_s2_incident_lifecycle_schema` applied first, because its writers fill new columns at observation time (B10.2) |
+| #259 | test(RLS): PB-1 incident tables are operator-only | Test-only, but it tests #255's schema; it travels with #255 |
+| #263 | test(PB-1 §13): Phase-2 parity harness scaffold | Test-only; it is the gate for the PB-1 reader cutovers |
+| #264 | PB-1 Phase 2: incident-intelligence module (API + deterministic core) | **PB-1 reader cutovers.** Inert in this tree: no reader is cut over, and each cutover is its own future PR gated on the §13 parity harness. It reads #255's columns, so it travels with #255. No cutover PR had merged to develop as of `f0405e1`; see #288 below |
+| #288 | PB-1 Phase 2 R1/R2: CS incidents panel + CS detail loader read module verdicts | **PB-1 reader cutover.** Not yet merged at `f0405e1`; it is expected to be merged by the time B10 is cut. It travels with the PB-1 group and is bound by the same migration-first rule. R3–R6b remain pending |
+| #296 | PB-1 2B: incident investigation workspace, detail, timeline, history (merged after `f0405e1`) | **Travels with PB-1** (migration first). Dependency check (diff applied to the B10a cut `5642bb5`): fails. It extends the intelligence module that #264/#287/#288 created and imports `lib/platform/incidents/codes.ts` (added by #255). It also overlaps the safe drill-down PRs #262/#283 in `lib/space/space-url.ts`, which ship anyway. The new workspace views are lead-only (no new section key), so no platform-Space seed is needed |
+| #308 | PB-1 D10: attempt evidence says why it is missing; per-subject evidence read is uncapped | **Travels with PB-1.** Builds on #263/#264/#287/#288/#296 (intelligence module, incidents UI). No migration |
+| #310 | PB-1 Phase 2 R3: convergence reads module verdicts | **Travels with PB-1** (builds on #263/#264/#287/#288/#296/#308). Visible Platform Ops changes D2/D2b/D3/D6/D7/D8/D10 are **owner decisions for Production** (B10.3) |
+| #322 | Test fix: R3 cutover fake uses `latestAttempts` (unbreaks the develop typecheck) | **Travels with #310.** Test-only |
+| #325 | PB-1 Phase 2 R4: the projection reads module verdicts; bundles the R5 alerts feed onto `alertable && critical` | **Travels with PB-1** (builds on #263/#264/#287/#288/#296/#308/#310, plus #284/#324/#320/#329 in the alert files). Visible changes D2/D2b/D10 on the projection, the alerts feed and CS/Ops attention are **owner decisions for Production** (B10.3). No migration |
+| #332 | PB-1 Phase 2 R5: alert fold and evaluation read module verdicts only | **Travels with PB-1** (builds on #263/#288/#310/#325, plus the alert chain #284/#315/#324/#320/#329). No migration; no visible change beyond R4's |
+| #333 | PB-1 Phase 2 R6a: Ops attention reads module `brokenNow` | **Travels with PB-1** (builds on #263/#288/#310/#325/#332, plus #282/#284/#324). No migration; the symbol scan finds only its own exports. Visible change in B10.3 (owner decision for Production) |
+| #336 | PB-1 Phase 2 R6b: CS attention reads module verdicts (completes §13.1) | **Travels with PB-1** (builds on #263/#288/#310/#325/#332/#333, plus #282/#284). No migration; the symbol scan finds only its own export. Visible change D4 in B10.3 (owner decision for Production) |
+| #338 | backgroundHistorySync's MISSING_ACCOUNT count pinned as a permanent control-gate exception | **Travels with PB-1** (edits #336's boundary test; `backgroundHistorySync.ts` was changed by #255/#312). Pins only; no runtime change; no migration |
+| #339 | Member activity feed: open/closed from the module's pure core (MEMBER `CoreAudience`) | **Travels with PB-1** (builds on #264/#287/#288/#296/#308/#310/#325/#336/#338). The read stays `fm_app` under RLS; proven byte-identical; no visible change; no migration |
+| #349 | Automatic incident recoveries record a resolution reason, evidence and a timeline event | **Travels with PB-1 + #316 (the balances arm).** Dependency check: fails on the cut in `lib/platform/incidents/*` (#255/#264) and `balance-observed.test.ts` (#316). No migration. Forward-only: historical auto-recoveries stay without an event |
+| #340 | PB-1 Phase 3: CS daily incident trend folds module verdicts | **Travels with PB-1** (builds on #255/#259/#325/#336/#338/#339). No migration; the symbol scan is clean. Visible changes D8/D2 in B10.3 (owner decision for Production) |
+| #372 | Ops attention: a second scan for critical-kind incidents beyond the 200-row page | **Travels with PB-1** (builds on #264/#287/#308/#310/#325/#333/#336/#339). No migration. Internal: a more complete Ops attention list |
+| #388 | PB-1 S6: operator acknowledge and manual resolve for incidents (PLATFORM_OPS WRITE) | **Travels with PB-1** (lifecycle #255/#349, intelligence and incidents UI #264/#296/#308/#339/#340) **plus #352** (limiter); its audit-action hunks also sit on #225 (PB-5) context. No migration. Pins the B9-rollback constraints (incident-boundary §12). Visible change in B10.3 |
+| #400 | Ops incident drawer: Related section (provider health, connection health, previous episode, open same-subject episodes) | **Full tree only:** travels with #388/#296 (PB-1) and the navigation registry #365/#368 (also touches #308/#395 context). Every link comes from the navigation registry; no new targets; no migration. Visible change in B10.3 |
+| #402 | Incident "Go to" links: a navigation failure never hides the incident; section titled "Go to"; view-aware in-place open | **Full tree only; travels with #400** (and #296/#388/#308). No migration |
+| #404 | CS incident drawer: "Go to" links through the navigation registry | **Full tree only; travels with #400/#402** (PB-1 incidents UI, navigation registry). No migration. Customer Success stays read-only; links are permission-checked |
+| #387 | Test fixtures use fake institution names, plus a census test | **Test-only, full tree.** 151 files, almost all test fixtures across many gated PRs' tests (PB-1, PB-8, PB-10, #225, Economics…), so it applies cleanly only to the full tree. No runtime effect; no migration |
+| #389 | Card product names in test fixtures replaced (follow-up to #387) | **Test-only, full tree.** 30 files, all tests and fixtures; the `desktop-baseline.json` re-pin is intentional. No runtime effect; no migration |
+| #393 | Payroll-like fixture de-identification | **Test/docs-only, full tree.** 45 files: test fixtures and docs; the 13 production files change in comments only (verified: no code line changed); `unchanged-pins` re-pinned for 2 finance files. No runtime effect; no migration |
+| #396 | Synthesised fixture dates and scaled balances; new date-run census | **Test/docs-only, full tree.** 25 files; the production files change in comments only (verified). No runtime effect; no migration |
+| #397 | Six docs moved to private records (content-free stubs left in the tree) | **Docs plus one test-tooling change, no runtime effect.** `scripts/ai-baseline/baseline.test.ts` no longer reads a moved doc. The doc hunks are post-cut-only (those docs were edited after the cut). Conclusions live in `docs/systems/*` |
+| #403 | Identity de-identification; operator scripts require an explicit target | **Test/docs/scripts plus comment-only production changes, full tree.** 146 files; the schema change is comments only; production code lines unchanged except comment text. No migration. Operator scripts now require an explicit target argument |
+| #406 | Final hygiene sweep | **Test/docs/scripts plus comment-only production changes, full tree.** 9 files; the schema change is comments only; one visible copy change: the Create Space name placeholder's example text. No migration |
+| #314 | Platform Economics PR A: Economics workspace + Overview with drilldowns (AI & Costs becomes a view of Economics) | **Travels with PB-1 (#296, workspaces.ts) + PB-10 (#274, engagement) + #284; full tree only.** `lib/platform/workspaces.ts` / `workspaces.test.ts` / workspace-navigation hunks sit in #296's PB-1 incidents-workspace context. `lib/platform/economics/snapshot(.core).ts` uses `loadEngagedUserIdsSince` (a PB-10 symbol added to an existing file, so the file-level scan missed it) and `opaqueUserRef` (#284), plus the AI spend fold and budget calls (#281/#283). No migration; lead-only views (no section key, no seed) |
+| #326 | Platform Economics PR B: Providers cost view + Entitlements (cost by group; HYPOTHETICAL read-only allowance scenarios) | **Travels with #314: PB-1 (#296, workspaces.ts) + PB-10 (#274, engagement) + #284; full tree only.** It modifies 9 files that #314 created and imports `opaque-user-ref.ts` (#284). No migration; lead-only views, no DB row |
+| #331 | Platform Economics PR C: the Platform AI category | **Travels with #314/#326, so full tree only.** It builds on #314/#326 and the AI spend PRs #281/#283/#284/#262; the symbol scan finds only its own new exports. No migration |
+| #343 | Economics tab strip fits at 375 px (shared `PlatformViewSwitcher`) | **Travels with #314/#326 (full tree); test-coupled.** The code applies cleanly to the B10a cut, but its new `platform-view-switcher.test.ts` asserts the four Economics views (Overview, AI & Costs, Providers, Entitlements), which exist only with #314/#326. No migration |
+| #345 | Live sessions honour SEC-010: one `liveSessionWhere(now)` for every session count and list | **Travels with PB-10 + PB-1 (full tree).** Dependency check: `customer-detail.ts` / `customers.ts` hunks rewrite PB-10's `lastPresenceAt` reads (#274) and sit on PB-1 (#288/#325) and #284 context; the other files touch #291's area. No migration |
+| #350 | Canonical "active" vocabulary: copy and population module (`population.ts`) | **Full tree only.** Dependency check: fails on the cut across Economics (#314/#326/#331), the metric registry (#317), PB-10 (#274/#278), #345, PB-1 (#325/#336/#340), #284 and #291 context. No migration. Copy-only: no number changes |
+| #353 | "Active" vocabulary follow-up (copy-only) | **Travels with #350, full tree only** (builds on #350, PB-10 #274/#276/#278, #345, #317, PB-1 #288, #284/#291). No migration. Registry: `accounts-with-live-session@1` added; `live-sessions@1` is now strictly the session count (no version bump) |
+| #359 | Platform Intelligence Phase 3 slice 1: `retrieveMetric` (aggregates only; no route or UI) | **Full tree only.** It builds on the registry #317 (PB-1 + PB-10 test-coupled), #350/#353, #339 and #264 (incident tokens). No migration. Internal contract; no visible change |
+| #361 | Live-session counts moved into shared readers (pure refactor of the Security Ops sessions and Growth users routes; payloads unchanged) | **Full tree only.** It builds on #345 (`liveSessionWhere`), #350/#353, #359 and #317. No migration; no visible change |
+| #363 | Live-session metrics retrievable through `retrieveMetric` | **Full tree only; travels with #359/#361** (builds on #359, #350/#353, #317). No migration; internal contract, no visible change |
+| #365 | Platform Intelligence step 3: navigation registry (internal; no route or UI) | **Full tree only; travels with #359/#363** and the registry #317 (#350/#353). No migration; no visible change |
+| #368 | Navigation follow-up: one href builder, `econ`/`econuntil` in `SPACE_URL_PARAMS`, per-surface metric drills (CS incidents broken now drills to the CS incidents route) | **Full tree only; travels with #365/#359.** No migration; no visible UI change |
+| #382 | provider-connection@2: a Plaid outage confined to one institution reads Degraded (institution-concentrated) | **Full tree only.** It modifies the verdicts (#282/#285/#286), the metric registry and retrieval (#317/#359/#363/#365/#368), and provider tiles (#314). No migration. Visible change in B10.3 (owner item before Production) |
+| #395 | Platform AI v0: read-only operational Q&A over the metric and navigation layers | **Full tree only** (builds on #359/#363/#365/#368 and #352; also touches #331/#357/#382 context). **Off by default** (`PLATFORM_AI_ENABLED` must be `"true"`). No migration. Enabling it is an owner decision (B10.5) |
+| #408 | Platform AI fixes: null optional args treated as absent; drill links only when byte-equal to a page resolved for this token; metadata-only per-turn trace | **Travels with #395 (full tree).** No migration. Platform AI ships disabled in Production, so no B10.3 change |
+| #417 | Platform AI: operator privacy hint ("don't enter customer names, emails, account numbers or other personal details") and an accurate scrub comment | **Travels with #395 (full tree).** No migration. Platform AI stays off in Production |
+| #419 | Platform AI cost metrics: 5 registry metrics wrapping the Economics / AI & Costs tile readers; provider-outcome PARTIAL/UNAVAILABLE envelope rule; Providers tile shows "—" with a reason when no provider is assessed | **Full tree only; travels with #359/#395 and the Economics readers #314/#326** (also #382/#365/#368/#363/#317/#408). No migration. Visible change in B10.3 |
+| #418 | Platform AI A1: placeholder grounding (numeric attribution v1); explicit `valueUnits` and `estimatedParts`; user-numeral allowance | **Full tree only; travels with #395/#408/#419.** No migration. In the B10 cut (merged before PR B), inert in Production (Platform AI is off) |
+| #423 | Platform AI window resolution: placeholders without a window resolve against a single read; every figure states its window in server text; a `WINDOW_NOTE` replaces the refusal; `unwindowedParts` / `windowLabel`; sanitiser category counts | **Full tree only; travels with #395/#418/#419** (also #408/#382; #376 overlap is the plan doc). No migration. In the B10 cut, inert in Production (Platform AI is off) |
+| #426 | Platform AI: cycle-start date from the economics snapshot; a date allowlist equal to `window.start`; the last-read rule; billing-cycle window label reworded in the registry | **Full tree only; travels with #419/#423** (also #418/#408/#395/#382). No migration. In the B10 cut, inert in Production: the registry's window labels are read only by Platform AI (off) |
+| #427 | Platform AI placeholder resolution (server-built placeholders) | **Full tree only; travels with #395** (and #408/#418/#419/#423/#426). Platform AI paths only; no migration. In the B10 cut, inert in Production. Merged at the S2-approved head `761cd39` (merge `94eb947`) via a REST pinned-SHA fallback after GitHub GraphQL errors; S2 accepted the fallback |
+| #432 | Platform AI: `UNAVAILABLE` reason codes; window ignored on fixed-window metrics; link-kind diagnostic | **Full tree only; travels with #395** (and #418/#419/#423/#426/#427). Platform AI paths only; no migration. In the B10 cut, inert in Production. Head `48bf26a`, merge `980f3d7` |
+| #366 | Security Ops sessions route no longer returns session ids | **Full tree only; travels with #345/#361.** No migration. No visible change: the recent-sessions payload no longer carries session ids |
+| #370 | B10.5 decision report: read-only counts with a Bound column; new CI acceptance step | **Full tree only (test-coupled to #316/#323).** The report itself reads UNAVAILABLE for a missing column, but its CI acceptance fixture inserts `FinancialAccount.balanceObserved` and `SpaceSnapshot.restrictedCash`, so the step fails without migrations 4 and 5. It also builds on #357's CI and `package.json` changes. No migration |
+| #376 | B10.5 decision report: fifth subcommand `frozen-restricted` (report-only) | **Travels with #370 (full tree).** It modifies only #370's files; no migration |
+| #378 | Session reaper also deletes sessions expired more than 30 days ago; sixth report subcommand `expired-sessions` | **Full tree only.** It uses #345's `liveSessionCutoffs` / `isSessionLive`, modifies #370/#376's report files and #374's registry, and sits on #255's retention context. No migration. **Retention change** (B10.3): deletes rows on each environment after deploy |
+| #287 | PB-1 Phase 2: unattributed is null, never "" | Follow-up to #264; travels with it |
+| #232 | PB-8: liability coverage floor + held-flat probe | **PB-8 regeneration.** The PR modifies no stored row, but once deployed the *next automatic* regeneration (connect, refresh or the daily wealth regen, typically the 30-day window) rewrites the affected Spaces' recent history: liabilities held flat before their connection become unknown, and credit cards are walked. A full-window regeneration is a separate owner decision |
+| #266 | PB-8b: change-since never compares across a partial-history floor | Builds on #232's floors; travels with PB-8 |
+| #267 | PB-8c: server-side change claims (AI, launcher, Brief) respect the floor | Builds on #232/#266; travels with PB-8 |
+| #272 | PB-8d: AI history points before the floor are withheld | Builds on #267; travels with PB-8 |
+| #293 | AI history tools and change claims fail closed on unreadable coverage (merged after `f0405e1`) | **Travels with PB-8.** Dependency check (diff applied to the B10a cut `5642bb5`): fails. It modifies `lib/connections/balance-coverage.core.ts` / `balance-coverage.ts`, which #232 created, and every other runtime file it touches was last changed by #267/#272 |
+| #299 | Data-health coverage fails closed: client heroes withhold on a failed read (merged after #293) | **Travels with PB-8 (and #293).** Dependency check fails: it modifies files that #232/#266 created (`balance-coverage.core.ts`, `BalanceCoverageNote.tsx`, `wealth-change-gate.ts`, `debt-trend-points.ts`) and builds on #293's `BALANCE_COVERAGE_UNAVAILABLE` |
+| #305 | Coverage loading renders governed changes as pending, never shown then retracted (merged after #299) | **Travels with PB-8 (and #293/#299).** Dependency check fails: it modifies `balance-coverage.core.ts`, `BalanceCoverageNote.tsx`, `wealth-change-gate.ts` and `debt-trend-points.ts` (created by #232/#266), and the test file #299 added |
+| #311 | FIN-005 part 1: cash history labelled all-cash (incl. restricted); never a change against unrestricted cash (merged after #302) | **Travels with PB-8.** Dependency check (diff applied to the B10a cut `5642bb5`): the liquidity UI and `cash-history.ts` hunks apply cleanly, but its Brief and AI files (`lib/ai/brief/package.ts`, `policy.ts`, `prompt.ts`, `lib/ai/assemblers/snapshot.ts`, `lib/ai/types.ts`) fail, because their context was last changed by #267/#293. Without PB-8 it needs a rebuilt branch that S2 reviews. No migration; part 2 (`restrictedCash` column) is a separate PR |
+| #307 | FIN-B2 (FM-AUDIT-022): unvalued wallets excluded from backfill history, never exported as 0 (merged after #305) | **Travels with PB-8 (backfill hunks) and needs #301.** Dependency check (diff applied to the B10a cut `5642bb5`): every file applies except `lib/snapshots/backfill.ts`, whose hunks sit inside PB-8's (#232) changes (`providerSubtype`, the card and held-flat helpers). It also uses #301's `resolveWalletBalance`. The export half (`lib/export/*`, `components/space/manage/*`) applies cleanly, so it could ship without PB-8 only on a rebuilt release branch that S2 reviews. No migration. The `backfill:snapshots` script now loads the existing server-only preload; it is not run as part of the deploy (see B10.5) |
+| #275 | PB-11: investments correctness (attribution FX, hero % gate, one allocation authority) | **Travels with PB-8 (code dependency).** Presentation-side itself, but `InvestmentsHero` imports `ESTIMATED_CHANGE_SUFFIX` from `lib/connections/balance-coverage.core`, a module created by #232 (PB-8) with the constant added by #266 (PB-8b). It promotes only with PB-8, or on a release branch that inlines the suffix (a rebuilt tree, S2-reviewed) |
+| #277 | PB-11b: investments display conversion fails closed on a rate miss | **Travels with PB-8 (code dependency).** Stacked on #275's files, so it inherits #275's dependency on PB-8 |
+| #274 | PB-10: presence and engagement | **PB-10 migration.** `20261103130000_pb10_session_presence` must be applied before the deploy (B10.2) |
+| #276 | PB-10 follow-ups: carry refused interactions; Content-Length precheck | Builds on #274; no schema change of its own |
+| #278 | PB-10 F3+F4: background reads don't extend the SEC-010 idle deadline | Builds on #274; no schema change of its own |
+| #280 | PB-10: pending interaction age = the latest input | Builds on #276; no schema change of its own |
+| #225 | PB-5: removed-connections list and operator Remove connection | #268 excluded it because **its live removal test is pending**. I couldn't confirm from git or GitHub that the test has since run. Needs S1 confirmation |
+
+**Docs-only** (they ship with whichever tree is promoted and need no gate): #236, #237 (also adds the docs-structure test), #241, #242, #243, #244, #245, #246 (also ignores `docs/invoices/`), #247, #248, #249, #250, #251, #253, #257, #260, #261, #273, #279.
+
+**Counts:** 14 safe, 16 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut. Added 2026-11-03: #291, #295 and #301 (safe; merged); #293 and #299 (gated, travel with PB-8); #296 (gated, travels with PB-1); #300 and #302 (safe; #302 needs #301); #305, #307 and #311 (gated, travel with PB-8); #316 (gated, migration 4; full tree); #312 (gated, travels with #316); #317 (gated; PB-1 + PB-10, test-coupled; inert); #315 and #324 (safe; need #284); #321 (gated, with #317); #323 (gated, migration 5; full tree); #320 (safe; needs #324); #329 (safe; needs #320); #314 and #326 (gated; PB-1 + PB-10 + #284, full tree only); #306 (safe, CI tooling); #308, #310, #322, #325, #332, #333, #336, #338, #339, #340, #372 and #388 (gated, PB-1; #388 also needs #352); #400, #402 and #404 (gated, full tree: PB-1 + navigation registry); #387, #389, #393 and #396 (test/docs-only, full tree); #397 (docs + test tooling); #403 and #406 (test/docs/scripts + comment-only production, full tree); #331 and #343 (gated, with #314/#326; full tree); #345, #350 and #353 (gated, full tree); #411 (gated, with #323); #349 (gated, PB-1 + #316); #347, #348, #352, #356, #357, #360, #364, #369, #374 and #377 (safe; #369 with #300; #356 with #348; #360 and #364 with #357); #359, #361, #363, #365, #366, #368, #370, #376, #378, #382, #395, #408, #417, #418, #419, #423, #426, #427 and #432 (gated, full tree; #408, #417, #418, #419, #423, #426, #427 and #432 with #395). Docs-only PRs since `f0405e1` (#289, #290, #292, #294, #297, #303, #304, #309, #313, #318, #319, #327, #328, #330, #334, #335, #337, #341, #342, #344, #346, #351, #354, #355, #358, #362, #367, #371, #373, #375, #380, #381, #383, #384, #386, #390, #391, #392, #394, #398, #399, #401, #405, #407, #410, #412, #414, #416 (Platform AI conversations design doc), #420, #421, #422, #425, #428 (merged `62bb261`, head `f8e1897`), #429 (conversations design §13 disable order; merged `d3efcdb`, head `10ec67a`), #430 (merged `1bf4531`, head `b65d8a5`)) need no gate. Test tooling plus docs, no runtime effect: #413 (FIN-E real-PG parity check in the rehearsal), #409 (B10 rollback rehearsal: `scripts/test-b10-rollback-rehearsal.ts`, two guarded probes, a guard test, the B10.6 evidence and B10.4 rows) and #298 (gated; DB-010 migration).
+
+**Recommended release tree (S2's advice).** The simplest reviewable tree is **develop at the B10 cut, with BOTH migrations applied first** (B10.2). That promotes everything above, except #225 if its live removal test has not run, and it requires the owner's PB-8 decision because PB-8 is in that tree. Any subset (excluding PB-8, PB-1, PB-10 or #225) means a release branch with reverts, and S2 reviews that exact tree before promotion. Develop is linear and the gated PRs are interleaved with the safe ones, so no subset is a clean cut.
+
+### B10.2 Migration order
+
+Five Prisma migrations are on develop and not on main (`git diff --name-only origin/main origin/develop -- prisma/migrations`, checked 2026-11-03): PB-1 `20261103120000`, PB-10 `20261103130000`, DB-010 `20261103140000`, FIN-A2 `20261103150000` and FIN-E `20261103160000`. Prisma applies them in name order:
+
+| # | Migration | PR | Must it precede the deploy? |
+|---|---|---|---|
+| 1 | `20261103120000_pb1_s2_incident_lifecycle_schema` | #255 | **Yes**, if #255 is in the tree. The new observation writer sets `subjectUserId` and `openedBy` on every new incident and writes `SyncIssueEvent`. Without the columns and tables, incident writes fail. They fail closed (swallowed and reported on the observer), but Production would stop recording incidents. The migration is additive: the new columns are nullable, except one with a constant default (no table rewrite); the CHECKs are vacuous on existing rows; there is no backfill; and the three new tables are fm_system-only with forced RLS. B9 code ignores all of it |
+| 2 | `20261103130000_pb10_session_presence` | #274 | **Yes, and sign-in critical; never optional.** The Customer Success list and detail queries select `UserSession.lastPresenceAt` / `lastInteractionAt`, and the heartbeat writes them. The login path creates a `UserSession` without a `select`; Prisma's `create` returns every scalar column, so a session create against a database without these columns fails, and **sign-in would break** (Session 1 confirmed this reading). The migration adds two nullable columns with no default, no backfill and no grant change (catalog-only). B9 code ignores them |
+| 3 | `20261103140000_db010_auditlog_append_only` | #298 | **Not required by the code, but in the same guarded run, after 1 and 2.** Grants and policies only (no table or column change): `fm_system` loses table-level UPDATE/DELETE on `AuditLog` and the single `FOR ALL` policy, and keeps SELECT and INSERT. Only the two retention jobs can still change rows: beta-intake network minimisation (a column-limited UPDATE of aged rows) and product-event retention (DELETE of rows past the retention window). `fm_backup`, `fm_app` and `fm_auth` are unchanged. **Gated:** owner approval for Production. **Rollback:** forward-only (database-safety §3a); see B10.4. An app rollback leaves it in place |
+| 4 | `20261103150000_fin_a2_balance_observed` | #316 | **Yes. Totals-critical; sign-in-irrelevant.** Every totals reader (accounts, Space detail, snapshots, backfill) selects `FinancialAccount.balanceObserved`, and Prisma returns every scalar column on reads without a `select`, so without the column those reads fail. Apply it before the deploy, like PB-10, in the same guarded run after DB-010. The migration adds `balanceObserved BOOLEAN NOT NULL DEFAULT true` (catalog-only, constant default, no backfill; existing rows keep their meaning) and the `SyncIssueKind` value `BALANCE_UNOBSERVED`. No grant change. Applied and verified on Preview (B10.2). **Rollback:** forward-only, a revert migration that drops only the column; Postgres cannot drop an enum value, so `BALANCE_UNOBSERVED` stays (harmless, unused). Never `migrate resolve --rolled-back` |
+| 5 | `20261103160000_fin_e_restricted_cash` | #323 | **Yes, required before the deploy.** B10 code selects `SpaceSnapshot.restrictedCash`, and Prisma returns every scalar column on reads without a `select`, so snapshot reads fail against a database without it (the same class as PB-10 and FIN-A2). Apply it in the same guarded run, after FIN-A2. One statement: `ADD COLUMN "restrictedCash" DOUBLE PRECISION`, nullable with no default (catalog-only; existing rows read null, meaning unknown, until the owner-gated past-row repair in B10.5). No grant change. Applied on Preview; schema verified (read-only); first written value pending a regeneration (Session 1, 2026-11-03; backup verified, existing rows null). **Rollback:** forward-only, a revert migration that drops the column; never `migrate resolve --rolled-back` |
+
+**Process:** apply all five in one guarded run before the deploy, in name order, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these migrations; ledger − tree = ∅. **Owner approval is required.** **Preview:** all four are applied on Preview through guarded `db:migrate:safe`, each with a verified backup (Session 1, 2026-11-03): PB-1 (ledger 146), PB-10 (147), DB-010 (148) and FIN-A2 (149). DB-010's catalog was checked (four per-command `fm_system` policies, `fm_system_all` dropped, column UPDATE limited to the three intended columns; an operator-path insert still works). FIN-A2: every existing row reads `balanceObserved = true` and the enum value is present. S2 accepted both.
+
+**Cron pause for the migration step (B1 cron-pause lesson):** pause the sync and incident-writing crons before the guarded run, so jobs don't queue behind PB-1's `ACCESS EXCLUSIVE` validation; re-enable them after the B10 deploy is verified healthy (B1 lesson: paused through the deploy and health check). Use a quiet window.
+
+### B10.2a Migration risk & reversibility (verified in code, 2026-11-04)
+
+Context: the five migrations run in one guarded `db:migrate:safe` run **before** the deploy, while B9 is still serving. So B9 code meets each new schema twice: during the migration window, and again on an app rollback that keeps the schema. All five are forward-only (database-safety §3a): the schema stays on any rollback, and a schema reversal is a new revert migration, never `migrate resolve --rolled-back`.
+
+| Migration | What it does | Lock / duration risk | B9 code with this schema (window and app rollback) | Reversibility | Validation step |
+|---|---|---|---|---|---|
+| PB-1 `20261103120000` | 24 `ADD COLUMN` in all (`SyncIssue` 19, one of them `NOT NULL DEFAULT 0`; `SyncIssueOccurrence` 5); 12 `CHECK`s on `SyncIssue` plus 1 size `CHECK` on `SyncIssueOccurrence`; three new tables (`SyncIssueRelation`, `SyncIssueArchive`, `SyncIssueEvent`); 10 indexes; no backfill, no `UPDATE` | The column adds are catalog-only. The `CHECK`s are added **without `NOT VALID`**, so each validates by scanning its table (`SyncIssue`, `SyncIssueOccurrence`) under an `ACCESS EXCLUSIVE` lock; 2 of the 10 indexes are built non-concurrently on `SyncIssue` (writes blocked during the build); the other 8 are on the new, empty tables. The duration scales with `SyncIssue` size: incident writes pause briefly. Run it in a quiet window | **Compatible (verified).** B9 never sets `lifecycleState`, so its rows keep it NULL and pass every `CHECK`. B10 leaves `lifecycleState` NULL on open incidents and writes it only as `RESOLVED` together with `resolved = true` (no B10 path writes ACTIVE/ACKNOWLEDGED/RECOVERING/STALE). B9's automatic resolution (`resolved = true`, `resolvedAt`, `resolutionKind`) therefore satisfies `resolved = (lifecycleState = 'RESOLVED')` on NULL-state rows. B9 only writes rows with `resolved = false`, so it never touches B10's resolved rows. B9 event inserts leave the new columns NULL. The new tables are ignored | Forward-only; columns, constraints and tables stay | Preflight: tree − ledger = the five; ledger − tree = ∅. After: `_prisma_migrations` finished; `\d "SyncIssue"` lists the 12 constraints; an incident write and an automatic resolution still succeed (Preview drill) |
+| PB-10 `…130000` | `UserSession`: 2 nullable `TIMESTAMP(3)` columns | Catalog-only; brief `ACCESS EXCLUSIVE` | **Compatible.** B9 neither selects nor writes them; its session creates leave them NULL. **Required before the B10 deploy** (B10 session creates return all scalars) | Forward-only | Columns present; sign-in works on Preview after the deploy |
+| DB-010 `…140000` | `AuditLog` for `fm_system`: `REVOKE UPDATE, DELETE`; column `UPDATE` grant on `ipAddress`/`userAgent`/`metadata`; `DELETE` re-granted; `fm_system_all` replaced by per-command policies (select, insert, minimise, retain) | Catalog-only `GRANT`/`REVOKE`/`CREATE POLICY` | **Compatible (verified against `origin/main`).** B9's two runtime writers are the only `fm_system` `UPDATE`/`DELETE` paths on `AuditLog`. (1) `jobs/data-retention.ts` beta-intake minimisation (`systemDb`) updates only `ipAddress`/`userAgent`/`metadata`, on `BETA_ACCESS_REQUESTED` rows older than 90 days, writing `ipAddress = userAgent = NULL`. That fits the column grant, `fm_system_minimise` `USING` and `WITH CHECK`. (2) `jobs/product-event-retention.ts` (`systemDb`) deletes rows whose action is in B9's `PRODUCT_EVENT_ACTIONS`, older than 13 months. B9's list is exactly the 9 actions `fm_system_retain` allows. Clock-skew edge rows are filtered by RLS (0 rows, no error) and retried next run. Operator scripts (`scripts/scrub-*.ts`) use `db`, not `fm_system`, and are unaffected | Forward-only; the README SQL is an emergency schema reversal through guarded tooling, followed by a forward revert migration | Policies listed in `pg_policies`; an operator-path insert still works; the next retention run succeeds (Preview: verified 2026-11-03) |
+| FIN-A2 `…150000` | `FinancialAccount.balanceObserved BOOLEAN NOT NULL DEFAULT true`; `SyncIssueKind` gains `BALANCE_UNOBSERVED` | A constant default is a metadata-only add (no rewrite); `ALTER TYPE … ADD VALUE` is catalog-only | **Compatible.** B9 ignores the column; its new accounts get the default `true`. Caveat: accounts B10 wrote as `false` read as their stored $0 under B9 (B10.4). B9 never writes the new enum value. **Required before the B10 deploy** (totals readers select it) | Forward-only; a revert migration drops the column, and the enum value stays (Postgres cannot drop it) | Column default `true` on every existing row; enum value present (Preview: verified) |
+| FIN-E `…160000` | `SpaceSnapshot.restrictedCash DOUBLE PRECISION`, nullable, no default | Catalog-only | **Compatible.** B9 neither selects nor writes it. **Required before the B10 deploy** (snapshot reads return all scalars) | Forward-only; a revert drops the column and loses values written meanwhile | Column present and NULL on existing rows; the first written value is checked after a regeneration (Preview: pending) |
+
+**B9-rollback constraints (PB-1).** B9 stays rollback-compatible only while B10 code (1) never writes a non-NULL *open* `lifecycleState` (ACTIVE / ACKNOWLEDGED / RECOVERING / STALE), and (2) never sets `resolved = false` on an existing row. Both are pinned by #388 (incident-boundary §12).
+
+**No B9 rollback-compatibility hazard was found** in any of the five. The hazards that do exist are data, not schema: values B10 writes that B9 cannot read (v3 ciphertext only after rotation step (b); `balanceObserved = false` rows reading as $0) and rows B10 deletes (the #378 session reaper). Those are listed in B10.4.
+
+### B10.3 Owner-visible release notes
+
+Each note was checked against its PR description and the develop code.
+
+- **Idle tabs now sign out (SEC-010; PB-10 F3/F4, #278).** A tab left open but unused for 30 days now signs out. Before, background reads kept pushing the 30-day idle deadline back (the notification bell's unread count, the notice rail's re-read on focus, and the session refetch on focus). Those three reads still check the session but no longer extend it. Navigations and actions still count. The SEC-010 durations themselves are unchanged.
+- **Customer references change format (#284).** Operator-facing references change from the old masked id tail to `user #xxxxxxxx`, a keyed digest that no longer contains any part of the account id. Old references in past alert emails, alert summaries and operator notes stop matching, and Customer Success search no longer accepts the old form. Alert dedupe keys change format too, so **an alert that is already firing may re-notify once** after the deploy. Rotating the server secret it is derived from rotates every reference.
+- **Operator scripts require an explicit target (#403).** Operator scripts that act on data now require an explicit target argument; a run without one is refused.
+- **Create Space placeholder (#406).** The Space-name placeholder shows different example text.
+- **Platform AI ships disabled (#395; full tree).** Platform AI (read-only Q&A for operators) ships DISABLED; enabling it is a separate owner decision (AI spend).
+- **Providers tile with no assessed provider (#419; full tree).** The Providers tile shows '—' with a reason instead of '0/N healthy' when no provider has evaluable runs.
+- **Single-bank Plaid outage reads Degraded (#382, provider-connection@2; full tree).** A Plaid outage confined to one bank now reads Degraded (institution-concentrated) instead of Failing, on the Providers tile, Ops posture and attention severity. Multi-bank or provider-wide failures still read Failing.
+- **Provider verdicts (provider-outcome@1, provider-connection@1; #282/#285/#286).**
+  - Any failure within a sufficient sample reads **Degraded** (before, an isolated failure under the old threshold read healthy).
+  - A small sample with no failures reads **"Not enough data"** (muted, no attention item), never Healthy. A small sample that has a failure still reads Degraded or Failing; it is never hidden.
+  - Providers no longer read **Failing** because a customer must re-authenticate or has revoked access. Reconnects show as a neutral fact on the tile. Only a provider-side error share can fail a provider. A large reauth wave reads Degraded.
+  - Every tile now shows the rule and the counts behind its word.
+- **Preview only: jobs read "Not scheduled in this environment" (#282).** Crons don't run on Preview, so jobs there read neutral instead of Failed; a job whose newest run failed still reads failing. Production output is unchanged.
+- **Customer Success presence labels (PB-10, #274/#276).** Customer Success now shows **Active now / Online, idle / Offline / Unknown**, a coarse last-active bucket (for example "within 5 min" or "active today"), last login, and signed-in sessions. It no longer reads the "session last used" clock. The new columns have no backfill, so every customer reads **Unknown** until their first heartbeat after the deploy. Growth "returning" and active-in-7-days now count meaningful engagement only, so those figures may drop.
+- **Bitcoin xpub balances are confirmed-only (#369, with #300).** xpub wallet balances now count confirmed transactions only (as single-address wallets already did); a pending receive is no longer shown, and a pending spend no longer deducted, until confirmed. Wallets over 600 used addresses show a stale balance (PARTIAL, over the per-run read cap).
+- **Crypto price closes and Bitcoin xpub reads (#300).** Newly fetched crypto daily closes are filed on the right day (a CoinGecko point at 00:00 UTC is the previous day's close). Closes already in the price archive are unchanged, because the archive is insert-only; rewriting them is a separate owner-gated repair, followed by regenerating the affected crypto history. Until that repair runs, the archive holds old one-day-shifted closes for dates already fetched and correct closes for new dates: mixed but non-overlapping, since `skipDuplicates` means no date ever has two values. A malformed or incomplete Bitcoin xpub lookup now fails as invalid data instead of reading as 0 BTC.
+- **Exports for unvalued wallets (#307, ships with PB-8).** `accounts.csv` gains a trailing `valuation_status` column (`not_yet_valued`) and leaves the balance cell empty for wallets not yet valued; `data.json` carries `balance: null` + `valuationStatus` for them. Anyone parsing the CSV by column position sees one extra trailing column.
+- **Stale bank balances no longer read as observed (#302, FM-AUDIT-021).** While a bank connection is stuck, today's snapshot is written as an estimate, and it is corrected after reconnect instead of freezing the old balance. Today's snapshot is also stamped incomplete when a wallet is unvalued. History charts may show estimated days where they used to show observed ones.
+- **Cash history labelled all-cash (#311, FIN-005 part 1; ships with PB-8).** The Liquidity history chart is labelled as all cash including restricted (for example HSA or retirement cash), so it can sit above the "available now" figure. The Brief and AI no longer state a change between that history and unrestricted cash now.
+- **Fleet AI daily ceiling (#315).** An optional fleet-wide AI daily spend ceiling mechanism. It is not set, so behaviour does not change; the owner sets a value through a future Policies editor.
+- **Incident readers on the shared module (PB-1 R3 #310, R4 and R5 feed #325, R5 fold/evaluate #332, R6a Ops attention #333, R6b CS attention #336, CS daily trend #340, with #308). Owner decisions for Production; allowed on develop/Preview.**
+  - **D2 / D2b:** incidents on soft- or hard-deleted accounts, or on revoked connections, leave the active incidents page, the Incidents preview, Ops and CS attention and alerts; convergence reads them as "connection removed" rather than degraded.
+  - **D10:** a stale row (past its window, neither attempted nor skipped) leaves the active page and alerts, and convergence shows it as "stale (needs verification)". The drawer says why attempt evidence is missing instead of "could not be read" (#308).
+  - **Ops attention (R6a, #333):** unverified incidents rank one severity lower and read "not confirmed inside its window"; when there are more than 20, the selection follows module priority. Ops attention scans the 200 most recently seen open incidents; beyond that the list is a floor ('+').
+  - **CS daily trend (#340):** D8: a legacy duplicate open row now counts once in 'opened'. D2: an incident that recovered before its connection was removed now stays counted (opened and resolved); open incidents closed by removal still drop out, as before.
+  - **CS attention (R6b, #336; D4):** CS attention attributes an incident to the customer it was observed for (`subjectUserId`) when recorded; older rows use the previous owner rule.
+  - **Incident actions (#388):** Platform Ops operators with WRITE access can acknowledge and manually resolve incidents from the incident drawer (reason required; audited; a recurrence opens a new episode). Customer Success stays read-only.
+  - **"Go to" links (#400, #402, #404):** the Ops and Customer Success incident drawers' "Go to" sections link to related views (provider health, connection health, previous episode and other open episodes of the same incident), each permission-checked. A navigation failure never hides the incident (#402).
+  - **Alerts (R5):** incident alerts fire only on `alertable && critical`, so an unverified or recovering critical incident no longer alerts.
+  - **Convergence (R3):** severity and domain come from full-fact classification (D3); incidents opened before the window and still open now appear (D6); events sit at their latest occurrence or resolution (D7); episodes cluster by incident episode, not by sync run (D8).
+- **Platform Economics (#314, #326; ship only in the full tree).** Platform Operations gains an Economics section: Overview (operating cost and its AI / providers / infrastructure split, cost per active customer, 7/30/90-day trend; revenue and margin shown as unavailable), AI & Costs (moved here; old links still open it), Providers (cost view; unmetered providers read "not metered", quotas read "cap unknown"), and Entitlements (cost by policy group, partial or unavailable rather than $0, plus a **hypothetical, read-only** allowance scenario with no apply or save control).
+- **Platform AI cost category (#331; full tree only).** Economics gains a Platform AI category (operator AI, today the Comms Center 'Polish with Fourth Meridian AI' helper), split out of unattributed overhead; operator refs shown as opaque `operator #…`; failures never $0.
+- **RETENTION CHANGE: expired sessions are deleted (#378; full tree).** Expired sessions are now removed 30 days after they expire, as revoked ones already were. The first run after deploy deletes all sessions revoked or expired more than 30 days ago, in bounded batches (up to 20k per run; a larger backlog drains over the following days). The Preview dry-run count is in the owner report.
+- **Session counts exclude expired sessions (#345; full tree).** Session counts and lists in Security Ops, Customer Success, Growth and the admin views now exclude sessions past the 30-day idle or 90-day absolute limit, and sessions of deactivated or deletion-scheduled accounts. Counts may drop; this is display-only, as sign-in already enforced these limits. The user Security Center shows expired sessions separately ('Expired — these sessions can no longer access your account', with Remove). The customer Security Center gains an 'Expired' group whose sessions can be removed (cosmetic; they already can't sign in).
+- **Encryption key rotation tooling (#357 + #360 + #364).** Encryption format unchanged on disk until a key rotation begins; rotation tooling added; starting a rotation makes the release roll-forward-only (owner action, B10.5).
+- **AI memory evidence (#348 + #356; behaviour change).** AI memory writes now require `statedAs` to be an exact excerpt (at least 3 words) from the user's own message in this conversation, and every amount must appear in that quote ("20k" counts; other suffixes don't). Paraphrased memories are refused. Memory writes stay off by default, so there is no visible effect unless they are enabled.
+- **AI ledger error codes (#347).** Provider prose is no longer stored as an error code; a non-code value is stored as `error`.
+- **"Active" vocabulary (#350 + #353; full tree). COPY-ONLY: no numbers change.** Visible label changes, net from B9:
+
+  | Surface | Before | After |
+  |---|---|---|
+  | Growth · Activity widget | DAU / WAU / MAU | Sign-ins · 1 d / 7 d / 30 d |
+  | Growth · activity series toggle | Signed in | Present |
+  | CS · customer detail | Signed-in sessions | Live sessions |
+  | CS · customer detail | Last active | Last interaction |
+  | Security · sessions | Active sessions | Live sessions (derivation states the SEC-010 lifetime) |
+  | Growth · Users widget | With a live session | Accounts with a live session (#353; was "Live sessions" in #350) |
+  | Admin · Security console | Active sessions | Live sessions (#353) |
+  | CS · customer list and detail (Last interaction) | active today | today (#353) |
+  | Growth · activity subline | N today · N this week · N in 30 d | N today · N in 7 d · N in 30 d, UTC days (#353) |
+  | Growth · Signups widget | N active this week | N engaged · 7 d |
+  | Economics | Active customers · this cycle | Engaged customers · this cycle |
+  | Economics | Cost per active customer | Cost per engaged customer |
+  | CS · hero, help, stages, cohorts, list population line | active customers | open customer accounts |
+  | CS · who needs help | (none) | caption: definition pending the owner (OD-2, OD-4) |
+  | Economics · customer figures' basis | (none) | definition pending the owner (OD-1..OD-4) |
+  | Growth · Product analytics | Returning ever | Returned (ever) |
+
+  Unit-economics definitions are pending owner decisions OD-1..4 and are shown as such. Metric registry: `accounts-with-live-session@1` added; `live-sessions@1` is strictly the session count.
+- **Automatic incident recoveries are recorded (#349; ships with PB-1).** Automatic incident recoveries now record a resolution reason, evidence and a timeline event. Forward-only: historical auto-recoveries stay without an event.
+- **Operator rate limits (#352).** Every platform mutating route is now limited to 30 requests per minute per operator per route. Operators doing rapid one-by-one bulk actions may see a 429; use bulk-approve.
+- **Alert recovery emails (#320).** Platform alert emails now also send a one-time 'resolved' email when a delivered alert clears for 2 consecutive evaluations; a rule that recovers twice within 24 h sends one 'flapping' email and is then quiet until stable (8 clean evaluations); an escalation to a higher severity during flapping is still emailed once, and the stable-again email and widget state the highest severity reached during the flap (#329); undelivered recoveries expire after 7 days and are shown in the Alerts widget.
+- **New anomaly alert emails (#324).** New warning-level alert emails when AI spend (fleet or one customer) or Plaid call volume over the trailing 24 h runs at least 3× the median of its 7 prior windows, above a floor. A rule that cannot be evaluated (unpriced calls, no recent data, too few prior windows) never fires.
+- **Brokerage holdings refresh automatically (#312, FIN-006).** Holdings, per-holding values and allocation now refresh on the scheduled sync and on Plaid holdings webhooks, not only on a manual refresh. This means more automatic Production Plaid holdings calls (cron per run + webhooks) on Items where Investments is already billed; cost-neutral (per Item-month billing). Consented-but-uninitialized Items are not auto-initialized (owner decision, B10.5).
+- **Today's liquid figure for HSA holders (#411, with #323; full tree).** For Spaces holding HSA cash, today's liquid figure drops by that HSA cash once today's row is next regenerated; net worth, total assets, cash and savings are unchanged.
+- **Restricted cash recorded in snapshots (#323, FIN-005 part 2).** Each new snapshot now records restricted cash separately. When every row in a history window has the figure, the liquidity history shows unrestricted cash, like "available now"; a window with any unrecorded row stays on the all-cash basis and label from #311. Snapshots written before the deploy have no figure (unknown, not zero) until the owner-gated past-row repair runs, so most windows stay all-cash until then.
+- **New accounts with no balance yet (#316, FIN-A2).** An account connected while the provider reports no current balance is no longer shown as $0. It is excluded from totals and flagged as not yet observed until a real balance arrives, and operators see a `BALANCE_UNOBSERVED` sync issue.
+- **Unvalued wallets (#301, FM-AUDIT-022).** A crypto wallet with no price or no observation yet is no longer counted (as $0 or a stale stored balance) in net worth, assets or the AI's totals. It is excluded, and surfaces say how many wallets are not yet valued, so totals can read as partial.
+- **Other visible changes:** a deactivated or deletion-scheduled account is signed out of every session even if a revoke failed (#291); single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277; ships only with PB-8). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …"), and, with #293/#299, changes and history points are withheld (with a note) when coverage cannot be read, rather than shown unqualified, and the removed-connections list (#225).
+
+### B10.4 Rollback notes
+
+**Code rollback** for every item is a Vercel rollback to the prior Production deployment (B9, main `dc76711`), or B10a's if #268 ships first. Leave the schema in place.
+
+| Item | Rollback | Trivial? |
+|---|---|---|
+| PB-10 migration + #274/#276/#278/#280 | The columns are additive and nullable; B9 code ignores them, and no down-migration is needed. Background reads go back to extending the idle deadline, and Customer Success goes back to the old "last active" | Yes |
+| PB-1 migration + #255/#259/#263/#264/#287/#288/#296/#308/#310/#322/#325/#332/#333/#336/#338/#339/#340/#388 | The columns and tables stay and old code ignores them; no down-migration. Data the new code wrote stays: incidents closed because their subject was removed stay closed, and archive rows stay. I found no main-code path that reopens a resolved incident, so the new `lifecycleState` CHECKs shouldn't block old writers | Yes, low risk |
+| #284 reference format | A rollback restores the old format. References issued meanwhile stop resolving, and dedupe keys change back, so a firing alert may re-notify once more | **Not trivial for operators** (references churn twice) |
+| PB-8 (#232/#266/#267/#272, plus #293/#299/#305/#307/#311) | The code rolls back, but **history rows rewritten by regenerations that ran under PB-8 are not reverted**. They change back only when the previous code's own regeneration next rewrites that window, or by a backup restore (the same class as the B3/B6 re-stamp) | **Not trivial** |
+| #225 PB-5 (if promoted) | The list and button disappear. **Removals an operator made in the meantime are not undone**: the provider-side revocation is external and permanent | **Not trivial** for any removal made |
+| #256 TOTP | The replay window reopens. Claim rows in `RateLimit` are harmless | Yes |
+| #291 deactivated-session lockout | A rollback reopens the P1: a deactivated or deletion-scheduled account whose session revoke failed could keep using that session | Yes, but it reopens a P1 security gap |
+| #295 exchange null balance | A rollback restores `?? 0` with a fresh clock at connect/reconnect; no data change | Yes |
+| #369 xpub confirmed balance | xpub balances include unconfirmed effects again; no schema change | Yes |
+| #300 price parser / xpub | A rollback restores the shifted filing for new fetches (rows written meanwhile stay correct, insert-only) and the read-as-zero on a malformed xpub response; no schema change | Yes |
+| #302 stale-bank estimate | Today's row goes back to being written as observed over stale balances. Rows written as estimates meanwhile stay estimates (still regenerable); no schema change | Yes |
+| #301 unvalued wallets | Unvalued wallets are summed again from the stored column; presentation and totals only, no data change | Yes |
+| FIN-E migration + #323 | **App rollback:** leave the column in place; B9 code ignores it. **Schema rollback only if needed:** a forward revert migration dropping `restrictedCash`. Values written meanwhile are lost with the column, and the past-row repair would need re-running. **During an app rollback (B10.6 F3):** a B9 regeneration of a row B10 wrote keeps B10's `restrictedCash` beside B9's `cash`; it "self-heals on re-deploy" | App: yes. Schema: not trivial (revert migration) |
+| FIN-A2 migration + #316 | **App rollback:** leave the column in place; B9 code ignores it (a new column with a default). **Schema rollback only if needed:** a forward revert migration dropping only `balanceObserved`; the enum value stays. Accounts written meanwhile with `balanceObserved = false` read as their stored $0 again under old code: "after a rollback, accounts B10 marked unobserved show their stored balance again" (reproduced in B10.6) | App: yes. Schema: not trivial (revert migration) |
+| #312 holdings auto-refresh | Holdings go back to manual-refresh only; positions already synced stay; no schema change | Yes |
+| #317 metric registry, #321 | No runtime effect (not wired) | Yes |
+| #315 fleet ceiling | The ceiling check disappears; while the setting is unset there is no behaviour difference. A value set meanwhile stays in `PlatformSetting`, ignored by old code | Yes |
+| #352 rate limits | The 17 routes return to unlimited; rate-limit rows are harmless; no schema change | Yes |
+| #349 recovery history | New auto-recoveries stop recording a reason, evidence and event; ones recorded meanwhile stay; no schema change | Yes |
+| #350/#353 vocabulary | Old labels return; no numbers change; no schema change | Yes |
+| #357 + #360 + #364 keyring | **Before owner step (b):** rollback to B9 is free (writes stay v2 under #364, proven against a vendored copy of B9's decrypt). **From step (b) on: roll forward only, permanently.** v3 values written during rotation stay unreadable by B9 (verified: B9's `decryptWithPurpose` accepts only v1/v2, `lib/plaid/encryption.ts` on main). Never roll back after step (d) | **Free before (b); roll-forward-only from (b)** |
+| #348 + #356 memory evidence | Memory writes accept paraphrased `statedAs` again (only matters if memory writes are enabled); no schema change | Yes |
+| #347 error codes | Provider prose can again be stored as an error code (new rows only); no schema change | Yes |
+| PB-1 + B9 retention (B10.6 F2) | "if B9 serves > 90 days after a rollback, B9 retention hard-deletes resolved incidents older than 90 d without archiving, orphaning their events". Mitigation: "a rollback longer than ~80 days needs a B9 hotfix or a retention pause" | **Not reversible for deleted rows** |
+| #378 session reaper | Old code stops deleting expired (non-revoked) sessions. **Rows already deleted are not restored** (backup restore only); no schema change | **Not reversible for deleted rows** |
+| #345 live sessions | Counts include expired and deactivated-account sessions again (display only); the Expired group disappears. No schema change | Yes |
+| #320 alert recovery | Resolved/flapping emails stop; breach emails continue as before. Recovery state lives in new optional fields of the evaluate-alerts JobRun summary, which old code ignores (it reads only the existing `fired` fields); no schema change. If the code later rolls forward again, the first run re-bootstraps open episodes from the retained `fired` records | Yes |
+| #314/#326/#331/#343 Economics | Economics views disappear and AI & Costs returns as its own workspace; read-only, no data written; no schema change | Yes |
+| #329 peak severity | The stable-again line loses its peak-severity text; no schema change | Yes |
+| #324 anomaly rules | The three anomaly rules stop evaluating; any of them firing goes quiet with no recovery email | Yes |
+| DB-010 migration (#298) | **App rollback:** leave DB-010 in place (B9 code is compatible — only the two retention jobs UPDATE/DELETE AuditLog, on main and develop). **Schema rollback only if needed:** the README SQL as an emergency step through guarded tooling, then a forward revert migration (`…_db010_revert`) carrying the same SQL so ledger and schema agree; never `migrate resolve --rolled-back` on an applied migration (Prisma allows it only on a FAILED migration; database-safety §3a, forward-only) | App rollback: yes. Schema rollback: not trivial (needs a revert migration) |
+| #233/#234 | The skipped-webhook defect returns; no data change | Yes |
+| Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, presence labels); #275/#277 roll back with PB-8's code | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
+| #258, #238, #239, docs | No runtime effect | Yes |
+
+**Unverified here:** whether #225's live removal test has run.
+
+### B10.5 Owner-gated data decisions (not part of the deploy)
+
+These rewrite stored rows. None runs as part of B10, and each needs its own owner approval per environment (Preview and Production separately), after a guarded backup.
+
+| Decision | What it rewrites | Why it is separate |
+|---|---|---|
+| CoinGecko archive repair (FM-AUDIT-025) | Crypto daily closes already in the price archive (one day late), then the crypto history valued from them | #300 fixes only new fetches; the archive is insert-only, so stored rows need a scripted delete + re-acquire, then regeneration |
+| Snapshot backfill re-run (`backfill:snapshots`, FM-AUDIT-022 / #307) | The backfilled snapshot window for Spaces with unvalued wallets | Regeneration-class: #307 changes what the backfill writes, but rows already written stay until it is re-run |
+| Restricted-cash snapshot repair (FIN-E part 2) | Populates `SpaceSnapshot.restrictedCash` for past rows (the column ships with part 2, additive and nullable) | Rows written before the column exist without it; the repair fills them |
+| ↳ Frozen observed rows (FIN-E, `frozen-restricted`, #376) | **Outcome (S2):** historical frozen days stay unsplit (documented limit). An optional owner-gated 0-fill for the retained-data trivially-0 rows is possible; **recommendation: leave.** Preview counts produced and signed off (S1/S2, 2026-11-04); figures are in the owner report, not the repo. Bounds: derivable and not-derivable counts are exact; trivially-0 counts are exact for retained data | Regeneration never rewrites frozen observed rows, so no repair derives their split |
+| Null-balance $0 rows (FIN-A2, #316 follow-up) | Finds existing accounts that stored $0 from a null balance at token exchange, and marks them unobserved | #316 fixes new exchanges only; existing $0 rows are indistinguishable from a real $0 without this review |
+| Frozen stale-observed rows (FM-AUDIT-021) | Re-opens past snapshot rows frozen as observed over stale bank balances, so regeneration can correct them | #302 fixes new rows only; the frozen guard keeps old observed rows (PB-8-class repair) |
+| PB-8 full-window regeneration | Stored history before each account's partial-history floor | Already noted under #232: deploying PB-8 rewrites only the next automatic window; a full window is a separate decision |
+
+**Order (S2):**
+1. Run data steps only **after** the B10 code deploy. The new code must be live, or a re-run writes the old semantics.
+2. Run the **CoinGecko archive repair before the snapshot backfill re-run**, so the re-run values history against corrected closes.
+3. Then the **restricted-cash snapshot repair** (FIN-E part 2).
+4. The null-balance $0 review (FIN-A2) and the frozen stale-observed re-open (FM-AUDIT-021) also run before the PB-8 regeneration, so it rebuilds against corrected inputs.
+5. Run the **PB-8 full-window regeneration last**, after all of the above.
+
+#### How the owner gets the numbers
+
+`scripts/b10-5-decision-report.ts` prints the candidate counts for four of these decisions, plus one follow-up FIN-E question (`frozen-restricted`), as one markdown table for the morning report. It is **read-only**: there is no apply mode, and each report runs in its own transaction opened with `SET TRANSACTION READ ONLY` (never a session-level SET). It prints **counts and date ranges only**: no ids, amounts, names, emails or institutions.
+
+```
+npm run report:b10-5 -- all --env=preview                       # or: coingecko | fin-a2 | fin-e | audit-021 | frozen-restricted
+npm run report:b10-5 -- coingecko --env=preview --coingecko-fixed-from=<#300 deploy date>
+npm run report:b10-5 -- all --env=production --acknowledge-production-read
+```
+
+- **Who runs it.** Preview/clone: engineering; Production: owner-run or owner-approved. `--acknowledge-production-read` is a safety rail, **not** approval. A Production run needs the owner's explicit approval for that run.
+- **Gates.** `--env` is required, and the connection must prove it, using the same guard as the repair tools (`scripts/lib/repair-env-guard.ts`; `FM_PRODUCTION_DB_REF` must be set for preview and production). `FM_DB_GUARD=clone-only` keeps its meaning. The role must bypass RLS, because a count made under RLS silently misses rows.
+- **UNAVAILABLE.** If the target lacks a column a report needs, that report prints UNAVAILABLE and names the column. For example, before the FIN-A2 or FIN-E migration is applied there, the report shows `FinancialAccount.balanceObserved` or `SpaceSnapshot.restrictedCash`. It never computes from a substitute.
+- **Bound column.** Every figure row ends with its bound kind, literally: `lower bound`, `upper bound`, `review list (includes genuine $0)`, `exact` or `exact for retained data (purged accounts can't be seen)`. `exact` is used only for plain counts of stored rows, such as populations, totals and the separate undetermined or excluded counts. Undetermined is always its own row and is never folded into a bound.
+- **Heuristics.** Each one is printed beside its numbers. In short:
+  - **CoinGecko (FM-AUDIT-025):** rows from one insert batch (same coin, `source` and `fetchedAt`) that span 92 or more days must come from a daily (00:00Z) response, so they are counted as one day late. This is a lower bound. Shorter batches are counted as undetermined.
+  - **FIN-A2:** a live Plaid account with `balance = 0` and `balanceObserved = true` counts as a candidate when it has no observed BALANCES coverage row since creation. Accounts created before the coverage ledger began are shown separately. A genuine $0 also qualifies, so this list is for review.
+  - **FIN-E:** counts estimate rows with a NULL `restrictedCash` in Spaces that have an active account link. This is an upper bound. Frozen observed rows are counted separately, because regeneration never rewrites them.
+  - **FM-AUDIT-021:** counts frozen observed days where a linked Plaid bank account had no observed balance in the 7 days to that day's end. This is an upper bound, because materiality cannot be evaluated historically. Days before the ledger are counted as undetermined.
+  - **Frozen restricted split (FIN-E follow-up):** answers whether the restricted share of frozen observed rows with a NULL `restrictedCash` could be derived without un-freezing them. No per-day account balance is stored. The as-of path walks back from each account's current posted balance through posted transactions, so derivability depends on transaction coverage. Only checking or savings accounts with an `hsa` subtype enter `restrictedCash`. A day is **derivable** (upper bound) when every such account linked that day still exists and has a posted, non-deleted transaction dated on or before the day. A day with no such account is **trivially 0** (`exact for retained data (purged accounts can't be seen)`): links are revoked, never deleted, but a hard-deleted account takes its links and transactions with it. Account purge after the grace period is not the only such path; the operator scripts `purge-plaid-connection.ts` and `dev-reset-test-state.ts` hard-delete accounts too. The rest are **not derivable** (exact). It is a report only: any fill of frozen rows is a separate owner-gated repair.
+- **Proof.** Unit: `scripts/b10-5-decision-report.test.ts`. Throwaway Postgres: `npm run accept:b10-5-report`, which also runs in CI.
+
+**Owner decision (security; PRIV-004):** encryption key rotation. Approve steps b–d after the clone + Preview drill. **Approving step (b) makes B10 roll-forward-only.** (b) set the new key as `ENCRYPTION_KEY` and the old one as `ENCRYPTION_KEY_PREVIOUS`; (c) `rotate-encryption-key` dry run, then apply; (d) only after `--verify-complete` exits 0, remove `ENCRYPTION_KEY_PREVIOUS`. Drill a→d end to end on a restored backup clone first, then on Preview, with a full verified backup before Production (see `docs/operations/key-rotation.md`).
+
+**B10.5 decision report (#370):** Preview counts: produced (S1, 11-04), signed off by S2 (Preview framing: test data; scale and method, not Production impact); Production run is owner-run or owner-approved. (The guard's Production reference is configured outside the repo; it is never committed.)
+
+**Owner decision (privacy; IP / user-agent minimisation, #374):** choose the window, the method (keyed digest vs /24 and /48 truncation) and whether to enable it, plus the DB-010 policy extension that lets the minimisation job update `AuditLog` (a migration; S2 reviews it when built). Until then `NETWORK_ID_MINIMISATION_MODE` stays off.
+
+**Owner decision (O-8 / AUDIT R-3 reversal):** stop writing the raw `ip:<addr>` in anomaly metadata and store the digest only. Security Ops loses raw-IP reads for new anomalies. A draft PR titled "[OWNER DECISION O-8]" is coming.
+
+**Tracked follow-ups (FM-AUDIT-053):** a balance-basis column plus a labelled unconfirmed fallback (schema change; owner); a keyed or self-hosted Esplora.
+
+**Owner item (visible semantics, before Production; #382):** accept that a Plaid outage confined to one institution reads Degraded (institution-concentrated), not Failing, on the Providers tile, Ops posture and attention severity.
+
+**Owner decision (repository history; S2 framing):** Git history (and any existing clones/forks) still contains personal-looking fixtures, real institution and card names, and other identifying shapes that are now gone from the tree. **Tree sanitisation is complete to diminishing returns** (#387, #389, #393, #396, #397, #403, #406); residuals are listed by path below; **the remedy is SEC-018 (private this weekend).** Options were: (a) accept; (b) rewrite history (disruptive: breaks clones, open PRs and SHAs pinned in docs; doesn't reach copies already taken); (c) make the repository private, the most effective mitigation going forward. **Owner decision 2026-11-04: (c), the repository goes private this weekend; no history rewrite.** Tree sanitisation is not remediation of historical exposure.
+
+- **Paired decision: GitHub plan.** On GitHub Free, a private repository's rulesets are **not enforced** (the merge gates silently switch off), and Actions minutes become **billed**. Keeping the gates on a private repository needs a paid plan; see the CI cost audit for the minute estimate.
+- **Removed from the tree, present in history (paths only):** `docs/operations/plaid-support-ticket-orphaned-items.md` (#403; replaced by a stub); #397: `docs/plans/v2.6-INVESTIGATION-UNATTESTED-DEBT-PAYMENTS.md`, `docs/plans/V26-INVESTIGATION-INCOME-TRUTH-AND-EXPECTED-CASH-FLOW.md`, `docs/plans/AI-CONVERSATION-GOLDENS.md`, `docs/plans/AI-CONVERSATION-INVESTIGATION.md`, `docs/plans/AI-RELIABILITY-BETA-REPORT-2026-10-16.md`, `docs/plans/AI-RELIABILITY-ISSUE1-FINDINGS-2026-10-16.md`.
+- **Residuals in the tree (paths only; class: merchant, amount and descriptor shapes in tests, and 2 byte-pinned production comments):**
+  - byte-pinned production comments: `lib/transactions/flow-classifier.ts`, `lib/transactions/liability-payment.ts`;
+  - tests: `lib/transactions/cash-flow-projection.test.ts`, `lib/transactions/liability-payment.test.ts`, `lib/transactions/calendar-tier-net.test.ts`, `lib/transactions/category-spend-authority.test.ts`, `lib/transactions/flow-desync-audit.test.ts`, `lib/transactions/lifecycle-economic-date.test.ts`, `lib/forecast/obligation.test.ts`;
+  - production comments: `lib/transactions/economic-date.ts`, `lib/transactions/flow-presentation.ts`, `lib/transactions/liability-inflow.ts`, `lib/transactions/merchant-credit-evidence.ts`, `lib/data/transactions.ts`, `components/transactions/TransactionDetailDrawer.tsx`;
+  - docs with earlier-noted figures: `docs/plans/V26-AUDIT-2026-08-31-PRODUCT-REASONING-ARCHITECTURE.md`.
+  - historical investigation documents under `docs/plans/` and `docs/audits/` may contain measured figures (not individually enumerated).
+
+**Owner decision (AI spend; enabling Platform AI, #395):** off by default. When enabled:
+- per turn: at most 6 tool calls, 4 model calls, 24k tokens and 45 s;
+- 20 turns per operator per UTC day;
+- estimated cost about $0.15 per operator per day on the default model (about $2 on a pricier model); worst case = active operators × 20 × the per-turn ceiling;
+- each operator's questions are scoped to a single area;
+- grounding checks values, not attribution (v0). **v1 (placeholder grounding, S2 C1–C7):** the model writes `{{m:<key>}}` instead of figures and the server renders each figure, unit and status wording from that metric's own envelope this turn, so a figure is always attributed to the metric it names; any leftover digit, an unresolved or malformed placeholder, or a model-written unit replaces the answer with the fallback (counted as `verdict=<code> unresolved=<n>`; trace `claims= resolved= unresolved=`). The only digit exemptions: registry labels the turn returned, envelope freshness dates, and (S2-approved) a time-window numeral the operator typed (`admitUserNumerals`: verbatim in the scrubbed question, next to h/hour/day/week/month/year, never equal to an envelope value; no year branch, since the SEC-AI-005 scrub removes 4+ digit runs). Window matching (S2 ruling 2026-11-04, `matchPlaceholderEnvelope`): a placeholder without `|window` resolves iff the key was read with exactly one window this turn (two different windows ⇒ `WINDOW_MISMATCH`); `|window=N` must equal the envelope's `window.days`, and a fixed-window metric (days null) takes no `|window`. Every rendered figure states the envelope's actual window as a short server phrase, `window.label` (built from days / hours, else the registry's `window.label`: "in the last 30 days", "in the last 24 hours", "this UTC calendar month to date"; nothing for point-in-time; pinned non-empty and number-consistent). No date is inferred; one is added only from an explicit reader `window.start` — today the economics cycle metrics carry the snapshot's own `s.cycle.start` ("this UTC calendar month to date, since 2026-11-01"), and that exact ISO date is the only start allowed in the model's prose. Configuration parts (`unwindowedParts`, e.g. `thresholdUsd`) render with their unit and no window label. A placed metric whose window differs from the one asked keeps the answer plus one server note per metric ("Note: <label> covers <window>, not the <asked> you asked about."; verdict `RESOLVED_WITH_WINDOW_NOTE`), never a substituted figure. The sanitiser's removed count is logged by category (`removed=N(link:1,…)`), never text. Units are EXPLICIT per value/part in the retrieval registry (`valueUnits`: count / usd / pct on 0–100; a projection whose parts differ from the declared units is UNAVAILABLE), and "(estimated)" is PER FIGURE: an estimated metric's figure renders "about $x (estimated)" (a floor: "at least $x (estimated)") only when the part is listed in the metric's `estimatedParts` (the source of truth; it may list a pct derived from estimated dollars) or, with no list, when its unit is usd; counts render plainly. New metrics must declare `valueUnits` (and `estimatedParts` where a non-usd part is an estimate). Owner caveat: the model can still place metric A's placeholder in a sentence about B (the chip beside each metric shows its own figure). Measure the fallback rate on Preview (trace `verdict=` enum) before widening the allowlist;
+- nothing about questions or answers is stored. Since #408, each turn writes a metadata-only trace (tool names, outcomes and metric/page references, with no question or answer text) to the server log and returns it to the asking operator with the answer.
+
+Recommended rollout: enable on Preview first (internal operators only), observe real cost and grounding-fallback counts, then decide on Production. **Owner decision 2026-11-04:** prepare and enable on Preview only, after verification; Production activation is prohibited.
+
+**Owner decision (billing, not a data step):** auto-holdings for consented-but-uninitialized Investments Items would **start** Plaid Investments billing per Item-month. #312 deliberately does not auto-initialize them; enabling it is an owner decision.
+
+### B10.6 Rollback rehearsal evidence (local, synthetic, 2026-11-04)
+
+**Result: 71/71 checks PASS. No B9-compat claim failed.** Three findings (F1–F3 below) are not B9-compat failures, but the release plan should note them. **F1 is a FIN-E correctness defect** in the live snapshot writer. **Update (2026-11-04, after #411):** F1 is fixed, and a re-run on develop `14ba6dd` passes **79/79**: the 71 checks plus 8 FIN-E live/backfill parity checks on real Postgres (below). F1 no longer reproduces.
+
+**What ran.** `npm run rehearse:b10-rollback -- --b9-tree=<worktree of origin/main> [--scale=N] [--evidence=<file>]` (`scripts/test-b10-rollback-rehearsal.ts`, with its probes `scripts/test-b10-rehearsal-b9-probe.ts` and `scripts/test-b10-rehearsal-b10-probe.ts`). **Each probe refuses to run** (exit 1, nothing read) unless the orchestrator's fixture, a `127.0.0.1` / `b10reh_*` database on every URL and the orchestrator's container marker are all present (`scripts/lib/b10-rehearsal-guard.ts`, proven by `scripts/b10-rehearsal-guard.test.ts`). It ran locally under the heavy-job lock, on a throwaway `postgres:16-alpine` (the same major as CI), removed afterwards with `docker rm -f -v`. **No Production or Preview database, dump or backup was used.** B9's schema comes from B9's own migrations, applied by B9's own Prisma, and every row is synthetic. The B9 side ran from a detached worktree of `origin/main` (`dc76711`) with its own `npm ci` and `prisma generate`; the B10 side ran from develop (`3b37796` + this PR). Both sides used the real role topology (`fm_app` / `fm_auth` / `fm_system`, `FM_RLS_STRICT=true`).
+
+**Steps.** (1) B9 migrations, then a synthetic seed (scale 1: 100k `SyncIssue` + 200k occurrences, 100k `AuditLog`, 20k `UserSession`, 5k accounts, 50k snapshots). (2) B9-code smoke. (3) Preflight, then a lock inventory: each migration replayed in one transaction on a template clone, reading `pg_locks` before COMMIT. (4) The guarded run: `db-guard --mode=migrate-deploy`, then `prisma migrate deploy`, with a blocked-lock sampler and a B9-shaped incident writer (an `UPDATE "SyncIssue"` every 20 ms) running against the database. (5) B10-code smoke. (6) **App rollback:** B9 code against the kept B10 schema, plus owner-side truth checks. (7) A data-effects inventory.
+
+**Durations** (`_prisma_migrations.finished_at − started_at`, guarded run; synthetic volumes):
+
+| Migration | Scale 1 (100k `SyncIssue`) | Scale 5 (500k `SyncIssue`) |
+|---|---|---|
+| PB-1 `…120000` | 281 ms | 1,420 ms |
+| PB-10 `…130000` | 3 ms | 9 ms |
+| DB-010 `…140000` | 6 ms | 6 ms |
+| FIN-A2 `…150000` | 10 ms | 4 ms |
+| FIN-E `…160000` | 3 ms | 4 ms |
+| `prisma migrate deploy` wall time | 0.9 s | 2.0 s |
+| B9-shaped incident writer, worst statement (p50) | 262 ms (3 ms) | 1,404 ms (3 ms) |
+
+PB-1 scales roughly linearly with `SyncIssue` + `SyncIssueOccurrence` size (its CHECK validation and two index builds). The other four are catalog-only and do not depend on table size.
+
+**Locks taken** (held at COMMIT, existing tables only; the three new PB-1 tables and their indexes also take `AccessExclusiveLock` but are empty):
+
+| Migration | Locks |
+|---|---|
+| PB-1 | `SyncIssue`: `AccessExclusiveLock` + `ShareLock` (CHECK validation scan, two non-concurrent index builds); `SyncIssueOccurrence`: `AccessExclusiveLock` (column adds + size CHECK) |
+| PB-10 | `UserSession`: `AccessExclusiveLock` (catalog-only) |
+| DB-010 | `AuditLog`: `AccessExclusiveLock` (policy DDL) + `AccessShareLock`; `pg_policy` object lock |
+| FIN-A2 | `FinancialAccount`: `AccessExclusiveLock` (constant default, no rewrite); `pg_type`: `ExclusiveLock` (enum add) |
+| FIN-E | `SpaceSnapshot`: `AccessExclusiveLock` (catalog-only) |
+
+The only blocked lock requests the sampler saw were the writer's own `RowExclusiveLock` on `SyncIssue`, while PB-1 ran (13 samples at scale 1, 70 at scale 5). The writer waited and then completed; it never failed. This confirms B10.2a ("incident writes pause briefly") and the cron-pause advice in B10.2. Readers of `SyncIssue` and `SyncIssueOccurrence` wait the same way.
+
+**Pass/fail by claim** (B = B10 code, R = B9 code after the rollback, P = B9 code before the migration, V/C/M = owner-side SQL truth):
+
+| Claim | Checks | Result |
+|---|---|---|
+| Schema build and preflight: tree − ledger = the five; ledger − tree = ∅; db-guard passes; deploy applies all five | M0–M5 | PASS |
+| Post-migration catalog: 12 PB-1 CHECKs validated on B9 rows; DB-010's four per-command policies, with `fm_system_all` dropped; `balanceObserved = true` and `restrictedCash` NULL on every existing row; enum value present; no backfill | C1–C5 | PASS |
+| B9 smoke before the migration (sign-in, session, incidents, automatic recovery, account and snapshot writes, both retention jobs) | P0–P8 | PASS |
+| B10 smoke: sign-in (PB-10 columns), session check (including a session B9 created), presence beat, incident read, operator acknowledge and resolve, B10 observation, AuditLog append, DB-010 refusals (UPDATE `action` denied, non-product DELETE = 0 rows), `balanceObserved`, `restrictedCash` written | B0–B15 | PASS (but see F1) |
+| **v2 ciphertext reads:** B10 with no `ENCRYPTION_KEY_PREVIOUS` writes the TOTP secret as v2, and B9 decrypts it, both directly and through B9's TOTP sign-in | B15, R2, R1 | PASS |
+| **#256 step-claim rows ignored by B9:** B10 claims the step and refuses a replay; B9 then signs in with the same code while the claim row exists, and writes and removes no claim rows. The replay window reopens under B9, as B10.4 documents | T1, T2, R1, R1b, R1c | PASS |
+| **PB-1 open rows keep NULL `lifecycleState`:** B9-written, B10-acknowledged and B10-opened rows, after B10 and after B9 writes | B4, B7, B8, V1 | PASS |
+| **B9 auto-resolve works, including on an acknowledged row:** CHECKs pass; the row reads `resolved = true`, NULL state, `AUTOMATIC_RECOVERY`, acknowledgement fields kept; the B10-opened row resolves too | R7–R9, V3 | PASS |
+| **No `resolved = false` rewrites:** every row resolved before the rollback is still resolved; B9 leaves the operator-resolved row untouched; a B9 recurrence opens a new episode | R10, R11, V2, V4 | PASS |
+| **DB-010 retention paths work for B9:** `runDataRetention` with no table error, beta-intake minimisation 3/3, product-event retention 3/3, the aged non-product row kept | R14–R16, V8 | PASS |
+| **FinancialAccount / SpaceSnapshot defaults:** B9 inserts succeed and read `balanceObserved = true` / `restrictedCash` NULL; B9 full-row reads succeed; B9 upserts a row B10 wrote | R17–R21, V5, V6 | PASS |
+| **PB-10 sessions and sign-in with the columns present:** B9 sign-in, B9 accepts a B10 session, full-row reads, presence NULL on B9 sessions | R3–R6, V7 | PASS |
+| B9 incident writer and readers on the B10 schema (repeat occurrence, full-row read) | R12, R13 | PASS |
+| **FIN-E live = backfill (after #411; S2).** In two dedicated Spaces, one linking an HSA savings account and one with no HSA (no transactions, so every day's true balances are today's), `backfillSpaceSnapshots` writes the window up to yesterday; the live writer (`regenerateSpaceSnapshot`) writes today, then rewrites yesterday. `restrictedCash`, `cash`, `savings` and `netLiquid` match across backfill's yesterday, live today and live yesterday. Synthetic HSA Space: 400 / 1,000 / 400 / 1,400. No-HSA Space: `restrictedCash` 0 from both writers (0 / 700 / 300 / 1,000) | FP-hsa-1…4, FP-noHsa-1…4 | PASS |
+
+**Data-effects inventory** (after the B10 run and the B9 rollback; these persist, for the B10.4 non-reversible list):
+- `SyncIssue` operator-resolved rows (`OPERATOR_RESOLVED`, `lifecycleState = RESOLVED`, reason, `resolvedById`) stay resolved, and B9 never touches them.
+- Acknowledgement fields (`acknowledgedAt`, `acknowledgedById`, `acknowledgedAuditId`) stay on rows B9 later auto-resolves.
+- `subjectUserId` / `openedBy` stay on B10-opened rows.
+- `SyncIssueEvent` rows stay (ignored by B9).
+- AuditLog `SYNC_INCIDENT_ACKNOWLEDGED` / `SYNC_INCIDENT_RESOLVED` rows stay (append-only under DB-010).
+- `UserSession.lastPresenceAt` / `lastInteractionAt` stay on sessions B10 beat; B9 neither reads nor clears them.
+- `RateLimit` TOTP step-claim rows stay (harmless; B9 ignores them).
+- `FinancialAccount.balanceObserved = false` rows: "after a rollback, accounts B10 marked unobserved show their stored balance again" (the B10.4 caveat, reproduced: today's cash went from 1,000 under B10 to 1,250 under B9 with a synthetic stored 250).
+- `SpaceSnapshot.restrictedCash` values stay on rows B10 wrote (see F3).
+- The `SyncIssueKind` value `BALANCE_UNOBSERVED` stays (an enum value cannot be dropped).
+
+**Findings (not B9-compat failures):**
+- **F1, FIN-E live writer (a defect, to fix before relying on `restrictedCash`).** `regenerateSpaceSnapshot` wrote `restrictedCash = 0` for a Space linking an HSA savings account, and counted the HSA as liquid savings. `readSpaceAccountsForSnapshot` (`lib/snapshots/space-accounts.ts`) does not select `providerSubtype`, so `classifyAccounts` cannot see `hsa`. The backfill and history writers do select it. So every live-written (today) row reads restricted 0, not NULL. That also bears on the Preview "first written value pending" check in B10.2. **Fixed by #411** (the live read now selects and forwards `providerSubtype`). Verified on real Postgres by the parity checks above; the rehearsal's F1 detector no longer fires.
+- **F2, B9 retention during a rollback window:** "if B9 serves > 90 days after a rollback, B9 retention hard-deletes resolved incidents older than 90 d without archiving, orphaning their events". Mitigation: "a rollback longer than ~80 days needs a B9 hotfix or a retention pause". (B9's `syncIssue` rule uses a bare `deleteMany`, so it writes no `SyncIssueArchive` row, which B10 writes first; PB-1 adds no FK, so the `SyncIssueEvent` rows stay as orphans. Not reversible; now in B10.4.)
+- **F3, stale `restrictedCash` after a B9 upsert.** When B9 regenerates a row B10 wrote, it rewrites `cash` but keeps B10's `restrictedCash` (B9 never writes the column), so the pair disagrees until B10 rewrites the row: it "self-heals on re-deploy". B9 does not read the column. Rows B9 inserts read NULL (unknown), as intended. Now in B10.4.
+
+All figures above are synthetic: they show method and scale only, not Production impact.
+
+## Beyond B10: carried from ROADMAP (2026-11-03)
+
+*Carried from `docs/plans/ROADMAP.md` (deleted 2026-11-03; recover with `git log -- docs/plans/ROADMAP.md`). Verbatim, except that DF-6's per-transaction details (merchant names, amounts, dates from the owner's accounts) are redacted under the public-repo rule; the original is in the owner's private record. Session 1 carries these into the post-B10 STATUS "Beyond B10 / outstanding obligations".*
+
+### v3.0 — Launch (L-1) — **not started**
+
+Billing/subscription; onboarding funnel; counsel-reviewed legal/compliance posture; tested backups + incident response + alerting; support tooling; accessibility/perf polish. **Zero new product surface.** Production Plaid is already live, so that line of the July text is retired.
+
+**Exit:** a stranger can pay, connect a bank, share a Space with a partner, and be supported and recovered.
+
+**DF-6 — Historical Production Duplicate Cleanup — DEFERRED, unscheduled.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (transaction details redacted). Extend the DF-5 repair pattern: dry-run by default, `--apply` to write, soft-delete only, abort on shape mismatch, idempotent, scoped to the three proven `(date, amount, raw descriptor)` lineages; retire the later row of each pair. No commit has referenced DF-6 since August. **Not to be executed during a release window**, and not before the cutover's own duplicate-identity preflight (which measured 0 duplicate PLAID identities on 2026-10-06 — a different check; the three lineages are economic duplicates, not identity duplicates).

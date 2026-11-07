@@ -214,7 +214,7 @@ Plaid attaches a `security_id` to essentially everything, including cash movemen
 ```
 cmrth646g002h5fn5e9t12hhn   "Journal to ...764"                        EQUITY
 cmrth6479002l5fn534s4w362   "Journal Frm ...743"                       EQUITY
-cmrth647n002p5fn5myxm6s18   "Tfr JPMORGAN CHASE BAN, CHRISTIAN HOGAN"  EQUITY
+cmrth647n002p5fn5myxm6s18   "Tfr JPMORGAN CHASE BAN, JULES EXAMPLE"  EQUITY
 ```
 
 - **Buys and sells** carry the traded security's id.

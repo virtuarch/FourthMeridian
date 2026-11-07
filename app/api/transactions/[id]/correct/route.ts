@@ -24,7 +24,7 @@
  * holding a FULL-tier link could perform three durable writes — stamp the row,
  * mint a USER MerchantRule that then steers every future transaction, or set a
  * category override. One of the two drifted write-authority shapes in
- * docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+ * docs/architecture/SECURITY_MODEL.md §Database-level tenant isolation.
  *
  * The role gate is now explicit: `requireSpaceAction(spaceId,
  * "transaction:correct")` (MEMBER+, ACTIVE). `transactionDetailWhere` is KEPT —

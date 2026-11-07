@@ -48,6 +48,8 @@ const MUST_INCLUDE = [
   "DATA_EXPORTED",
   "ACCOUNT_DELETION_REQUESTED",
   "ACCOUNT_DELETION_CANCELLED",
+  // PB-5 (owner decision 2026-11-02) — support removed one of the user's connections.
+  "CONNECTION_REMOVED_BY_SUPPORT",
 ];
 for (const a of MUST_INCLUDE) {
   check(`allowlist includes ${a}`, isSecurityHistoryAction(a));
@@ -58,6 +60,8 @@ const MUST_EXCLUDE = [
   "SPACE_SWITCH", "SPACE_CREATE", "GOAL_CREATED", "ACCOUNT_SHARED",
   "MEMBER_INVITED", "PLAID_SYNC", "IMPORT_BATCH_ROLLED_BACK",
   "AI_CONTEXT_ASSEMBLED", "ADMIN_SESSION_REVOKED",
+  // PB-5 — the operator's own rows (they name the operator) never reach the customer.
+  "CONNECTION_REMOVED_BY_OPERATOR", "CONNECTION_REMOVAL_REQUESTED",
 ];
 for (const a of MUST_EXCLUDE) {
   check(`allowlist excludes ${a}`, !isSecurityHistoryAction(a), a);

@@ -50,6 +50,8 @@ import { resolveAccountByFingerprint, resolvePlaidAccountByExternalId } from "@/
 // PROV-2 — the ONE owner of Plaid type/subtype → AccountType (was defined + exported here).
 import { mapAccountType } from "@/lib/plaid/account-type";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
+import { planExchangeBalanceStamp } from "@/lib/plaid/refresh";
+import { recordExchangeBalanceUnobserved, resolveExchangeBalanceObserved } from "@/lib/plaid/exchange-balance-observation";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 // PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
@@ -150,7 +152,7 @@ export function duplicateInstitutionMessage(institutionName: string, existingSta
  * database. ANY non-REVOKED Item of the same institution blocks a FRESH link:
  * before this it was ACTIVE-only, so a customer re-linking a NEEDS_REAUTH or
  * ERROR bank minted a SECOND billable Item while the first kept billing until
- * someone revoked it (growth vector 1, AI-PLAID-COST-ECONOMICS-ASSESSMENT §6.2).
+ * someone revoked it (docs/systems/billing-and-provider-costs.md, "Plaid growth controls").
  * A REVOKED Item is the one case a fresh link is the right answer: the user
  * removed it, and a relink legitimately creates a new Item.
  */
@@ -422,7 +424,11 @@ export async function performPlaidTokenExchange(
       const type             = mapAccountType(acct.type, acct.subtype);
       // 2026-10-07 — the subtype mapAccountType reduces away, kept as evidence.
       const providerSubtype  = normalizeProviderSubtype(acct.subtype);
-      const balance          = acct.balances.current ?? 0;
+      // FM-AUDIT-023 — a null `current` is NOT an observation (FIN-011). On an
+      // existing row the balance AND its verified stamp are written only when
+      // Plaid observed one (`balanceStamp` is empty otherwise), so a reconnect
+      // that got no balance keeps the prior figure under its own, older clock.
+      const balanceStamp     = planExchangeBalanceStamp(acct.balances.current, new Date());
       const availableBalance = acct.balances.available ?? undefined;
       const creditLimit      = acct.balances.limit ?? undefined;
 
@@ -456,16 +462,20 @@ export async function performPlaidTokenExchange(
       // account is still found — that is RLS-D1's owner arm, and before it this
       // conversion would have broken restore-on-reconnect.
       let fa = await withTenantDb(userId, (tx) => resolvePlaidAccountByExternalId(tx, acct.account_id));
+      // FIN-A2 — which kind of write landed: an EXISTING row (resolved or
+      // fingerprint-reused) or a NEW row created without an observed balance.
+      let wroteExistingRow = false;
+      let createdUnobserved = false;
 
       if (fa) {
+        wroteExistingRow = true;
         fa = await db.financialAccount.update({
           where: { id: fa.id },
           data: {
-            balance,
+            ...balanceStamp,
             availableBalance,
             ...(creditLimit !== undefined && { creditLimit }),
             providerSubtype,
-            lastUpdated: new Date(),
             syncStatus:  "synced",
             deletedAt:   null,
           },
@@ -533,15 +543,15 @@ export async function performPlaidTokenExchange(
         }
 
         if (resolution) {
+          wroteExistingRow = true;
           fa = await db.financialAccount.update({
             where: { id: resolution.canonical.id },
             data: {
               plaidAccountId:  acct.account_id,
-              balance,
+              ...balanceStamp,
               availableBalance,
               ...(creditLimit !== undefined && { creditLimit }),
               providerSubtype,
-              lastUpdated: new Date(),
               syncStatus:  "synced",
               deletedAt:   null,
             },
@@ -561,14 +571,35 @@ export async function performPlaidTokenExchange(
               institution:     institution_name,
               institutionId:   institution_id,
               mask:            acct.mask ?? undefined,
-              balance,
+              // FIN-A2 (FM-AUDIT-023, new-row half) — `balance` is
+              // `Float NOT NULL DEFAULT 0`, so a null `current` still stores the
+              // structural 0, but it is now MARKED as not a value:
+              // `balanceObserved: false` excludes the row from every total
+              // ("Balance unavailable") until an observed balance lands. An
+              // observed balance writes exactly what it wrote before (the
+              // column default `true` is not restated), so that create is unchanged.
+              balance:         balanceStamp.balance ?? 0,
+              ...(balanceStamp.balanceObserved ? {} : { balanceObserved: false }),
               availableBalance,
               creditLimit,
               currency:        acct.balances.iso_currency_code ?? "USD",
               syncStatus:      "synced",
             },
           });
+          createdUnobserved = !balanceStamp.balanceObserved;
         }
+      }
+
+      // FIN-A2 — the BALANCE_UNOBSERVED condition, through the ONE incident
+      // writer (exchange-balance-observation.ts → recordSyncIssue → the
+      // lifecycle authority; never a direct SyncIssue row). Raised for a new row
+      // created without a balance; closed by the first observed balance on an
+      // existing row (here on re-exchange, or in refreshBalancesForItem). Both
+      // calls never throw.
+      if (createdUnobserved) {
+        await recordExchangeBalanceUnobserved(fa.id, acct.account_id, plaidItem.id);
+      } else if (wroteExistingRow && balanceStamp.balanceObserved) {
+        await resolveExchangeBalanceObserved(fa.id);
       }
 
       // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per

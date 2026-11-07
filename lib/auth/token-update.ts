@@ -10,7 +10,8 @@
  * layouts under /admin and /dashboard never re-checked the DB-derived flag — so
  * `POST /api/auth/session {data:{requireTotpSetup:false}}` with a valid CSRF
  * token turned a TOTP-pending (password-only) SYSTEM_ADMIN session into one that
- * could render the admin inventory (runtime-confirmed, 02-SECURITY-VERIFICATION).
+ * could render the admin inventory (runtime-confirmed,
+ * docs/archive/evidence/security/02-SECURITY-VERIFICATION.md).
  *
  * THE RULE. A client update payload is UNTRUSTED INPUT. Exactly one field is
  * accepted from it — `username`, which is presentation only and grants nothing

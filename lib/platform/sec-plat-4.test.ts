@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { AuditAction } from "@/lib/audit-actions";
 import { REASON_REQUIRED_ACTIONS } from "@/lib/audit";
+import { CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -34,7 +35,9 @@ console.log("A · deactivation lives in Customer Success only");
   check("state change + operator action commit together, actor area CUSTOMER_SUCCESS",
     (s.match(/systemDb\.\$transaction\(async \(tx\) =>/g) ?? []).length === 2 && /recordOperatorAction\(tx,/.test(s) && s.includes('operatorActorFrom(auth, "CUSTOMER_SUCCESS")'));
   check("guards kept: no SYSTEM_ADMIN target, no self-target", /UserRole\.SYSTEM_ADMIN\) return NextResponse\.json/.test(s) && /target\.id === auth\.user\.id/.test(s));
-  check("deactivation still revokes every session afterwards", s.indexOf("deactivatedAt: now") < s.indexOf("revokeAllUserSessions("));
+  // Deactivation-fix — the "already deactivated" retry now ALSO revokes (before
+  // the stamp in source order), so the pin reads the first revoke AFTER the stamp.
+  check("deactivation still revokes every session afterwards", s.indexOf("revokeAllUserSessions(", s.indexOf("deactivatedAt: now")) > s.indexOf("deactivatedAt: now"));
   check("operator surface on fm_system (no migration-principal db)", /import \{ systemDb \} from "@\/lib\/db"/.test(s) && !/\bdb\./.test(s.replace(/systemDb\./g, "")));
   const detail = code("lib/platform/customer/customer-detail.ts");
   check("the customer profile points its action at the CS route", /\/api\/platform\/customer-success\/customers\/\$\{user\.id\}\/access/.test(detail) && !/growth-revenue\/users/.test(detail));
@@ -47,7 +50,7 @@ console.log("B · Growth users is aggregates only");
   check("no exported POST/PUT/PATCH/DELETE", !/export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)/.test(r));
   check("no identity field selected or returned", !/(email|name|username|id)\s*:\s*(true|u\.)/.test(r) && !/findMany\(/.test(r));
   check("no search parameter (a search box is an identity oracle)", !/searchParams|contains:/.test(r));
-  check("counts only: customer population (role USER)", /role: UserRole\.USER/.test(r) && /\.count\(/.test(r));
+  check("counts only: customer population (role USER)", /const customer = CUSTOMER_WHERE;/.test(r) && JSON.stringify(CUSTOMER_WHERE) === JSON.stringify({ role: "USER" }) && /\.count\(/.test(r));
   const w = code("components/platform/widgets/OpsUsersWidget.tsx");
   check("the widget renders aggregate tiles and no per-user row", /WidgetStat value=\{data\.total\}/.test(w) && !/\.map\(\(u\)/.test(w));
   check("the widget points operators to Customer Success", /OPS_USERS_MOVED_LINE/.test(w));

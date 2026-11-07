@@ -34,9 +34,13 @@ export function OpsTimelineWidget({ section }: { section: PlatformSection }) {
     <PlatformWidgetCard label={section.label} icon={Rss}>
       {loading || error || !data ? (
         <WidgetMessage loading={loading} error={error} />
-      ) : data.events.length === 0 ? (
+      ) : data.events.length === 0 && !data.incidentScan?.truncated ? (
         <p className="text-xs text-[var(--text-secondary)]">No operational events in the window.</p>
       ) : (
+        <>
+        {data.incidentScan?.truncated ? (
+          <p className="text-[11px] text-[var(--text-muted)] mb-1">{`Incident evidence capped at ${data.incidentScan.cap} — story counts are a floor.`}</p>
+        ) : null}
         <ul className="flex flex-col gap-1.5">
           {data.events.slice(0, 20).map((e, i) => (
             <li key={`${e.at}:${i}`} className="flex items-start justify-between gap-2 text-xs">
@@ -48,6 +52,7 @@ export function OpsTimelineWidget({ section }: { section: PlatformSection }) {
             </li>
           ))}
         </ul>
+        </>
       )}
     </PlatformWidgetCard>
   );

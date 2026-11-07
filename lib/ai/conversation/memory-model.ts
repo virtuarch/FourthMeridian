@@ -602,6 +602,93 @@ export function turnEvidence(userTexts: readonly string[], messages: readonly un
   };
 }
 
+/**
+ * SEC-AI-006 — fold text for the "did the user say this?" check: Unicode NFKC,
+ * lower case, curly quotes to straight, apostrophes dropped, every other
+ * punctuation mark a space, runs of whitespace one space. PURE.
+ */
+export function foldForUserEvidence(text: string): string {
+  return text.normalize('NFKC').toLowerCase()
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/'/g, '')
+    .replace(/\p{P}/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * SEC-AI-006 — is `statedAs` something the USER said in this conversation?
+ *
+ * True only when its folded text is a whole-word substring of one folded USER
+ * turn. `userTexts` is the conversation's explicit user turns (TurnEvidence) —
+ * never assistant prose, tool results or the orientation. Blank never matches.
+ */
+export function statedInUserTurns(statedAs: unknown, userTexts: readonly string[] | null | undefined): boolean {
+  if (typeof statedAs !== 'string' || !userTexts?.length) return false;
+  const needle = foldForUserEvidence(statedAs);
+  if (!needle) return false;
+  return userTexts.some((t) => typeof t === 'string' && ` ${foldForUserEvidence(t)} `.includes(` ${needle} `));
+}
+
+/** SEC-AI-006 — the fewest folded words a `statedAs` excerpt may have. */
+export const MIN_STATED_AS_WORDS = 3;
+
+/** SEC-AI-006 — does the folded excerpt carry at least MIN_STATED_AS_WORDS words? PURE. */
+export function statedAsLongEnough(statedAs: unknown): boolean {
+  if (typeof statedAs !== 'string') return false;
+  const folded = foldForUserEvidence(statedAs);
+  return folded !== '' && folded.split(' ').length >= MIN_STATED_AS_WORDS;
+}
+
+/** Every Money-typed field name, across classes (an amend may not name its class). */
+const MONEY_FIELD_NAMES: ReadonlySet<string> = new Set(
+  Object.values(FIELDS).flatMap((spec) => Object.entries(spec).filter(([, t]) => t === 'Money').map(([k]) => k)));
+
+/**
+ * The numbers written in `text`, digits normalised: `$` dropped and thousands
+ * separators (`,` or spaces between 3-digit groups) removed, so "$4,200",
+ * "4 200" and "4200" are all 4200. ONE suffix is expanded: a `k`/`K` ATTACHED
+ * to the digits ("20k" = 20000, "2.5k" = 2500). A separate "k" ("20 k"), a k
+ * inside a word ("20kg"), and every other suffix ("20m", "2mm", "1bn") are NOT
+ * expanded — such an amount reads only as its bare digits, so it fails binding.
+ * A k after a leftover comma ("1,20k") never expands its tail ("20k").
+ * Spelled-out numbers are not read. PURE.
+ */
+function digitNumbers(text: string): number[] {
+  const flat = text.replace(/\$/g, ' ').replace(/\d{1,3}(?:[,\s]\d{3})+(?!\d)/g, (g) => g.replace(/[,\s]/g, ''));
+  const out = [...flat.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+  for (const m of flat.matchAll(/(?<![\d.,])(\d+(?:\.\d+)?)[kK](?![A-Za-z0-9])/g)) out.push(Math.round(Number(m[1]) * 1000 * 100) / 100);
+  return out.filter(Number.isFinite);
+}
+
+/**
+ * SEC-AI-006 VALUE BINDING — the first money figure in this write that its own
+ * `statedAs` does not contain, or null when every one is bound.
+ *
+ * Checked: every Money-typed field supplied (a record's fields, an amend's
+ * `set`) and every figure inside a supplied STRING (a label). A figure is bound
+ * when `statedAs` contains it as digits (normalised: "$4,200" ≡ "4200"), or
+ * with an attached `k` ("20k" ≡ 20000) — no other suffix (see digitNumbers). A quote that
+ * really is the user's ("my rent") cannot carry an invented amount.
+ */
+export function unboundAmount(supplied: Fields, statedAs: unknown): { field: string; value: number } | null {
+  const quote = typeof statedAs === 'string' ? statedAs : '';
+  const inQuote = digitNumbers(quote);
+  const bound = (v: number) => inQuote.some((x) => Math.abs(Math.abs(v) - x) < SAID_EXACTLY);
+  for (const [field, value] of Object.entries(supplied)) {
+    if (MONEY_FIELD_NAMES.has(field) && typeof value === 'number' && Number.isFinite(value) && !bound(value)) {
+      return { field, value };
+    }
+    if (typeof value === 'string') {
+      for (const f of extractFigures(value)) {
+        if (f.kind !== 'PERCENT' && !bound(f.value)) return { field, value: f.value };
+      }
+    }
+  }
+  return null;
+}
+
 const EPS = 1e-9;
 
 /**
@@ -930,7 +1017,7 @@ export type RuleRendering = 'clause' | 'sentence';
  * fields ARE the arguments, so "run my remembered strategy" is a copy rather
  * than a parse — but a literal clause on every request could prime the model to
  * apply it unasked. Which one ships is decided by measurement, recorded in
- * docs/plans/AI-FINANCIAL-MEMORY-V2-DESIGN.md (ruling R6), not by preference.
+ * docs/systems/ai-foundation.md §5.3 (ruling R6), not by preference.
  */
 export const MEMORY_LINE_RULES: RuleRendering = 'clause';
 

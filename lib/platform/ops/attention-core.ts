@@ -9,8 +9,9 @@
  * reached: a connection's `healthState` (lib/connections/health.ts), a job's
  * `status` (lib/jobs/health.ts), a provider's `trust` (provider-health.ts), a
  * resource's `healthState` (resource-freshness.ts), a rule's `firing` in the
- * LATEST evaluate-alerts run (lib/alerts/latest-evaluation.ts) and an active
- * incident's `severity`/`state` (sync-issue-semantics via the D5 projection).
+ * LATEST evaluate-alerts run (lib/alerts/latest-evaluation.ts) and a broken-now
+ * incident's `brokenNow`/`effectiveSeverity` (the incident-intelligence module's
+ * verdict via the D5 projection — PB-1 R6a).
  * This module computes no staleness, no streak and no threshold. The ONE
  * judgement it makes — declared in `SEVERITY_OF` below and nowhere else — is
  * how those vocabularies line up on a single attention scale so the rows can
@@ -71,7 +72,7 @@ export type AttentionEntityKind = "connection" | "job" | "provider" | "resource"
 export interface AttentionEntity {
   kind: AttentionEntityKind;
   /** Institution / job name / provider label / resource label / rule title / subject label /
-   *  a customer's OPAQUE `user …abc123` reference (never an email, name or whole id). */
+   *  a customer's OPAQUE `user #3fa9c21b` reference (never an email, name or whole id). */
   label: string;
   /** An OPAQUE reference the actions need (a connection id). Never a customer id. */
   ref?: string;
@@ -201,7 +202,7 @@ export function relativeAge(iso: string | null, now: Date): string {
   return ms >= 0 ? `${span} ago` : `in ${span}`;
 }
 
-const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown" };
+const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown", INSUFFICIENT_DATA: "Not enough data" };
 
 // ── Per-authority restatements ───────────────────────────────────────────────
 
@@ -338,26 +339,38 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
 }
 
 function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionItem[] {
+  // `i.items` is a page of the module's 200-most-recent open-row scan plus its bounded critical-kind second
+  // scan (ATTENTION_INCIDENT_SCAN / ATTENTION_CRITICAL_SCAN in ./attention.ts); either cap reached ⇒ "+".
+  // PB-1 R6a — open/closed and rank are the module's verdicts, never re-derived here:
+  // `brokenNow` (D1/D2/D2b/D10 decided in lib/platform/incidents/intelligence) and
+  // `effectiveSeverity` (one notch lower for an unverified incident — D10).
   return i.items
-    .filter((inc) => inc.state === "active")
+    .filter((inc) => inc.brokenNow)
     .map((inc) => ({
       id: `incident:${inc.id}`,
-      severity: SEVERITY_OF.incident[inc.severity],
+      severity: SEVERITY_OF.incident[inc.effectiveSeverity],
       entity: { kind: "incident", label: inc.subject ?? "Subject unavailable" },
-      problem: `${inc.label}${inc.operationLabel ? ` — ${inc.operationLabel}` : ""}${inc.occurrenceCountKnown ? ` · ${inc.occurrenceCount} occurrence${inc.occurrenceCount === 1 ? "" : "s"}` : " · depth unknown"}.`,
+      problem: `${inc.label}${inc.operationLabel ? ` — ${inc.operationLabel}` : ""}${inc.occurrenceCountKnown ? ` · ${inc.occurrenceCount} occurrence${inc.occurrenceCount === 1 ? "" : "s"}` : " · depth unknown"}${INCIDENT_QUALIFIER[inc.state] ?? ""}${inc.freshness === "unverified" ? " · not confirmed inside its window" : ""}.`,
       since: inc.firstOccurredAt,
       evidence: inc.refreshExecutionId
         ? { kind: "execution", id: inc.refreshExecutionId, workspace: "platform-refresh" }
         : { kind: "incident", id: inc.id, workspace: "platform-refresh" },
       actions: [{ kind: "open-workspace", workspace: "platform-refresh" }],
-      basis: "active sync incident (SyncIssue lifecycle via the semantics authority; subject = institution · account); since = first occurrence",
+      basis: "broken-now sync incident (incident-intelligence module verdict; severity = effectiveSeverity; subject = institution · account); since = first occurrence",
     }));
 }
 
+/** The module's broken-now states that read differently from a plain active incident. */
+const INCIDENT_QUALIFIER: Partial<Record<PlatformIncidentProjection["state"], string>> = {
+  acknowledged: " · acknowledged",
+  recovering: " · recovering (awaiting confirmation)",
+};
+
 function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
   const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];
+  // The row id carries the keyed dedupe token (distinct per customer even when every ref reads "customer").
   return p.items.map((i) => ({
-    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.ref.slice(-6)}`,
+    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.dedupe}`,
     severity,
     entity: { kind: "customer" as const, label: i.ref },
     problem: describePolicyAssignmentIssue(i, p.enforced),
@@ -516,6 +529,9 @@ function refreshImpactRows(r: NonNullable<UserImpactInputs["refresh"]>): UserImp
   for (const row of r.rows) {
     const kind: UserImpactKind | null = row.overallStatus === "FAILED" ? "refresh-failed" : row.overallStatus === "PARTIAL" ? "refresh-partial" : null;
     if (!kind) continue; // the seam was asked for FAILED/PARTIAL; anything else is not a user impact
+    // PB-7 — a reaped (stale) execution a later success for the same source
+    // superseded is RECOVERED: the customer's data landed (recovery-core.ts).
+    if (row.recoveredByExecutionId) continue;
     const source = row.sourceKind === "PLAID_ITEM" ? "Plaid item" : `${row.network ?? "wallet"} wallet`;
     const category = row.failureCategory ?? row.failureStage ?? null;
     out.push({
@@ -619,6 +635,8 @@ export function buildUserImpact(inputs: UserImpactInputs, now: Date, windowHours
     checked.push("refresh-executions");
     rows.push(...refreshImpactRows(inputs.refresh));
     if (inputs.refresh.more) floors.push(`Refresh: ${inputs.refresh.rows.length} FAILED/PARTIAL executions shown — the seam had a further page (a floor, not a total).`);
+    const recovered = inputs.refresh.rows.filter((r) => r.recoveredByExecutionId).length;
+    if (recovered > 0) floors.push(`Refresh: ${recovered} interrupted execution${recovered === 1 ? "" : "s"} (process ended mid-run) not listed — a later run for the same source succeeded (recovered).`);
   } else failed.push("refresh-executions");
 
   if (inputs.ai) { checked.push("ai-failures"); rows.push(...aiImpactRows(inputs.ai)); } else failed.push("ai-failures");

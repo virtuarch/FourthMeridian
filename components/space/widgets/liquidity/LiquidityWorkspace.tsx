@@ -75,7 +75,7 @@ import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/pers
 import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
-import { clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
+import { allCashChangeComparableToCurrent, clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -252,6 +252,11 @@ export function LiquidityWorkspace({
     [snapshots, asOf, compareTo, snapshotCurrency, ctx],
   );
 
+  // FIN-005 / FIN-E part 2 — the window delta is on the series' basis; it says nothing
+  // about the unrestricted headline when the series is ALL_CASH and restricted cash exists.
+  const allCashDeltaMismatch = (cashHistory?.basis ?? "ALL_CASH") === "ALL_CASH"
+    && !allCashChangeComparableToCurrent(classification.totalRestrictedCash);
+
   // Balance-history WINDOW delta for the Hero (cashNow snapshot basis — the figure the chart
   // states). Only real when ≥2 in-window points exist; never invented.
   const change = useMemo<LiquidityWindowChange | null>(() => {
@@ -358,7 +363,11 @@ export function LiquidityWorkspace({
             // The headline uses reachable cash whenever ANY account supplied a
             // current-state claim; the window delta is computed from the ledger
             // snapshot series, so the two bases diverge exactly then.
-            deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
+            // FIN-005 — and whenever restricted cash exists while the window's series
+            // is ALL cash (restricted included) and the headline excludes it. FIN-E
+            // part 2: an UNRESTRICTED window is on the headline's basis.
+            deltaBasisDiffers={(reach.coveredCount > 0 && cashNow !== classification.totalLiquid) || allCashDeltaMismatch}
+            deltaBasisReason={allCashDeltaMismatch ? "RESTRICTED_CASH" : "REACHABLE"}
             envelope={figureEnvelope}
             verdict={verdict}
             verdictAsOf={verdictAsOf}
@@ -367,7 +376,7 @@ export function LiquidityWorkspace({
         </div>
       )}
 
-      {/* ② Balance history — accessible cash over time, the SHARED TrendChart.
+      {/* ② Balance history — ALL cash over time (restricted included, FIN-005), the SHARED TrendChart.
            Embedded, the unified Assets chart above already slices to this SAME
            series (WealthChartPoint.cash === totalCash + totalSavings), so a second
            identical chart is not drawn; the as-of retry affordance stays. */}

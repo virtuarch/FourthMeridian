@@ -109,7 +109,7 @@ export interface ControlValueView<V extends boolean | number> {
 }
 
 export interface AllowanceOverrideView {
-  /** Opaque customer reference ("user …abc123"); never an email, name or full id on this surface. */
+  /** Opaque customer reference ("user #3fa9c21b"); never an email, name or full id on this surface. */
   ref: string;
   usd: number;
   updatedAt: string;
@@ -206,10 +206,10 @@ export interface CustomerBudgetView {
   /** The allowance in force for THIS customer (override / overlay / platform / policy, after the ceiling). */
   allowanceUsd: number;
   allowanceSource: "USER_OVERRIDE" | "OVERLAY" | "PLATFORM_SETTING" | "POLICY" | "CEILING";
-  /** todayUsd / allowanceUsd × 100, capped nowhere (over 100 means over). */
-  allowanceUtilizationPct: number;
-  /** rolling24hUsd / per-customer alert threshold × 100. */
-  alertUtilizationPct: number;
+  /** todayUsd / allowanceUsd × 100, capped nowhere (over 100 means over). Null when the allowance is $0 — no share of nothing. */
+  allowanceUtilizationPct: number | null;
+  /** rolling24hUsd / per-customer alert threshold × 100. Null when no threshold is set ($0). */
+  alertUtilizationPct: number | null;
 }
 
 export interface SurfaceBudgetView {
@@ -227,6 +227,7 @@ export interface AiBudgetUtilization {
   fleet: {
     /** Customer surfaces only (chat + brief); harness and unattributed traffic are overhead, never fleet. */
     estimatedUsd: number | null;
+    /** The fleet alert threshold in force. 0 (or unset) means NO threshold — utilization is then null, never "0% of $0.00". */
     thresholdUsd: number;
     alertEnabled: boolean;
     utilizationPct: number | null;
@@ -245,6 +246,15 @@ export interface AiBudgetUtilization {
     userAlertEnabled: boolean;
     userAlertThresholdUsd: number;
     paused: boolean;
+    /**
+     * SEC-AI-001 — APPENDED. The optional fleet daily ceiling in force (whole USD
+     * over the trailing 24 h), or null when none is set — the surface reads
+     * "Fleet daily ceiling: not set". Read-only here; editing belongs to Policies.
+     * Optional so a payload from before the field reads as "not set".
+     */
+    fleetCeilingUsd?: number | null;
+    /** SEC-AI-001 — APPENDED. What the ceiling is doing (fleet-ceiling.core.ts FleetCeilingState); absent ⇒ NOT_SET. */
+    fleetCeilingState?: "NOT_SET" | "ENFORCED" | "UNENFORCEABLE" | "ENFORCEMENT_OFF";
   };
   /** The sentence every dollar on the surface is governed by. */
   estimateNote: string;

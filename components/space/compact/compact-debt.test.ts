@@ -43,8 +43,8 @@ const debt = (id: string, name: string, balance: number, over: Partial<DebtPersp
   ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
 // The P0 baseline fixture (cards, loans, other) …
 const BASE: DebtPerspectiveAccount[] = [
-  debt("c1", "Sapphire", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),
-  debt("c2", "Freedom", -300, { debtSubtype: "credit_card", creditLimit: 5000 }),
+  debt("c1", "Card Product A", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),
+  debt("c2", "Card Product B", -300, { debtSubtype: "credit_card", creditLimit: 5000 }),
   debt("l1", "Auto loan", -14000, { debtSubtype: "auto_loan", interestRate: 6.5 }),
   debt("l2", "Mortgage", -280000, { debtSubtype: "mortgage", interestRate: 5.1 }),
   debt("o1", "IOU", -500),
@@ -86,7 +86,7 @@ console.log("\n3. the ledger per category");
   const html = ledger(MANY_CARDS, "cards");
   const compactPart = html.slice(html.indexOf('data-debt-class-ledger="cards"'));
   check("Credit lists EVERY card (7 here — more than the 5-row inline list)",
-    ["Sapphire", "Freedom", "Card 3", "Card 4", "Card 5", "Card 6", "Card 7"].every((n) => compactPart.includes(`>${n}<`)) && !compactPart.includes(">Mortgage<"));
+    ["Card Product A", "Card Product B", "Card 3", "Card 4", "Card 5", "Card 6", "Card 7"].every((n) => compactPart.includes(`>${n}<`)) && !compactPart.includes(">Mortgage<"));
   check("…and nothing that is not a card (closed panels render nothing, so the compact block runs to the end)",
     !/>Auto loan<|>Mortgage<|>IOU</.test(compactPart));
   const loansHtml = ledger(BASE, "loans");
@@ -108,7 +108,7 @@ console.log("\n3. the ledger per category");
     check("DESKTOP: with a category set, the class list renders at ≥1024px (no lg:hidden) and the combined list is hidden at every width",
       !/lg:hidden/.test(ledger(MANY_CARDS, "cards")) && /data-debt-class-ledger="cards"/.test(desk)
         && /<div class="rounded-\[var\(--radius-lg\)\] border border-\[var\(--border-hairline\)\] overflow-hidden hidden"/.test(desk)
-        && ["Sapphire", "Freedom", "Card 3", "Card 7"].every((n) => desk.slice(desk.indexOf("data-debt-class-ledger")).includes(`>${n}<`)));
+        && ["Card Product A", "Card Product B", "Card 3", "Card 7"].every((n) => desk.slice(desk.indexOf("data-debt-class-ledger")).includes(`>${n}<`)));
   }
 }
 

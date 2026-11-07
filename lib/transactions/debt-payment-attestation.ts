@@ -27,7 +27,7 @@
  * through and was counted, at confidence 1. That is admission by ABSENCE OF
  * CONTRADICTION, and absence of contradiction is not evidence.
  *
- * Three live rows ($6,500) were counted on that basis while the transfer
+ * Three live rows (a few thousand dollars) were counted on that basis while the transfer
  * authority had returned UNRESOLVED_TRANSFER / CANDIDATES_SPAN_TYPES for them —
  * "several possible destinations of different kinds". The authority said it did
  * not know; the liquidity axis heard yes. Their stored `flowType = DEBT_PAYMENT`

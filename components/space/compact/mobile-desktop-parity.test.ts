@@ -94,7 +94,7 @@ console.log("1. Debt — All · Credit · Loans at every width");
     ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
   // Positive balance = owed (lib/debt/balance-semantics amountOwed).
   const ACCTS: DebtPerspectiveAccount[] = [
-    debt("c1", "Sapphire", 1200, { debtSubtype: "credit_card", creditLimit: 10000 }),
+    debt("c1", "Card Product A", 1200, { debtSubtype: "credit_card", creditLimit: 10000 }),
     debt("l1", "Auto loan", 14000, { debtSubtype: "auto_loan" }),
     debt("l2", "Mortgage", 280000, { debtSubtype: "mortgage" }),
   ];
@@ -118,7 +118,7 @@ console.log("1. Debt — All · Credit · Loans at every width");
   const ledger = renderToStaticMarkup(createElement(LiabilitiesLedger, { accounts: ACCTS, currency: "USD", compactClass: "loans" }));
   const classPart = (h: string) => h.slice(h.indexOf('data-debt-class-ledger="loans"'));
   check("Loans: the class account list renders in both layouts", both(classPart(ledger), "Auto loan") && both(classPart(ledger), "Mortgage")
-    && !/Sapphire/.test(text(classPart(ledger))));
+    && !/Card Product A/.test(text(classPart(ledger))));
   check("…and the combined list is hidden in both (hidden, not max-lg:hidden)", /overflow-hidden hidden"/.test(ledger) && !/max-lg:hidden|lg:hidden/.test(ledger));
 
   const loans = renderToStaticMarkup(createElement(DebtCompositionCard, { accounts: ACCTS, ctx: identityContext("USD"), currency: "USD", scope: "loans" }));
@@ -147,9 +147,9 @@ console.log("\n3. Cash accounts — one row model");
   const state = (reachable: number, pendingSum: number, adjusted: number, basis: string) =>
     ({ reachable, unexplained: null, state: "EXACT", pendingCount: pendingSum ? 1 : 0, pendingSum, adjusted, basis });
   const ACCTS: CashLedgerAccount[] = [
-    { id: "chk", name: "Checking", type: "checking", institution: "Chase", balance: 5000, adjustedBalance: 4900, currency: "USD", lastUpdated: NOW,
+    { id: "chk", name: "Checking", type: "checking", institution: "Example Bank", balance: 5000, adjustedBalance: 4900, currency: "USD", lastUpdated: NOW,
       currentState: state(4900, -100, 4900, "PENDING_EXCLUDED") } as CashLedgerAccount,
-    { id: "unp", name: "No avail", type: "checking", institution: "Ally", balance: 1000, adjustedBalance: 1000, currency: "USD", lastUpdated: NOW,
+    { id: "unp", name: "No avail", type: "checking", institution: "Institution E", balance: 1000, adjustedBalance: 1000, currency: "USD", lastUpdated: NOW,
       currentState: state(950, -50, 1000, "UNPROVEN") } as CashLedgerAccount,
     { id: "agg", name: "Shared accounts", type: "savings", institution: "", balance: 3000, currency: "USD", lastUpdated: NOW,
       aggregate: { memberAccountIds: ["x", "y", "z"], memberCount: 3, owedTotal: 0, creditTotal: 0 } } as CashLedgerAccount,

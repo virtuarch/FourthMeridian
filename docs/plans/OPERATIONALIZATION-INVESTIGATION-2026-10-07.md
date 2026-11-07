@@ -4,7 +4,7 @@
 
 Tags on findings: **FACT** (read in code/schema/config) or **INFERENCE** (reasoned, not executed). Classification vocabulary: DEFECT · DESIGN DEBT · MISSING CAPABILITY · PRESENTATION GAP · OPERATIONAL GAP · INTENTIONAL BOUNDARY.
 
-Prior investigations this report builds on rather than repeats: `docs/architecture/OPERATIONAL_TRUTH_SPINE.md` (§J IA, §K gap analysis, §L roadmap), `docs/plans/PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md` (2026-09-21), `docs/plans/PLATFORM-OPS-COST-ACCOUNTING-INVESTIGATION.md` (2026-09-09), `docs/plans/AI-BETA-COST-ECONOMICS-INVESTIGATION.md` (2026-09-08), `docs/plans/Platform-Ops-Prototype-Production-Migration.md` (2026-07-27).
+Prior investigations this report builds on rather than repeats: `docs/architecture/OPERATIONAL_TRUTH_SPINE.md` (§J IA, §K gap analysis, §L roadmap), `docs/plans/PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md` (2026-09-21), the Platform Ops cost-accounting investigation (2026-09-09) and the AI beta cost-economics investigation (2026-09-08), both since extracted into `docs/systems/billing-and-provider-costs.md`, `docs/plans/Platform-Ops-Prototype-Production-Migration.md` (2026-07-27).
 
 ---
 
@@ -504,7 +504,7 @@ Infra cost automation (Vercel/Supabase/Sentry telemetry); Slack/pager channels; 
 
 ## Final question
 
-> If Chris invited the first five real beta users tomorrow, what would he still be forced to use Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, or other external consoles to understand or operate — and which of those dependencies should Project OPERATIONALIZATION eliminate before he does so?
+> If Jules invited the first five real beta users tomorrow, what would he still be forced to use Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, or other external consoles to understand or operate — and which of those dependencies should Project OPERATIONALIZATION eliminate before he does so?
 
 **Forced today:**
 

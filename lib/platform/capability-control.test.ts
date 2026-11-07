@@ -355,6 +355,8 @@ function main() {
       // MERCHANT-OPS AUTHORITY (2026-10-06): merge / dismiss, fresh WRITE on the
       // MERCHANT_OPS area — no longer ordinary Space membership.
       "app/api/merchant-ops/decide/route.ts",
+      // PB-9 — reconsider a dismissed pair: the same fresh MERCHANT_OPS WRITE, a required reason.
+      "app/api/merchant-ops/reconsider/route.ts",
       // P1 — Customer Success spine: policy / cohort assignment and the operator
       // Refresh All on a customer's behalf, fresh WRITE on CUSTOMER_SUCCESS; each
       // audited through recordOperatorAction (the first two with a required reason).
@@ -375,6 +377,10 @@ function main() {
       "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts",
       "app/api/platform/customer-success/notifications/automations/[id]/disable/route.ts",
       "app/api/platform/customer-success/notifications/test-send/route.ts",
+      // PB-1 S6 (S2 ruling 2026-11-04) — incident acknowledge / manual resolve: fresh
+      // PLATFORM_OPS WRITE (never CONTROL), reason required, audited in the transition.
+      "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

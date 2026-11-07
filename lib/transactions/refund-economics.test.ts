@@ -185,20 +185,20 @@ console.log("7. refund the provider labels in the purchase's own family (explici
 console.log("8. refund WITHOUT a usable provider label — the live defect (INCOME_RENTAL on a card)");
 {
   const tenTravel = Array(10).fill("Travel");
-  const r = ingest(misfiledRefund("r", "2026-09-18", 521.34, tenTravel));
+  const r = ingest(misfiledRefund("r", "2026-09-18", 412.75, tenTravel));
   check("unanimous merchant history ⇒ Travel / REFUND", r.category === "Travel" && r.flowType === "REFUND");
-  const c = classifyFlow({ category: "Travel", amount: 521.34, accountType: "debt", pfcPrimary: "INCOME", pfcDetailed: "INCOME_RENTAL" });
+  const c = classifyFlow({ category: "Travel", amount: 412.75, accountType: "debt", pfcPrimary: "INCOME", pfcDetailed: "INCOME_RENTAL" });
   check("…decided by ACCOUNT_TYPE_CONTEXT at 0.6 — below a provider-labelled refund's 0.7", c.reason === "ACCOUNT_TYPE_CONTEXT" && c.confidence === 0.6);
 
-  const rows = [ingest(purchase("p1", "2026-09-09", 1098.88)), ingest(purchase("p2", "2026-09-14", 732.48)),
-    ingest(misfiledRefund("r1", "2026-09-14", 339.96, tenTravel)), r];
+  const rows = [ingest(purchase("p1", "2026-09-09", 1204.50)), ingest(purchase("p2", "2026-09-14", 655.25)),
+    ingest(misfiledRefund("r1", "2026-09-14", 287.40, tenTravel)), r];
   const t = line(rows, "Travel")!;
-  // 1,098.88 + 732.48 = 1,831.36 ; 339.96 + 521.34 = 861.30 ; 1,831.36 − 861.30 = 970.06
-  check("gross 1,831.36 · refunds 861.30 · net 970.06", eq(t.gross, 1831.36) && eq(t.refunds, 861.30) && eq(t.net, 970.06));
+  // 1,204.50 + 655.25 = 1,859.75 ; 287.40 + 412.75 = 700.15 ; 1,859.75 − 700.15 = 1,159.60
+  check("gross 1,859.75 · refunds 700.15 · net 1,159.60", eq(t.gross, 1859.75) && eq(t.refunds, 700.15) && eq(t.net, 1159.60));
   check("and NOT ONE CENT of it is income", eq(economicTotals(rows).income, 0));
 
   for (const [label, history] of [["no history", []], ["split history", ["Travel", "Dining"]], ["Other-only history", ["Other", "Other"]]] as const) {
-    const u = ingest(misfiledRefund("u", "2026-09-18", 280.45, [...history]));
+    const u = ingest(misfiledRefund("u", "2026-09-18", 190.20, [...history]));
     check(`${label} ⇒ Other / UNKNOWN — never income, never a fabricated refund`, u.category === "Other" && u.flowType === "UNKNOWN");
     const solo = [ingest(purchase("p", "2026-09-01", 1000)), u];
     check(`…and it moves NOTHING: income 0, refunds 0, Travel still 1,000 (${label})`,
@@ -257,7 +257,7 @@ console.log("10. bank transfer");
 
 console.log("11. cashback / reward / statement credit — existing semantics: an issuer credit is NOT a purchase refund");
 {
-  const reward = ingest({ id: "pts", date: "2026-09-11", amount: 76.06, account: "card", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", merchant: "POINTS FOR AMEX TRVL" });
+  const reward = ingest({ id: "pts", date: "2026-09-11", amount: 42.15, account: "card", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", merchant: "POINTS FOR EXAMPLE CARD TRVL" });
   check("Other / UNKNOWN — the provider named no spend family, so nothing is reversed", reward.category === "Other" && reward.flowType === "UNKNOWN");
   const rows = [ingest(purchase("p1", "2026-09-05", 1500)), reward];
   check("Travel stays 1,500 even though the descriptor says TRVL (no descriptor decides a category here)", eq(line(rows, "Travel")!.net, 1500));
@@ -287,7 +287,7 @@ console.log("13. chargeback / dispute credit — the provider has no dispute fla
 
 console.log("14. reversal — same-day charge and credit");
 {
-  const rows = [ingest(purchase("p", "2026-06-02", 2871.20)), ingest(labelledRefund("r", "2026-06-02", 2871.20))];
+  const rows = [ingest(purchase("p", "2026-06-02", 1934.60)), ingest(labelledRefund("r", "2026-06-02", 1934.60))];
   check("net 0.00 to the cent", cents(line(rows, "Travel")!.net) === 0 && cents(economicTotals(rows).spend) === 0);
 }
 
@@ -297,21 +297,21 @@ console.log("15/16. pending → posted (purchase and refund)");
   // tombstoned when its posted successor arrives (event identity, L8), so the two
   // are never folded together. What THIS layer owes is that either observation
   // classifies and folds identically.
-  const pendP = ingest(purchase("pp", "2026-09-13", 732.48, { pending: true })), postP = ingest(purchase("pp2", "2026-09-14", 732.48));
+  const pendP = ingest(purchase("pp", "2026-09-13", 655.25, { pending: true })), postP = ingest(purchase("pp2", "2026-09-14", 655.25));
   check("pending purchase and its posted successor classify alike", pendP.flowType === postP.flowType && pendP.category === postP.category);
   const hist = Array(3).fill("Travel");
-  const pendR = ingest(misfiledRefund("pr", "2026-09-17", 521.34, hist, { pending: true })), postR = ingest(misfiledRefund("pr2", "2026-09-18", 521.34, hist));
+  const pendR = ingest(misfiledRefund("pr", "2026-09-17", 412.75, hist, { pending: true })), postR = ingest(misfiledRefund("pr2", "2026-09-18", 412.75, hist));
   check("a PENDING misfiled refund is already Travel / REFUND — it never spends a day as income", pendR.flowType === "REFUND" && pendR.category === "Travel");
   check("…and posts as the same thing", postR.flowType === "REFUND" && postR.category === "Travel");
   check("folding the pending observation OR the posted one gives the same figures",
-    eq(line([postP, pendR], "Travel")!.net, 732.48 - 521.34) && eq(line([postP, postR], "Travel")!.net, 732.48 - 521.34));
+    eq(line([postP, pendR], "Travel")!.net, 655.25 - 412.75) && eq(line([postP, postR], "Travel")!.net, 655.25 - 412.75));
   check("a refund's own pending twin is a CREDIT and can never be its purchase evidence (amount < 0 only)",
     JSON.stringify(priorPurchaseWhere({ financialAccountId: "a", merchantEntityId: null, merchant: "m", description: null, onOrBefore: new Date() }).amount) === '{"lt":0}');
 }
 
 console.log("17. duplicate provider delivery");
 {
-  const p = misfiledRefund("r", "2026-09-18", 521.34, ["Travel"]);
+  const p = misfiledRefund("r", "2026-09-18", 412.75, ["Travel"]);
   const a = ingest(p), b = ingest(p);
   check("re-delivery classifies byte-identically, so the upsert on the provider id is a no-op", JSON.stringify(a) === JSON.stringify(b));
   // Identity (one row per plaidTransactionId / event) is the ingest layer's and is
@@ -324,11 +324,11 @@ console.log("18. category attribution is preserved per category");
     ingest(purchase("t", "2026-09-01", 1000)),
     ingest(purchase("d", "2026-09-02", 300, { pfcPrimary: "FOOD_AND_DRINK", pfcDetailed: "FOOD_AND_DRINK_FAST_FOOD", merchant: "Delivery Co" })),
     ingest(purchase("s", "2026-09-03", 200, { pfcPrimary: "GENERAL_MERCHANDISE", pfcDetailed: "GENERAL_MERCHANDISE_SUPERSTORES", merchant: "Mart" })),
-    ingest(misfiledRefund("dr", "2026-09-04", 18.38, Array(14).fill("Dining"), { pfcDetailed: "INCOME_CONTRACTOR", merchant: "Delivery Co" })),
+    ingest(misfiledRefund("dr", "2026-09-04", 23.70, Array(14).fill("Dining"), { pfcDetailed: "INCOME_CONTRACTOR", merchant: "Delivery Co" })),
     ingest(labelledRefund("sr", "2026-09-05", 50, { pfcPrimary: "GENERAL_MERCHANDISE", pfcDetailed: "GENERAL_MERCHANDISE_SUPERSTORES", merchant: "Mart" })),
   ];
-  check("Travel 1,000 · Dining 281.62 (300 − 18.38) · Shopping 150 (200 − 50)",
-    eq(line(rows, "Travel")!.net, 1000) && eq(line(rows, "Dining")!.net, 281.62) && eq(line(rows, "Shopping")!.net, 150));
+  check("Travel 1,000 · Dining 276.30 (300 − 23.70) · Shopping 150 (200 − 50)",
+    eq(line(rows, "Travel")!.net, 1000) && eq(line(rows, "Dining")!.net, 276.30) && eq(line(rows, "Shopping")!.net, 150));
   check("there is no generic 'Refund' bucket soaking them up", !categorySpendLedger(rows).some((l) => /refund/i.test(l.category)));
   check("only spend categories may carry a refund", isGenuineSpendCategory("Travel") && !isGenuineSpendCategory("Other")
     && !["Income", "Payment", "Transfer", "Interest", "Fee", "Dividend", "Buy"].some(isGenuineSpendCategory));
@@ -340,13 +340,13 @@ console.log("19. conservation + invariants");
     ingest(purchase("a", "2026-09-01", 1500)), ingest(labelledRefund("b", "2026-09-02", 500)),
     ingest(purchase("c", "2026-09-03", 90, { pfcPrimary: "FOOD_AND_DRINK", pfcDetailed: "FOOD_AND_DRINK_RESTAURANT", merchant: "Bistro" })),
     ingest(labelledRefund("d", "2026-09-04", 240, { pfcPrimary: "FOOD_AND_DRINK", pfcDetailed: "FOOD_AND_DRINK_RESTAURANT", merchant: "Bistro" })),
-    ingest({ id: "e", date: "2026-09-05", amount: 5306.12, account: "checking", pfcPrimary: "INCOME", pfcDetailed: "INCOME_SALARY", merchant: "ACME PAYROLL" }),
+    ingest({ id: "e", date: "2026-09-05", amount: 4946.78, account: "checking", pfcPrimary: "INCOME", pfcDetailed: "INCOME_SALARY", merchant: "ACME PAYROLL" }),
     ingest({ id: "f", date: "2026-09-06", amount: 2000, account: "card", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", merchant: "MOBILE PAYMENT - THANK YOU" }),
   ];
   const tot = economicTotals(rows);
   // gross 1,590 ; refunds 740 ; Travel net 1,000 ; Dining net 0 with 150 unapplied ; headline 850
   check("Σgross − Σrefunds === Σnet − Σunapplied (1,590 − 740 = 1,000 − 150 = 850)", conserved(rows) && eq(tot.spend, 850));
-  check("income is the paycheck alone (5,306.12)", eq(tot.income, 5306.12));
+  check("income is the paycheck alone (4,946.78)", eq(tot.income, 4946.78));
   check("every row is AT MOST one of spending / refund / income",
     rows.every((r) => [isCostFlow(r.flowType), isRefund(r.flowType), isIncome(r.flowType)].filter(Boolean).length <= 1));
   check("a refund is never earned income: the income taxonomy names it REFUND_REVERSAL / NOT_INCOME",
@@ -441,9 +441,9 @@ console.log("22. expense baseline — impact stated, not hidden");
 
 console.log("23. Daily Brief recent-activity evidence");
 {
-  const refund = ingest(misfiledRefund("r", "2026-09-18", 521.34, ["Travel"], { merchant: "Stayline" }));
+  const refund = ingest(misfiledRefund("r", "2026-09-18", 412.75, ["Travel"], { merchant: "Stayline" }));
   const top = projectRecentActivity([refund], { from: "2026-09-14", to: "2026-09-20" }, true).top[0];
-  check("the Brief is handed flow REFUND / category Travel — never 'INCOME' from a lodging brand", top.flow === "REFUND" && top.category === "Travel" && eq(top.amount, 521.34));
+  check("the Brief is handed flow REFUND / category Travel — never 'INCOME' from a lodging brand", top.flow === "REFUND" && top.category === "Travel" && eq(top.amount, 412.75));
 }
 
 console.log("24. the ingest seam runs the chain in THIS order");

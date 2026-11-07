@@ -33,7 +33,7 @@ const acct = (over: Partial<InvestmentAccountInput> & Pick<InvestmentAccountInpu
 // The live Preview population (Brandon), plus the classes the invariant names.
 const K401   = acct({ id: "Plaid 401k", type: "investment", balance: 23631.9805 });
 const IRA    = acct({ id: "Plaid IRA",  type: "investment", balance: 320.76 });
-const BROKER = acct({ id: "Schwab Brokerage", type: "investment", balance: 50_000, holdings: 12, institution: "Schwab" });
+const BROKER = acct({ id: "Example Brokerage Brokerage", type: "investment", balance: 50_000, holdings: 12, institution: "Example Brokerage" });
 const ROTH   = acct({ id: "Roth IRA", type: "investment", balance: 8_000, holdings: 3 });
 const WALLET = acct({ id: "BTC wallet", type: "crypto", balance: 1_500, institution: null });
 const CHECK  = acct({ id: "Checking", type: "checking", balance: 9_999 });
@@ -43,7 +43,7 @@ console.log("1–3. Every investment account is listed at its balance; holdings 
 {
   const s = assembleInvestmentAccounts([BROKER, ROTH, K401, IRA], "USD");
   const row = (id: string) => s.rows.find((r) => r.id === id)!;
-  check("brokerage WITH holdings: listed, counted, status holdings (12)", row("Schwab Brokerage").status === "holdings" && row("Schwab Brokerage").holdings === 12 && row("Schwab Brokerage").counted);
+  check("brokerage WITH holdings: listed, counted, status holdings (12)", row("Example Brokerage Brokerage").status === "holdings" && row("Example Brokerage Brokerage").holdings === 12 && row("Example Brokerage Brokerage").counted);
   check("retirement WITH holdings (Roth IRA): listed with its holdings", row("Roth IRA").status === "holdings" && row("Roth IRA").value === 8000);
   check("REGRESSION: retirement with a balance and NO holdings (401k) is listed at its balance", row("Plaid 401k").value === 23631.9805 && row("Plaid 401k").counted);
   check("…and says holdings are unavailable — never claims any", row("Plaid 401k").status === "holdings_unavailable" && row("Plaid 401k").holdings === 0);

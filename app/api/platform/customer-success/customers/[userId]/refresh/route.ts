@@ -23,6 +23,7 @@ import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { refreshAllForUser } from "@/lib/refresh/refresh-all";
 import { clientRefreshDeps } from "@/lib/refresh/deps";
 import type { RefreshAllReport } from "@/lib/refresh/outcomes";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 /** A full refresh across several authorities can take minutes (Plaid history, wallet reconstruction). */
@@ -33,6 +34,8 @@ export type OperatorRefreshAllResponse = RefreshAllReport;
 export async function POST(req: NextRequest, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
   const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "cs-customer-refresh");
+  if (limited) return limited;
   const { userId } = await ctx.params;
   const user = await systemDb.user.findUnique({ where: { id: userId }, select: { id: true, deactivatedAt: true } });
   if (!user) return NextResponse.json({ error: "Customer not found." }, { status: 404 });

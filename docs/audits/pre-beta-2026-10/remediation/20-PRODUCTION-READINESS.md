@@ -16,14 +16,14 @@
 | PR #1 | ⟳ **MERGED** 2026-10-22 20:10:23 UTC at head `a72a83d` → `0773008` | doc 19 §1 |
 | CI | ⟳ green on every merged head (`a72a83d`, PRs #2–#4) except the secret-free `Deployment health` (UNVERIFIED by design); the trusted push-time health check probes the app HEALTHY on `v2.6` | doc 19 §1–§2 |
 | Preview DB | 135 migrations applied (A5, 2026-10-22 19:29 UTC) | doc 18 §0, §5; RESUME-CHECKPOINT |
-| Repository | `virtuarch/FourthMeridian`, **public**; default branch `main` | `gh api repos/…` → `visibility: public` |
+| Repository | `<owner>/FourthMeridian`, **public**; default branch `main` | `gh api repos/…` → `visibility: public` |
 | Branch protection / rulesets | none on `main`, `v2.6` or `remediation/beta-1` (each `…/protection` → 404); rulesets `[]` | gh api, 2026-10-22 |
 
 ## 1. Production backup and PITR requirements
 
 | Requirement | Status | Evidence | Gap |
 |---|---|---|---|
-| Supabase plan entitles daily backups | DONE (org level) | doc 17 §2: org VirtuArch on **Pro**, covering both projects | — |
+| Supabase plan entitles daily backups | DONE (org level) | doc 17 §2: org the team on **Pro**, covering both projects | — |
 | Production backup cadence, newest backup, retention read and recorded | **UNVERIFIED** | only Preview was read (doc 17 §2: 7 daily PHYSICAL backups, WAL archiving healthy). Checklist C1 is unticked | owner reads Dashboard → Database → Backups for `qirfzvvaeddukjiphims` |
 | PITR on Production | **UNVERIFIED** (Preview: DISABLED) | doc 17 §2; `11` G0c: "Decide PITR for Production before beta (paid add-on)" | owner decision. Without PITR the platform RPO is up to about 24 h |
 | `fm_backup` role exists with a password | OPEN | the role is created by migration `20261002000100` (not yet on Production, §3); `backup-restore-verification.md` §2 | after migration: set the password, verify `t,f,f,f,t` (checklist C2) |

@@ -1,6 +1,6 @@
 # Email and Beta Invitation Lifecycle Audit (2026-10-31)
 
-**Scope.** This is a read-only audit of Fourth Meridian's transactional email system and beta invitation lifecycle. It covers the worktree `/Users/chrstn/dev/FM-email` at `develop` `bf6b797` (branch `feat/email-invite-audit`).
+**Scope.** This is a read-only audit of Fourth Meridian's transactional email system and beta invitation lifecycle. It covers the worktree `/Users/devuser/dev/FM-email` at `develop` `bf6b797` (branch `feat/email-invite-audit`).
 **Method.** The findings come from static reading of the code. No code was edited, no database or network was touched, no email was sent, and no tsc, test suite or build was run. Every fact cites `file:line`. Anything inferred rather than read directly is marked **INFERRED**. Anything that needs a live environment to confirm is marked **UNVERIFIED**.
 
 ---
@@ -47,7 +47,7 @@
 
 - In dev with no key, emails are captured and never sent (`send.ts:37-38`). `forgot-password` additionally returns `resetUrl` in the response when `NODE_ENV!=="production"` and the status is not `sent` (`app/api/auth/forgot-password/route.ts:98-106`).
 - **On Preview, real email goes out exactly when `RESEND_API_KEY` is present in that Vercel environment.** `send.ts` has no `VERCEL_ENV` awareness, no recipient allowlist and no sandbox redirect (`send.ts:33-39`). The boot check requires the key only when `VERCEL_ENV==="production"` (`lib/env.ts:306-320`).
-- Whether Preview carries the key is **UNVERIFIED**. It is recorded as "Unknown / Owner check" in `docs/plans/PUBLIC-APP-DOMAIN-SPLIT-ARCHITECTURE.md:747`, and remediation doc 16 recommends removing it from generic Preview (`docs/audits/pre-beta-2026-10/remediation/16-PREVIEW-REHEARSAL-AND-APPROVALS.md:153`).
+- Whether Preview carries the key is **UNVERIFIED**. It is recorded as "Unknown / Owner check" in `docs/plans/PUBLIC-APP-DOMAIN-SPLIT-ARCHITECTURE.md:747`, and remediation doc 16 recommends removing it from generic Preview (`docs/archive/evidence/production-cutover/16-PREVIEW-REHEARSAL-AND-APPROVALS.md`).
 
 ### 1.6 Email-health monitoring
 

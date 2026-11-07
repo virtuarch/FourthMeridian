@@ -51,7 +51,7 @@ function main(): void {
     // against the CUR:USD instrument (isCashEquivalent true).
     check("A. LLC cash — derived row says false, instrument says cash ⇒ CASH",
       resolveIsCash({ isCash: false }, { isCash: true }) === true);
-    check("A. Robinhood cash — same shape, same answer",
+    check("A. Institution F cash — same shape, same answer",
       resolveIsCash({ isCash: false }, { isCash: true }) === true);
     check("A. an OBSERVED cash row stays cash",
       resolveIsCash({ isCash: true }, { isCash: true }) === true);

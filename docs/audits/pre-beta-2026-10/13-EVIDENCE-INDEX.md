@@ -6,7 +6,7 @@ Fourth Meridian pre-beta audit · 2026-10-21. Every finding in reports `02`-`11`
 
 | Item | Value |
 |---|---|
-| Repository | `/Users/chrstn/dev/FourthMeridian` → `https://github.com/virtuarch/FourthMeridian.git` (visibility **PUBLIC**, verified with `gh repo view`) |
+| Repository | `/Users/devuser/dev/FourthMeridian` → `https://github.com/<owner>/FourthMeridian.git` (visibility **PUBLIC**, verified with `gh repo view`) |
 | Branch | `v2.6` |
 | HEAD | `cde8fa0e25d2c744933109b41611d1dd65a1f9a8` ("Merge approved UI hardening and simplified AI Policies into v2.6") — equal to the last approved commit named in the brief; `origin/v2.6` at the same SHA |
 | Working tree at start | clean except one pre-existing untracked file `docs/plans/UNIVERSAL-FINANCIAL-CONNECTOR-ARCHITECTURE-P0.md` (preserved, untouched) |
@@ -15,7 +15,7 @@ Fourth Meridian pre-beta audit · 2026-10-21. Every finding in reports `02`-`11`
 | Ancestry checks | `git merge-base --is-ancestor 89a46ad HEAD` → true; `e67fa58` → true; `ecf84a4` → true; `3241f16` → true; `dc3755f` → true. (The coordinator's first `git branch --contains 89a46ad` was truncated by `head -3` and wrongly suggested the fix was absent; corrected and re-verified.) |
 | `main` vs `v2.6` | `main` is 872 commits behind and 1 commit ahead (`87e4df7`, a content-identical cherry-pick); 38 `migration.sql` files added since `main` |
 | Latest CI on HEAD | GitHub run 38847934169 (CI) and 38847934157 (STATUS drift guard), both `success`, created 2026-10-16T03:55Z; architecture job 116802558049 log: 25 REQUIRED audits, RLS suites 34/34, 98/98, 72/72, 20/20, 67/67, allowance 15/15; unit job: 743/743, eslint 19 warnings 0 errors |
-| Branch protection | `gh api repos/virtuarch/FourthMeridian/branches/{main,v2.6}/protection` → 404 "Branch not protected"; `/rulesets` → `[]` |
+| Branch protection | `gh api repos/{owner}/{repo}/branches/{main,v2.6}/protection` → 404 "Branch not protected"; `/rulesets` → `[]` |
 
 ## 2. Evidence IDs
 
@@ -46,7 +46,7 @@ Not run, by rule: `npm test`, `npm run ci`, any `prisma` command other than `gen
 
 ## 4. Scripts written by workstreams (scratchpad only, read repository files only)
 
-`/private/tmp/claude-501/-Users-chrstn-dev-FourthMeridian/4158b24c-90b6-4dca-a1dd-507d4c2645e9/scratchpad/`:
+`/private/tmp/claude-501/-Users-devuser-dev-FourthMeridian/4158b24c-90b6-4dca-a1dd-507d4c2645e9/scratchpad/`:
 - `ws1/depgraph.js` (import graph: 2,214 files, 7,384 edges; Tarjan SCCs; fan-in/out; boundary violations; `process.env` reads), `ws1/loopq.js` (Prisma-in-loop heuristic), `ws1/unused-exports.js`, `ws1/routes.txt`, `ws1/srcfiles.txt`, `ws1/env-*.txt`
 - `ws2/rls_cov.py` (RLS coverage from migration SQL), `ws2/inventory.sh`, `ws2/inventory2.sh`, `ws2/matrix.py` (route authorisation matrix)
 - `ws3/` (sub-read notes), `ws4/scan_findmany.py` (136 `findMany` sites classified), `ws4/models.txt`, `ws4/rls.txt`

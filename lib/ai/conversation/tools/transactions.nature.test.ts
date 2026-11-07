@@ -3,7 +3,7 @@
  *
  * `get_transactions` flow membership and row explanation come from THE resolved-
  * nature contract (lib/transactions/resolved-nature.ts), not the stored column — so
- * a historical, unrepaired Chase → Amex HYSA leg (stored DEBT_PAYMENT) is a
+ * a historical, unrepaired Example Bank → Example Card HYSA leg (stored DEBT_PAYMENT) is a
  * transfer, never a card payment, and the AI is told so in plain words.
  *
  * Pure: the filter and lookup are exercised directly; no DB, no model.
@@ -18,8 +18,8 @@ import { accountTypeLookupOf, filterByResolvedFlow, RESOLVED_FLOW_MEMBERSHIP } f
 import { NATURE_DESCRIPTION, natureEvidenceFromRow, resolveTransactionNature } from '@/lib/transactions/resolved-nature';
 
 const accountTypeOf = accountTypeLookupOf([
-  { id: 'chaseChk', type: 'checking' }, { id: 'schwabChk', type: 'checking' }, { id: 'amexChk', type: 'checking' },
-  { id: 'amexHysa', type: 'savings' }, { id: 'chaseCard', type: 'debt' }, { id: 'autoLoan', type: 'debt' },
+  { id: 'exbankChk', type: 'checking' }, { id: 'exbrokerChk', type: 'checking' }, { id: 'excardChk', type: 'checking' },
+  { id: 'excardHysa', type: 'savings' }, { id: 'exbankCard', type: 'debt' }, { id: 'autoLoan', type: 'debt' },
 ] as never);
 
 let n = 0;
@@ -32,16 +32,16 @@ const TR = 'TRANSFER' as Transaction['flowType'];
 
 /** The READ population for both resolved flows: every stored DEBT_PAYMENT / TRANSFER row in the window. */
 const WINDOW: Transaction[] = [
-  tx('chaseChk', -1500, { id: 'hysaUnpaired', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', pending: true }),
-  tx('chaseChk', -125.41, { id: 'hysaPaired', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'amexHysa' }),
-  tx('chaseChk', -747.26, { id: 'amexChk', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
-  tx('chaseChk', -1500, { id: 'schwab', flowType: TR, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'schwabChk' }),
-  tx('chaseChk', -300, { id: 'cardCash', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'DEBT_PAYMENT', counterpartyAccountId: 'chaseCard' }),
-  tx('chaseCard', 300, { id: 'cardLeg', flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'chaseChk' }),
-  tx('chaseChk', -450, { id: 'loanCash', flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'autoLoan' }),
-  tx('chaseChk', -150, { id: 'apple', flowType: TR, transferMaturity: 'EXTERNAL_PERSON_TRANSFER' }),
-  tx('chaseChk', -900, { id: 'unattested', flowType: DP, category: 'Payment' as Transaction['category'] }),
-  tx('chaseChk', -125.41, { id: 'userPayment', flowType: DP, category: 'Payment' as Transaction['category'], categorySource: 'USER_OVERRIDE', transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'amexHysa' }),
+  tx('exbankChk', -1500, { id: 'hysaUnpaired', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', pending: true }),
+  tx('exbankChk', -125.41, { id: 'hysaPaired', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'excardHysa' }),
+  tx('exbankChk', -747.26, { id: 'excardChk', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'excardChk' }),
+  tx('exbankChk', -1500, { id: 'exbroker', flowType: TR, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'exbrokerChk' }),
+  tx('exbankChk', -300, { id: 'cardCash', flowType: DP, category: 'Payment' as Transaction['category'], transferMaturity: 'DEBT_PAYMENT', counterpartyAccountId: 'exbankCard' }),
+  tx('exbankCard', 300, { id: 'cardLeg', flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'exbankChk' }),
+  tx('exbankChk', -450, { id: 'loanCash', flowType: DP, category: 'Payment' as Transaction['category'], counterpartyAccountId: 'autoLoan' }),
+  tx('exbankChk', -150, { id: 'apple', flowType: TR, transferMaturity: 'EXTERNAL_PERSON_TRANSFER' }),
+  tx('exbankChk', -900, { id: 'unattested', flowType: DP, category: 'Payment' as Transaction['category'] }),
+  tx('exbankChk', -125.41, { id: 'userPayment', flowType: DP, category: 'Payment' as Transaction['category'], categorySource: 'USER_OVERRIDE', transferMaturity: 'SAVINGS_TRANSFER', counterpartyAccountId: 'excardHysa' }),
 ];
 
 const ids = (rows: Transaction[]) => rows.map((r) => r.id).sort();
@@ -51,9 +51,9 @@ test('card_payments = liability payments only (card + loan legs, and a human "Pa
     ['cardCash', 'cardLeg', 'loanCash', 'userPayment']);
 });
 
-test('transfers = every other movement, INCLUDING the historical unrepaired Amex pulls', () => {
+test('transfers = every other movement, INCLUDING the historical unrepaired Example Card pulls', () => {
   assert.deepEqual(ids(filterByResolvedFlow(WINDOW, 'transfers', accountTypeOf)),
-    ['amexChk', 'apple', 'hysaPaired', 'hysaUnpaired', 'schwab', 'unattested']);
+    ['apple', 'exbroker', 'excardChk', 'hysaPaired', 'hysaUnpaired', 'unattested']);
 });
 
 test('the two flows partition the read population exactly — nothing counted twice, nothing dropped', () => {
@@ -72,7 +72,7 @@ test('count === list: the count the tool reports is the length of the very list 
 });
 
 test('the AI explanation of each row (natureNote) never calls an internal transfer a debt payment', () => {
-  for (const id of ['hysaUnpaired', 'hysaPaired', 'amexChk', 'schwab']) {
+  for (const id of ['hysaUnpaired', 'hysaPaired', 'excardChk', 'exbroker']) {
     const r = WINDOW.find((x) => x.id === id)!;
     const nature = resolveTransactionNature(natureEvidenceFromRow(r, accountTypeOf)).nature;
     const note = NATURE_DESCRIPTION[nature];

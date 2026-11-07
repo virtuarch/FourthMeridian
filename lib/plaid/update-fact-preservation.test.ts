@@ -51,7 +51,7 @@ function makeFakeDb(opts: {
   metaFailures?: number;
 }) {
   const txns: Row[] = [...(opts.seed ?? [])];
-  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank" };
   const cursorWrites: (string | null)[] = [];
   let metaFailuresLeft = opts.metaFailures ?? 0;
   let seq = 100;

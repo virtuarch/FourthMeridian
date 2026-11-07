@@ -170,6 +170,19 @@ subsystem (`investment-event-ingest.ts`, `reconstruction-*.ts`).
    valued" / the activity caveat; they read `InvestmentsTrustSummary`.
 6. **The trust envelope is emitted from the *unconverted* result** (trust tiers are
    currency-agnostic).
+7. **A statistic carries its population.** The AI holdings assembler
+   (`lib/ai/assemblers/holdings-core.ts`, contract in `lib/ai/types.ts`) once reported a
+   "highly concentrated" verdict computed over the few positions the valuation seam
+   could price. That was a tiny fraction of the money, with whole asset classes
+   unpriced, and nothing said so. The arithmetic was right; the scope was missing. Now
+   `concentration.population` (denominator, counts, exclusions, `shareOfValuedTotal`)
+   sits **inside** the concentration object, so a serializer cannot emit the verdict
+   without it. `unvaluedPositions[]` lists the exclusions with the seam's own reason.
+   `valuationCompleteness` carries the canonical seam's verdict verbatim instead of
+   re-deriving it. The totals are named for their scope: `valuedPositionsTotal`,
+   `valuedNonCashTotal`, `valuedCashTotal` (formerly `totalPortfolioValue`,
+   `investedValue`, `cashValue`). `computeConcentration` itself is unchanged. Pinned by
+   `holdings-scope.test.ts`.
 
 ## Known limitations
 

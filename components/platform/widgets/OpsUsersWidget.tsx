@@ -38,7 +38,7 @@ export function OpsUsersWidget({ section }: { section: PlatformSection }) {
           <div className="grid grid-cols-3 gap-3">
             <WidgetStat value={data.total} label="Customer accounts" />
             <WidgetStat value={data.emailVerified} label="Email verified" />
-            <WidgetStat value={data.withLiveSession} label="With a live session" />
+            <WidgetStat value={data.withLiveSession} label="Accounts with a live session" />
           </div>
           <div className="grid grid-cols-3 gap-3 mt-1">
             <WidgetStat value={data.neverSignedIn} label="Never signed in" />

@@ -5,6 +5,8 @@ import { db }               from "@/lib/db";
 import { SpacesClient }     from "@/components/dashboard/SpacesClient";
 import { getSpaceContext } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
+import { loadBalanceCoverageBySpace } from "@/lib/connections/balance-coverage";
+import { BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine } from "@/lib/connections/balance-coverage.core";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
 
@@ -280,8 +282,19 @@ export default async function SpacesPage() {
   // `OR "isPublic" = true` arm so a public Space's ROW is readable to anyone —
   // and `SpaceSnapshot` deliberately has no such arm. The policy drew the line
   // at membership for financial figures before the product did.
+  // PB-8c — the balance-history floors of the viewer's OWN Spaces, so a card's
+  // 1M change is withheld (or marked estimated) by the same rule as the
+  // inside-Space hero. A phase of its own: a failed read FAILS CLOSED (the
+  // change is withheld) with a counts-only log line, and cannot abort the figures' read.
+  const balanceCoverageBySpace = await withTenantDb(userId, (tx) =>
+    loadBalanceCoverageBySpace(tx, mySpaceIds, "space-launcher"),
+  ).catch(() => {
+    console.warn(balanceCoverageLoadFailureLine("space-launcher", mySpaceIds.length, mySpaceIds.length));
+    // S2 sweep — FAIL CLOSED: every one of the viewer's Spaces is UNAVAILABLE, so its card withholds the change.
+    return new Map(mySpaceIds.map((id) => [id, BALANCE_COVERAGE_UNAVAILABLE] as const));
+  });
   const netWorthBySpace = await withTenantDb(userId, (tx) =>
-    getSpaceNetWorthSummaries(tx, allIds),
+    getSpaceNetWorthSummaries(tx, allIds, balanceCoverageBySpace),
   );
   // v2.6-L4F — per-Space ACCOUNT freshness, so the card's "updated" line is the
   // Slice 1 claim (anchored on the OLDEST observation, with its qualifier) and
@@ -342,6 +355,8 @@ export default async function SpacesPage() {
       lastUpdated:  nw?.asOf ?? null,
       // v2.6-L4F — the canonical 1M change (same authority as the inside view).
       change:       nw?.change ?? null,
+      // PB-8c — why the change is absent, when it crosses the partial-history floor.
+      changeWithheld: nw?.changeWithheld ?? null,
       // v2.6-L4F/L1 — account freshness through the Slice 1 authority. "Updated
       // today" previously came from the snapshot date, which says when we last
       // COMPUTED, never when the balances were last observed.
@@ -368,6 +383,7 @@ export default async function SpacesPage() {
       estimated:    nw?.estimated ?? false,
       lastUpdated:  nw?.asOf ?? null,
       change:       nw?.change ?? null,
+      changeWithheld: nw?.changeWithheld ?? null,
       freshness:    freshnessBySpace[w.id] ?? null,
     };
   });

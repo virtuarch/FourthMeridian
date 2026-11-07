@@ -302,6 +302,69 @@ async function main(): Promise<void> {
         && defaults.jobs.find((j) => j.job === "sync-banks")?.source?.policyCadence === "24h");
   }
 
+  // ── 9. Ops env-aware verdicts — no scheduler on this deployment (Preview) ──
+  console.log("9. scheduler absent (Preview): not-run jobs are neutral; a recorded failure is still a failure; Production identical");
+  {
+    const j = { name: "t" };
+    const dead = DEFAULT_CADENCE_HOURS * DEAD_CADENCE_MULTIPLE + 1;
+    const overdue = DEFAULT_CADENCE_HOURS + GRACE_HOURS + 1;
+    const fixtures: Record<string, JobRunHealthRow[]> = {
+      empty: [],
+      fresh: [run(5, "succeeded")],
+      overdue: [run(overdue, "succeeded")],
+      dead: [run(dead, "succeeded")],
+      streak: [run(1, "failed"), run(25, "failed"), run(49, "failed")],
+      oldStreak: [run(dead, "failed"), run(dead + 24, "failed"), run(dead + 48, "failed")],
+      oldSingleFailure: [run(dead, "failed"), run(dead + 24, "succeeded")],
+      oldCrash: [run(dead, "running")],
+      running: [run(0.5, "running")],
+      skipped: [{ startedAt: hoursAgo(1), status: "succeeded", summary: { outcome: "SKIPPED", skipReason: "BILLABLE_COST_FREEZE" } }],
+    };
+    const absent = (rows: JobRunHealthRow[]) => classifyJobHealth(j, rows, NOW, null, null, "absent");
+
+    check("Production/development (scheduler present, also the default) are byte-identical to the 6-arg-less call",
+      Object.values(fixtures).every((rows) =>
+        JSON.stringify(classifyJobHealth(j, rows, NOW, null, null, "present")) === JSON.stringify(classifyJobHealth(j, rows, NOW))));
+    check("never ran → not-scheduled (neutral), not never-ran", absent(fixtures.empty).status === "not-scheduled");
+    check("overdue / dead with a clean head → not-scheduled", absent(fixtures.overdue).status === "not-scheduled" && absent(fixtures.dead).status === "not-scheduled");
+    check("a run that failed is still failed: an on-time streak stays failing", absent(fixtures.streak).status === "failing");
+    check("…an old streak (dead with a scheduler) is failing, never neutral", absent(fixtures.oldStreak).status === "failing");
+    check("…a single old failed run is failing (nothing will run to clear it)",
+      absent(fixtures.oldSingleFailure).status === "failing" && absent(fixtures.oldSingleFailure).consecutiveFailures === 1);
+    check("…a crashed (stale running) old run is failing", absent(fixtures.oldCrash).status === "failing");
+    check("recent success stays healthy; in-flight stays running; refused stays skipped",
+      absent(fixtures.fresh).status === "healthy" && absent(fixtures.running).status === "running" && absent(fixtures.skipped).status === "skipped");
+    check("metrics are unchanged by the environment (every number still traces to the same rows)",
+      (() => { const a = absent(fixtures.dead); const p = classifyJobHealth(j, fixtures.dead, NOW);
+        return a.totalRuns === p.totalRuns && a.lastStartedAt?.getTime() === p.lastStartedAt?.getTime() && a.lastRunStatus === p.lastRunStatus && a.consecutiveFailures === p.consecutiveFailures; })());
+
+    const byJob: Record<string, JobRunHealthRow[]> = { "sync-banks": fixtures.oldSingleFailure, "fetch-fx-rates": fixtures.dead };
+    const client: JobRunReadClient = { jobRun: { async findMany({ where }) { return byJob[where.jobName] ?? []; } } };
+    const preview = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS, { scheduler: "absent" });
+    const prod = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS, { scheduler: "present" });
+    const st = (h: typeof preview, n: string) => h.jobs.find((r) => r.job === n)?.status;
+    check("detector (absent): untouched jobs not-scheduled, failed job failing, presence reported",
+      preview.scheduler === "absent" && st(preview, "fetch-fx-rates") === "not-scheduled" && st(preview, "sync-banks") === "failing"
+        && preview.jobs.filter((r) => r.status === "not-scheduled").length === SCHEDULED_JOBS.length - 1 && preview.healthy === false);
+    check("detector (present): the same ledger classifies exactly as before",
+      prod.scheduler === "present" && st(prod, "fetch-fx-rates") === "dead" && st(prod, "sync-banks") === "dead" && st(prod, "process-deletions") === "never-ran");
+    const dflt = await checkScheduledJobHealth(client, NOW, SCHEDULED_JOBS);
+    check("default presence comes from the server environment (no VERCEL here ⇒ present)", dflt.scheduler === "present"
+      && JSON.stringify(dflt.jobs) === JSON.stringify(prod.jobs));
+
+    const healthSrc = readFileSync("lib/jobs/health.ts", "utf8");
+    check("the environment is read server-side via deploymentSchedulerPresence (never a client value)",
+      /opts\.scheduler \?\? deploymentSchedulerPresence\(\)/.test(healthSrc));
+  }
+  {
+    const { schedulerPresenceFor } = await import("@/lib/jobs/scheduler-presence.core");
+    check("only Preview has no scheduler", schedulerPresenceFor("preview") === "absent"
+      && schedulerPresenceFor("production") === "present" && schedulerPresenceFor("development") === "present");
+    const presSrc = readFileSync("lib/jobs/scheduler-presence.ts", "utf8");
+    check("the presence module is server-only and reads deploymentEnvironment()",
+      presSrc.includes('import "server-only"') && /schedulerPresenceFor\(deploymentEnvironment\(\)\)/.test(presSrc));
+  }
+
   if (failures > 0) {
     console.error(`\ndead-job detector tests: ${failures} FAILED`);
     process.exit(1);

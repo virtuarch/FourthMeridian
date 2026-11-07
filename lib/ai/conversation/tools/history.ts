@@ -25,6 +25,112 @@ import {
   round2, isoDay, SNAPSHOT_READ_ROWS, MAX_DAILY_POINTS, clampToCeiling, daysAgoISO,
 } from './shared/values';
 import { absentIn } from './shared/reads';
+// PB-8c — the change block obeys the same partial-history floor as the heroes.
+import { loadBalanceCoverageFailClosed } from '@/lib/connections/balance-coverage';
+import {
+  BALANCE_COVERAGE_UNAVAILABLE, BALANCE_COVERAGE_UNREADABLE_NOTE, balanceCoverageSidesFor, balanceCoveredFromISO,
+  changeComparability, estimatedCoverageLabel, isBalanceCoverageUnavailable, knownBalanceCoverage, withheldChangeOf,
+  type BalanceCoverageRead,
+} from '@/lib/connections/balance-coverage.core';
+
+// ── PB-8d — points before the balance-history floor are NOT KNOWABLE ─────────
+//
+// PB-8c withheld the change figures; the series POINTS before the floor still
+// carried numbers, so a model could subtract two of them across the floor
+// itself. Structural now, the way the Debt hero withholds: on a day before the
+// floor of the accounts a metric is composed from, that metric is null and the
+// point says `partial: true` (+ which metrics) — the date stays, the number
+// does not. A day on/after the floor whose row is a reconstruction holding a
+// debt at today's balance keeps its values and says `estimated: true`.
+// investments / digitalAssets are composed of neither cash nor debt and are
+// never masked here (their own coverage disclosures apply). Same floors, same
+// core as every other PB-8 surface; no coverage ⇒ points unchanged.
+
+/** The balance metrics a history point carries. */
+export type BalancePointMetric =
+  'netWorth' | 'totalAssets' | 'liquid' | 'checking' | 'investments' | 'digitalAssets' | 'debt';
+
+/** Each metric's series in the vocabulary `balanceCoverageSidesFor` maps to balance sides. */
+const POINT_METRIC_SERIES: Record<BalancePointMetric, string> = {
+  netWorth: 'netWorth', totalAssets: 'totalAssets', liquid: 'cash', checking: 'cash',
+  investments: 'invested', digitalAssets: 'invested', debt: 'totalLiabilities',
+};
+
+export interface BalanceHistoryPoint {
+  date: string;
+  netWorth: number | null; totalAssets: number | null;
+  liquid: number | null; checking: number | null;
+  investments: number | null; digitalAssets: number | null;
+  debt: number | null;
+  unassertableBecause?: string;
+  realAssetsModeled?: true;
+  /** PB-8d — before the balance-history floor: the metrics in `partialMetrics` are null, not knowable. */
+  partial?: true;
+  partialMetrics?: BalancePointMetric[];
+  /** PB-8d — on/after the floor, but a debt is held at today's balance (no history). */
+  estimated?: true;
+}
+
+/** The metrics of a point dated `dateISO` that lie before their coverage floor. */
+export function partialMetricsOn(covRead: BalanceCoverageRead, dateISO: string): BalancePointMetric[] {
+  // An UNAVAILABLE read knows no floor: nothing is masked, and the payload says the points are unvouched.
+  const cov = knownBalanceCoverage(covRead);
+  if (!cov) return [];
+  return (Object.keys(POINT_METRIC_SERIES) as BalancePointMetric[]).filter((m) => {
+    const from = balanceCoveredFromISO(cov, balanceCoverageSidesFor(POINT_METRIC_SERIES[m]));
+    return from !== null && dateISO < from;
+  });
+}
+
+/** True when a reconstructed day on/after the debt floor includes a held-flat debt. */
+export function isEstimatedOn(cov: BalanceCoverageRead, dateISO: string, rowEstimated: boolean | undefined): boolean {
+  return rowEstimated === true && !partialMetricsOn(cov, dateISO).includes('debt')
+    && estimatedCoverageLabel(cov, ['liability'], dateISO) !== null;
+}
+
+/** Withhold (null) every metric of a point that lies before its floor; flag estimated days. */
+export function maskBalancePoint(
+  p: BalanceHistoryPoint, cov: BalanceCoverageRead, rowEstimated?: boolean,
+): BalanceHistoryPoint {
+  const partial = partialMetricsOn(cov, p.date);
+  const estimated = isEstimatedOn(cov, p.date, rowEstimated);
+  if (partial.length === 0 && !estimated) return p;
+  const out: BalanceHistoryPoint = { ...p };
+  for (const m of partial) out[m] = null;
+  return {
+    ...out,
+    ...(partial.length > 0 ? { partial: true as const, partialMetrics: partial } : {}),
+    ...(estimated ? { estimated: true as const } : {}),
+  };
+}
+
+/**
+ * S2 sweep — the floors for a tool call, FAIL CLOSED. From the transcript's own
+ * coverage phase when there is one (it never rejects; a failure there is already
+ * BALANCE_COVERAGE_UNAVAILABLE). With no phase runner the read runs here, on a
+ * client that holds no transaction. A phase WITHOUT a provider has no safe place
+ * to read: UNAVAILABLE, never null (null means "nothing to cover").
+ */
+export async function historyCoverage(ctx: { readClient: Parameters<typeof loadBalanceCoverageFailClosed>[0]; spaceId: string; phase?: unknown; balanceCoverage?: () => Promise<BalanceCoverageRead> }, rows: number): Promise<BalanceCoverageRead> {
+  if (rows === 0) return null;
+  if (ctx.balanceCoverage) return ctx.balanceCoverage();
+  if (!ctx.phase) return loadBalanceCoverageFailClosed(ctx.readClient, ctx.spaceId, 'ai-history-tool');
+  return BALANCE_COVERAGE_UNAVAILABLE;
+}
+
+/** The block a history payload carries when the coverage read failed (absent otherwise). */
+export function unreadableCoverageBlock(cov: BalanceCoverageRead): { balanceHistoryCompleteness: 'UNAVAILABLE'; balanceHistoryNote: string; pointsUnvouched: true } | Record<string, never> {
+  return isBalanceCoverageUnavailable(cov)
+    ? { balanceHistoryCompleteness: 'UNAVAILABLE', balanceHistoryNote: BALANCE_COVERAGE_UNREADABLE_NOTE, pointsUnvouched: true }
+    : {};
+}
+
+/** The sentence a payload carries when it withheld any point. */
+const PARTIAL_POINTS_NOTE =
+  'A point with partial: true lies before the balance-history floor: some accounts had no balance '
+  + 'history yet that day, so each metric named in partialMetrics is null because it is NOT KNOWABLE — '
+  + 'not zero, not missing data to fill in. Never state, estimate or subtract a value for it. A point '
+  + 'with estimated: true includes a debt held at today\'s balance: describe its figures as estimated.';
 
 // ── 6. Net-worth history ─────────────────────────────────────────────────────
 
@@ -44,7 +150,10 @@ export const getNetWorthHistory: ToolDefinition = {
     'ago". `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today\'s unrestricted `liquid` when such accounts exist; `checking` is the checking bucket alone — there ' +
     'is deliberately no field called "cash". Ask for `granularity: "monthly"` to get one ' +
     'point per calendar month. A point whose net worth could not be established is returned ' +
-    'as null WITH a reason; read `coverage` before describing older history as fact. For an ' +
+    'as null WITH a reason; read `coverage` before describing older history as fact. A point ' +
+    'with `partial: true` lies before the balance-history floor: the metrics it names in ' +
+    '`partialMetrics` are null because they are NOT KNOWABLE that day (not zero) — never state, ' +
+    'estimate or subtract them; `estimated: true` means a debt is held at today\'s balance. For an ' +
     'EXACT date — the first or last time something crossed a number, a highest or a lowest — ' +
     'use `find_in_balance_history` instead: a long series here is downsampled and the day you ' +
     'need may not be in it.',
@@ -76,7 +185,14 @@ export const getNetWorthHistory: ToolDefinition = {
     // row was reported as a fact and the model told the user he had negative net
     // worth in early 2025.
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
-    const section = projectSnapshotSection(rows as Snapshot[], 'full');
+    // PB-8c — the floors come from the transcript's own coverage phase
+    // (ctx.balanceCoverage), never from this call's transaction. Only a context
+    // with NO phase runner — whose client holds no transaction to abort — reads
+    // them here. S2 sweep — FAIL CLOSED: a failed read (or a phase with no
+    // provider) is UNAVAILABLE, so `change` is withheld and the payload says why.
+    const balanceCoverage = await historyCoverage(ctx, rows.length);
+    const section = projectSnapshotSection(rows as Snapshot[], 'full', balanceCoverage);
+    const estimatedOn = new Map((rows as Snapshot[]).map((r) => [r.date.slice(0, 10), r.isEstimated === true]));
     if (!section) {
       return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history');
     }
@@ -119,7 +235,7 @@ export const getNetWorthHistory: ToolDefinition = {
     // model quoted the smaller one, built debt advice on it, and only corrected
     // when the user pushed back. A model cannot reconcile two fields that share a
     // name and not a population, and it should never have to.
-    const pt = (p: (typeof inRange)[number]) => ({
+    const pt = (p: (typeof inRange)[number]): BalanceHistoryPoint => ({
       date: p.date,
       // Null means EXPLICITLY UNKNOWN and always travels with its reason.
       netWorth: p.netWorth, totalAssets: p.totalAssets,
@@ -134,6 +250,10 @@ export const getNetWorthHistory: ToolDefinition = {
       // RWA-2B — present only when the real-asset part of this point is modeled.
       ...(p.realAssetsModeled ? { realAssetsModeled: true } : {}),
     });
+    // PB-8d — what the model READS: every point masked before the floor. The
+    // change block below gates itself and is computed from the unmasked `pt`.
+    const shown = (p: (typeof inRange)[number]) => maskBalancePoint(pt(p), balanceCoverage, estimatedOn.get(p.date));
+    const partialPoints = picked.filter((p) => partialMetricsOn(balanceCoverage, p.date).length > 0).length;
 
     const unassertable = picked.filter((p) => p.netWorth === null);
     const firstAssertable = inRange.find((p) => p.netWorth !== null)?.date ?? null;
@@ -175,6 +295,13 @@ export const getNetWorthHistory: ToolDefinition = {
             + 'component could not be valued for that date. Do not state them as amounts, '
             + 'and do not treat a series containing them as a complete trend.'
           : null,
+        // PB-8c — before this date some accounts have no balance history, so a
+        // point there is partial and no change may be measured across it.
+        ...(section.partialHistory ? { partialHistory: section.partialHistory } : {}),
+        // PB-8d — how many returned points are withheld before the floor.
+        ...(partialPoints > 0 ? { pointsPartial: partialPoints, partialPointsNote: PARTIAL_POINTS_NOTE } : {}),
+        // S2 sweep — the coverage read FAILED: points are unvouched, `change` is withheld.
+        ...unreadableCoverageBlock(balanceCoverage),
         historyAvailableFrom: section.oldestDate,
         historyAvailableTo:   section.newestDate,
         ...(clamped ? { maxPointsClamped: MAX_DAILY_POINTS } : {}),
@@ -187,7 +314,7 @@ export const getNetWorthHistory: ToolDefinition = {
             + 'those dates are unaffected. Describe such net worth as modeled or estimated, never observed.',
         } : {}),
       },
-      first: pt(inRange[0]), last: pt(inRange[inRange.length - 1]),
+      first: shown(inRange[0]), last: shown(inRange[inRange.length - 1]),
       // ⚠️ MEASURED MOVEMENT, NOT ATTRIBUTION. Each entry is the closing
       // observation minus the opening one for that metric, computed by
       // `observedChange` and carrying the dates it actually compared. Nothing
@@ -195,8 +322,8 @@ export const getNetWorthHistory: ToolDefinition = {
       // not income received, and debt falling is a debt fact whose effect on net
       // worth is the reader's to state. A metric that could not be established at
       // either end is absent rather than zero.
-      change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1])),
-      series: picked.map(pt),
+      change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1]), balanceCoverage, estimatedOn),
+      series: picked.map(shown),
     };
   },
 };
@@ -243,7 +370,9 @@ export const findInBalanceHistory: ToolDefinition = {
     '"when did I cross above/below". ALWAYS use this rather than reading dates off a ' +
     'series yourself: it checks every observation in the range, while a long history ' +
     'series is downsampled and may not even contain the day you need. Returns the ' +
-    'matching observation, the observation before it, and the coverage it searched.',
+    'matching observation, the observation before it, and the coverage it searched. Days ' +
+    'before the balance-history floor are NOT KNOWABLE and are not searched (`coverage.' +
+    'observationsPartial`); an answer flagged `estimated` includes a debt held at today\'s balance.',
   parameters: obj({
     metric: { type: 'string', enum: Object.keys(BALANCE_METRICS),
       description: 'Which balance. `liquid` is the recorded checking + savings balance; historical snapshots do not separate restricted accounts such as an HSA, so it is not comparable to today\'s unrestricted `liquid` when such accounts exist; `checking` is the '
@@ -274,7 +403,10 @@ export const findInBalanceHistory: ToolDefinition = {
     const ceiling = ctx.asOfISO;
     const to = clampToCeiling((a.to as string) || ceiling, ceiling);
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
-    const section = projectSnapshotSection(rows as Snapshot[], 'full');
+    // PB-8d — the same floors as the series tool, from the same source (see there).
+    const balanceCoverage = await historyCoverage(ctx, rows.length);
+    const estimatedOn = new Map((rows as Snapshot[]).map((r) => [r.date.slice(0, 10), r.isEstimated === true]));
+    const section = projectSnapshotSection(rows as Snapshot[], 'full', balanceCoverage);
     // ⚠️ THE CONTRACT OF THIS TOOL IS "THE FIRST DAY DEBT HIT $0", so an empty
     // series does not merely fail to answer it — it answers it WRONGLY unless the
     // emptiness is established. This is the site the absence contract was written
@@ -301,10 +433,15 @@ export const findInBalanceHistory: ToolDefinition = {
     // ⚠️ AN UNESTABLISHED VALUE IS NOT A LOW AND NOT A ZERO. Points the
     // assembler refused are removed from the scan and counted, so "crypto could
     // not be valued for 407 days" can never become "your net worth bottomed out".
+    // PB-8d — a day before this metric's balance-history floor is NOT KNOWABLE:
+    // withheld from the scan exactly like an unestablished one, and counted apart
+    // so "no history yet" is never told as "could not be valued".
+    const partialDay = (iso: string) => partialMetricsOn(balanceCoverage, iso).includes(metric);
+    const partialCount = inRange.filter((p) => partialDay(p.date)).length;
     const usable = inRange
-      .map((p) => ({ date: new Date(`${p.date}T00:00:00.000Z`), value: valueOf(p) }))
+      .map((p) => ({ date: new Date(`${p.date}T00:00:00.000Z`), value: partialDay(p.date) ? null : valueOf(p) }))
       .filter((p): p is { date: Date; value: number } => p.value !== null);
-    const unassertable = inRange.length - usable.length;
+    const unassertable = inRange.length - usable.length - partialCount;
 
     const coverage = {
       window: { from, to },
@@ -318,7 +455,25 @@ export const findInBalanceHistory: ToolDefinition = {
       ...(unassertable > 0 ? { note:
         `${unassertable} observation(s) in this range could not be established and were `
         + 'not searched. They are not zeroes.' } : {}),
+      ...(partialCount > 0 ? {
+        observationsPartial: partialCount,
+        partialNote: `${partialCount} observation(s) lie before the balance-history floor `
+          + `(${balanceCoveredFromISO(balanceCoverage, balanceCoverageSidesFor(POINT_METRIC_SERIES[metric]))}): `
+          + 'some accounts had no history yet, so the value is NOT KNOWABLE there and those days were not '
+          + 'searched. Never state a first, last, highest or lowest from before that date.',
+      } : {}),
     };
+
+    // S2 sweep — the coverage read FAILED, so no floor is known: any day found
+    // may lie before the history of some accounts. The answer is WITHHELD with
+    // the reason (the series tool withholds its `change` the same way).
+    // Only for a metric balance coverage governs: investments / digitalAssets have no
+    // balance sides, so a coverage outage changes nothing about their answer.
+    if (isBalanceCoverageUnavailable(balanceCoverage) && balanceCoverageSidesFor(POINT_METRIC_SERIES[metric]).length > 0) {
+      return { metric, operation, ...(threshold !== undefined ? { threshold } : {}),
+        result: null, unavailable: 'BALANCE_HISTORY_COMPLETENESS_UNREADABLE',
+        coverage: { ...coverage, ...unreadableCoverageBlock(balanceCoverage) } };
+    }
 
     // ⚠️ TWO DIFFERENT ANSWERS, NEVER THE SAME ONE. "It never happened in a range
     // I can see" and "I cannot see that range" are opposite statements, and a
@@ -350,8 +505,14 @@ export const findInBalanceHistory: ToolDefinition = {
       result: {
         date: matchDate,
         value: found.match.value,
+        // PB-8d — the matched day holds a debt at today's balance (no history).
+        ...(metric === 'debt' || metric === 'netWorth'
+          ? (isEstimatedOn(balanceCoverage, matchDate, estimatedOn.get(matchDate)) ? { estimated: true } : {}) : {}),
         ...(found.previous
-          ? { previousObservation: { date: isoDay(found.previous.date), value: found.previous.value } }
+          ? { previousObservation: { date: isoDay(found.previous.date), value: found.previous.value,
+              ...((metric === 'debt' || metric === 'netWorth')
+                && isEstimatedOn(balanceCoverage, isoDay(found.previous.date), estimatedOn.get(isoDay(found.previous.date)))
+                ? { estimated: true } : {}) } }
           : {}),
         // RWA-2B — the matched day's net worth rests partly on a modeled real-asset value.
         ...(modeledDates.has(matchDate) ? { realAssetsModeled: true } : {}),
@@ -403,20 +564,55 @@ interface ChangeableSnapshotPoint {
 }
 type ChangeMetric = Exclude<keyof ChangeableSnapshotPoint, 'date'>;
 
-function changeBlock(first: ChangeableSnapshotPoint, last: ChangeableSnapshotPoint) {
+/**
+ * PB-8c — each metric's series, in the Wealth vocabulary `balanceCoverageSidesFor`
+ * maps to the balance sides it is composed from (investments / crypto: neither).
+ */
+const CHANGE_METRIC_SERIES: Record<ChangeMetric, string> = {
+  netWorth: 'netWorth', liquid: 'cash', checking: 'cash',
+  investments: 'invested', digitalAssets: 'invested', debt: 'totalLiabilities',
+};
+
+export function changeBlock(
+  first: ChangeableSnapshotPoint, last: ChangeableSnapshotPoint,
+  balanceCoverage: BalanceCoverageRead = null,
+  estimatedOn: ReadonlyMap<string, boolean> = new Map(),
+) {
   const metrics: ChangeMetric[] =
     ['netWorth', 'liquid', 'checking', 'investments', 'digitalAssets', 'debt'];
   const at = (p: ChangeableSnapshotPoint, k: ChangeMetric) =>
     (typeof p[k] === 'number' ? { date: new Date(`${p.date}T00:00:00.000Z`), value: p[k] } : null);
   const out: Record<string, unknown> = {};
+  const unavailable: Record<string, string> = {};
+  let coveredFrom: string | null = null;
   for (const m of metrics) {
     const c = observedChange(at(first, m), at(last, m));
-    if (c) out[m] = { from: c.fromValue, to: c.toValue, abs: round2(c.abs), pct: c.pct };
+    // PB-8c — the same rule as the heroes: across the balance-history floor the
+    // figure is withheld and its REASON takes its place; estimated ⇒ marked.
+    const g = c ? changeComparability(balanceCoverage, balanceCoverageSidesFor(CHANGE_METRIC_SERIES[m]), {
+      fromISO: first.date, toISO: last.date,
+      fromEstimated: estimatedOn.get(first.date), toEstimated: estimatedOn.get(last.date),
+    }) : null;
+    const withheld = g ? withheldChangeOf(g) : null;
+    if (withheld) { unavailable[m] = withheld.message; coveredFrom = withheld.coveredFrom; continue; }
+    if (c) out[m] = { from: c.fromValue, to: c.toValue, abs: round2(c.abs), pct: c.pct,
+      ...(g?.state === 'estimated' ? { estimated: true } : {}) };
   }
-  if (Object.keys(out).length === 0) return null;
+  if (Object.keys(out).length === 0 && Object.keys(unavailable).length === 0) return null;
   return {
     between: { from: first.date, to: last.date },
     ...out,
+    ...(Object.keys(unavailable).length > 0 ? {
+      unavailable,
+      unavailableMeaning: coveredFrom === null
+        // S2 sweep — the coverage read FAILED: no floor is known, so no change is measured.
+        ? `These changes are NOT measured: ${BALANCE_COVERAGE_UNREADABLE_NOTE}. `
+          + 'Never state, estimate or recompute a figure for them from the points.'
+        : `These changes are NOT measured: on ${first.date} some accounts had no `
+        + `balance history yet (history is partial before ${coveredFrom}), so the difference would be `
+        + 'those accounts arriving, not a change. Say that history is partial before that date; '
+        + 'never state, estimate or recompute a figure for them from the points.',
+    } : {}),
     meaning: 'Each figure is the closing observation minus the opening one for that metric, '
       + 'in the metric\'s own direction — `debt` negative means debt fell. These are MEASURED '
       + 'movements, not causes: an investments rise is not necessarily a market gain, a cash '

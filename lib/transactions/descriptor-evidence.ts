@@ -59,7 +59,7 @@ const UNRESOLVED_CATEGORY = "Other";
  * phrase they actually use and pin it in descriptor-evidence.test.ts.
  */
 export const PAYROLL_INCOME_DESCRIPTORS: readonly string[] = [
-  "payroll",         // "VECTRUS SYSTEMS PAYROLL", "ACME CORP PAYROLL SEC PPD"
+  "payroll",         // "EMPLOYER A PAYROLL", "ACME CORP PAYROLL SEC PPD"
   "direct dep",      // abbreviated "DIRECT DEP" (exact word match, so it needs the token "dep")
   "direct deposit",  // spelled-out "COMPANY DIRECT DEPOSIT" — a separate entry: "dep" ≠ "deposit"
   "salary",          // "MONTHLY SALARY"

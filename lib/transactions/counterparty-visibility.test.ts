@@ -18,12 +18,12 @@ function check(name: string, ok: boolean, detail?: string): void {
 const visibleLinks = [{ id: "sal_1" }];   // ACTIVE + FULL link to this space (pre-filtered by the query)
 const noLinks: { id: string }[] = [];
 
-// Visible counterparty → id exposed (Feb 27 Coinbase→Chase: both accounts shared).
+// Visible counterparty → id exposed (Feb 27 Example Exchange→Example Bank: both accounts shared).
 check("visible counterparty → id exposed",
   gatedCounterpartyId({
-    counterpartyAccountId: "fa_coinbase",
+    counterpartyAccountId: "fa_exexch",
     counterpartyAccount: { deletedAt: null, spaceAccountLinks: visibleLinks },
-  }) === "fa_coinbase");
+  }) === "fa_exexch");
 
 // Not shared to this space (no visible link) → withheld.
 check("counterparty not shared to space → null (no leak)",

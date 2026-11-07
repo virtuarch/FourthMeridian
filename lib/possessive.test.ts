@@ -1,9 +1,9 @@
 /**
  * lib/possessive.test.ts  (2026-10-07)
  *
- * The product's possessive convention — "Chris'", "James'", "Brandon's",
+ * The product's possessive convention — "Jules'", "James'", "Brandon's",
  * "Alex's" — for strings the product builds (possessive) AND for prose a model
- * wrote (applyPossessiveConvention). Dogfood: Conversations said "Chris's account".
+ * wrote (applyPossessiveConvention). Dogfood: Conversations said "Jules's account".
  *
  *   npx tsx lib/possessive.test.ts
  */
@@ -18,20 +18,20 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 console.log("possessive() — strings the product builds");
-for (const [name, want] of [["Chris", "Chris'"], ["James", "James'"], ["Brandon", "Brandon's"], ["Alex", "Alex's"]]) {
+for (const [name, want] of [["Jules", "Jules'"], ["James", "James'"], ["Brandon", "Brandon's"], ["Alex", "Alex's"]]) {
   check(`${name} → ${want}`, possessive(name) === want, possessive(name));
 }
 
 console.log("applyPossessiveConvention() — prose a model wrote");
 const cases: [string, string][] = [
-  ["Chris's account is up 4%.", "Chris' account is up 4%."],
+  ["Jules's account is up 4%.", "Jules' account is up 4%."],
   ["James's IRA and Brandon's 401(k)", "James' IRA and Brandon's 401(k)"],
   ["Alex's checking", "Alex's checking"],
-  ["Chris’s savings (curly apostrophe)", "Chris’ savings (curly apostrophe)"],
+  ["Jules’s savings (curly apostrophe)", "Jules’ savings (curly apostrophe)"],
   ["the bus's schedule", "the bus's schedule"],
   ["the US's rates", "the US's rates"],
-  ["Chris' account (already right)", "Chris' account (already right)"],
-  ["Wells Fargo's fee", "Wells Fargo's fee"],
+  ["Jules' account (already right)", "Jules' account (already right)"],
+  ["Institution D's fee", "Institution D's fee"],
   ["\"It's\" stays; it's lowercase", "\"It's\" stays; it's lowercase"],
 ];
 for (const [input, want] of cases) {

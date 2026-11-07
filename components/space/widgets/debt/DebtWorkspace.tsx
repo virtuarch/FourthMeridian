@@ -58,6 +58,10 @@ import { DebtHero, debtCompactKpiItems, debtHeroNotes, type DebtWindowChange } f
 import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
+import { debtWindowChange } from "./debt-trend-points";
+import { useSpaceIdContext } from "@/components/space/space-id-context";
+import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
+import { BalanceCoverageNote } from "@/components/space/widgets/shared/BalanceCoverageNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
 import { DebtCompositionCard } from "./DebtCompositionCard";
@@ -216,15 +220,12 @@ export function DebtWorkspace({
 
   // Balance-history WINDOW delta for the hero (snapshot basis — the same figure the
   // chart states). Only real when ≥2 in-window points exist; never invented.
-  const change = useMemo<DebtWindowChange | null>(() => {
-    const pts = history?.points ?? [];
-    if (pts.length < 2) return null;
-    const first = pts[0];
-    const last = pts[pts.length - 1];
-    const abs = last.totalDebt - first.totalDebt;
-    const pct = first.totalDebt !== 0 ? (abs / first.totalDebt) * 100 : null;
-    return { abs, pct, fromLabel: formatDate(first.date) };
-  }, [history]);
+  // PB-8b — never across a liability's balance-history floor: withheld, and said.
+  const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
+  const { change, withheld: changeWithheld } = useMemo<{ change: DebtWindowChange | null; withheld: string | null }>(
+    () => debtWindowChange(history, balanceCoverage),
+    [history, balanceCoverage],
+  );
 
   // The lens verdict SENTENCE (prose only — never a figure of record). status !== "ok"
   // ⇒ no prose (absent/empty/error). Its freshness + redaction count ride along.
@@ -321,6 +322,7 @@ export function DebtWorkspace({
           today={today}
           historical={historical}
           change={change}
+          changeWithheld={changeWithheld}
           envelope={heroEnvelope}
           verdict={verdict}
           verdictAsOf={verdictAsOf}
@@ -353,6 +355,9 @@ export function DebtWorkspace({
           compareTo={compareTo}
           onSelectPoint={handleSelectPoint}
         />
+        {/* PB-8 — before a liability's balance-history floor the debt history is
+            partial: said under the chart, never read as $0 owed. */}
+        <BalanceCoverageNote from={history?.points[0]?.date ?? null} metric="totalLiabilities" />
         {/* v2.7 header parity — the headline's qualifying disclosures live UNDER
             THE CHART (every width), never in / below the header. */}
         <HeroNotes notes={debtHeroNotes({ historical, asOf, redactions })} />

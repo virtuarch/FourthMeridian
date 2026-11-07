@@ -20,14 +20,17 @@
  * split idiom (OPS-4 S5), applied to alerting.
  */
 
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSignal } from "@/lib/alerts/rules";
-import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth } from "@/lib/alerts/authorities";
+import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth, AiSpendAnomalyFacts, PlaidCallAnomalyFacts } from "@/lib/alerts/authorities";
+import { ANOMALY_DEFINITION, ANOMALY_DEFINITION_ID, anomalyBasis, judgeAnomaly } from "@/lib/alerts/anomaly";
 import { incidentLabel, type SyncIssueDomain } from "@/lib/platform/sync-issue-semantics";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import type { AlertFlapRecord, AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -179,9 +182,10 @@ export function evaluateProviderUnhealthy(rule: AlertRuleDefinition, conn: Conne
 }
 
 /**
- * OBS-004 — active sync incidents → one critical signal PER PLAID ITEM (or per
- * episode when the episode names no Item). The semantic authority decided
- * "active" and "critical" upstream; this reads those verdicts and groups them
+ * OBS-004 — alertable sync incidents → one critical signal PER PLAID ITEM (or per
+ * episode when the episode names no Item). The incident-intelligence module
+ * decided `alertable` and the severity upstream (PB-1 R5: the fold keeps only
+ * alertable verdicts); this keeps severity "critical" and groups them
  * so one Item with several critical episodes is one breach, and two Items are
  * two. The dedupe key carries the opaque Item id, so a second customer's
  * incident inside the re-notify window pages on its own clock. No `detail`,
@@ -288,7 +292,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
  *                          figures above are partial and the summary says so.
  *    ai-spend-user-high
  *      :user:<day>:<ref>   the largest per-customer estimated USD ≥ user threshold —
- *                          same two levels; the key carries the OPAQUE "user …abc123"
+ *                          same two levels; the key carries the OPAQUE "user #3fa9c21b"
  *                          reference, never an email.
  *  Every summary names the estimated USD and the threshold it was judged
  *  against, and carries the unpriced line as its own sentence. */
@@ -312,6 +316,26 @@ export function evaluateAiSpendFleetHigh(rule: AlertRuleDefinition, spend: AiSpe
       summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet threshold of $${spend.thresholds.fleetUsd} (${spend.customerInvocations} invocations, ${spend.customers} customer(s); estimate, not a bill).${unpricedLine}`,
     });
   }
+  // SEC-AI-001 — the OPTIONAL hard fleet ceiling, on the same rule and dedupe
+  // family: when the priced fleet spend has reached it, customers' next turns
+  // are being REFUSED (FLEET_CEILING_REACHED, lib/platform/ai/allowance-reservation.ts).
+  // Absent unless a ceiling is set, so a fleet with no ceiling signals exactly as before.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd !== null && spend.fleetUsd >= spend.fleetCeilingUsd) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "critical",
+      dedupeKey: `${rule.id}:ceiling:${day}`,
+      summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet daily ceiling of $${spend.fleetCeilingUsd}. New Conversations turns and Daily Brief generations are being refused until the window falls below it (estimate, not a bill).${unpricedLine}`,
+    });
+  }
+  // S2 ruling (a) — a set ceiling the fold cannot price is NOT enforced (the
+  // reservation fails open); that is never silent.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd === null && spend.customerInvocations > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:ceiling-unenforceable:${day}`,
+      summary: `Fleet ceiling set ($${spend.fleetCeilingUsd}) but fleet spend could not be priced — not enforced. ${spend.customerInvocations} customer invocation(s) in the last ${spend.windowHours}h, none priced.${unpricedLine}`,
+    });
+  }
   if (spend.unpricedInvocations > 0) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: "warning",
@@ -330,7 +354,7 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
   if (spend.maxUserUsd !== null && spend.maxUserRef && spend.maxUserUsd >= spend.thresholds.userUsd) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: spendLevel(spend.maxUserUsd, spend.thresholds.userUsd),
-      dedupeKey: `${rule.id}:user:${day}:${spend.maxUserRef.slice(-6)}`,
+      dedupeKey: `${rule.id}:user:${day}:${spend.maxUserDedupe ?? opaqueRefToken(spend.maxUserRef) ?? "unattributed"}`,
       summary: `One customer (${spend.maxUserRef}) caused an estimated ${usd(spend.maxUserUsd)} of AI spend in the last ${spend.windowHours}h — at or above the per-customer threshold of $${spend.thresholds.userUsd}`
         + (spend.customersAtOrOverThreshold > 1 ? ` (${spend.customersAtOrOverThreshold} customers are at or above it; the largest is named)` : "")
         + ` (estimate, not a bill).${unpricedLine}`,
@@ -344,7 +368,7 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
  *  on its own clock), plus one `:unlisted` breach when the authority's capped list is a
  *  floor. Critical while the fail-closed switch is enforced (the customer is being
  *  refused now); warning while it is off. The authority decided who is affected; this
- *  only words it. Opaque `user …abc123` references only — never an email or a name. */
+ *  only words it. Opaque `user #3fa9c21b` references only — never an email or a name. */
 export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
   if (p.total <= 0) return [];
   // Review fix: while the switch is OFF nothing is refused, and legacy accounts
@@ -358,7 +382,7 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
     ruleId: rule.id, kind: rule.kind, severity,
     // Severity in the key, so a state change is never suppressed by an older,
     // lower-severity breach inside the re-notify window.
-    dedupeKey: `${rule.id}:${severity}:${i.ref.slice(-6)}`,
+    dedupeKey: `${rule.id}:${severity}:${i.dedupe}`,
     summary: i.reason === "UNASSIGNED"
       ? `Customer ${i.ref} has no policy-group assignment — ${state}. Assign a valid policy group in Customer Success.`
       : `Customer ${i.ref} is assigned unknown policy group "${i.unknownKey ?? ""}" — ${state}. Assign a valid policy group in Customer Success.`,
@@ -373,6 +397,85 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
   return out;
 }
 
+// ── Quota / cost anomaly (anomaly@1) ────────────────────────────────────────────
+
+/** An evaluator that may decline to judge: `notEvaluable` says why (never a breach, never a recovery). */
+export interface AnomalyEvaluation {
+  signals: AlertSignal[];
+  notEvaluable: string | null;
+}
+
+/** The records an operator drills to from an anomaly signal (existing views only). */
+export const AI_CALLS_RECORDS_HREF = "/dashboard/platform/PLATFORM_OPS?workspace=platform-ai&aicalls=budget";
+export const PLAID_USAGE_RECORDS_HREF = "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers";
+
+/** The AI calls drilldown for the exact window the signal judged (aiuntil = its end). */
+export function aiCallsRecordsHref(checkedAtISO: string): string {
+  const ms = Date.parse(checkedAtISO);
+  return Number.isNaN(ms) ? AI_CALLS_RECORDS_HREF : `${AI_CALLS_RECORDS_HREF}&aiuntil=${ms}`;
+}
+
+const callsFmt = (n: number) => `${Math.round(n)} calls`;
+
+/** Fleet customer-surface AI spend, 24 h vs the 7-window median. One breach per UTC day. */
+export function evaluateAiSpendAnomaly(rule: AlertRuleDefinition, f: AiSpendAnomalyFacts): AnomalyEvaluation {
+  const j = judgeAnomaly({ current: f.fleet.current, baseline: f.fleet.baseline, floor: ANOMALY_DEFINITION.floors.aiFleetUsd });
+  if (j.verdict === "NOT_EVALUABLE") return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${j.reason}` };
+  if (j.verdict === "NORMAL") return { signals: [], notEvaluable: null };
+  return {
+    notEvaluable: null,
+    signals: [{
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:fleet:${f.checkedAt.slice(0, 10)}`,
+      summary: `AI spend jump across customer surfaces: ${anomalyBasis(j, usd, `${f.windowHours}h`)} — at least ×${ANOMALY_DEFINITION.ratio} and $${ANOMALY_DEFINITION.floors.aiFleetUsd}. Estimate, not a bill. Records: ${aiCallsRecordsHref(f.checkedAt)}`,
+    }],
+  };
+}
+
+/** One customer's AI spend, 24 h vs their own 7-window median. One breach per customer per UTC day, opaque refs only. */
+export function evaluateAiSpendUserAnomaly(rule: AlertRuleDefinition, f: AiSpendAnomalyFacts): AnomalyEvaluation {
+  // Rule-level: per-customer figures are only defined when every window is fully priced.
+  const unpriced = [f.fleet.current, ...f.fleet.baseline].filter((w) => w.kind === "UNPRICED" || w.kind === "UNREADABLE").length;
+  if (unpriced > 0) {
+    return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${unpriced} window(s) hold calls the rate card cannot price, so no customer's figure can be compared` };
+  }
+  if (f.fleet.current.kind !== "VALUE") {
+    return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: nothing was recorded in the current window (unavailable, never $0)` };
+  }
+  const out: AlertSignal[] = [];
+  let shortHistory = 0;
+  for (const c of f.customers) {
+    const j = judgeAnomaly({ current: c.current, baseline: c.baseline, floor: ANOMALY_DEFINITION.floors.aiCustomerUsd });
+    if (j.verdict === "NOT_EVALUABLE") { shortHistory++; continue; }
+    if (j.verdict !== "ANOMALOUS") continue;
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:${f.checkedAt.slice(0, 10)}:${c.dedupe}`,
+      summary: `AI spend jump for one customer (${c.ref}): ${anomalyBasis(j, usd, `${f.windowHours}h`)} — at least ×${ANOMALY_DEFINITION.ratio} and $${ANOMALY_DEFINITION.floors.aiCustomerUsd}. Estimate, not a bill. Records: ${aiCallsRecordsHref(f.checkedAt)}`,
+    });
+  }
+  // Every customer lacking history is NOT a rule-level gap — the rule judged the others.
+  const notEvaluable = f.customers.length > 0 && shortHistory === f.customers.length
+    ? `${ANOMALY_DEFINITION_ID}: none of the ${f.customers.length} active customer(s) has ${ANOMALY_DEFINITION.minBaselineWindows} active prior windows`
+    : null;
+  return { signals: out, notEvaluable };
+}
+
+/** Plaid calls on the last complete UTC day vs the 7 days before it. One breach per day. */
+export function evaluatePlaidCallAnomaly(rule: AlertRuleDefinition, f: PlaidCallAnomalyFacts): AnomalyEvaluation {
+  const j = judgeAnomaly({ current: f.current, baseline: f.baseline, floor: ANOMALY_DEFINITION.floors.plaidCalls });
+  if (j.verdict === "NOT_EVALUABLE") return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${j.reason}` };
+  if (j.verdict === "NORMAL") return { signals: [], notEvaluable: null };
+  return {
+    notEvaluable: null,
+    signals: [{
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:${f.dayISO}`,
+      summary: `Plaid call volume jump on ${f.dayISO} (UTC): ${anomalyBasis(j, callsFmt, "day")} — at least ×${ANOMALY_DEFINITION.ratio} and ${ANOMALY_DEFINITION.floors.plaidCalls} calls. Records: ${PLAID_USAGE_RECORDS_HREF}`,
+    }],
+  };
+}
+
 // ── THE canonical evaluation ────────────────────────────────────────────────────
 
 /**
@@ -385,7 +488,29 @@ export function evaluateAlertRules(
   isEnabled: (ruleId: string) => boolean,
   rules: readonly AlertRuleDefinition[] = ALERT_RULES,
 ): AlertSignal[] {
+  return evaluateAlertRulesDetailed(authorities, isEnabled, rules).signals;
+}
+
+/**
+ * The same evaluation, plus WHY a rule could not judge this cycle (anomaly
+ * rules only: unpriced spend, nothing recorded, short history). A rule absent
+ * from `notEvaluable` either judged or has no such notion. An anomaly rule
+ * whose authority did not gather is reported not evaluable too, so a silent
+ * rule is never mistaken for a healthy one.
+ */
+export function evaluateAlertRulesDetailed(
+  authorities: AuthorityOutputs,
+  isEnabled: (ruleId: string) => boolean,
+  rules: readonly AlertRuleDefinition[] = ALERT_RULES,
+): { signals: AlertSignal[]; notEvaluable: Map<string, string> } {
   const signals: AlertSignal[] = [];
+  const notEvaluable = new Map<string, string>();
+  const anomaly = (rule: AlertRuleDefinition, facts: unknown, run: () => AnomalyEvaluation) => {
+    if (!facts) { notEvaluable.set(rule.id, `${ANOMALY_DEFINITION_ID}: the usage authority did not gather this cycle`); return; }
+    const r = run();
+    signals.push(...r.signals);
+    if (r.notEvaluable) notEvaluable.set(rule.id, r.notEvaluable);
+  };
   for (const rule of rules) {
     if (!rule.live || !isEnabled(rule.id)) continue;
     switch (rule.kind) {
@@ -416,13 +541,22 @@ export function evaluateAlertRules(
       case "policy-assignment":
         if (authorities.policyAssignments) signals.push(...evaluatePolicyAssignmentInvalid(rule, authorities.policyAssignments));
         break;
+      case "ai-spend-anomaly":
+        anomaly(rule, authorities.aiSpendAnomaly, () => evaluateAiSpendAnomaly(rule, authorities.aiSpendAnomaly!));
+        break;
+      case "ai-spend-user-anomaly":
+        anomaly(rule, authorities.aiSpendAnomaly, () => evaluateAiSpendUserAnomaly(rule, authorities.aiSpendAnomaly!));
+        break;
+      case "plaid-call-anomaly":
+        anomaly(rule, authorities.plaidCallAnomaly, () => evaluatePlaidCallAnomaly(rule, authorities.plaidCallAnomaly!));
+        break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;
         // this arm exists only for switch exhaustiveness.
         break;
     }
   }
-  return signals;
+  return { signals, notEvaluable };
 }
 
 // ── Suppression (suppress-while-open across cycles) ─────────────────────────────
@@ -460,6 +594,40 @@ export function decideDeliveries(
 export interface AlertEmailData {
   evaluatedAtISO: string;
   alerts: { title: string; severity: AlertSeverity; summary: string }[];
+  /**
+   * ALERT RECOVERY — the template's "resolved" variant. Present only on a
+   * recovery email (one per recovered breach); a firing email omits it and
+   * renders exactly as before.
+   */
+  resolved?: AlertResolvedEmailData;
+  /** FLAP PROTECTION — the "flapping" variant: ONE email when an identity starts flapping. */
+  flapping?: AlertFlappingEmailData;
+}
+
+/** One identity that has started flapping, as the `platform-alert` flapping variant renders it. */
+export interface AlertFlappingEmailData {
+  ruleId: string;
+  ruleTitle: string;
+  dedupeKey: string;
+  /** Recoveries inside the window, this one included. */
+  recoveries: number;
+  threshold: number;
+  windowHours: number;
+  stableAfterEvaluations: number;
+}
+
+/** One recovered breach, as the `platform-alert` resolved variant renders it. */
+export interface AlertResolvedEmailData {
+  ruleId: string;
+  ruleTitle: string;
+  dedupeKey: string;
+  firstFiredAtISO: string;
+  clearedAtISO: string;
+  durationLabel: string;
+  /** "stable" — the one email that ends a flapping period; absent on an ordinary recovery. */
+  variant?: "stable";
+  /** "stable" only — the HIGHEST severity reached during the flap, so a critical episode inside it is never hidden. */
+  peakSeverity?: AlertSeverity;
 }
 
 /** Build the email payload for the signals being delivered (critical first). */
@@ -496,6 +664,13 @@ export interface AlertRuleOutcome {
   firing: boolean;
   breaches: number;
   severity: AlertSeverity | null;
+  /**
+   * Quota/cost anomaly — why the rule could not judge this cycle (anomaly@1:
+   * unpriced spend, nothing recorded, short history, authority not gathered).
+   * Absent / null = it judged, or the rule has no such notion. A not-evaluable
+   * rule is neither firing nor healthy. Optional: older summaries lack it.
+   */
+  notEvaluable?: string | null;
 }
 
 /**
@@ -509,11 +684,13 @@ export interface AlertRuleOutcome {
  *                       so the message went to a buffer nobody reads
  *   NO_DESTINATION      PLATFORM_ALERTS_EMAIL is unset
  *   SEND_ERROR          the transport attempted a send and failed
+ *   EXPIRED             ALERT RECOVERY only — a cleared breach's recovery could
+ *                       not be delivered within 7 days and was dropped
  *   LEDGER_WRITE_FAILED OBS-015 — this run's own JobRun start row failed to
  *                       write; delivery was circuit-broken because suppression
  *                       cannot persist (an alert storm would follow)
  */
-export type AlertUndeliveredReason = "NO_EMAIL_TRANSPORT" | "NO_DESTINATION" | "SEND_ERROR" | "LEDGER_WRITE_FAILED";
+export type AlertUndeliveredReason = "NO_EMAIL_TRANSPORT" | "NO_DESTINATION" | "SEND_ERROR" | "LEDGER_WRITE_FAILED" | "EXPIRED";
 export interface AlertUndelivered {
   reason: AlertUndeliveredReason;
   breaches: number;
@@ -549,9 +726,23 @@ export interface AlertRunSummary {
   deliveryStatus: "none" | "sent" | "captured" | "skipped" | "error";
   /** OBS-003 — set whenever firing breaches were due and did NOT reach a real transport. Null when nothing was lost. */
   undelivered?: AlertUndelivered | null;
-  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number };
+  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number; recovered?: number; recoveryExpired?: number };
   rules: AlertRuleOutcome[];
   fired: AlertFiredRecord[];
+  /**
+   * ALERT RECOVERY (lib/alerts/recovery.ts) — the delivered breaches still being
+   * tracked until they recover: THE recovery state, carried run to run. Absent
+   * on rows written before the feature (the next run seeds it from `fired`).
+   */
+  open?: AlertOpenRecord[];
+  /** ALERT RECOVERY — recovery emails delivered by this run (the dedupe record: never re-sent). */
+  recovered?: AlertRecoveredRecord[];
+  /** ALERT RECOVERY — recoveries that were due and NOT delivered, with why (the same reasons as `undelivered`). Null when nothing was lost. */
+  recoveryUndelivered?: AlertUndelivered | null;
+  /** FLAP PROTECTION — per-identity flap state (recent recoveries, flapping period), carried run to run. */
+  flap?: AlertFlapRecord[];
+  /** FLAP PROTECTION — flapping-notice keys delivered by this run (the dedupe record). */
+  flapNotices?: string[];
 }
 
 /**

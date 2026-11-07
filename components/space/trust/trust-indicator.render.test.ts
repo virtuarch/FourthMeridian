@@ -33,7 +33,7 @@ const render = (envelope: PerspectiveEnvelope, variant: "compact" | "inline" | "
 console.log("1. The clean tier is silent on a hero");
 check("compact + Observed ⇒ renders NOTHING (no child 'Observed' badge)", render({ completeness: tier("observed") }) === "");
 check("…even with evidence attached (no 'N accounts' chip leaks in)",
-  render({ completeness: tier("observed"), evidence: { label: "2 accounts", rows: [{ date: "2026-09-20", label: "Chase", tier: "observed" }] } }) === "");
+  render({ completeness: tier("observed"), evidence: { label: "2 accounts", rows: [{ date: "2026-09-20", label: "Example Bank", tier: "observed" }] } }) === "");
 
 console.log("2. A tier that changes how the figure reads still shows");
 for (const t of ["derived", "estimated", "incomplete", "unknown"] as const) {

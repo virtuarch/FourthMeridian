@@ -23,6 +23,10 @@ import { resolveControlValue } from "./cost-controls-core";
 import { AI_COST_CONTROL_KEYS, AI_COST_CONTROL_SETTING_KEYS, AI_SPEND_RULE_IDS } from "./cost-controls.types";
 import { AI_PAUSED_CUSTOMER_MESSAGE } from "./paid-requests-admission";
 import type { AlertRunSummary } from "@/lib/alerts/evaluate";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -159,7 +163,7 @@ async function main() {
     check("every control present with its setting key", AI_COST_CONTROL_KEYS.every((c) => [m.allowance.enforced, m.allowance.usd, m.userAlert.enabled, m.userAlert.thresholdUsd, m.fleetAlert.enabled, m.fleetAlert.thresholdUsd, m.killSwitch.paused].some((v) => v.control === c && v.settingKey === K[c])));
     check("the platform allowance 8 is SETTING by Dana Ops; the effective default is PLATFORM_SETTING 8 under ceiling 20", m.allowance.usd.value === 8 && m.allowance.usd.updatedByName === "Dana Ops" && m.allowance.effectiveDefaultUsd === 8 && m.allowance.effectiveDefaultSource === "PLATFORM_SETTING" && m.allowance.ceilingUsd === 20);
     check("defaults: enforced true DEFAULT, thresholds 3 / 10 DEFAULT, alerts enabled DEFAULT", m.allowance.enforced.value === true && m.allowance.enforced.origin === "DEFAULT" && m.userAlert.thresholdUsd.value === 3 && m.fleetAlert.thresholdUsd.value === 10 && m.userAlert.enabled.value && m.fleetAlert.enabled.origin === "DEFAULT");
-    check("overrides: count + opaque refs only (no full id), with the usd and version", m.allowance.overrides.count === 1 && m.allowance.overrides.customers[0].ref === "user …abc123" && m.allowance.overrides.customers[0].usd === 12 && !JSON.stringify(m.allowance.overrides).includes("usr_000abc123"));
+    check("overrides: count + opaque refs only (no full id), with the usd and version", m.allowance.overrides.count === 1 && m.allowance.overrides.customers[0].ref === opaqueUserRef("usr_000abc123") && !JSON.stringify(m.allowance.overrides).includes("abc123") && m.allowance.overrides.customers[0].usd === 12 && !JSON.stringify(m.allowance.overrides).includes("usr_000abc123"));
     check("the kill switch is paused (SETTING) and carries the customer sentence", m.killSwitch.paused.value === true && m.killSwitch.paused.origin === "SETTING" && m.killSwitch.customerMessage === AI_PAUSED_CUSTOMER_MESSAGE);
     check("user alert: live, firing now from the LATEST run, last fired + recent newest first", m.userAlert.status.live && m.userAlert.status.firingNow && m.userAlert.status.lastFiredAt === "2026-10-15T12:30:00.000Z".replace(".000", "") && m.userAlert.status.recent.length === 1 && m.userAlert.status.recent[0].severity === "critical");
     check("fleet alert: live, NOT firing now, its own history only", m.fleetAlert.status.live && !m.fleetAlert.status.firingNow && m.fleetAlert.status.recent.length === 1 && m.fleetAlert.status.recent[0].dedupeKey.startsWith("ai-spend-fleet-high:"));

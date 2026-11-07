@@ -110,7 +110,11 @@ type SpaceItem = {
     // longer month-only). Still PAST_MONTH for this card; the card renders the
     // window it is GIVEN rather than assuming which one arrived.
     pct: number | null; abs: number; preset: string;
+    /** PB-8c — an endpoint includes a held-flat debt estimate. */
+    estimated?: true;
   } | null;
+  /** PB-8c — why `change` is null: the month crosses the partial-history floor. */
+  changeWithheld?: { reason: string; coveredFrom: string | null; message: string } | null;
   /** v2.6-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
   freshness?: {
     label: string; anchorObservedAt: string | null; qualifier: string | null;
@@ -414,8 +418,20 @@ function SpaceCard({
               provenance the inside-Space history badges disclose). */}
           <Figure value={hasFigure ? `${space.estimated ? "≈" : ""}${formatCurrencyCompact(space.netWorth, space.currency)}` : "—"} size="lede" />
           {delta !== null && (
-            <p className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}>
-              {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
+            <p
+              className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}
+              {...(space.change?.estimated ? { title: "Estimated change" } : {})}
+            >
+              {/* PB-8c — ≈ marks a change that includes a held-flat debt estimate. */}
+              {space.change?.estimated ? "≈" : ""}{delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
+            </p>
+          )}
+          {/* PB-8c — the 1M change crosses the partial-history floor: said, never a %. */}
+          {delta === null && space.changeWithheld && (
+            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]" title={space.changeWithheld.message}>
+              {/* S2 sweep — a failed coverage read withholds too, with its own short word. */}
+              <span aria-hidden>{space.changeWithheld.reason === "BALANCE_HISTORY_UNREADABLE" ? "Change unavailable" : "Partial history"}</span>
+              <span className="sr-only">{space.changeWithheld.message}</span>
             </p>
           )}
         </div>

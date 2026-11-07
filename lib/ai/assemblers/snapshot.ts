@@ -44,6 +44,7 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+import { ALL_CASH_HISTORY_AI_NOTE, UNRESTRICTED_HISTORY_AI_NOTE, cashHistoryBasisOf, cashOnBasis } from '@/lib/liquidity/cash-history';
 /**
  * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
  * HOLDS NO CLIENT AT ALL.
@@ -64,7 +65,12 @@ import { getRecentSnapshots } from '@/lib/data/snapshots';
 import type { ReadClient } from '@/lib/db/tenant-context';
 // v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
 // read, so the projection below stays reachable from a probe.
-import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
+import { canonicalWindowChange, seriesSpanDays, type CanonicalWindowChange } from '@/lib/data/snapshot-window';
+// PB-8c — the SAME floors and the SAME rule the client heroes use (PB-8b).
+import {
+  BALANCE_COVERAGE_UNREADABLE_NOTE, balanceCoverageNote, balanceCoveredFromISO, balanceCoverageSidesFor, gateWindowChange,
+  isBalanceCoverageUnavailable, type BalanceCoverageRead,
+} from '@/lib/connections/balance-coverage.core';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -116,6 +122,13 @@ const CANONICAL_CHANGE_PRESET = "PAST_MONTH" as const;
 export function projectSnapshotSection(
   rows: Snapshot[],
   scopeHint: 'brief' | 'full',
+  /**
+   * PB-8c — the Space's balance-history floors (lib/connections/balance-coverage).
+   * Null / omitted ⇒ nothing to cover: every change comparable (byte-identical payload).
+   * BALANCE_COVERAGE_UNAVAILABLE (the read FAILED) ⇒ every change withheld and
+   * `balanceHistoryCompleteness` says why (S2 sweep — fail closed).
+   */
+  balanceCoverage: BalanceCoverageRead = null,
 ): SnapshotSectionData | null {
   const usable   = rows.filter((r) => !r.fxMiss);
   const excluded = rows.length - usable.length;
@@ -134,6 +147,9 @@ export function projectSnapshotSection(
   // arithmetically composed WITH the crypto component — on the affected rows it
   // is 41.7%–99.9% of totalAssets. `liabilities`, `liquid`, `investments`,
   // `cashOnHand` and `netLiquid` never involved crypto and stay factual.
+  // FIN-E part 2 — ONE basis for the whole section: UNRESTRICTED only when every
+  // usable row recorded its restricted share; otherwise ALL_CASH (never stitched).
+  const liquidBasis = cashHistoryBasisOf(usable);
   const points: SnapshotDataPoint[] = usable.map((r) => {
     // v2.6-A/B — the AGGREGATE's verdict decides, not one component's boolean.
     // A model must never receive an unassertable Net Worth as a fact, and after
@@ -148,11 +164,12 @@ export function projectSnapshotSection(
       netWorth:      contaminated ? null : r.netWorth,
       totalAssets:   contaminated ? null : r.totalAssets,
       liabilities:   r.totalDebt,                    // rename for semantic clarity
-      liquid:        r.totalCash + r.totalSavings,
+      // FIN-005 / FIN-E — on the section's `liquidBasis` (ALL_CASH: restricted included).
+      liquid:        cashOnBasis(r, liquidBasis),
       investments:   r.totalInvestments,             // rename for semantic clarity
       digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
       cashOnHand:    r.cashOnHand,
-      netLiquid:     r.netLiquid ?? 0,
+      netLiquid:     liquidBasis === 'UNRESTRICTED' ? (r.netLiquid ?? 0) - (r.restrictedCash as number) : r.netLiquid ?? 0,
       ...(contaminated
         ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
         : {}),
@@ -209,6 +226,32 @@ export function projectSnapshotSection(
   const liabilitiesSeries = points.map((p) => ({ date: new Date(p.date), value: p.liabilities }));
   const liabilitiesChange = canonicalWindowChange(liabilitiesSeries, CANONICAL_CHANGE_PRESET);
 
+  // PB-8c — neither change is ever measured across the balance-history floor.
+  // Before it, the stored series omits the accounts with no history that far
+  // back (a mortgage connected yesterday reads as $0 owed), so a window opening
+  // there measures those accounts ARRIVING. `changeComparability` (via
+  // `gateWindowChange`) withholds it: the figure becomes null and the REASON
+  // travels in its place, so the model says "history is partial before <date>"
+  // instead of "net worth fell $X". An endpoint that includes a held-flat debt
+  // keeps its figure, marked estimated. No coverage ⇒ untouched.
+  const estimatedOn = new Map(usable.map((r) => [r.date.slice(0, 10), r.isEstimated === true]));
+  const openingOf = (s: { date: Date }[], fromDate: string) =>
+    s.filter((p) => p.date.toISOString().slice(0, 10) <= fromDate).at(-1)?.date.toISOString().slice(0, 10) ?? null;
+  const gate = (c: CanonicalWindowChange | null, s: { date: Date }[], metric: 'netWorth' | 'totalLiabilities') => {
+    const openingISO = c ? openingOf(s, c.fromDate) : null;
+    return gateWindowChange<CanonicalWindowChange>(c, balanceCoverage, balanceCoverageSidesFor(metric), {
+      openingISO,
+      fromEstimated: openingISO ? estimatedOn.get(openingISO) : undefined,
+      toEstimated: c ? estimatedOn.get(c.toDate) : undefined,
+    });
+  };
+  const netWorthGate = gate(canonicalChange, series, 'netWorth');
+  const liabilitiesGate = gate(liabilitiesChange, liabilitiesSeries, 'totalLiabilities');
+  const coveredFrom = balanceCoveredFromISO(balanceCoverage, balanceCoverageSidesFor('netWorth'));
+  const partialNote = coveredFrom && oldest.date < coveredFrom
+    ? balanceCoverageNote(balanceCoverage, balanceCoverageSidesFor('netWorth'), oldest.date)
+    : null;
+
   return {
     // REVIEW-3 C-6 — the effective currency of these figures, from the newest
     // usable row's stamp (the canonical read boundary resolves it). Consumers
@@ -219,8 +262,24 @@ export function projectSnapshotSection(
       : {}),
     snapshotCount:    usable.length,
     spanDays,
-    canonicalChange,
-    liabilitiesChange,
+    canonicalChange:   netWorthGate.change,
+    ...(netWorthGate.withheld ? { canonicalChangeUnavailable: netWorthGate.withheld } : {}),
+    liabilitiesChange: liabilitiesGate.change,
+    ...(liabilitiesGate.withheld ? { liabilitiesChangeUnavailable: liabilitiesGate.withheld } : {}),
+    // S2 sweep — a FAILED coverage read: the gates above withheld every change; say why.
+    ...(isBalanceCoverageUnavailable(balanceCoverage)
+      ? { balanceHistoryCompleteness: { state: 'UNAVAILABLE' as const, note: BALANCE_COVERAGE_UNREADABLE_NOTE } } : {}),
+    ...(coveredFrom && partialNote ? { partialHistory: {
+      before: coveredFrom,
+      note: `${partialNote} Never measure or state a change between a day before ${coveredFrom} and a later one.`,
+    } } : {}),
+    // FIN-005 — the historical cash basis, stated on the payload. ALL_CASH: every
+    // point's `liquid` / `netLiquid` includes restricted cash (HSA, retirement),
+    // unlike the accounts section's unrestricted `totalLiquid`, and the note forbids
+    // any change between the two. UNRESTRICTED (FIN-E part 2): every row recorded
+    // its restricted share, so the points are on `totalLiquid`'s basis.
+    liquidBasis,
+    liquidBasisNote:  liquidBasis === 'UNRESTRICTED' ? UNRESTRICTED_HISTORY_AI_NOTE : ALL_CASH_HISTORY_AI_NOTE,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,
@@ -244,13 +303,17 @@ async function assembleSnapshot(
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
   const { spaceId } = spaceCtx;
-  const { scopeHint = 'full' } = options;
+  const { scopeHint = 'full', balanceCoverage = null } = options;
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
   const rows = await getRecentSnapshots(client, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
+  // PB-8c — the balance-history floors arrive on `options`, read by the caller in
+  // a phase of its OWN (readBalanceCoverage, lib/ai/conversation/evidence.ts) —
+  // never on this client, where a failed statement would abort the shared
+  // transaction and take this domain (and a turn) down with it.
 
-  const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
+  const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full', balanceCoverage);
   if (data === null) return null;
 
   return {

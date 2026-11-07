@@ -53,7 +53,7 @@ const financialCtx: SpaceContext = {
   role:    "OWNER",
   permissions: { canInvite: true, canManage: true, canWrite: true, canRead: true, isOwner: true },
   space: {
-    id: "space-fin-1", name: "Chris' Space", type: "PERSONAL",
+    id: "space-fin-1", name: "Jules' Space", type: "PERSONAL",
     category: "PERSONAL", isPublic: false, reportingCurrency: "USD",
   },
 };
@@ -72,7 +72,7 @@ check("access is DESCRIPTIVE (canRead/canWrite/level from permissions+role)",
   fin.access.canRead === true && fin.access.canWrite === true && fin.access.level === "OWNER");
 check("shell.variant = space", fin.shell.variant === "space");
 check("display.name only (no balances/currency/counts)",
-  fin.display.name === "Chris' Space" && !("balance" in fin.display) && !("currency" in fin.display));
+  fin.display.name === "Jules' Space" && !("balance" in fin.display) && !("currency" in fin.display));
 // Workspaces come from the shared registry, filtered to the Space's category.
 const expectFin = getPerspectivesForCategory("PERSONAL").map((p) => p.id);
 check("workspaces.available sourced from shared registry (category perspectives)",

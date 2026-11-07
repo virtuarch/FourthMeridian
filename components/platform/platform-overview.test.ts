@@ -69,7 +69,7 @@ const FULL: OverviewSignals = {
   },
   CUSTOMER_SUCCESS: {
     syncIssues: ok({ activeTotal: 7, truncated: true, severityCounts: { critical: 1 }, items: [
-      { id: "c1", title: "Chase", operationLabel: "Balance refresh", description: "Item login required", severity: "critical" as const, lastOccurredAt: "2026-10-30T09:00:00.000Z" },
+      { id: "c1", title: "Example Bank", operationLabel: "Balance refresh", description: "Item login required", severity: "critical" as const, lastOccurredAt: "2026-10-30T09:00:00.000Z" },
     ] }),
     incidentsDaily: ok({ checkedAt: NOW.toISOString(), floor: false, days: days(14, () => ({ opened: 1, resolved: 0 })) }),
   },
@@ -218,7 +218,10 @@ console.log("Platform AI page: guarded like the Overview, honest, no controls, n
   const iGrants = page.indexOf('if (spaces.length === 0) redirect("/dashboard/spaces");');
   const iTotp = page.indexOf("if (env.isOperatorTotpEnforced && !(await operatorHasTotp(session.user.id))) redirect(OPERATOR_TOTP_ENROLMENT_PATH);");
   check("gate order = the Overview's: session → ≥1 ACTIVE grant (tenant read) → operator 2FA", iSession > -1 && iGrants > iSession && iTotp > iGrants && /loadPlatformDirectory\(session\.user\.id\)/.test(page));
-  check("it reads no Platform data and renders only the placeholder", /return <PlatformAiPlaceholder \/>;/.test(page) && !/\/api\/platform|systemDb|@\/lib\/db"/.test(page));
+  check("it reads no Platform data; flag OFF (PLATFORM_AI_ENABLED, default) ⇒ exactly the placeholder",
+    /if \(!env\.isPlatformAiEnabled\) return <PlatformAiPlaceholder \/>;/.test(page) && /return <PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>;/.test(page) && !/\/api\/platform|systemDb|@\/lib\/db"/.test(page));
+  check("…and the flag is read AFTER every gate (the gate order is unchanged either way)",
+    page.indexOf("env.isPlatformAiEnabled") > iTotp);
   const html = renderToStaticMarkup(createElement(PlatformAiPlaceholder));
   check("titled 'Platform AI', in the AI visual language (AiMark)", /<h1[^>]*>Platform AI<\/h1>/.test(html) && /box-shadow:0 0 10px 1px var\(--accent-info\)/.test(html));
   check("NO input, textarea, form, button, link or contenteditable — nothing that pretends to work",
@@ -236,10 +239,10 @@ console.log("R1 review fixes");
 {
   // An incident carried by BOTH Ops attention (incident:<id>) and CS incidents appears once.
   const both = attentionQueue({ ...FULL, PLATFORM_OPS: { ...FULL.PLATFORM_OPS!, attention: ok({ checkedAt: NOW.toISOString(), counts: { critical: 1 }, items: [
-    { id: "incident:c1", severity: "critical" as const, entity: { label: "Chase" }, problem: "Item login required", since: "2026-10-30T09:00:00.000Z", evidence: { workspace: "platform-overview" } },
+    { id: "incident:c1", severity: "critical" as const, entity: { label: "Example Bank" }, problem: "Item login required", since: "2026-10-30T09:00:00.000Z", evidence: { workspace: "platform-overview" } },
   ] }) } }, SPACES, NOW);
-  const chase = both.items.filter((x) => /Chase/.test(x.title));
-  check("a sync incident held by both Ops attention and CS appears exactly once", chase.length === 1, both.items.map((x) => x.title).join(" | "));
+  const exbank = both.items.filter((x) => /Example Bank/.test(x.title));
+  check("a sync incident held by both Ops attention and CS appears exactly once", exbank.length === 1, both.items.map((x) => x.title).join(" | "));
   // Sparse AI series: exactly TREND_DAYS calendar days ending on checkedAt, missing days are gaps.
   const sparse = [{ day: "2026-10-01", calls: 5 }, { day: "2026-10-29", calls: 3 }, { day: "2026-10-30", calls: 2 }];
   const pts = calendarPoints(sparse, (x) => x.calls, "2026-10-30T12:00:00.000Z");

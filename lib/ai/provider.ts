@@ -119,9 +119,14 @@ function abortedReason(signal: AbortSignal | undefined, where: string): Error | 
  * longer exists — FORECAST-11 measured a stronger tier against prose reasoning
  * and said no; V26-REASONING measured it against a typed answer boundary and
  * said yes. Neither conclusion transfers. The next conversation layer must
- * measure the tier for itself; see docs/plans/AI-CONVERSATION-RESET.md.
+ * measure the tier for itself; see docs/systems/ai-foundation.md §9 (the reset).
  */
 const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
+
+/** The chat tier, for a caller that runs its own tool loop (Platform AI v0). Same value, no second default. */
+export function chatModel(): string {
+  return CHAT_MODEL;
+}
 
 /**
  * Record one OpenAI call against `ApiUsageCounter` — the ONLY usage-write path
@@ -415,7 +420,7 @@ export async function generateChatReply(
  *   gpt-4o-mini / gpt-4.1   `max_tokens`, `temperature` honoured
  *   gpt-5.x / gpt-6.x / o*  `max_completion_tokens`, temperature MUST be default
  * Sending the wrong one is a 400, so the dialect is selected by model family
- * rather than by hope. See docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
+ * rather than by hope. See docs/systems/ai-foundation.md §8 (conversation harness).
  */
 export interface ToolCallRequest {
   id:        string;

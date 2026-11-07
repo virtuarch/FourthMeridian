@@ -203,7 +203,7 @@ export const AuditAction = {
   // events: PRODUCT_EVENT_ACTIONS below is pinned DISJOINT from every security,
   // operator and member-feed allowlist, so a product event can never surface
   // as "something happened to your account".
-  //   SESSION_ACTIVE_DAY          first live session check of a UTC day (presence)
+  //   SESSION_ACTIVE_DAY          first human-initiated authenticated request of a UTC day (presence; PB-10 F3: background polls excluded)
   //   SPACE_VIEWED                a Space's server page rendered for a member
   //   BRIEF_VIEWED                a Daily Brief was shown to its reader
   //   TRANSACTIONS_VIEWED         the Transactions workspace loaded its first page
@@ -329,6 +329,27 @@ export const AuditAction = {
   // institution, outcome) — never financial content.
   CONNECTION_RESYNC_TRIGGERED: "CONNECTION_RESYNC_TRIGGERED",
   CONNECTION_REAUTH_REQUESTED: "CONNECTION_REAUTH_REQUESTED",
+  // PB-5 — a SYSTEM_ADMIN removed ONE customer connection from Platform Ops
+  // (app/api/platform/platform-ops/connections/[id]/remove). The SAME engine as
+  // the customer's own disconnect (lib/accounts/disconnect.ts disconnectAccounts:
+  // soft-delete, link revoke, orphan-gated itemRemove, token scrub, cleanup
+  // marker). Reason REQUIRED. Target = the PLAID_ITEM / CONNECTION; detail
+  // carries the owner's user id, the account count, the removal reason and the
+  // provider outcome as the marker reads it — never financial content. Distinct
+  // from CONNECTION_DISCONNECTED (the customer's own act, in their history).
+  CONNECTION_REMOVED_BY_OPERATOR: "CONNECTION_REMOVED_BY_OPERATOR",
+  // PB-5 (S2 flag) — the INTENT row of that removal, written BEFORE anything
+  // changes (the PLATFORM_OPERATION_REQUESTED idiom): who, why, which
+  // connection. A crash before the outcome row leaves this as the trace; the
+  // outcome row names it in `detail.intentAuditId`. Reason REQUIRED.
+  CONNECTION_REMOVAL_REQUESTED: "CONNECTION_REMOVAL_REQUESTED",
+  // PB-5 (owner decision 2026-11-02) — the CUSTOMER-FACING fact of an operator
+  // removal, on the owner's own row (userId = owner) so it shows in their
+  // Security History as "Removed by Fourth Meridian support · <reason>".
+  // Deliberately carries NO operator identity: no performedByAdminId, no IP,
+  // no user agent; metadata = connectionId, provider, institution,
+  // reasonCategory. The operator lives on CONNECTION_REMOVED_BY_OPERATOR.
+  CONNECTION_REMOVED_BY_SUPPORT: "CONNECTION_REMOVED_BY_SUPPORT",
   // Release 2 (domain split) — an operator repointed ONE Plaid Item's webhook to
   // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
   // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
@@ -341,6 +362,16 @@ export const AuditAction = {
   // chain, the prior and resulting state, and requests consumed. Never an
   // address, a balance, or provider text.
   WALLET_HISTORY_RESUMED:      "WALLET_HISTORY_RESUMED",
+  // PB-1 S6 — an operator acknowledged (took ownership of) ONE incident, or
+  // closed it as OPERATOR_RESOLVED, from Platform Ops (app/api/platform/
+  // platform-ops/incidents/[id]/acknowledge | resolve). Both reason REQUIRED.
+  // Written inside the lifecycle transition's transaction
+  // (lib/platform/incidents/lifecycle.ts applyOperatorTransition), so the row
+  // change, the SyncIssueEvent and this audit commit together. Target =
+  // SYNC_INCIDENT; detail = kind / provider / the resolution reason code. Never
+  // the incident `detail`, provider text or a customer id.
+  SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
+  SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -358,6 +389,9 @@ export const AuditAction = {
   // the database; its record carries the full report and a recovery snapshot.
   MERCHANT_MERGE_APPLIED:              "MERCHANT_MERGE_APPLIED",
   MERCHANT_MERGE_DISMISSED:            "MERCHANT_MERGE_DISMISSED",
+  // PB-9 — a dismissed pair's suppression removed (the decision row deleted,
+  // its snapshot carried here) so the detector may propose it again.
+  MERCHANT_MERGE_RECONSIDERED:         "MERCHANT_MERGE_RECONSIDERED",
 
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
@@ -533,6 +567,13 @@ export const AuditAction = {
   // row says that an erasure happened, in which Space, of which class and how
   // many versions — never what the item said, which is the thing they erased.
   AI_MEMORY_ERASED:         "AI_MEMORY_ERASED",
+
+  // ── Key management (PRIV-004) ───────────────────────────────────────────────
+  // One row per `scripts/rotate-encryption-key.ts --apply` run (userId null —
+  // an operator script, not a user). VALUE-FREE by contract: metadata carries
+  // the outcome, the old/new key ids (non-secret fingerprints) and per-field
+  // counts — never a key, a ciphertext, a plaintext or a row id.
+  ENCRYPTION_KEY_ROTATED:   "ENCRYPTION_KEY_ROTATED",
   //
   // ⚠️ TWO CONSTANTS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because
   // their only writers were deleted with the conversation layer:
@@ -618,6 +659,8 @@ export const USER_SECURITY_HISTORY_ACTIONS: AuditActionType[] = [
   AuditAction.RECOVERY_CODES_GENERATED,
   AuditAction.RECOVERY_CODES_REGENERATED,
   AuditAction.SESSION_REVOKED,
+  // PB-5 — support removed one of the user's connections (no operator identity on the row).
+  AuditAction.CONNECTION_REMOVED_BY_SUPPORT,
 ];
 
 /**
@@ -662,8 +705,12 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
+  AuditAction.CONNECTION_REMOVAL_REQUESTED,
+  AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   AuditAction.WALLET_HISTORY_RESUMED,
+  AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
+  AuditAction.SYNC_INCIDENT_RESOLVED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.
@@ -695,6 +742,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   // mutations, and the Plaid webhook dry run.
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
+  AuditAction.MERCHANT_MERGE_RECONSIDERED,
   AuditAction.PLATFORM_CONTROL_REFUSED,
   AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
   // SEC-PLAT-3 — authorized customer-identity reads.
@@ -720,6 +768,8 @@ export const ADMIN_SECURITY_FILTER_ACTIONS: AuditActionType[] = [
   // Wave 3 ⑧ — anomaly trips surface in the security audit feed too, not just
   // the dedicated anomalies widget.
   AuditAction.SECURITY_ANOMALY_DETECTED,
+  // PRIV-004 — an encryption-key re-encryption run is a security event.
+  AuditAction.ENCRYPTION_KEY_ROTATED,
 ];
 
 /**
@@ -789,6 +839,10 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Sessions",
     actions: [AuditAction.SESSION_REVOKED, AuditAction.ADMIN_SESSION_REVOKED],
+  },
+  {
+    label: "Key Management",
+    actions: [AuditAction.ENCRYPTION_KEY_ROTATED],
   },
   {
     label: "Goals",

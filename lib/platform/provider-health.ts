@@ -33,7 +33,14 @@
  *                               (see the completion report). Null + a caveat is
  *                               the honest-signal house idiom (estimatedSpendUsd).
  *   trust                   ← a derived roll-up (this module's ONLY judgement):
- *                               content OR execution, whichever is worse.
+ *                               content OR execution, whichever is worse. The
+ *                               EXECUTION half is the shared, versioned rule
+ *                               provider-outcome@1 (lib/platform/verdicts/
+ *                               provider-outcome.ts) over the window's run
+ *                               counts — a minimum sample, a failure ratio and a
+ *                               recency streak — and its assessment rides on the
+ *                               report (`execution`) so the verdict traces to
+ *                               the counts that produced it.
  *
  * "Do NOT invent another freshness model" (OPS-5 S3 brief, Architecture): honored
  * structurally — this module imports freshness, it never derives staleness. The
@@ -64,21 +71,22 @@ import {
   type ResourceFreshnessResult,
   type FreshnessHealthState,
 } from "@/lib/platform/resource-freshness";
+import { assessOutcomes, PROVIDER_OUTCOME_DEFINITION, PROVIDER_OUTCOME_DEFINITION_ID, type OutcomeAssessment } from "@/lib/platform/verdicts/provider-outcome";
+import { assessConnections, connectionTrustState, tallyConnections, type ConnectionAssessment } from "@/lib/platform/verdicts/provider-connection";
 import {
   getConnectionHealth,
   type ConnectionHealthResult,
   type ConnectionHealthRow,
-  type HealthState,
+  type ConnectionSourceTally,
 } from "@/lib/connections/health";
 
 // ── Tunables (local — deliberately not coupled to a concurrently-owned module) ─
 
 /** Window over which availability / error-rate / sync-failures are computed. */
 export const PROVIDER_WINDOW_DAYS = 7;
-/** Consecutive failed runs at which a provider's execution is "failing". Mirrors
- *  lib/jobs/health.ts FAILURE_STREAK_THRESHOLD; kept local so this slice does not
- *  import from a module a concurrent slice is actively editing. */
-export const PROVIDER_FAILING_STREAK = 3;
+/** Consecutive failed runs at which a provider's execution is "failing" — the
+ *  recency step of the shared rule (provider-outcome@1), restated for callers. */
+export const PROVIDER_FAILING_STREAK = PROVIDER_OUTCOME_DEFINITION.recentFailingRun;
 /** A "running" JobRun older than this is a crashed run (no completion write). */
 export const PROVIDER_STALE_RUNNING_HOURS = 2;
 
@@ -100,7 +108,10 @@ export type ProviderTrust =
   /** The provider's execution is broken (failure streak / high error rate / hard connection error). */
   | "FAILING"
   /** No signal at all — nothing to judge yet. */
-  | "UNKNOWN";
+  | "UNKNOWN"
+  /** Fresh data and no fault, but too few run outcomes in the window for an
+   *  execution verdict (provider-outcome@1 minimum sample) — never "OPERATIONAL". */
+  | "INSUFFICIENT_DATA";
 
 /** How current a provider's data is — a compact view CONSUMED from a freshness
  *  authority (S1 ResourceFreshnessReport for archives; connection health for
@@ -124,6 +135,9 @@ export interface ProviderHealth {
   kind: ProviderKind;
   /** The roll-up status (the card headline). This module's only judgement. */
   trust: ProviderTrust;
+  /** The rule and counts that decided `trust` — every tile shows it, so a verdict never sits beside an unrelated figure.
+   *  Optional for older payloads; the read-model always sets it. */
+  trustBasis?: string;
 
   /** Succeeded / total runs over the window, in [0,1]. null when no runs. */
   availability: number | null;
@@ -150,6 +164,11 @@ export interface ProviderHealth {
   syncFailures: number;
   /** Failed / total runs over the window, in [0,1]. null when no runs. */
   errorRate: number | null;
+  /** The execution half of `trust`: provider-outcome@1 over the window's run
+   *  counts (decided / failed / leading failures). null when no run is recorded. */
+  execution?: OutcomeAssessment | null;
+  /** provider-connection@2 over the provider's connections (sync providers); null/absent otherwise. */
+  connections?: ConnectionAssessment | null;
 
   /** Calls today / last 30 days from ApiUsageCounter. null when the provider is not metered. */
   callsToday: number | null;
@@ -324,17 +343,17 @@ export function freshnessFromResourceReport(report: ResourceFreshnessReport): Pr
   };
 }
 
-/** Severity for picking the worst connection state (higher = worse). */
-const CONNECTION_SEVERITY: Record<HealthState, number> = {
-  ERROR: 5, REVOKED: 4, NEEDS_REAUTH: 3, DEGRADED: 2, STALE: 1, HEALTHY: 0,
-};
-
 /**
  * Derive a provider's freshness from the connection authority's rows (sync
  * providers). We consume connection health's DERIVED STALE state — we never
  * re-derive recency from raw lastSyncedAt. Healthy connections are not in the
  * authority's `unhealthy` list, so an absence of unhealthy rows is treated as
  * fresh (with a null asOf — the authority does not surface healthy sync times).
+ *
+ * Connection-scope fix (provider-connection@1, kept in @2): only STALE rows are a recency
+ * signal. Faults (ERROR, NEEDS_REAUTH, REVOKED, DEGRADED) belong to the
+ * connection rule, and a customer who must reconnect never makes the provider's
+ * freshness "unknown".
  */
 export function freshnessFromConnections(source: string, rows: readonly ConnectionHealthRow[]): ProviderFreshness {
   // The connection authority's `unhealthy` list never contains HEALTHY rows;
@@ -343,70 +362,109 @@ export function freshnessFromConnections(source: string, rows: readonly Connecti
   if (mine.length === 0) {
     return { state: "fresh", asOf: null, ageDays: null, source: "connection-health", detail: "all connections healthy" };
   }
-  // Worst-first; STALE is the recency signal, harder states feed trust (below).
-  const worst = [...mine].sort((a, b) => CONNECTION_SEVERITY[b.healthState] - CONNECTION_SEVERITY[a.healthState])[0];
-  const state: ProviderFreshness["state"] = worst.healthState === "STALE" ? "stale" : "unknown";
-  const detail =
-    worst.healthState === "STALE"
-      ? `${mine.length} connection(s) stale — newest lag ${worst.since ? "since " + worst.since.slice(0, 10) : "unknown"}`
-      : `${mine.length} connection(s) unhealthy (${worst.healthState})`;
-  return { state, asOf: worst.lastSyncedAt, ageDays: null, source: "connection-health", detail };
+  const stale = mine.filter((r) => r.healthState === "STALE");
+  if (stale.length === 0) {
+    return { state: "fresh", asOf: null, ageDays: null, source: "connection-health", detail: "no connection is behind its refresh policy" };
+  }
+  // Longest-lagging first (oldest `since`), nulls last — the authority's own order.
+  const worst = stale[0];
+  return {
+    state: "stale", asOf: worst.lastSyncedAt, ageDays: null, source: "connection-health",
+    detail: `${stale.length} connection(s) stale — newest lag ${worst.since ? "since " + worst.since.slice(0, 10) : "unknown"}`,
+  };
 }
 
-/** Do this provider's connections carry a hard (non-stale) fault? Feeds trust. */
-function connectionsHaveHardFault(source: string, rows: readonly ConnectionHealthRow[]): boolean {
-  return rows.some(
-    (r) => r.source === source && (r.healthState === "ERROR" || r.healthState === "REVOKED" || r.healthState === "NEEDS_REAUTH"),
-  );
-}
-
-/** Do this provider's connections carry any degradation (incl. DEGRADED)? */
-function connectionsDegraded(source: string, rows: readonly ConnectionHealthRow[]): boolean {
-  return rows.some((r) => r.source === source && r.healthState !== "HEALTHY");
+/**
+ * provider-connection@2 over one provider's connections. Uses the authority's
+ * per-source tally (an unbounded population) when present. Otherwise it tallies
+ * the capped unhealthy rows with an UNKNOWN population (active 0), so no share
+ * rule can fire: an error still degrades, nothing fails.
+ */
+export function connectionAssessmentFor(source: string, rows: readonly ConnectionHealthRow[], tally?: ConnectionSourceTally | null): ConnectionAssessment {
+  if (tally) return assessConnections(tallyConnections(tally.faults, tally.active, tally.revoked, { institutionActive: tally.institutionActive }));
+  const mine = rows.filter((r) => r.source === source);
+  return assessConnections(tallyConnections(mine, 0, mine.filter((r) => connectionTrustState(r.healthState, r.errorCode) === "REVOKED").length, { populationUnknown: true }));
 }
 
 // ── Trust roll-up (the ONE judgement — pure) ──────────────────────────────────
 
 export interface TrustSignals {
   hasExecutionSignal: boolean;
-  lastRunFailed: boolean;
   consecutiveFailures: number;
-  errorRate: number | null;
+  /** Runs with an outcome in the window (succeeded + failed, a crashed run counted failed). */
+  decidedRuns: number;
+  /** Failed runs among them. */
+  failedRuns: number;
   freshnessState: ProviderFreshness["state"];
-  /** A hard, actionable connection fault (revoked / error / needs-reauth). */
-  connectionHardFault: boolean;
-  /** Any connection degradation short of a hard fault. */
-  connectionDegraded: boolean;
+  /** The freshness authority's one-line detail (for the basis); optional for pure callers. */
+  freshnessDetail?: string;
+  /** provider-connection@2 over the provider's connections; null for a provider without any. */
+  connections: ConnectionAssessment | null;
+}
+
+/** The trust verdict with the rule and the counts that decided it. */
+export interface ProviderVerdict {
+  trust: ProviderTrust;
+  /** One line, rule id included: "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)". */
+  basis: string;
 }
 
 /**
  * Roll the signals up to a single trust level — content OR execution, whichever
- * is WORSE (the PLATOPS doctrine). Precedence:
- *   FAILING  execution clearly broken, OR a hard connection fault.
+ * is WORSE (the PLATOPS doctrine). The execution verdict is provider-outcome@1
+ * (executionAssessment). Precedence:
+ *   FAILING  execution FAILING (last 3 runs failed, or ≥ 50 % of a sufficient
+ *            sample), OR connections FAILING (provider-connection@2: ≥ 50 % of
+ *            ≥ 2 live connections in provider-side ERROR, and still ≥ 50 % with
+ *            the worst institution set aside). A customer who must
+ *            reconnect, or a REVOKED connection, never makes a provider FAILING.
  *   STALE    the DATA is behind/absent (freshness stale|empty) — the false-green
  *            catch: a green job over a stale archive still reads STALE here.
+ *   DEGRADED connections DEGRADED (any provider-side ERROR, an error share
+ *            concentrated on one institution, a reauth wave,
+ *            an unclassified error). This is checked before UNKNOWN: a connection
+ *            fault is a signal.
  *   UNKNOWN  no signal at all to judge (no runs AND freshness un-assertable).
- *   DEGRADED some failures, a degraded connection, or un-assertable freshness
- *            despite having an execution signal.
- *   OPERATIONAL otherwise (fresh/idle data + clean execution).
+ *   DEGRADED execution DEGRADED (isolated failures in a sufficient sample, or
+ *            ANY failure in a small one — a small sample never hides it), or
+ *            un-assertable freshness despite having an execution signal.
+ *   INSUFFICIENT_DATA  clean otherwise (no failure), but too few run outcomes for a verdict.
+ *   OPERATIONAL otherwise (fresh/idle data + a sufficient, clean execution sample).
  */
 export function deriveProviderTrust(s: TrustSignals): ProviderTrust {
-  const highErrorRate = s.errorRate != null && s.errorRate >= 0.5;
-  if (s.consecutiveFailures >= PROVIDER_FAILING_STREAK || highErrorRate || s.connectionHardFault) {
-    return "FAILING";
-  }
+  return deriveProviderVerdict(s).trust;
+}
+
+/** deriveProviderTrust with its basis: the deciding rule and its counts. Pure. */
+export function deriveProviderVerdict(s: TrustSignals): ProviderVerdict {
+  const exec = executionAssessment(s);
+  const conn = s.connections;
+  const execBasis = exec ? `${exec.basis} (${PROVIDER_OUTCOME_DEFINITION_ID})` : "no run recorded in the window";
+  const connBasis = conn?.basis ? `${conn.basis} (${conn.definition})` : "";
+  const v = (trust: ProviderTrust, basis: string): ProviderVerdict => ({ trust, basis });
+
+  if (exec?.verdict === "FAILING") return v("FAILING", execBasis);
+  if (conn?.verdict === "FAILING") return v("FAILING", connBasis);
   if (s.freshnessState === "stale" || s.freshnessState === "empty") {
-    return "STALE";
+    return v("STALE", `data ${s.freshnessState === "empty" ? "absent" : "behind"}${s.freshnessDetail ? ` — ${s.freshnessDetail}` : ""}`);
   }
+  if (conn?.verdict === "DEGRADED") return v("DEGRADED", connBasis);
   // Nothing to judge on either axis — honest UNKNOWN before any softer verdict.
   if (!s.hasExecutionSignal && s.freshnessState === "unknown") {
-    return "UNKNOWN";
+    return v("UNKNOWN", "no run in the window and freshness cannot be asserted");
   }
-  const someFailures = (s.errorRate != null && s.errorRate > 0) || s.consecutiveFailures > 0 || s.lastRunFailed;
-  if (someFailures || s.connectionDegraded || s.freshnessState === "unknown") {
-    return "DEGRADED";
+  if (exec?.verdict === "DEGRADED") return v("DEGRADED", execBasis);
+  if (s.freshnessState === "unknown") return v("DEGRADED", `freshness cannot be asserted${s.freshnessDetail ? ` — ${s.freshnessDetail}` : ""}`);
+  if (!exec || exec.verdict === "NOT_ENOUGH_DATA") {
+    return v("INSUFFICIENT_DATA", s.freshnessState === "not-refreshed" ? `${execBasis} · not refreshed in this environment` : execBasis);
   }
-  return "OPERATIONAL";
+  return v("OPERATIONAL", execBasis);
+}
+
+/** provider-outcome@1 over the run counts; null when no run is recorded at all. Pure. */
+export function executionAssessment(s: Pick<TrustSignals, "hasExecutionSignal" | "decidedRuns" | "failedRuns" | "consecutiveFailures">): OutcomeAssessment | null {
+  if (!s.hasExecutionSignal) return null;
+  return assessOutcomes({ kind: "runs", decided: s.decidedRuns, failed: s.failedRuns, recentConsecutiveFailures: s.consecutiveFailures });
 }
 
 // ── Pure assembly ─────────────────────────────────────────────────────────────
@@ -419,6 +477,8 @@ export interface ProviderInputs {
   freshnessReport: ResourceFreshnessReport | null;
   /** Connection-health rows (sync providers). */
   connectionRows: readonly ConnectionHealthRow[];
+  /** The connection authority's per-source tally for this provider (unbounded); absent ⇒ rows only, population unknown. */
+  connectionTally?: ConnectionSourceTally | null;
   now: Date;
 }
 
@@ -431,8 +491,7 @@ export function buildProviderHealth(spec: ProviderSpec, inputs: ProviderInputs):
   let freshness: ProviderFreshness;
   let coverage: number | null = null;
   let coverageUnit: string | null = null;
-  let connectionHardFault = false;
-  let connectionDegraded = false;
+  let connections: ConnectionAssessment | null = null;
 
   if (spec.freshness.via === "resource") {
     coverageUnit = spec.freshness.coverageUnit;
@@ -448,20 +507,22 @@ export function buildProviderHealth(spec: ProviderSpec, inputs: ProviderInputs):
     }
   } else {
     freshness = freshnessFromConnections(spec.freshness.source, inputs.connectionRows);
-    connectionHardFault = connectionsHaveHardFault(spec.freshness.source, inputs.connectionRows);
-    connectionDegraded = connectionsDegraded(spec.freshness.source, inputs.connectionRows);
-    if (connectionHardFault) notes.push("One or more connections need attention (revoked / error / re-auth).");
+    connections = connectionAssessmentFor(spec.freshness.source, inputs.connectionRows, inputs.connectionTally);
+    // Neutral facts (customers who must reconnect, revoked connections) — shown, never trust.
+    for (const f of connections.facts) notes.push(`${f} (per-customer; does not affect provider health).`);
   }
 
-  const trust = deriveProviderTrust({
+  const signals: TrustSignals = {
     hasExecutionSignal: runs.hasRuns,
-    lastRunFailed: runs.lastRunFailed,
     consecutiveFailures: runs.consecutiveFailures,
-    errorRate: runs.errorRate,
+    decidedRuns: runs.total,
+    failedRuns: runs.failed,
     freshnessState: freshness.state,
-    connectionHardFault,
-    connectionDegraded,
-  });
+    freshnessDetail: freshness.detail,
+    connections,
+  };
+  const { trust, basis: trustBasis } = deriveProviderVerdict(signals);
+  const execution = executionAssessment(signals);
 
   // False-green surfacing: a green execution window while the data is behind.
   if ((freshness.state === "stale" || freshness.state === "empty") && runs.lastSuccessAt) {
@@ -474,6 +535,7 @@ export function buildProviderHealth(spec: ProviderSpec, inputs: ProviderInputs):
     label: spec.label,
     kind: spec.kind,
     trust,
+    trustBasis,
     availability: runs.availability,
     lastSuccessAt: runs.lastSuccessAt ? runs.lastSuccessAt.toISOString() : null,
     lastFailureAt: runs.lastFailureAt ? runs.lastFailureAt.toISOString() : null,
@@ -485,6 +547,8 @@ export function buildProviderHealth(spec: ProviderSpec, inputs: ProviderInputs):
     freshness,
     syncFailures: runs.syncFailures,
     errorRate: runs.errorRate,
+    execution,
+    connections,
     callsToday: inputs.callsToday,
     calls30d: inputs.calls30d,
     notes,
@@ -610,11 +674,12 @@ export async function getProviderHealth(deps: ProviderHealthDeps = {}): Promise<
       calls30d: spec.usageProvider ? calls30dByProvider.get(spec.usageProvider) ?? 0 : null,
       freshnessReport: spec.freshness.via === "resource" ? freshnessByResource.get(spec.freshness.resourceId) ?? null : null,
       connectionRows,
+      connectionTally: spec.freshness.via === "connection" ? connections?.bySource?.[spec.freshness.source] ?? null : null,
       now,
     }),
   );
 
-  const counts: Record<ProviderTrust, number> = { OPERATIONAL: 0, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0 };
+  const counts: Record<ProviderTrust, number> = { OPERATIONAL: 0, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0, INSUFFICIENT_DATA: 0 };
   for (const p of providers) counts[p.trust]++;
 
   return { checkedAt: now, counts, providers };

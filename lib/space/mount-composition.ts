@@ -62,7 +62,7 @@ import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { resolveRowBalances, reconcileAccount, adjustedDepositoryBalance } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 
 /**
  * The client these loaders read through.
@@ -140,6 +140,9 @@ export async function loadSpaceAccounts(
           // freshness authority can distinguish provider attestation from our own
           // write time instead of every surface assuming they are the same fact.
           balanceLastUpdatedAt: true,
+          // FIN-A2 — read by the one totals classification below; destructured
+          // out so the client payload keeps its exact shape.
+          balanceObserved: true,
           // V26-PRE (B3) — DebtProfile joined so the EFFECTIVE terms authority
           // (lib/debt/effective-terms.ts) can resolve APR/minimum payment.
           // Before this join, Space debt widgets computed interest and payoff
@@ -192,14 +195,13 @@ export async function loadSpaceAccounts(
   //
   // W6d — Bitcoin is now in this map too, and this call did not change: it has
   // always passed every linked account's chain and let the registry-backed
-  // authority decide which ones it serves. A wallet whose value is UNKNOWN still
-  // falls through to the column rather than having a number invented for it —
-  // see the fallback note in lib/data/accounts.ts for why that stays, and for
-  // its deletion condition.
+  // authority decide which ones it serves.
   //
-  // ⚠️ This payload carries no tri-state alongside the number, so the fallback
-  // is SILENT here in a way it is not on the account read. That is a knowing
-  // limit of the mount shape, not a claim that the figure is spine-backed.
+  // FM-AUDIT-022 — a wallet whose value is UNKNOWN (NO_PRICE / NO_OBSERVATION)
+  // no longer falls through to the column: `resolveWalletBalance` excludes it
+  // (structural 0) and the row carries `valuationUnknown` — or, folded into a
+  // privacy aggregate, `unvaluedMemberCount` — so `classifyAccounts` counts it
+  // and the Wealth envelope discloses "N not yet valued".
   const walletValueByAccount = await loadWalletCurrentValues(
     links.map((l) => ({
       id: l.financialAccount.id,
@@ -213,10 +215,13 @@ export async function loadSpaceAccounts(
     { contextSpaceId: spaceId, client },
   );
 
+  // FM-AUDIT-022 — the accounts the totals classification excluded as unvalued.
+  const unvaluedIds = new Set<string>();
   const effectiveLinks = links.map((l) => {
     const terms = resolveEffectiveDebtTerms(l.financialAccount);
-    const { debtProfile: _profile, ...account } = l.financialAccount;
-    const walletValue = walletValueByAccount.get(account.id);
+    const { debtProfile: _profile, balanceObserved, ...account } = l.financialAccount;
+    const wb = resolveWalletBalance(account.balance, walletValueByAccount.get(account.id), balanceObserved);
+    if (wb.valuationUnknown) unvaluedIds.add(account.id);
     return {
       ...l,
       financialAccount: {
@@ -224,7 +229,7 @@ export async function loadSpaceAccounts(
         // W6b — VALUED or STALE alike: a dated last-known figure beats an
         // unwritten column that always reads zero. Staleness is disclosed by the
         // richer account read, not by discarding the number here.
-        balance: hasKnownValue(walletValue) ? walletValue!.value! : account.balance,
+        balance: wb.balance,
         // v2.6-TRUTH-10 — resolve the canonical identity HERE, once, so every
         // Space surface downstream receives the same name the Credit page shows.
         // ⚠️ `name` is overwritten with the resolved identity, NOT a new field:
@@ -299,6 +304,12 @@ export async function loadSpaceAccounts(
       ...(typeof currentState?.adjusted === "number" ? { adjustedBalance: currentState.adjusted } : {}),
       ...(cryptoPrice ? { cryptoPrice } : {}),
       ...(!a.aggregate && estimateIds.has(a.id) ? { userEstimate: true as const } : {}),
+      // FM-AUDIT-022 — OMITTED unless something was excluded as unvalued.
+      ...(!a.aggregate && unvaluedIds.has(a.id) ? { valuationUnknown: true as const } : {}),
+      ...((): { unvaluedMemberCount?: number } => {
+        const n = a.aggregate ? a.aggregate.memberAccountIds.filter((id) => unvaluedIds.has(id)).length : 0;
+        return n > 0 ? { unvaluedMemberCount: n } : {};
+      })(),
     };
   })) as unknown as SpaceAccount[];
 }

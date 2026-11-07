@@ -47,7 +47,7 @@ const CARD = { accountType: "debt", debtSubtype: null };
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The defect that started CCPAY-1: one hyphen where a space was expected. ✓real
-eq("normalize: Chase pending 'PAYMENT-THANK YOU' ✓real", normalizeDescriptor("PAYMENT-THANK YOU"), "payment thank you");
+eq("normalize: Example Bank pending 'PAYMENT-THANK YOU' ✓real", normalizeDescriptor("PAYMENT-THANK YOU"), "payment thank you");
 // Every other punctuation an issuer might use for the same phrase. ✗synthetic —
 // only the hyphen forms are attested; these pin the axis, not an observation.
 for (const [label, raw] of [
@@ -86,9 +86,9 @@ for (const s of ["PAYMENT-THANK YOU", "  A--B  ", "Payment Thank You-Mobile"]) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 for (const variant of [
-  "PAYMENT-THANK YOU",        // ✓real — Chase, pending
-  "Payment Thank You-Mobile", // ✓real — Chase, posted
-  "MOBILE PAYMENT - THANK YOU", // ✓real — Amex, posted
+  "PAYMENT-THANK YOU",        // ✓real — Example Bank, pending
+  "Payment Thank You-Mobile", // ✓real — Example Bank, posted
+  "MOBILE PAYMENT - THANK YOU", // ✓real — Example Card, posted
   "PAYMENT THANK YOU",        // ✗synthetic
   "PAYMENT.THANK.YOU",        // ✗synthetic
   "PAYMENT_THANK_YOU",        // ✗synthetic
@@ -102,10 +102,10 @@ for (const variant of [
     isCardPaymentDescriptor(variant) === true);
 }
 
-// The pending and posted forms of the SAME Chase payment must agree. This is the
+// The pending and posted forms of the SAME Example Bank payment must agree. This is the
 // CCPAY-1 defect stated as an invariant: descriptor drift across the pending →
 // posted lifecycle must not change the classification. ✓real both sides.
-eq("lifecycle: Chase pending and posted descriptors agree",
+eq("lifecycle: Example Bank pending and posted descriptors agree",
   isLiabilityCardPaymentLeg({ ...CARD, amount: 5000, merchant: "PAYMENT-THANK YOU", name: "PAYMENT-THANK YOU" }),
   isLiabilityCardPaymentLeg({ ...CARD, amount: 5000, merchant: "Payment Thank You-Mobile", name: "Payment Thank You-Mobile" }));
 
@@ -113,14 +113,14 @@ eq("lifecycle: Chase pending and posted descriptors agree",
 // 3. The word-boundary contract — the e-payment trap
 // ─────────────────────────────────────────────────────────────────────────────
 // Substring matching over NORMALIZED text is unsafe: "e-payment" normalizes to
-// "e payment", a substring of "mobile payment" and "Zelle payment to Mom".
+// "e payment", a substring of "mobile payment" and "Example payment to Pat".
 // Measured: 156 rows under substring, 0 under word-boundary. These pin that the
 // matcher is word-boundary — they fail loudly if anyone reverts to .includes().
 
-check("word-boundary: 'Zelle payment to Mom' is NOT a card-payment descriptor (the e-payment trap)",
-  isCardPaymentDescriptor("Zelle payment to Mom JPM99b2i991r") === false);
+check("word-boundary: 'Example payment to Pat' is NOT a card-payment descriptor (the e-payment trap)",
+  isCardPaymentDescriptor("Example payment to Pat REF0000000") === false);
 check("word-boundary: a bare 'payment' word does not match a multi-word token",
-  isCardPaymentDescriptor("ABACUS TECHNOLOG Payment 1862 CCD ID: 1521328215") === false);
+  isCardPaymentDescriptor("EXAMPLE PAYEE CO Payment 0000 CCD ID: 0000000000") === false);
 check("word-boundary: '3CPAYMENT*PULLMAN PAPARIS FR' is NOT a payment descriptor ✓real",
   isCardPaymentDescriptor("Pullman Paparis Fr", "3CPAYMENT*PULLMAN PAPARIS FR") === false);
 // A token must not match as a fragment of a longer word.
@@ -135,7 +135,7 @@ check("word-boundary: 'prepayment thanks youth' does not match",
 // still be found — this is the case that breaks if anyone narrows the haystack.
 
 check("combined evidence: descriptor ONLY in description (merchant enriched away) still matches",
-  isCardPaymentDescriptor("Chase Card Services", "PAYMENT-THANK YOU") === true);
+  isCardPaymentDescriptor("Example Bank Card Services", "PAYMENT-THANK YOU") === true);
 check("combined evidence: descriptor ONLY in merchant (Payee-only CSV, description null) still matches",
   isCardPaymentDescriptor("PAYMENT-THANK YOU", null) === true);
 check("combined evidence: description undefined is tolerated",
@@ -160,7 +160,7 @@ for (const [label, merchant, amount] of [
   ["merchant refund (Amazon) ✓real",            "Amazon SA",                   49.01],
   ["merchant refund (Sephora) ✓real",           "Sephora",                     22.86],
   ["merchant refund (Airbnb) ✓real",            "Airbnb",                     221.45],
-  ["reward redemption ✓real",                   "POINTS FOR AMEX TRVL",       684.46],
+  ["reward redemption ✓real",                   "POINTS FOR EXAMPLE CARD TRVL",       684.46],
   ["statement credit ✓real",                    "TSA Global Entry Fee Credit", 120.00],
   ["statement credit ✓real",                    "ANNUAL HOTEL CREDIT",         50.00],
   ["apple-pay refund (the 'pay' cliff) ✓real",  "AplPay TARGET",              108.89],
@@ -209,14 +209,14 @@ for (const decided of ["Dining", "Travel", "Shopping", "Income", "Transfer", "In
 // Rescue-only: it may never DEMOTE. The symmetric liability-outflow case is
 // CCPAY-2B's structural veto in the classifier — never duplicated here.
 eq("resolver: never demotes a liability OUTFLOW carrying Payment (that is CCPAY-2B's job)",
-  resolveLiabilityPaymentCategory("Payment", "Payment", { ...CARD, amount: -387.24, merchant: "Qlub", description: "QLUB" }), "Payment");
+  resolveLiabilityPaymentCategory("Payment", "Payment", { ...CARD, amount: -342.80, merchant: "Example Bistro App", description: "EXAMPLE BISTRO APP" }), "Payment");
 // Guards reach the resolver.
 eq("resolver: Other on a DEPOSITORY account is never rescued",
   resolveLiabilityPaymentCategory("Other", "Payment", { accountType: "checking", debtSubtype: null, amount: 5000, merchant: "PAYMENT-THANK YOU", description: "PAYMENT-THANK YOU" }), "Other");
 eq("resolver: Other + liability + negative is never rescued",
   resolveLiabilityPaymentCategory("Other", "Payment", { ...PAY_EVIDENCE, amount: -5000 }), "Other");
 eq("resolver: descriptor only in description still rescues (combined-evidence contract)",
-  resolveLiabilityPaymentCategory("Other", "Payment", { ...CARD, amount: 5000, merchant: "Chase Card Services", description: "PAYMENT-THANK YOU" }), "Payment");
+  resolveLiabilityPaymentCategory("Other", "Payment", { ...CARD, amount: 5000, merchant: "Example Bank Card Services", description: "PAYMENT-THANK YOU" }), "Payment");
 eq("resolver: null description is tolerated (Payee-only CSV shape)",
   resolveLiabilityPaymentCategory("Other", "Payment", { ...CARD, amount: 5000, merchant: "PAYMENT-THANK YOU", description: null }), "Payment");
 

@@ -14,10 +14,10 @@
  *
  * Fixture (one owner, u1, unless stated). Each scenario is ≥ 3 weeks from every
  * other and uses its own amount, so no scenario can pair with another:
- *   S1  Amex HYSA       checking −1,000 LOAN_PAYMENTS  ↔ savings +1,000      → TRANSFER (SAVINGS_TRANSFER)
- *   S2  Amex checking   checking −747.26 LOAN_PAYMENTS ↔ amex checking +747.26 → TRANSFER (CASH_TRANSFER)
- *   S3  Schwab          checking −1,500 TRANSFER       ↔ schwab +1,500         → untouched, stays TRANSFER
- *   S4  Chase card      checking −300 CC_PAYMENT       ↔ card +300             → DEBT_PAYMENT kept
+ *   S1  Example Card HYSA       checking −1,000 LOAN_PAYMENTS  ↔ savings +1,000      → TRANSFER (SAVINGS_TRANSFER)
+ *   S2  Example Card checking   checking −747.26 LOAN_PAYMENTS ↔ excard checking +747.26 → TRANSFER (CASH_TRANSFER)
+ *   S3  Example Brokerage          checking −1,500 TRANSFER       ↔ exbroker +1,500         → untouched, stays TRANSFER
+ *   S4  Example Bank card      checking −300 CC_PAYMENT       ↔ card +300             → DEBT_PAYMENT kept
  *   S5  ambiguous       checking −432.10 OTHER_PAYMENT ↔ savings2 +432.10 AND card +432.10 → TRANSFER @0.2
  *   S6  unpaired card   checking −88.88 CC_PAYMENT, no pair                     → DEBT_PAYMENT kept
  *   S7  unpaired other  checking −1,234.56 OTHER_PAYMENT, no pair               → TRANSFER @0.2
@@ -71,10 +71,10 @@ const SPACE = "space_u1";
 const ACCOUNTS: { id: string; type: string; owner: string; mask: string }[] = [
   { id: "fa_chk",     type: "checking",   owner: "u1", mask: "1111" },
   { id: "fa_hysa",    type: "savings",    owner: "u1", mask: "2222" },
-  { id: "fa_amexchk", type: "checking",   owner: "u1", mask: "3333" },
-  { id: "fa_schwab",  type: "checking",   owner: "u1", mask: "4444" },
+  { id: "fa_excardchk", type: "checking",   owner: "u1", mask: "3333" },
+  { id: "fa_exbroker",  type: "checking",   owner: "u1", mask: "4444" },
   { id: "fa_card",    type: "debt",       owner: "u1", mask: "5555" },
-  { id: "fa_amexcard",type: "debt",       owner: "u1", mask: "6666" },
+  { id: "fa_excardcard",type: "debt",       owner: "u1", mask: "6666" },
   { id: "fa_sav2",    type: "savings",    owner: "u1", mask: "7777" },
   { id: "fa_broker",  type: "investment", owner: "u1", mask: "8888" },
   { id: "fa_u2sav",   type: "savings",    owner: "u2", mask: "9999" },
@@ -93,9 +93,9 @@ function classifierRow(s: Seed) {
   return {
     id: s.id, financialAccountId: s.acct, date, economicDate: date,
     amount: s.amount, currency: "USD",
-    merchant: s.id.startsWith("s1") || s.id.startsWith("s9") ? "AMERICANEXPRESS CO" : `M ${s.id}`,
+    merchant: s.id.startsWith("s1") || s.id.startsWith("s9") ? "EXAMPLECARD CO" : `M ${s.id}`,
     description: s.id.startsWith("s1") || s.id.startsWith("s9")
-      ? "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER" : `D ${s.id}`,
+      ? "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER" : `D ${s.id}`,
     category: s.category, flowType: s.flowType,
     flowDirection: s.flowType === "DEBT_PAYMENT" ? (s.amount < 0 ? "INTERNAL" : "INFLOW")
       : s.flowType === "TRANSFER" ? "INTERNAL" : s.amount < 0 ? "OUTFLOW" : "INFLOW",
@@ -114,24 +114,24 @@ const OTHER = "LOAN_PAYMENTS_OTHER_PAYMENT";
 const CC = "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT";
 
 const SEEDS: Seed[] = [
-  // S1 Amex HYSA
+  // S1 Example Card HYSA
   { id: "s1_out", acct: "fa_chk",  day: "2026-01-05", amount: -1000, flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: OTHER },
   { id: "s1_in",  acct: "fa_hysa", day: "2026-01-06", amount: 1000,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
   // S13 coincidence: same amount, same day, ordinary purchase.
   { id: "s13_buy", acct: "fa_chk", day: "2026-01-05", amount: -1000, flowType: "SPENDING", category: "Shopping", pfcPrimary: "GENERAL_MERCHANDISE", pfcDetailed: "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE" },
-  // S2 Amex checking
+  // S2 Example Card checking
   { id: "s2_out", acct: "fa_chk",     day: "2026-02-05", amount: -747.26, flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: OTHER },
-  { id: "s2_in",  acct: "fa_amexchk", day: "2026-02-05", amount: 747.26,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
-  // S3 Schwab
+  { id: "s2_in",  acct: "fa_excardchk", day: "2026-02-05", amount: 747.26,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
+  // S3 Example Brokerage
   { id: "s3_out", acct: "fa_chk",    day: "2026-03-05", amount: -1500, flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_OUT", pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER" },
-  { id: "s3_in",  acct: "fa_schwab", day: "2026-03-05", amount: 1500,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
-  // S4 Chase card payment
+  { id: "s3_in",  acct: "fa_exbroker", day: "2026-03-05", amount: 1500,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
+  // S4 Example Bank card payment
   { id: "s4_out", acct: "fa_chk",  day: "2026-04-05", amount: -300, flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: CC },
   { id: "s4_in",  acct: "fa_card", day: "2026-04-05", amount: 300,  flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: CC },
   // S5 ambiguous: a savings and a card candidate of equal amount
   { id: "s5_out",  acct: "fa_chk",      day: "2026-05-05", amount: -432.10, flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: OTHER },
   { id: "s5_sav",  acct: "fa_sav2",     day: "2026-05-06", amount: 432.10,  flowType: "TRANSFER", category: "Transfer", pfcPrimary: "TRANSFER_IN", pfcDetailed: "TRANSFER_IN_ACCOUNT_TRANSFER" },
-  { id: "s5_card", acct: "fa_amexcard", day: "2026-05-06", amount: 432.10,  flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: CC },
+  { id: "s5_card", acct: "fa_excardcard", day: "2026-05-06", amount: 432.10,  flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: CC },
   // S6 unpaired credit-card payment
   { id: "s6_out", acct: "fa_chk", day: "2026-06-05", amount: -88.88, flowType: "DEBT_PAYMENT", category: "Payment", pfcPrimary: LP, pfcDetailed: CC },
   // S7 unpaired OTHER_PAYMENT
@@ -300,7 +300,7 @@ console.log("3. classifyFlow stays institution- and descriptor-blind (purity pro
 {
   const input = { category: "Payment", amount: -1000, accountType: "checking", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: OTHER } as Parameters<typeof classifyFlow>[0];
   const a = classifyFlow(input);
-  const b = classifyFlow({ ...input, merchant: "AMERICANEXPRESS CO", description: "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER" } as never);
+  const b = classifyFlow({ ...input, merchant: "EXAMPLECARD CO", description: "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER" } as never);
   const c = classifyFlow({ ...input, merchant: "Totally Different Bank", description: "SOMETHING ELSE" } as never);
   check("the classifier still says DEBT_PAYMENT for the context-free row (the fix is NOT here)", a.flowType === "DEBT_PAYMENT");
   check("descriptor/institution text changes nothing", JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(a) === JSON.stringify(c));
@@ -317,13 +317,13 @@ const candidates = await loadCorrectionCandidates(client, candidateWhere(depIds)
 const plan = await planTransferDebtPaymentCorrections(client, candidates);
 const kindOf = new Map(plan.writes.map((p) => [p.row.id, p]));
 {
-  check("S1 Amex HYSA leg ⇒ TRANSFER_CERTAIN / SAVINGS_TRANSFER",
+  check("S1 Example Card HYSA leg ⇒ TRANSFER_CERTAIN / SAVINGS_TRANSFER",
     kindOf.get("s1_out")?.kind === "TRANSFER_CERTAIN" && kindOf.get("s1_out")?.maturity === "SAVINGS_TRANSFER",
     JSON.stringify(kindOf.get("s1_out") && { k: kindOf.get("s1_out")!.kind, m: kindOf.get("s1_out")!.maturity, e: kindOf.get("s1_out")!.evidenceLevel }));
-  check("S2 Amex checking leg ⇒ TRANSFER_CERTAIN / CASH_TRANSFER",
+  check("S2 Example Card checking leg ⇒ TRANSFER_CERTAIN / CASH_TRANSFER",
     kindOf.get("s2_out")?.kind === "TRANSFER_CERTAIN" && kindOf.get("s2_out")?.maturity === "CASH_TRANSFER");
-  check("S3 Schwab transfer is not a candidate (already TRANSFER)", !candidates.some((c) => c.id.startsWith("s3")));
-  check("S4 Chase card payment cash leg is KEPT", !kindOf.has("s4_out"));
+  check("S3 Example Brokerage transfer is not a candidate (already TRANSFER)", !candidates.some((c) => c.id.startsWith("s3")));
+  check("S4 Example Bank card payment cash leg is KEPT", !kindOf.has("s4_out"));
   check("S5 savings/card ambiguity ⇒ TRANSFER_UNRESOLVED @0.2",
     kindOf.get("s5_out")?.kind === "TRANSFER_UNRESOLVED" && kindOf.get("s5_out")?.evidenceLevel === "TYPE_AMBIGUOUS",
     JSON.stringify(kindOf.get("s5_out")?.evidenceLevel));
@@ -388,7 +388,7 @@ console.log("6. money totals are IDENTICAL before vs after");
     `${JSON.stringify(before.byReason)} → ${JSON.stringify(after.byReason)}`);
   check("debt payments identical (count + total)", after.debtPaymentCount === before.debtPaymentCount && after.debtPaymentTotal === before.debtPaymentTotal);
   check("debt-service netPaydown identical", after.netPaydown === before.netPaydown);
-  check("Chase card payment counted ONCE — the cash leg only (no double count with the card leg)",
+  check("Example Bank card payment counted ONCE — the cash leg only (no double count with the card leg)",
     JSON.stringify(after.debtPaymentIds) === JSON.stringify(["s4_out"]) && after.debtPaymentTotal === 300,
     JSON.stringify(after.debtPaymentIds));
 }
@@ -443,12 +443,12 @@ console.log("10. AI transferTotal counts the resolved legs (monthly fold)");
 console.log("11. Brief recent activity sends the resolved nature");
 {
   const mk = (over: Partial<Transaction>): Transaction => ({
-    id: "t", accountId: "fa_chk", date: "2026-10-26", amount: -125.41, merchant: "AMERICANEXPRESS CO",
+    id: "t", accountId: "fa_chk", date: "2026-10-26", amount: -125.41, merchant: "EXAMPLECARD CO",
     category: "Payment", flowType: "DEBT_PAYMENT", pending: true, ...over,
   } as unknown as Transaction);
   const act = projectRecentActivity([
     mk({ id: "a", transferMaturity: "SAVINGS_TRANSFER", counterpartyAccountId: "fa_hysa" } as never),
-    mk({ id: "b", amount: -300, merchant: "PAYMENT TO CHASE CARD", transferMaturity: "DEBT_PAYMENT", counterpartyAccountId: "fa_card" } as never),
+    mk({ id: "b", amount: -300, merchant: "PAYMENT TO EXAMPLE BANK CARD", transferMaturity: "DEBT_PAYMENT", counterpartyAccountId: "fa_card" } as never),
   ], { from: "2026-10-20", to: "2026-10-26" }, true, (id) => ACCOUNTS.find((a) => a.id === id)?.type);
   const hysa = act.top.find((r) => r.amount === -125.41)!;
   const card = act.top.find((r) => r.amount === -300)!;

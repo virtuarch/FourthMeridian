@@ -15,7 +15,7 @@ are honest debt with a known shape.
 `category` *from* `flowType` (`FLOW_TO_CATEGORY`) — the inverse of the canonical
 `classifyFlow`, which derives flow from category.
 
-**Why it was left alone (CCPAY-2F).** Its 25 live rows in `Chris' Space`
+**Why it was left alone (CCPAY-2F).** Its 25 live rows in `Jules' Space`
 (`Bitcoin received`) carry `classifierVersion = null` and a hand-written
 `SIGN_DEFAULT_INFLOW`. Because they have no resolved merchant, they currently
 fire `needs-classification.ts` clause B (`UNKNOWN_INFLOW_SOURCE`) and feed the

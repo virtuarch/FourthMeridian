@@ -29,6 +29,7 @@ import { Snapshot } from "@/types";
 import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
 import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
 import { todayUTCISO } from "@/lib/time/clock";
+import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 /**
  * Resolve the stamp-conversion context for a set of snapshot rows against the
@@ -212,6 +213,9 @@ export async function getRecentSnapshots(
       // V26-PRE (B2) — rides the same stamp-aware conversion as every other
       // total (convertStampedValues converts all keys of this object).
       netLiquid:        r.netLiquid,
+      // FIN-E part 2 — only when RECORDED (null = not recorded, never 0), so a
+      // row without it is byte-identical; converted with the rest when present.
+      ...(typeof r.restrictedCash === "number" ? { restrictedCash: r.restrictedCash as number } : {}),
     };
 
     // V26-INVESTMENTS-HISTORY / V26-CRYPTO-STATUS-1 / v2.6-A — the row's
@@ -245,7 +249,7 @@ export async function getRecentSnapshots(
 
     // Off-stamp: convert every total at THIS row's own date (historical FX);
     // the display-estimation flag joins the existing badge mechanism.
-    const converted = convertStampedValues(raw, stamp, r.date.toISOString().slice(0, 10), stampCtx);
+    const converted = convertStampedValues(raw as Record<keyof typeof raw, number>, stamp, r.date.toISOString().slice(0, 10), stampCtx);
     return {
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
@@ -314,7 +318,7 @@ export interface SpaceNetWorthSummary {
    * disagree. Null when there is no comparison point.
    *
    * This replaces a card-local `trendDeltaPct(trend)` that ran over the last 14
-   * SNAPSHOT ROWS — neither a month nor 30 days. On Chris' Space that read 25.0%
+   * SNAPSHOT ROWS — neither a month nor 30 days. On Jules' Space that read 25.0%
    * against the inside view's 49.2%, for the same Space on the same day.
    */
   change: {
@@ -336,7 +340,15 @@ export interface SpaceNetWorthSummary {
      * it was given rather than assuming which one it received.
      */
     preset: TimePreset;
+    /** PB-8c — an endpoint includes a held-flat debt estimate: the card marks it. */
+    estimated?: true;
   } | null;
+  /**
+   * PB-8c — present when `change` is null because the month crosses the Space's
+   * balance-history floor (balance-coverage.core `changeComparability`, the rule
+   * the inside-Space hero uses). The card says "history is partial", never a %.
+   */
+  changeWithheld?: WithheldChange;
 }
 
 /**
@@ -350,6 +362,13 @@ export interface SpaceNetWorthSummary {
 export async function getSpaceNetWorthSummaries(
   client: ReadClient,
   spaceIds: string[],
+  /**
+   * PB-8c — each Space's balance-history floors (loadBalanceCoverageBySpace),
+   * read by the caller in a phase of its own. A Space mapped to null (nothing to
+   * cover) or absent keeps its change exactly as before; one mapped to
+   * BALANCE_COVERAGE_UNAVAILABLE (the read failed) has it withheld (S2 sweep).
+   */
+  balanceCoverage?: ReadonlyMap<string, BalanceCoverageRead>,
 ): Promise<Record<string, SpaceNetWorthSummary>> {
   if (spaceIds.length === 0) return {};
 
@@ -405,7 +424,8 @@ export async function getSpaceNetWorthSummaries(
     // genuine rate misses are omitted — never rendered as plain numbers, never
     // native magnitudes relabelled. No admissible point ⇒ the card's explicit
     // "no figure" state (netWorth 0, trend [], asOf null).
-    const summary = summarizeNetWorthSeries(admissibleNetWorthSeries(series, target, stampCtx));
+    const summary = summarizeNetWorthSeries(
+      admissibleNetWorthSeries(series, target, stampCtx), balanceCoverage?.get(id) ?? null);
     result[id] = { currency: target, ...summary };
   }
   return result;

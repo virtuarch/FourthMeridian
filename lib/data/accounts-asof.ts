@@ -104,7 +104,7 @@ export async function getAccountsAsOf(
       financialAccount: {
         select: {
           id: true, type: true, balance: true, createdAt: true,
-          debtSubtype: true, creditLimit: true,
+          debtSubtype: true, creditLimit: true, providerSubtype: true,
           // W6e — the wallet's asset and its successful-read clock.
           walletChain: true, lastUpdated: true,
         },
@@ -126,6 +126,7 @@ export async function getAccountsAsOf(
       type: l.financialAccount.type as string,
       debtSubtype: l.financialAccount.debtSubtype,
       creditLimit: l.financialAccount.creditLimit,
+      providerSubtype: l.financialAccount.providerSubtype,
     }),
     connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
   }));
@@ -161,6 +162,7 @@ export async function getAccountsAsOf(
     balance:     canonicalBalance.get(l.financialAccount.id) ?? l.financialAccount.balance,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
+    providerSubtype: l.financialAccount.providerSubtype,
     // The REPLAY floor, never the existence floor: knowing an account is older
     // does not license carrying today's balance back across the extra years.
     floorISO:    coverage.get(l.financialAccount.id)?.displayFromISO ?? refs[idx].connectionFloorISO,

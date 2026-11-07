@@ -9,14 +9,14 @@
  * ── The failure this closes ─────────────────────────────────────────────────
  * After CF-6 the evidence is reachable, and nothing says what to do with it. A
  * user's "investments" spans two authorities the product keeps deliberately
- * apart, and the model was left to join them itself. Measured on the real Space
- * at 93b46c0:
+ * apart, and the model was left to join them itself. The measured failure,
+ * with illustrative figures of the same shape:
  *
- *     holdings.totalPortfolioValue  $23,943.30
- *     accounts.totalDigitalAssets   $19,014.63
- *     sum                           $42,957.92   ← overstates by $18,936.74
+ *     holdings.totalPortfolioValue  $24,900.01
+ *     accounts.totalDigitalAssets   $20,000.01
+ *     sum                           $44,900.02   ← overstates by $19,900.00
  *
- * That addition is the obvious one to make and it is wrong by 79%, because
+ * That addition is the obvious one to make and it is wrong by ~80%, because
  * `holdings_summary` is the canonical POSITION spine and already contains the
  * digital assets. The two figures look like disjoint components and are not.
  *
@@ -132,11 +132,23 @@ export function composeInvestments(
       ? 'at least one balance could not be converted to the reporting currency and was excluded from the totals'
       : null;
 
+  // FM-AUDIT-022 — an unvalued wallet was EXCLUDED from the digital-asset total
+  // (never counted at 0). That total is a partial, so it is not assertable; the
+  // exclusion is attributable to digital assets only, so the other class stands.
+  const unvalued = accounts.totalsUnvaluedCount ?? 0;
+  const digitalIndeterminate = unvalued > 0
+    ? `${unvalued} crypto wallet(s) are not yet valued (no price or no observation) and are excluded from the digital-asset total`
+    : null;
+
   const component = (
     key: string, label: string, amount: number | undefined, accountCount: number,
+    classIndeterminate: string | null = null,
   ): ConceptComponent => {
     if (indeterminate) {
       return { key, label, state: ComponentState.UNKNOWN, amount: null, accountCount, reason: indeterminate };
+    }
+    if (classIndeterminate) {
+      return { key, label, state: ComponentState.UNKNOWN, amount: null, accountCount, reason: classIndeterminate };
     }
     if (accountCount === 0) {
       // Provably empty: the classification found no accounts of this class and
@@ -153,7 +165,7 @@ export function composeInvestments(
     component('TRADITIONAL_INVESTMENTS', 'Traditional investments',
       accounts.totalInvestments, accounts.counts?.investments ?? 0),
     component('DIGITAL_ASSETS', 'Digital assets',
-      accounts.totalDigitalAssets, accounts.counts?.digitalAssets ?? 0),
+      accounts.totalDigitalAssets, accounts.counts?.digitalAssets ?? 0, digitalIndeterminate),
   ];
 
   // Nothing of either kind, and nothing hidden — the concept does not apply and
@@ -163,8 +175,8 @@ export function composeInvestments(
   const unknown = components.filter((c) => c.state === ComponentState.UNKNOWN);
   // Summed from the ROUNDED components, not from the raw balances.
   //
-  // The two differ by a cent here ($5,006.56 + $19,014.63 = $24,021.19, while
-  // rounding the raw sum gives $24,021.18) and the rounded-component sum is the
+  // The two differ by a cent here (illustratively $5,000.01 + $20,000.01 = $25,000.02,
+  // while rounding the raw sum gives $25,000.01) and the rounded-component sum is the
   // right one: the components are what the user is shown, and a total they
   // cannot reproduce by adding the two figures in front of them reads as an
   // error in the system rather than as rounding.
@@ -275,7 +287,7 @@ function money(n: number, currency: string): string {
  * The concept block, rendered only when a question is actually about it.
  *
  * The decomposition is mandatory and the combined figure is optional — never
- * the other way round. A single "Investments: $24,021" hides that four fifths
+ * the other way round. A single "Investments: $25,000" hides that four fifths
  * of it is crypto, which is the first thing anyone asking would want to know,
  * and it hides which authority produced it.
  */

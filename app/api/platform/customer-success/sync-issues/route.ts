@@ -33,6 +33,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { getIncidentPreview, PREVIEW_LIMIT } from "@/lib/platform/incidents/preview";
 import type { IncidentPreview } from "@/lib/platform/incidents/preview-core";
 
@@ -41,9 +42,12 @@ export const runtime = "nodejs";
 export type PlatformSyncIssuesResponse = IncidentPreview;
 
 export async function GET() {
-  const [, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
+  const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
   if (err) return err;
+  // PB-1 R4 — the incident tier follows THIS guard result (never a parameter).
+  const incidentToken = incidentAudienceFor(auth);
+  if (!incidentToken || incidentToken.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const preview = await getIncidentPreview(PREVIEW_LIMIT);
+  const preview = await getIncidentPreview(incidentToken, PREVIEW_LIMIT);
   return NextResponse.json(preview satisfies PlatformSyncIssuesResponse);
 }

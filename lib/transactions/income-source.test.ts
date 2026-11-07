@@ -21,8 +21,8 @@ const ev = (o: Partial<IncomeEvidence>): IncomeEvidence =>
 
 console.log("v2.6-TRUTH-4 INCOME. Earned income");
 {
-  // "VECTRUS SYSTEMS PAYROLL PPD ID: 22215228" — 54 rows, $255,648.69.
-  const salary = attributeIncome(ev({ providerDetail: "INCOME_SALARY", amount: 5286.64 }));
+  // "EMPLOYER A PAYROLL PPD ID: 0000000000" — the observed payroll rows.
+  const salary = attributeIncome(ev({ providerDetail: "INCOME_SALARY", amount: 4928.41 }));
   check("payroll ⇒ EARNED_INCOME / SALARY",
     salary.incomeClass === "EARNED_INCOME" && salary.subtype === "SALARY");
   check("contractor ⇒ EARNED_INCOME / CONTRACT",
@@ -33,7 +33,7 @@ console.log("v2.6-TRUTH-4 INCOME. Earned income");
 
 console.log("v2.6-TRUTH-4 INCOME. Interest is NOT earned, and keeps its source account");
 {
-  // HYSA "Interest Payment" $6.03; CHASE SAVINGS "INTEREST PAYMENT" $0.01.
+  // HYSA "Interest Payment" $6.03; EXAMPLE BANK SAVINGS "INTEREST PAYMENT" $0.01.
   const i = attributeIncome(ev({ providerDetail: "INCOME_INTEREST_EARNED", amount: 6.03,
     accountType: "savings", sourceAccountId: "hysa" }));
   check("interest ⇒ INTEREST_INCOME", i.incomeClass === "INTEREST_INCOME");
@@ -71,7 +71,7 @@ console.log("v2.6-TRUTH-4 INCOME. Non-income inflows are excluded, and NAMED");
 
 console.log("v2.6-TRUTH-4 INCOME. Interest CHARGED is not interest income");
 {
-  // 44 live rows, Σ−16,158.26, BANK_FEES_INTEREST_CHARGE on cards.
+  // dozens of live rows, a five-figure Σ, BANK_FEES_INTEREST_CHARGE on cards.
   const charged = attributeIncome(ev({ flowType: "INTEREST", amount: -412.55, accountType: "debt",
     providerDetail: "BANK_FEES_INTEREST_CHARGE" }));
   check("a NEGATIVE interest row is never INTEREST_INCOME", charged.incomeClass !== "INTEREST_INCOME");

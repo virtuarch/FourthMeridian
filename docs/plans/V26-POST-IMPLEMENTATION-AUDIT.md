@@ -354,7 +354,7 @@ A figure of `−4000` verifies against prose reading `"$4,000.00"`. Worse, it is
 
 ## 13. Smallest justified next phase
 
-Chris's hypothesis was A (framing) → B (planner vocabulary) → C (manual conversational exercise). **I would reorder it, and put something before all three.**
+Jules's hypothesis was A (framing) → B (planner vocabulary) → C (manual conversational exercise). **I would reorder it, and put something before all three.**
 
 **Phase 0 — the five blockers. ~1 day. Not optional.**
 D1 (`\b`-anchor the suffix in both regexes), D2 (delete the `Math.abs` clause; fix `renderFigure` to emit `-$4,000.00`), D3 (thread `fallbacks` into a real field and stop misattributing `basis`), D4 (reject a PREMISE claim in a declarative frame, or split the address spaces), D7 (move the call inside the try). Add one property test over arbitrary `LicensedFigure`s and an anti-vacuity assertion to the gated suite. **None of these is a design question; all five are wrong on their own terms.**

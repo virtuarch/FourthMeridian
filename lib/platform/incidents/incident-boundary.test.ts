@@ -73,8 +73,16 @@ const ALL_PRODUCERS = [
   { file: "lib/crypto/btc-sync.ts",                          enveloped: false },
 ] as const;
 
-/** The ONLY module permitted to touch SyncIssue rows directly. */
-const LIFECYCLE_INTERNALS = new Set(["lib/platform/incidents/lifecycle.ts"]);
+/**
+ * The ONLY modules permitted to touch SyncIssue rows directly. PB-1 Phase 1
+ * adds two, deliberately: the account-deletion incident purge and the
+ * archive-on-prune retention step — both DELETE, neither observes or resolves.
+ */
+const LIFECYCLE_INTERNALS = new Set([
+  "lib/platform/incidents/lifecycle.ts",
+  "lib/platform/incidents/purge.ts",
+  "lib/platform/incidents/retention.ts",
+]);
 
 function main() {
   // ── 1. The semantics authority stays the only classifier ────────────────────
@@ -113,12 +121,32 @@ function main() {
     const resolvers = prod.filter((f) => /export async function resolveByAutomaticRecovery/.test(code(f)));
     check("one automatic-resolution service", resolvers.length === 1 && resolvers[0] === LIFECYCLE, resolvers.join(", "));
 
-    // Only AUTOMATIC_RECOVERY exists — no kind without a producer.
+    const removers = prod.filter((f) => /export async function resolveBySubjectRemoval/.test(code(f)));
+    check("one subject-removal service", removers.length === 1 && removers[0] === LIFECYCLE, removers.join(", "));
+
+    // PB-1 S2 — DELIBERATE PIN UPDATE (was: "AUTOMATIC_RECOVERY is the only kind").
+    // The kind set is exactly these three; each has one writer or is declared for
+    // the invariant only (OPERATOR_RESOLVED — its writer is S6).
     const lc = code(LIFECYCLE);
+    const inv = code("lib/platform/incidents/invariant.ts");
     for (const unbacked of ["CONNECTION_REMOVED", "REAUTHENTICATED", "OPERATOR_ACTION", "SUPERSEDED"]) {
-      check(`no unbacked resolution kind \`${unbacked}\``, !new RegExp(`"${unbacked}"`).test(lc));
+      check(`no unbacked resolution kind \`${unbacked}\``, !new RegExp(`"${unbacked}"`).test(lc) && !new RegExp(`"${unbacked}"`).test(inv));
     }
-    check("AUTOMATIC_RECOVERY is the only kind", /RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY"/.test(lc));
+    check("the resolution kinds are exactly AUTOMATIC_RECOVERY, OPERATOR_RESOLVED, SUBJECT_REMOVED",
+      /RESOLUTION_KINDS = \["AUTOMATIC_RECOVERY", "OPERATOR_RESOLVED", "SUBJECT_REMOVED"\] as const/.test(inv)
+      && /RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY"/.test(lc)
+      && /RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED"/.test(lc)
+      && /RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED"/.test(lc));
+    // PB-1 S6 — DELIBERATE PIN UPDATE (was: "OPERATOR_RESOLVED has no writer yet").
+    // Its ONE writer is applyOperatorTransition, the one operator lifecycle function.
+    const opWriters = lc.match(/resolutionKind:\s*RESOLUTION_KIND_OPERATOR/g) ?? [];
+    const opFn = lc.slice(lc.indexOf("export async function applyOperatorTransition"));
+    check("OPERATOR_RESOLVED has exactly ONE writer, inside applyOperatorTransition",
+      opWriters.length === 1 && /resolutionKind:\s*RESOLUTION_KIND_OPERATOR/.test(opFn), String(opWriters.length));
+    const transitionFns = prod.filter((f) => /export async function applyOperatorTransition/.test(code(f)));
+    check("one operator-transition service", transitionFns.length === 1 && transitionFns[0] === LIFECYCLE, transitionFns.join(", "));
+    check("SUBJECT_REMOVED is never written as a recovery (its writer names its own kind)",
+      /resolutionKind:\s*RESOLUTION_KIND_SUBJECT_REMOVED/.test(lc));
   }
 
   // ── 3. Producers submit facts; they decide nothing ──────────────────────────
@@ -160,7 +188,7 @@ function main() {
     const consumers = [...walk("lib"), ...walk("app"), ...walk("jobs")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => !f.startsWith("lib/platform/incidents/"))
-      .filter((f) => /recordIncidentObservation\(|resolveByAutomaticRecovery\(/.test(code(f)));
+      .filter((f) => /recordIncidentObservation\(|resolveByAutomaticRecovery\(|resolveBySubjectRemoval\(/.test(code(f)));
     check("only the facade calls the lifecycle authority",
       consumers.length === 1 && consumers[0] === FACADE, consumers.join(", "));
 
@@ -193,8 +221,11 @@ function main() {
   console.log("6. active/history is decided centrally");
   {
     const proj = code("lib/platform/incidents/projections.ts");
+    // PB-4 — through episodes-core's ONE row → state call (shared with the CS trend), which delegates to the authority.
+    const episodes = code("lib/platform/incidents/episodes-core.ts");
     check("projections delegate state to the semantics authority",
-      /syncIssueState\(/.test(proj) && !/function syncIssueState/.test(proj));
+      /episodeStateOf\(/.test(proj) && /from "\.\/episodes-core"/.test(proj) && !/function syncIssueState/.test(proj)
+      && /syncIssueState\(/.test(episodes) && !/function syncIssueState/.test(episodes));
   }
 
   // ── 7. Admission separation holds ───────────────────────────────────────────
@@ -207,6 +238,258 @@ function main() {
     }
     check("the lifecycle authority knows nothing of admission reasons",
       !/INGESTION_PAUSED|MAINTENANCE_MODE|CONTROL_PLANE_|admissionReason/.test(code(LIFECYCLE)));
+  }
+
+  // ── 8. PB-1 Phase 1 — provenance is append-only, evidence is typed ─────────
+  console.log("8. the chronology, the archive and the evidence have one writer each");
+  {
+    // Disposable-PG harnesses (scripts/test-*.ts) reset their own throwaway
+    // database and refuse any other; they are fixtures, not product code.
+    // The RLS acceptance suite issues raw SQL against these tables ON PURPOSE, to
+    // prove the database REFUSES it (cases 42-48: UPDATE / backdated INSERT denied
+    // by grant). It runs only against a throwaway clone. Exempted by exact path —
+    // ONE file, pinned below to keep proving refusal — never by loosening a pattern.
+    const ACCEPTANCE_PROBES = new Set(["scripts/rls-acceptance.ts"]);
+    const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f))
+      .filter((f) => !ACCEPTANCE_PROBES.has(f));
+    check("the acceptance-probe exemption covers exactly one file",
+      ACCEPTANCE_PROBES.size === 1 && ACCEPTANCE_PROBES.has("scripts/rls-acceptance.ts"));
+    {
+      const probes = code("scripts/rls-acceptance.ts");
+      check("…and that file still asserts the refusals it is exempted for (append-only, no backdating)",
+        /can NOT update an incident event \(append-only\)/.test(probes) && /can NOT supply `at` \(no backdating\)/.test(probes)
+        && /deniedByGrant\(upd\)/.test(probes) && /deniedByGrant\(back\)/.test(probes));
+    }
+    const touching = (re: RegExp) => prod.filter((f) => re.test(code(f)));
+    check("SyncIssueEvent is never updated anywhere (append-only)",
+      touching(/syncIssueEvent\.(update|updateMany|upsert)\(|UPDATE\s+"?SyncIssueEvent/i).length === 0);
+    const eventDeleters = touching(/syncIssueEvent\.(delete|deleteMany)\(|DELETE\s+FROM\s+"?SyncIssueEvent/i);
+    check("SyncIssueEvent is deleted ONLY by the purge and the retention prune",
+      eventDeleters.every((f) => f === "lib/platform/incidents/purge.ts" || f === "lib/platform/incidents/retention.ts")
+      && eventDeleters.length === 2, eventDeleters.join(", "));
+    const eventWriters = touching(/syncIssueEvent\.(create|createMany)\(|INSERT\s+INTO\s+"?SyncIssueEvent/i);
+    check("SyncIssueEvent is written ONLY by the lifecycle authority",
+      eventWriters.length === 1 && eventWriters[0] === LIFECYCLE, eventWriters.join(", "));
+    const archiveWriters = touching(/syncIssueArchive\.(create|createMany|update|updateMany|upsert)\(/);
+    check("SyncIssueArchive is written ONLY by the archive-on-prune step",
+      archiveWriters.length === 1 && archiveWriters[0] === "lib/platform/incidents/retention.ts", archiveWriters.join(", "));
+    check("the archive row is shaped ONLY by the allowlist builder", /buildArchiveRow\(/.test(code("lib/platform/incidents/retention.ts")));
+    const lc = code(LIFECYCLE);
+    // The evidence columns may be NAMED only where they are built, copied through
+    // the builder, or exported read-only; the write forms are pinned in place.
+    const EVIDENCE_FILES = new Set([
+      LIFECYCLE, "lib/platform/incidents/evidence.ts", "lib/platform/incidents/archive-core.ts",
+      "lib/platform/incidents/retention.ts", "lib/platform/incidents/invariant.ts", "lib/platform/incidents/subject-export.ts",
+    ]);
+    const evidenceNamers = touching(/\bresolutionEvidence\b/).filter((f) => !EVIDENCE_FILES.has(f));
+    check("resolutionEvidence is touched only by its builder, the archive copy and the export",
+      evidenceNamers.length === 0, evidenceNamers.join(", "));
+    check("lifecycle writes resolutionEvidence only from buildResolutionEvidence",
+      /const evidence = buildResolutionEvidence\(/.test(lc) && /resolutionEvidence:\s*evidence as unknown/.test(lc));
+    check("the archive copy re-builds it through the typed reshaper",
+      /resolutionEvidence:\s*reshapeStoredEvidence\(/.test(code("lib/platform/incidents/archive-core.ts")));
+    const summaryNamers = touching(/\bevidenceSummary\b/).filter((f) => f !== LIFECYCLE && f !== "lib/platform/incidents/evidence.ts");
+    check("evidenceSummary is written ONLY via buildOccurrenceEvidenceSummary",
+      summaryNamers.length === 0 && /evidenceSummary:\s*buildOccurrenceEvidenceSummary\(/.test(lc), summaryNamers.join(", "));
+    check("a transition is a CAS that THROWS on 0 rows, inside one transaction with its event",
+      /\$transaction\(async \(tx\)/.test(lc) && /lifecycleState:\s*c\.lifecycleState/.test(lc)
+      && /if \(count !== 1\) throw new IncidentTransitionConflictError/.test(lc));
+  }
+
+  // ── 9. PB-1 S3 — every removal path closes its subject's incidents ────────
+  console.log("9. removal closes incidents as SUBJECT_REMOVED; restore never reopens");
+  {
+    for (const f of ["lib/accounts/disconnect.ts", "lib/plaid/disconnect.ts", "lib/account-deletion/purge.ts"]) {
+      check(`${f}: calls the subject-removal facade`, /resolveIncidentsForRemovedSubjects|resolveRemovedSubjects/.test(code(f)));
+    }
+    const restore = code("app/api/accounts/[id]/restore/route.ts");
+    check("restore does not reopen a closed episode (no incident code at all)",
+      !/syncIssue|incidents\/|recordSyncIssue|resolveIncidents/.test(restore));
+  }
+
+  // ── 10. RLS — the tenant role's column grant is unchanged ─────────────────
+  console.log("10. fm_app still reads only the RLS-16 columns of SyncIssue");
+  {
+    const dir = path.join(ROOT, "prisma/migrations");
+    const grants: string[] = [];
+    for (const m of readdirSync(dir)) {
+      let sql = "";
+      try { sql = readFileSync(path.join(dir, m, "migration.sql"), "utf8"); } catch { continue; }
+      sql = sql.replace(/--.*$/gm, "");
+      for (const g of sql.match(/GRANT[^;]*ON\s+TABLE\s+public\."SyncIssue(Occurrence|Event|Archive|Relation)?"[^;]*TO\s+fm_app[^;]*;/g) ?? []) grants.push(`${m}: ${g.replace(/\s+/g, " ")}`);
+    }
+    check("exactly one fm_app grant on the incident tables, the RLS-16 six columns",
+      grants.length === 1 && grants[0].startsWith("20261002000500_rls_app_sync_issue_read")
+      && /"id", "kind", "resolved", "createdAt", "financialAccountId", "plaidTransactionId"/.test(grants[0]), grants.join(" | "));
+  }
+
+  // ── 11. PB-1 Phase 2 FINAL — open/closed is the intelligence module's ──────
+  // Every production file that reads SyncIssue ROWS (a Prisma read on syncIssue) or calls a legacy
+  // row → state helper, outside the module, is CENSUSED here with why it may. An unlisted file fails;
+  // a listed file that no longer matches fails too (the census only shrinks by a reviewed change).
+  // None of the six cut-over readers (R1–R6, PB-1 §13.1) may appear: their open/closed is the module's.
+  console.log("11. no reader outside the intelligence module decides open/closed from SyncIssue rows");
+  {
+    const RAW_READ = /\.syncIssue\.(findMany|findFirst|findUnique|findFirstOrThrow|findUniqueOrThrow|count|groupBy|aggregate)\(|\b(syncIssueState|episodeStateOf|incidentEpisodes)\(/;
+    const CENSUS: Readonly<Record<string, string>> = {
+      // The lifecycle authority and its two DELETE-only steps (§2 LIFECYCLE_INTERNALS): they WRITE open/closed.
+      "lib/platform/incidents/lifecycle.ts": "lifecycle writer",
+      "lib/platform/incidents/purge.ts": "lifecycle internal (account-deletion purge; selects ids to delete)",
+      "lib/platform/incidents/retention.ts": "lifecycle internal (archive-on-prune; copies rows it deletes)",
+      // The semantics authority itself (defines syncIssueState; §1 pins it as the only classifier).
+      "lib/platform/sync-issue-semantics.ts": "semantics authority (definition)",
+      // Copies a customer's rows, `resolved` included as a FACT, into their export; decides nothing.
+      "lib/platform/incidents/subject-export.ts": "subject export (verbatim facts)",
+      // The wallet-sync incident's LAST FAILURE INSTANT (max lastOccurredAt) — a clock, not an open/closed verdict.
+      "lib/crypto/wallet-refresh.ts": "failure clock (no state)",
+      // PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — shape pinned below.
+      "lib/plaid/backgroundHistorySync.ts": "EXCEPTION: control gate, not a display read (MISSING_ACCOUNT persisted-open COUNT gates recovery)",
+      // PB-1 Phase 3 — the CS daily trend moved to module verdicts (incident-trend-core.ts); what remains is
+      // getIncidentDetail's IncidentView, KEPT by S2 ruling: execution evidence only; state ignored (pinned below).
+      "lib/platform/incidents/projections.ts": "KEPT: getIncidentDetail — execution evidence only; state ignored",
+      "lib/platform/incidents/episodes-core.ts": "KEPT: episodeStateOf for getIncidentDetail's view only — state ignored by its consumer",
+      // PB-1 Phase 3 (S2-approved design a) — fm_app tenant read of the RLS-16 columns; the open/closed
+      // decision is the module's PURE core (lib/activity/member-incidents.ts, audience MEMBER).
+      "app/api/spaces/[id]/activity/route.ts": "raw read; open/closed decision from module core",
+    };
+    // S2 (PB-1 Phase 3 close) — the census splits into NON-READER entries (writers, the authority, the export,
+    // a clock, a helper) and RESIDUAL READERS (display-path / raw-read paths outside the module). Both counts are
+    // pinned: exactly THREE residual readers — the control gate, getIncidentDetail's execution evidence and the
+    // member tenant read — and ten entries in all. Any growth is a reviewed change to these numbers.
+    const RESIDUAL_READERS = new Set([
+      "lib/plaid/backgroundHistorySync.ts",      // control gate (permanent exception)
+      "lib/platform/incidents/projections.ts",   // getIncidentDetail — execution evidence only
+      "app/api/spaces/[id]/activity/route.ts",   // member tenant read — open/closed from the module core
+    ]);
+    check("exactly THREE residual readers, all censused", RESIDUAL_READERS.size === 3 && [...RESIDUAL_READERS].every((f) => f in CENSUS));
+    const nonReaders = Object.keys(CENSUS).filter((f) => !RESIDUAL_READERS.has(f));
+    check("…and SEVEN non-reader entries (lifecycle writer, purge, retention, semantics authority, subject export, wallet clock, episodes-core helper)",
+      nonReaders.length === 7, nonReaders.join(", "));
+    check("the census holds TEN entries in all", Object.keys(CENSUS).length === 10, String(Object.keys(CENSUS).length));
+    const found = [...walk("lib"), ...walk("app"), ...walk("components")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !f.startsWith("lib/platform/incidents/intelligence/") && !f.startsWith("lib/platform/incidents/parity/"))
+      .filter((f) => RAW_READ.test(code(f)))
+      .sort();
+    const unlisted = found.filter((f) => !(f in CENSUS));
+    const stale = Object.keys(CENSUS).filter((f) => !found.includes(f));
+    check("every SyncIssue row reader / legacy state caller outside the module is censused", unlisted.length === 0, unlisted.join(", "));
+    check("…and every census entry still matches (the census only shrinks by a reviewed change)", stale.length === 0, stale.join(", "));
+    const CUT_OVER = [
+      "lib/platform/customer/", // R1 customer-core, R2 customer-detail, R6b attention
+      "lib/platform/convergence/", // R3
+      "lib/alerts/", // R5
+      "lib/platform/ops/", // R6a
+    ];
+    const leaks = found.filter((f) => CUT_OVER.some((d) => f.startsWith(d)));
+    check("none of the cut-over readers (R1–R3, R5, R6a, R6b) reads SyncIssue rows or a legacy state helper", leaks.length === 0, leaks.join(", "));
+    // The control-gate exception's SHAPE (S2): exactly one SyncIssue read in the file — a COUNT over
+    // MISSING_ACCOUNT with resolved=false, scoped to the item (and the legacy resolvedAt=null guard);
+    // no select, no detail, no other kind. Anything wider is a new reader and fails here.
+    const gate = code("lib/plaid/backgroundHistorySync.ts");
+    const gateReads = gate.match(new RegExp(RAW_READ.source, "g")) ?? [];
+    check("backgroundHistorySync: its ONE SyncIssue read is a COUNT", gateReads.length === 1 && gateReads[0] === ".syncIssue.count(", gateReads.join(", "));
+    check("…over MISSING_ACCOUNT, resolved=false, per item — no select, no detail",
+      /\.syncIssue\.count\(\{\s*where: \{ plaidItemId: id, kind: SyncIssueKind\.MISSING_ACCOUNT, resolvedAt: null, resolved: false \},?\s*\}\)/.test(gate)
+      && !/\.syncIssue\.count\(\{[^)]*(select|detail|include)/.test(gate));
+    check("…and the revisit note (derived module-only closure on MISSING_ACCOUNT) stays beside it",
+      /REVISIT if the intelligence module ever applies a module-only \(derived,\s*\n?\s*\/\/ not persisted\) closure to MISSING_ACCOUNT/.test(readFileSync(path.join(ROOT, "lib/plaid/backgroundHistorySync.ts"), "utf8")));
+    const proj = code("lib/platform/incidents/projections.ts");
+    // KEPT by ruling: getIncidentDetail is execution evidence only — its single consumer (Ops attention) reads
+    // occurrences, never the derived state.
+    const opsAtt = code("lib/platform/ops/attention.ts");
+    check("getIncidentDetail's only consumer reads occurrences, never its state",
+      /getIncidentDetail\(v\.id\)/.test(opsAtt) && /detail\?\.occurrences\.find/.test(opsAtt) && !/detail\?\.incident|\.incident\.state/.test(opsAtt));
+    // PB-1 Phase 3 — the KEPT entries are only what the ruling names: projections' one SyncIssue read is
+    // getIncidentDetail's findUnique, and episodeStateOf's one caller is projections' IncidentView mapping.
+    const projReads = proj.match(new RegExp(RAW_READ.source, "g")) ?? [];
+    check("projections: its SyncIssue reads are exactly getIncidentDetail's findUnique (+ the view's episodeStateOf)",
+      JSON.stringify([...projReads].sort()) === JSON.stringify([".syncIssue.findUnique(", "episodeStateOf("].sort())
+      && /export async function getIncidentDetail[\s\S]*?\.syncIssue\.findUnique\(/.test(proj), projReads.join(", "));
+    const stateCallers = found.filter((f) => f !== "lib/platform/incidents/episodes-core.ts" && /\bepisodeStateOf\(/.test(code(f)));
+    check("episodeStateOf's only caller is projections.ts", stateCallers.join() === "lib/platform/incidents/projections.ts", stateCallers.join(", "));
+    const page = proj.slice(proj.indexOf("export async function getActiveIncidentPage"));
+    const pageBody = page.slice(0, page.indexOf("\n}\n") + 3);
+    check("R4: getActiveIncidentPage reads the module (brokenNow) and no SyncIssue row",
+      /incidentAccessors\.brokenNow\(token,/.test(pageBody) && !RAW_READ.test(pageBody) && !/resolved/.test(pageBody), pageBody.slice(0, 200));
+  }
+
+  // ── 12. PB-1 S6 — operator transitions, and the B9-rollback constraints ──
+  // S2 BINDING RULING (2026-11-04). B9 (Production) can be rolled back to only
+  // while B10+ never leaves an OPEN row with a non-NULL lifecycleState: B9's
+  // automatic resolution sets resolved=true without touching lifecycleState,
+  // which satisfies SyncIssue_lifecycleState_resolved_check only on NULL rows.
+  //   (a) NO writer sets a non-NULL lifecycleState other than RESOLVED;
+  //   (b) NOTHING writes resolved=false on an existing row.
+  // Lift ONLY with an owner roll-forward-only decision (docs/plans/PB1-INCIDENT-LIFECYCLE.md §6.1).
+  console.log("12. operator transitions are guarded + audited; the B9-rollback constraints hold");
+  {
+    const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f) && f !== "scripts/rls-acceptance.ts");
+    // (a) — every lifecycleState literal assigned anywhere is RESOLVED; raw SQL never sets an open state.
+    const openLiterals = prod.filter((f) => /lifecycleState["']?\s*:\s*["'](ACTIVE|ACKNOWLEDGED|RECOVERING|STALE)["']/.test(code(f))
+      || /"lifecycleState"\s*=\s*'(ACTIVE|ACKNOWLEDGED|RECOVERING|STALE)'/.test(code(f)) && /\bUPDATE\b|\bINSERT\b/.test(code(f)));
+    check("(a) no writer sets lifecycleState to an OPEN value (only RESOLVED, or NULL)", openLiterals.length === 0, openLiterals.join(", "));
+    // In the writers, a non-literal `lifecycleState:` is only ever a CAS expectation (a WHERE), never data.
+    const lc = code(LIFECYCLE);
+    const nonLiteral = [...lc.matchAll(/lifecycleState:\s*([^,\s}]+)/g)].map((m) => m[1]).filter((v) => !/^"RESOLVED"$|^true$/.test(v));
+    check("(a) …lifecycle.ts names lifecycleState otherwise only as the CAS state AS READ",
+      nonLiteral.every((v) => ["asRead", "c.lifecycleState", "row.lifecycleState"].includes(v)), nonLiteral.join(", "));
+    const opFn = lc.slice(lc.indexOf("export async function applyOperatorTransition"));
+    const ackData = opFn.match(/data = \{ acknowledgedAt: now, acknowledgedById: input\.actor\.userId, acknowledgedAuditId: audit\.id \};/);
+    check("(a) acknowledge writes the three acknowledged* fields TOGETHER and no lifecycleState", !!ackData);
+    // (b) — no update data carries resolved:false; every `const data`/`fields` used by an update closes.
+    for (const f of [...LIFECYCLE_INTERNALS]) {
+      const s2 = code(f);
+      check(`(b) ${f}: no update writes resolved=false`,
+        !/\.update(Many)?\(\{[\s\S]{0,200}?data:\s*\{[^}]*resolved:\s*false/.test(s2) && !/"resolved"\s*=\s*false/i.test(s2));
+    }
+    check("(b) the only resolved:false data in lifecycle.ts is a NEW row's create (the condition `fields` spread into syncIssue.create)",
+      (lc.match(/resolved:\s*false,\s*resolvedAt:\s*null/g) ?? []).length === 1
+      && /const fields = \{\s*resolved: false, resolvedAt: null[\s\S]{0,400}client\.syncIssue\.create\(\{\s*data: \{\s*\.\.\.baseData, \.\.\.fields/.test(lc));
+
+    // THE MUTATION-ROUTE PIN: every mutating incident route is fresh WRITE+ on PLATFORM_OPS, rate-limited,
+    // mints its Ops token from that guard, and writes ONLY through the audited lifecycle transition.
+    const incidentRoutes = walk("app/api/platform").filter((f) => /\/(incidents|sync-issues)(\/|$)/.test(f) && f.endsWith("route.ts"));
+    const mutating = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
+    check("the mutating incident routes are exactly acknowledge + resolve under platform-ops",
+      JSON.stringify(mutating.sort()) === JSON.stringify([
+        "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+        "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
+      ]), mutating.join(", "));
+    check("Customer Success has NO mutating incident route (CS is read-only)",
+      !mutating.some((f) => f.startsWith("app/api/platform/customer-success/")));
+    for (const f of mutating) {
+      const s2 = code(f);
+      check(`${f}: fresh PLATFORM_OPS WRITE (S2 ruling) — never a plain/stale guard`,
+        /const \[auth, err\] = await requireFreshPlatformAccess\("PLATFORM_OPS", "(WRITE|CONTROL)"\)/.test(s2) && !/requirePlatformAccess\(/.test(s2));
+      check(`${f}: the #352 per-operator limiter, after the guard`,
+        /const limited = await limitPlatformMutation\(auth\.user\.id, "incident-(acknowledge|resolve)"\);\s*if \(limited\) return limited;/.test(s2)
+        && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
+      check(`${f}: token minted from the guard, at the Ops tier`, /atOpsTier\(incidentAudienceFor\(auth\)\)/.test(s2));
+      check(`${f}: writes through the audited runner (no direct SyncIssue / AuditLog access)`,
+        /runIncidentOperatorAction\(/.test(s2) && !/syncIssue\.|auditLog\.|systemDb/.test(s2));
+    }
+    const runner = code("lib/platform/incidents/operator-route.ts");
+    check("the runner reads the verdict through the module and asks ITS rule before writing",
+      /deps\.investigate\(input\.token/.test(runner) && /lifecycleActionsFor\(inv\.verdict, "ops"\)/.test(runner)
+      && runner.indexOf("lifecycleActionsFor(") < runner.indexOf("deps.apply("));
+    check("the runner touches no SyncIssue row itself", !/syncIssue\.|systemDb/.test(runner));
+    check("the transition records the operator action INSIDE its transaction, before the CAS, and stores the audit id",
+      /client\.\$transaction\(async \(tx\)/.test(opFn) && /recordOperatorAction\(tx,/.test(opFn)
+      && opFn.indexOf("recordOperatorAction(tx,") < opFn.indexOf("tx.syncIssue.updateMany(")
+      && /resolutionAuditId: audit\.id/.test(opFn) && /acknowledgedAuditId: audit\.id/.test(opFn));
+    check("the transition's CAS is on the state AND updatedAt as read, and a 0-row CAS throws",
+      /where: \{ id: row\.id, resolved: false, lifecycleState: row\.lifecycleState, updatedAt: row\.updatedAt \}/.test(opFn)
+      && /if \(count !== 1\) throw new IncidentTransitionConflictError\(row\.id/.test(opFn));
+    const callers = prod.filter((f) => /applyOperatorTransition\(/.test(code(f)) && f !== LIFECYCLE);
+    check("applyOperatorTransition is called only by the operator-route runner",
+      callers.join() === "lib/platform/incidents/operator-route.ts", callers.join(", "));
+    const runnerCallers = prod.filter((f) => /runIncidentOperatorAction\(/.test(code(f)) && f !== "lib/platform/incidents/operator-route.ts").sort();
+    check("…and the runner only by the two Platform Ops routes", JSON.stringify(runnerCallers) === JSON.stringify(mutating.sort()), runnerCallers.join(", "));
   }
 
   if (failures > 0) {

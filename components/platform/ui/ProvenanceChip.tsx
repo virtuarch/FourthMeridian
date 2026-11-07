@@ -6,19 +6,22 @@
  *   ESTIMATED  derived from measured inputs by a stated rule (tokens × rate card)
  *   ASSUMED    a configured or declared value, not observed
  *   UNKNOWN    no authority answered — never rendered as a zero or a colour
+ *   UNAVAILABLE the authority answered, and there is no figure to give (e.g. a
+ *              spend window where nothing could be priced) — never a zero
  * plus "as of HH:MM UTC" when the source reported the instant it answered.
  *
  * The kind is always a WORD (never colour alone); the tint is a quiet hint.
  * Pure, server-safe, no state.
  */
 
-export type ProvenanceKind = "MEASURED" | "ESTIMATED" | "ASSUMED" | "UNKNOWN";
+export type ProvenanceKind = "MEASURED" | "ESTIMATED" | "ASSUMED" | "UNKNOWN" | "UNAVAILABLE";
 
 const KIND_WORD: Record<ProvenanceKind, string> = {
   MEASURED: "Measured",
   ESTIMATED: "Estimated",
   ASSUMED: "Assumed",
   UNKNOWN: "Unknown",
+  UNAVAILABLE: "Unavailable",
 };
 
 const KIND_COLOR: Record<ProvenanceKind, string> = {
@@ -26,6 +29,7 @@ const KIND_COLOR: Record<ProvenanceKind, string> = {
   ESTIMATED: "var(--brass-300)",
   ASSUMED: "var(--text-secondary)",
   UNKNOWN: "var(--text-faint)",
+  UNAVAILABLE: "var(--text-faint)",
 };
 
 /** "14:02 UTC" for an ISO instant; null when unparseable (then no freshness is claimed). */

@@ -46,6 +46,7 @@
 
 import "server-only";
 import { describeOpenAiConfiguration, type OpenAiConfigurationFacts } from "@/lib/ai/openai-configuration";
+import { previousKeyProblem, previousKeyWarning } from "@/lib/plaid/encryption";
 
 // ── Internal snapshot (read once at module load) ──────────────────────────────
 
@@ -167,6 +168,9 @@ const _e = {
   // SEC-PLAT-1 rollout switch — "enforce" makes TOTP mandatory for Platform
   // operators (lib/platform/authorize.ts). Unset/anything else = not enforced.
   OPERATOR_TOTP_ENFORCEMENT: process.env.OPERATOR_TOTP_ENFORCEMENT,
+  // Platform AI v0 — the operator Q&A kill switch (lib/platform/intelligence/ai).
+  // Strict `=== "true"`; unset / anything else = OFF (placeholder page, 404 API).
+  PLATFORM_AI_ENABLED: process.env.PLATFORM_AI_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -246,7 +250,7 @@ const _e = {
   //   AI_REASONING_PATH          the legacy/new planner strangler
   //   AI_PROMPT_SHAPE            the prompt-shape experiment
   // A flag whose code is gone is not a kill switch, it is a lie in the
-  // environment surface. See docs/plans/AI-CONVERSATION-RESET.md.
+  // environment surface. See docs/systems/ai-foundation.md §9 (the reset).
   //
   // FLOWTYPE_SHADOW toggles an optional non-PII flow-distribution log line only
   // (no data-path effect); unset ⇒ "off". Read directly at its site — mirrored
@@ -603,6 +607,16 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // PRIV-004 — ENCRYPTION_KEY_PREVIOUS is optional and set only during a key
+  // rotation (docs/operations/key-rotation.md). A malformed value would make
+  // EVERY decrypt throw (TOTP sign-in, Plaid sync), so it refuses the deploy
+  // here instead. The message names the rule, never the value.
+  const previousKey = previousKeyProblem(process.env);
+  if (previousKey) throw new Error(`[env] ${previousKey}`);
+  // Equal to ENCRYPTION_KEY: a copy-paste slip, ignored by the keyring — loud, never fatal.
+  const previousSame = previousKeyWarning(process.env);
+  if (previousSame) console.warn(`[env] ${previousSame}`);
+
   // V25-FINAL-2 — a production deployment must not silently run against Plaid
   // SANDBOX. Plaid is an OPTIONAL integration (a prod deploy with NO credentials
   // runs with Plaid disabled — env.isPlaidEnabled false, routes return 503), and
@@ -851,6 +865,14 @@ export const env = {
    * dormant and behaviour is exactly as before.
    */
   get isOperatorTotpEnforced() { return _e.OPERATOR_TOTP_ENFORCEMENT === "enforce"; },
+  /**
+   * Platform AI v0 — read-only operational Q&A for operators is ON only when
+   * PLATFORM_AI_ENABLED === "true". Unset ⇒ OFF: the AI page keeps its
+   * placeholder and POST /api/platform/ai/ask answers 404 NOT_AVAILABLE before
+   * any guard, ledger read or provider call. Enabling it spends AI (overhead,
+   * surface platform_ai) — an owner decision per environment.
+   */
+  get isPlatformAiEnabled() { return _e.PLATFORM_AI_ENABLED === "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
    * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"

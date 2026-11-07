@@ -18,6 +18,7 @@ import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness"
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import type { AnomalyWindow } from "@/lib/alerts/anomaly";
 
 /** The authority a rule reads. `provider-quota` names the not-yet-shipped
  *  OPS-5 S3 authority the dormant `quota-low` rule will bind to.
@@ -33,15 +34,16 @@ export type AlertAuthority =
   | "ai-spend"
   | "sync-incidents"
   | "policy-assignments"
+  | "provider-usage"
   | "provider-quota";
 
 /**
- * OBS-004 — the MINIMAL slice of the sync-incident read model the engine
- * reads: ACTIVE episodes (lib/platform/incidents/projections.ts, state
- * "active" by the semantic authority) with their derived severity. Folded by
- * lib/alerts/sync-incidents.ts from IncidentView; the engine never touches a
- * SyncIssue row. Carries opaque ids only — never `detail`, never a label that
- * names an institution.
+ * OBS-004 — the MINIMAL slice of the incident-intelligence module's verdicts
+ * the engine reads: the ALERTABLE episodes (PB-1 R5 — the module's `alertable`
+ * verdict, read with the SYSTEM token) with the module's severity. Folded by
+ * lib/alerts/sync-incidents.ts; the engine never touches a SyncIssue row and
+ * never decides open/closed. Carries opaque ids only — never `detail`, never a
+ * label that names an institution.
  */
 export interface AlertSyncIncident {
   /** SyncIssue.id (opaque). */
@@ -56,7 +58,7 @@ export interface AlertSyncIncident {
 }
 export interface SyncIncidentHealth {
   checkedAt: string;
-  /** Active episodes, every severity; the rule filters to critical. */
+  /** Alertable episodes (module verdict), every severity; the rule filters to critical. */
   active: readonly AlertSyncIncident[];
   /** True when the underlying scan hit its ceiling — `active` is then a floor. */
   scanTruncated: boolean;
@@ -81,6 +83,35 @@ export interface AlertJobHealth {
 }
 
 /**
+ * Quota/cost anomaly (anomaly@1, lib/alerts/anomaly.ts) — the AI spend fold
+ * (lib/platform/ai/spend-health.ts foldSpendGroups, the SAME fold the fleet
+ * rule reads) over 8 consecutive trailing 24 h windows: `current` ends at
+ * `checkedAt`, `baseline` holds the 7 before it, newest first. Customers are
+ * named by OPAQUE references only (opaqueUserRef / opaqueDedupeToken); a raw
+ * user id never reaches this shape.
+ */
+export interface AiSpendAnomalyFacts {
+  checkedAt: string;
+  windowHours: number;
+  fleet: { current: AnomalyWindow; baseline: AnomalyWindow[] };
+  /** Customers with priced spend in the CURRENT window. Empty when that window is not priced. */
+  customers: Array<{ ref: string; dedupe: string; current: AnomalyWindow; baseline: AnomalyWindow[] }>;
+}
+
+/**
+ * Plaid provider calls per UTC day from the ApiUsageCounter ledger
+ * (provider "PLAID", unit "calls" — lib/plaid/client.ts records one per call).
+ * The ledger's grain is the UTC day, so `current` is the last COMPLETE day
+ * (`dayISO`) and `baseline` the 7 days before it, newest first.
+ */
+export interface PlaidCallAnomalyFacts {
+  checkedAt: string;
+  dayISO: string;
+  current: AnomalyWindow;
+  baseline: AnomalyWindow[];
+}
+
+/**
  * The already-fetched output of every consumable authority, gathered ONCE per
  * evaluation cycle and passed to the pure engine. An authority that failed to
  * gather is `null` (its rules simply produce no signals that cycle — a gather
@@ -100,4 +131,8 @@ export interface AuthorityOutputs {
   /** Owner ruling (2026-10-30) — missing / invalid customer policy-group assignments
    *  (lib/platform/policy-assignment-health.ts). Optional: absent = did not gather. */
   policyAssignments?: PolicyAssignmentHealth | null;
+  /** Quota/cost anomaly — AI spend windows. Optional: absent = did not gather. */
+  aiSpendAnomaly?: AiSpendAnomalyFacts | null;
+  /** Quota/cost anomaly — Plaid calls per day. Optional: absent = did not gather. */
+  plaidCallAnomaly?: PlaidCallAnomalyFacts | null;
 }

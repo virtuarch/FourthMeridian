@@ -73,7 +73,7 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
   const txns: Row[] = [];
   const obs: Obs[] = [];
   const events: Evt[] = [];
-  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank" };
   const syncIssues: { kind: string; detail?: Record<string, unknown>; resolved: boolean }[] = [];
   let seq = 0, oseq = 0, eseq = 0;
 
