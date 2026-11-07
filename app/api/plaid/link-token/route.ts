@@ -28,6 +28,7 @@ import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { CountryCode, Products } from "plaid";
 import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
+import { updateModeAccountSelectionFor } from "@/lib/plaid/reauth-codes";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
@@ -106,17 +107,23 @@ export async function GET(req: NextRequest) {
       if (failClosed) return failClosed;
     }
     let accessToken: string | undefined;
+    // Update mode with Account Select — only for an Item whose error code needs
+    // the member to RE-SELECT accounts (NO_ACCOUNTS; lib/plaid/reauth-codes.ts).
+    // Never for a plain re-login: Account Select lets the member DE-select
+    // accounts too, which stops sharing them.
+    let updateModeAccountSelection: ReturnType<typeof updateModeAccountSelectionFor> = undefined;
 
     if (reconnectItemId) {
-      // Existing path — unchanged from D2-7E.
+      // Existing path — D2-7E, plus the item's error code for Account Select.
       const existing = await withTenantDb(user.id, (tx) => tx.plaidItem.findFirst({
         where:  { id: reconnectItemId, userId: user.id },
-        select: { encryptedToken: true },
+        select: { encryptedToken: true, errorCode: true },
       }));
       if (!existing) {
         return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
       }
       accessToken = decryptWithPurpose(existing.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
+      updateModeAccountSelection = updateModeAccountSelectionFor(existing.errorCode);
     } else if (institutionId) {
       // D2 Slice A — auto-detect an existing credential for this institution.
       // Check Connection layer first (written by exchange-token since Slice A);
@@ -220,6 +227,7 @@ export async function GET(req: NextRequest) {
       env:           PLAID_ENV,
       client_name:   "Fourth Meridian",
       mode:          accessToken ? "update" : "new",
+      account_selection: updateModeAccountSelection ? "enabled" : "default",
       products:      products.map(String),
       additional_consented_products: additionalConsentedProducts?.map(String) ?? null,
       country_codes: country_codes.map(String),
@@ -250,6 +258,8 @@ export async function GET(req: NextRequest) {
       // Update mode: pass access_token, omit products (Plaid requires this —
       // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
       ...(accessToken ? { access_token: accessToken } : { products }),
+      // Update mode only (it is set only in the plaidItemId branch above).
+      ...(accessToken && updateModeAccountSelection && { update: updateModeAccountSelection }),
       // Only present in update mode when this Item's Investments consent was
       // explicitly requested (see wantsInvestmentsConsent). Undefined otherwise,
       // so it is a no-op for every normal/reconnect session.

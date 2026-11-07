@@ -21,7 +21,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PlaidItemStatus } from "@prisma/client";
 import {
-  UPDATE_MODE_FIXABLE_CODES, NEEDS_REAUTH_CODES, canReconnectViaUpdateMode, isUpdateModeFixable,
+  UPDATE_MODE_FIXABLE_CODES, NEEDS_REAUTH_CODES, ACCOUNT_SELECTION_CODES, canReconnectViaUpdateMode, isUpdateModeFixable,
+  updateModeAccountSelectionFor,
 } from "./reauth-codes";
 import { classifyPlaidErrorForHealth } from "./errors";
 import { webhookHealthTransition, WEBHOOK_REAUTH_ERROR_CODES } from "./webhook-receiver";
@@ -109,9 +110,12 @@ function incidentClient() {
 async function main() {
   console.log("0. the set itself (Plaid-documented update-mode fixes only)");
   {
-    check("ITEM_LOGIN_REQUIRED and ACCESS_NOT_GRANTED are update-mode-fixable",
-      isUpdateModeFixable("ITEM_LOGIN_REQUIRED") && isUpdateModeFixable("ACCESS_NOT_GRANTED"));
-    for (const c of ["NO_ACCOUNTS", "ITEM_LOCKED", "USER_SETUP_REQUIRED"]) {
+    check("ITEM_LOGIN_REQUIRED, ACCESS_NOT_GRANTED and NO_ACCOUNTS are update-mode-fixable",
+      isUpdateModeFixable("ITEM_LOGIN_REQUIRED") && isUpdateModeFixable("ACCESS_NOT_GRANTED") && isUpdateModeFixable("NO_ACCOUNTS"));
+    check("exactly those three", UPDATE_MODE_FIXABLE_CODES.size === 3);
+    check("Account Select codes are a subset of the fixable set",
+      [...ACCOUNT_SELECTION_CODES].every((c) => UPDATE_MODE_FIXABLE_CODES.has(c)));
+    for (const c of ["ITEM_LOCKED", "USER_SETUP_REQUIRED"]) {
       check(`${c} is NOT in the set (Plaid's docs do not name update mode as its fix)`, !isUpdateModeFixable(c));
     }
     for (const c of ["USER_PERMISSION_REVOKED", "PENDING_EXPIRATION", "PENDING_DISCONNECT",
@@ -131,10 +135,11 @@ async function main() {
     }
     check("ACCESS_NOT_GRANTED now → NEEDS_REAUTH (was ERROR: a lockout with no action)",
       classifyPlaidErrorForHealth(plaidErr("ACCESS_NOT_GRANTED"))?.status === PlaidItemStatus.NEEDS_REAUTH);
+    check("NO_ACCOUNTS now → NEEDS_REAUTH (was ERROR: a lockout with no action)",
+      classifyPlaidErrorForHealth(plaidErr("NO_ACCOUNTS"))?.status === PlaidItemStatus.NEEDS_REAUTH);
     check("ITEM_LOCKED stays transient → null (status unchanged, never ERROR)",
       classifyPlaidErrorForHealth(plaidErr("ITEM_LOCKED")) === null);
     check("INSTITUTION_DOWN stays transient → null", classifyPlaidErrorForHealth(plaidErr("INSTITUTION_DOWN")) === null);
-    check("NO_ACCOUNTS (unverified) stays ERROR", classifyPlaidErrorForHealth(plaidErr("NO_ACCOUNTS"))?.status === PlaidItemStatus.ERROR);
     check("INSTITUTION_NO_LONGER_SUPPORTED stays ERROR",
       classifyPlaidErrorForHealth(plaidErr("INSTITUTION_NO_LONGER_SUPPORTED"))?.status === PlaidItemStatus.ERROR);
   }
@@ -144,8 +149,10 @@ async function main() {
     check("ERROR + ACCESS_NOT_GRANTED → Reconnect offered", offersReconnect(conn({ errorCode: "ACCESS_NOT_GRANTED" })));
     check("ERROR + ITEM_LOGIN_REQUIRED (legacy row) → Reconnect offered", offersReconnect(conn({ errorCode: "ITEM_LOGIN_REQUIRED" })));
     check("ERROR + INSTITUTION_DOWN → NO Reconnect", !offersReconnect(conn({ errorCode: "INSTITUTION_DOWN" })));
-    check("ERROR + NO_ACCOUNTS → NO Reconnect (excluded until Plaid documents update mode for it)",
-      !offersReconnect(conn({ errorCode: "NO_ACCOUNTS" })));
+    check("ERROR + NO_ACCOUNTS → Reconnect offered (heals already-stranded items on deploy)",
+      offersReconnect(conn({ errorCode: "NO_ACCOUNTS" })));
+    check("row: ERROR + NO_ACCOUNTS reads 'Reconnect needed'",
+      summarizeConnection(conn({ errorCode: "NO_ACCOUNTS" }), undefined, 1).status === "Reconnect needed");
     check("ERROR + no code → NO Reconnect", !offersReconnect(conn({ errorCode: null })));
     check("needs_reauth → Reconnect offered (any code)", offersReconnect(conn({ state: "needs_reauth", errorCode: "INVALID_ACCESS_TOKEN" })));
     check("ready → no Reconnect", !offersReconnect(conn({ state: "ready" })));
@@ -172,8 +179,9 @@ async function main() {
     for (const c of NEEDS_REAUTH_CODES) {
       check(`ITEM/ERROR ${c} → NEEDS_REAUTH`, webhookHealthTransition("ITEM", "ERROR", c)?.status === "NEEDS_REAUTH");
     }
-    check("ITEM/ERROR NO_ACCOUNTS → no transition (status unchanged; not update-mode-fixable per Plaid docs)",
-      webhookHealthTransition("ITEM", "ERROR", "NO_ACCOUNTS") === null);
+    check("ITEM/ERROR NO_ACCOUNTS → NEEDS_REAUTH (same as the sync path)",
+      webhookHealthTransition("ITEM", "ERROR", "NO_ACCOUNTS")?.status === "NEEDS_REAUTH"
+      && webhookHealthTransition("ITEM", "ERROR", "NO_ACCOUNTS")?.errorCode === "NO_ACCOUNTS");
     check("ITEM/ERROR INSTITUTION_DOWN → no transition", webhookHealthTransition("ITEM", "ERROR", "INSTITUTION_DOWN") === null);
     check("ITEM/USER_PERMISSION_REVOKED → REVOKED (unchanged)",
       webhookHealthTransition("ITEM", "USER_PERMISSION_REVOKED", null)?.status === "REVOKED");
@@ -197,10 +205,30 @@ async function main() {
     for (const f of ["lib/plaid/errors.ts", "lib/plaid/webhook-receiver.ts", "lib/platform/verdicts/provider-connection.ts",
                      "lib/connections/connection-summary.ts", "components/connections/ConnectionCard.tsx"]) {
       const s = strip(f);
-      check(`${f}: no literal ITEM_LOGIN_REQUIRED / ACCESS_NOT_GRANTED`, !/"ITEM_LOGIN_REQUIRED"|"ACCESS_NOT_GRANTED"/.test(s));
+      check(`${f}: no literal ITEM_LOGIN_REQUIRED / ACCESS_NOT_GRANTED / NO_ACCOUNTS`, !/"ITEM_LOGIN_REQUIRED"|"ACCESS_NOT_GRANTED"|"NO_ACCOUNTS"/.test(s));
     }
     check("errors.ts imports the shared set", /from "@\/lib\/plaid\/reauth-codes"/.test(strip("lib/plaid/errors.ts")));
     check("the verdict spreads the shared set", /\.\.\.NEEDS_REAUTH_CODES/.test(strip("lib/platform/verdicts/provider-connection.ts")));
+  }
+
+  console.log("5b. Reconnect for a NO_ACCOUNTS item opens update mode WITH Account Select");
+  {
+    check("NO_ACCOUNTS → update.account_selection_enabled: true",
+      JSON.stringify(updateModeAccountSelectionFor("NO_ACCOUNTS")) === JSON.stringify({ account_selection_enabled: true }));
+    for (const c of ["ITEM_LOGIN_REQUIRED", "ACCESS_NOT_GRANTED", "INVALID_ACCESS_TOKEN", null]) {
+      check(`${c}: no Account Select (a re-login must not offer de-selection)`, updateModeAccountSelectionFor(c) === undefined);
+    }
+    const route = strip("app/api/plaid/link-token/route.ts");
+    check("route: the Reconnect lookup reads the item's errorCode",
+      /where:\s*\{\s*id:\s*reconnectItemId,\s*userId:\s*user\.id\s*\},\s*select:\s*\{\s*encryptedToken:\s*true,\s*errorCode:\s*true\s*\}/.test(route));
+    check("route: Account Select derives from that errorCode via the shared helper",
+      /updateModeAccountSelection\s*=\s*updateModeAccountSelectionFor\(existing\.errorCode\)/.test(route));
+    check("route: the linkTokenCreate request carries update: … only in update mode",
+      /\.\.\.\(accessToken && updateModeAccountSelection && \{ update: updateModeAccountSelection \}\)/.test(route)
+      && route.indexOf("update: updateModeAccountSelection") > route.indexOf("plaidClient.linkTokenCreate("));
+    check("route: Account Select is assigned only in the plaidItemId (Reconnect) branch",
+      (route.match(/updateModeAccountSelection\s*=\s*updateModeAccountSelectionFor/g) ?? []).length === 1
+      && route.indexOf("updateModeAccountSelection = updateModeAccountSelectionFor") < route.indexOf("} else if (institutionId)"));
   }
 
   console.log("6. relink heals an ERROR item");
