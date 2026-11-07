@@ -852,7 +852,7 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   const v0t = segmentsText(v0.result.answer);
   // Changed by S2 F-C1 (ii) (2026-11-08): the prose restates the asked period (period_mismatch=1) ⇒ the plain note is
   // REPLACED by the server CORRECTION segment (answer[0], kind "correction"); the model's prose is kept verbatim after it.
-  const V0_CORR = "Correction: these figures cover in the last 24 hours, not the 30 days. AI fleet spend vs budget (24 h) cannot be measured for that period.";
+  const V0_CORR = "Correction: the figures for AI fleet spend vs budget (24 h) cover the last 24 hours, not the past 30 days you asked about; that period cannot be measured for them.";
   check("OWNER \"…in the past 30 days\" (S2 (d) + F-C1 (ii)): the answer is KEPT, the figure states its own 24 h window, and ONE server correction says it is not the 30 days asked",
     v0.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !v0.result.grounding.replaced
     && v0.result.answer[0]?.kind === "correction" && v0.result.answer[0].text === V0_CORR
@@ -1381,7 +1381,7 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   // Changed by S2 F-C1 (ii) (2026-11-08): C's prose restates the asked period ⇒ answer[0] is the CORRECTION segment
   // (asserted in the F-C1 (ii) block below); the plain-note-first rule is pinned on a lead without an asked-period phrase.
   const cT = segmentsText(C.result.answer);
-  const CORR_C = "Correction: these figures cover so far this month (since 2026-11-01), not the 30 days. Estimated operating cost this cycle (by category) cannot be measured for that period.";
+  const CORR_C = "Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-11-01), not the past 30 days you asked about; that period cannot be measured for them.";
   const plainLead = await turnWith(["economics-operating-cost"], (ph, lph) => `The largest cost category is ${lph(OP, "largestMeasuredCategory")} with a figure of ${ph(OP, "largestMeasuredCategory")}.`, Q_C);
   const plT = segmentsText(plainLead.result.answer);
   check("F-C1 (b): the window note comes FIRST — answer[0] and typed[0] are the server note, then the model's prose unchanged",
@@ -1419,6 +1419,9 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   check("F-C1 (ii): note fires AND period_mismatch > 0 ⇒ answer[0] / typed[0] is a DISTINCT correction segment (server data only), the plain note is gone",
     C.result.answer[0]?.kind === "correction" && C.result.answer[0].text === CORR_C && C.record.typed[0]?.kind === "correction" && (C.record.typed[0] as { text: string }).text === CORR_C
     && !/Note: /.test(cT) && C.result.answer.filter((x) => x.kind === "correction").length === 1, C.result.answer[0]);
+  const aiLabel = METRICS.find((m) => metricKey(m) === AI)!.label;
+  check("…an UNAFFECTED metric in the same answer (the 30-day AI cost, which covers the asked period) is NOT named in the correction",
+    C.result.citations.some((c) => c.metric === AI) && cT.includes("estimated AI spend is") && !(C.result.answer[0] as { text: string }).text.includes(aiLabel), { aiLabel, corr: C.result.answer[0] });
   check("…the model's prose is kept verbatim, in order, right after it (no rewrite / deletion / reordering) and the verdict stays RESOLVED_WITH_WINDOW_NOTE",
     cT.startsWith(`${CORR_C}In the past 30 days, the largest cost category is Providers (Plaid) with a figure of at least $`) && C.result.answer.slice(1).every((x) => x.kind !== "correction")
     && C.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !C.result.grounding.replaced, cT);
@@ -1440,17 +1443,34 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
     && segmentsText(lastMonth.result.answer).includes("Last month, the biggest was"), lmFirst);
   const twoWeeks = await turnWith(["economics-operating-cost"], (ph) => `Over the past 2 weeks: ${ph(OP, "totalUsd")}.`, "What did we spend in the past 2 weeks?");
   check("…a different asked period flows through from the question (\"2 weeks\")",
-    twoWeeks.result.answer[0]?.kind === "correction" && twoWeeks.result.answer[0].text === "Correction: these figures cover so far this month (since 2026-11-01), not the 2 weeks. Estimated operating cost this cycle (by category) cannot be measured for that period.", twoWeeks.result.answer[0]);
+    twoWeeks.result.answer[0]?.kind === "correction" && twoWeeks.result.answer[0].text === "Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-11-01), not the past 2 weeks you asked about; that period cannot be measured for them.", twoWeeks.result.answer[0]);
   const fake = (metric: string, label: string | null, start: string | null) => ({ metric, window: { kind: "UTC_DAYS", description: "d", days: null, hours: null, label, start } }) as unknown as MetricEnvelope;
-  check("pure periodCorrectionText: several metrics ⇒ every label listed, each distinct window_phrase once",
-    periodCorrectionText([fake("a@1", "this UTC calendar month to date", "2026-11-01"), fake("b@1", "this UTC calendar month to date", "2026-11-01"), fake("c@1", null, null)], "30 days", (k) => ({ "a@1": "Alpha", "b@1": "Beta", "c@1": "Gamma" })[k] ?? k)
-      === "Correction: these figures cover so far this month (since 2026-11-01) and right now, not the 30 days. Alpha, Beta and Gamma cannot be measured for that period.");
+  const lbl = (k: string) => ({ "a@1": "Alpha", "b@1": "Beta", "c@1": "Gamma" })[k] ?? k;
+  const D30 = [{ n: 30, unit: "day" }];
+  check("pure periodCorrectionText: a ROLLING phrase drops its leading \"in \" (\"in the last 24 hours\" ⇒ \"the last 24 hours\")",
+    periodCorrectionText([fake("a@1", "in the last 24 hours", null)], D30, lbl)
+      === "Correction: the figures for Alpha cover the last 24 hours, not the past 30 days you asked about; that period cannot be measured for them.");
+  check("…a CALENDAR phrase is unchanged (\"so far this month (since 2026-11-01)\")",
+    periodCorrectionText([fake("a@1", "this UTC calendar month to date", "2026-11-01")], D30, lbl)
+      === "Correction: the figures for Alpha cover so far this month (since 2026-11-01), not the past 30 days you asked about; that period cannot be measured for them.");
+  check("…n = 1 ⇒ \"the past day\" (singular, no numeral)",
+    periodCorrectionText([fake("a@1", "in the last 7 days", null)], [{ n: 1, unit: "day" }], lbl)
+      === "Correction: the figures for Alpha cover the last 7 days, not the past day you asked about; that period cannot be measured for them.");
+  check("…two affected metrics ⇒ both labelled; a shared window_phrase stated once",
+    periodCorrectionText([fake("a@1", "this UTC calendar month to date", "2026-11-01"), fake("b@1", "this UTC calendar month to date", "2026-11-01")], D30, lbl)
+      === "Correction: the figures for Alpha and Beta cover so far this month (since 2026-11-01), not the past 30 days you asked about; that period cannot be measured for them.");
+  check("…three metrics with distinct windows ⇒ every label and each distinct phrase listed",
+    periodCorrectionText([fake("a@1", "this UTC calendar month to date", "2026-11-01"), fake("b@1", "in the last 24 hours", null), fake("c@1", null, null)], D30, lbl)
+      === "Correction: the figures for Alpha, Beta and Gamma cover so far this month (since 2026-11-01), the last 24 hours and right now, not the past 30 days you asked about; that period cannot be measured for them.");
+  const oneDay = await turnWith(["economics-operating-cost"], (ph) => `In the past 1 day, operating cost was ${ph(OP, "totalUsd")}.`, "What did we spend in the past 1 day?");
+  check("…in a turn: a question asking about 1 day ⇒ \"not the past day you asked about\"",
+    oneDay.result.answer[0]?.kind === "correction" && oneDay.result.answer[0].text === "Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-11-01), not the past day you asked about; that period cannot be measured for them.", oneDay.result.answer[0]);
   const stored = storedAnswerOf(C.result, C.record);
   check("…the STORED typed answer (B11) keeps the correction as its own segment, first, and passes the strict stored-shape validator",
     isStoredAnswer(stored) && stored.segments[0]?.kind === "correction" && stored.segments[0].text === CORR_C && stored.segments.filter((x) => x.kind === "correction").length === 1, stored.segments[0]);
   const replay = replayAnswer(stored, NOW);
   check("…history replay neutralisation is unaffected: the correction replays as neutralised, digit-masked text (no braces, no digits), then the prose",
-    !/[{}]/.test(replay) && !/\d/.test(replay.replace(/\[[^\]]*\]/g, "")) && replay.startsWith("Correction: these figures cover so far this month (since [figure][figure][figure]), not the [figure] days. ") && /cannot be measured for that period\. In the past/.test(replay), replay);
+    !/[{}]/.test(replay) && !/\d/.test(replay.replace(/\[[^\]]*\]/g, "")) && replay.startsWith("Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since [figure][figure][figure]), not the past [figure] days you asked about; that period cannot be measured for them. ") && /cannot be measured for them\. In the past/.test(replay), replay);
   check("…the export renders the correction as text, separated from the prose", renderAnswerText(stored).startsWith(`${CORR_C} In the past 30 days`), renderAnswerText(stored).slice(0, 200));
 
   // F-C2: {{l:}} rendering and its unresolved / malformed handling (exactly like {{m:}}).

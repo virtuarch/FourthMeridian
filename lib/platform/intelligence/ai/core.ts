@@ -1327,16 +1327,18 @@ export function periodMismatchCount(modelProse: string, asked: readonly { hours:
 const listLabels = (labels: readonly string[]) => labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 
 /**
- * S2 F-C1 (ii), 2026-11-08 — the CORRECTION text, built ONLY from server data: each affected
- * envelope's window_phrase (quotableWindowPhrase), the asked period as server-parsed from the
- * operator's question (requestedWindows, formatted by the caller), and registry labels. No
- * model text, no invented explanation.
- *   "Correction: these figures cover so far this month (since 2026-11-01), not the 30 days. Providers cost cannot be measured for that period."
+ * S2 F-C1 (ii), 2026-11-08 (wording per S2 on #460) — the CORRECTION text, built ONLY from server
+ * data: the affected envelopes' registry labels, each one's window_phrase (quotableWindowPhrase)
+ * with a leading "in " removed (here only), and the asked period as server-parsed from the
+ * operator's question (requestedWindows: n + unit, pluralised; n = 1 ⇒ "the past day"). No model
+ * text, no invented explanation.
+ *   "Correction: the figures for AI fleet spend vs budget (24 h) cover the last 24 hours, not the past 30 days you asked about; that period cannot be measured for them."
  */
-export function periodCorrectionText(affected: readonly MetricEnvelope[], askedPeriod: string, labelOf: (metric: string) => string): string {
-  const phrases = [...new Set(affected.map(quotableWindowPhrase))];
+export function periodCorrectionText(affected: readonly MetricEnvelope[], asked: readonly { n: number; unit: string }[], labelOf: (metric: string) => string): string {
   const labels = [...new Set(affected.map((e) => labelOf(e.metric)))];
-  return `Correction: these figures cover ${listLabels(phrases)}, not the ${askedPeriod}. ${listLabels(labels)} cannot be measured for that period.`;
+  const phrases = [...new Set(affected.map((e) => quotableWindowPhrase(e).replace(/^in /, "")))];
+  const period = asked.map((a) => (a.n === 1 ? `past ${a.unit}` : `past ${a.n} ${a.unit}s`)).join(" / ");
+  return `Correction: the figures for ${listLabels(labels)} cover ${listLabels(phrases)}, not the ${period} you asked about; that period cannot be measured for them.`;
 }
 
 export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE";
@@ -1556,7 +1558,7 @@ export async function runPlatformAiTurn(input: {
     if (periodMismatch > 0) {
       // S2 F-C1 (ii): the model restated the asked period ⇒ the note becomes a CORRECTION segment
       // (server data only; the model's prose is neither rewritten, removed nor reordered).
-      const text = periodCorrectionText(affected, want, (key) => binding.describeMetric(key)?.label ?? key);
+      const text = periodCorrectionText(affected, asked, (key) => binding.describeMetric(key)?.label ?? key);
       answer = [{ kind: "correction", text }, ...answer];
       typed = [{ kind: "correction", text }, ...typed];
       correction = 1;

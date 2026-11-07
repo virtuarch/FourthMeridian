@@ -232,7 +232,7 @@ console.log("\n4. no Markdown parser — typed segments only; links only same-or
 // ── 4b. S2 F-C1 (ii): the server correction segment ─────────────────────────
 console.log("\n4b. the period CORRECTION segment — its own block, prominent, ABOVE the answer (v0 + conversations)");
 {
-  const CORR = "Correction: these figures cover so far this month (since 2026-11-01), not the 30 days. Estimated operating cost this cycle (by category) cannot be measured for that period.";
+  const CORR = "Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-11-01), not the past 30 days you asked about; that period cannot be measured for them.";
   const PROSE = "In the past 30 days, the largest cost category is Providers (Plaid).";
   const conv = renderToStaticMarkup(createElement(TypedAnswerSegments, { staleAsOf: null, segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
   const v0 = renderToStaticMarkup(createElement(AnswerSegments, { segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
