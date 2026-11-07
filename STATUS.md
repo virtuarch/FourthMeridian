@@ -132,7 +132,7 @@ File ownership during the UX P1 program is exclusive and listed in the coordinat
 **B10 (owner-approved preparation, 2026-11-07):**
 1. ~~S2 final verification~~ — **GO (conditional), 2026-11-07**; close C1 (rehearsal check + B9 hotfix kit or owner acceptance), C2, C4 before deploy.
 2. ~~Main's required checks on release PR #455~~ — **green 2026-11-07** (run 42408372774; Deployment health = known Preview 401). #455 stays a DRAFT, DO NOT MERGE.
-3. Read-only Production preflight — **S2-approved 2026-11-07** (run as a role with BYPASSRLS + pg_read_all_stats); run pending. Results go to the owner, not into this repository.
+3. Read-only Production preflight — **RUN 2026-11-07** (S2-approved, one read-only statement in the Supabase SQL editor): ledger 145 with nothing unfinished, no B10 migration, column, table or enum value present, AuditLog policies as B9 expects, no long transactions or lock waits, PostgreSQL 17.6. One stop rule hit (one session's state not visible in `pg_stat_activity`) → S2 ruling pending. Results in the owner's private store, not here. Results go to the owner, not into this repository.
 4. #456: B9 retention safeguard (F2) and #312 holdings billing exposure in the rollback notes → S2 review.
 5. Owner gates, each separately: Production backup, the five migrations, the merge of #455, the deployment, smoke tests. After B10 is verified: recommend whether #385 (and #268) close as superseded.
 
@@ -146,7 +146,7 @@ File ownership during the UX P1 program is exclusive and listed in the coordinat
 |---|---|---|---|
 | 1 | **S2 B10 verdict 2026-11-07: GO (conditional) on `d6a60f7`, not deploy permission.** Open before deploy: **C1** B9 (Prisma 5.22) cannot read `BALANCE_UNOBSERVED` incidents after a rollback → rehearsal check + B9 schema-only hotfix kit or owner acceptance; **C2** `lock_timeout` on the migration connection (or a named watcher); **C4** merging #455 = the Production deploy (one owner gate; never "Update branch"); C3 wording fixed; C5 Prod PG version noted. | release plan B10.4 (C1) | B10 conditions |
 | 2 | ~~Main's required checks on #455~~ **CLEARED 2026-11-07:** at head `d6a60f7` against `main`, `test`, `status-drift-guard`, `Architecture audits` and `Public site` pass (run 42408372774); "Deployment health" fails only on the Preview 401 (run 42408529367, not required, see #7). | PR #455 | Cleared |
-| 3 | **Read-only Production preflight not yet run** (S2-approved 2026-11-07). | §7 | B10 blocker |
+| 3 | **Read-only Production preflight run 2026-11-07:** schema state as expected; one session-visibility stop rule awaiting S2's ruling. | §7 | B10 blocker (S2 ruling) |
 | 4 | **F2:** if B9 serves 90 days after the B10 deploy, B9 retention deletes B10-era resolved incidents without archiving; B9 has no runtime pause, so the safeguard is procedural (deploy date + 80 days). | release plan B10.4 (#456) | Rollback risk, owner-acknowledged 2026-11-07 |
 | 5 | **Preview ≠ B10 Production schema** since 2026-11-04 (B11 migrations on Preview). The exact-cut rehearsal is the B10 evidence; S2 decides whether more is needed. | release plan B10 cut ruling 4 | Validation limit |
 | 6 | **Repository is PUBLIC**; history keeps identifying shapes removed from the tree. Making it private on GitHub Free switches rulesets off and bills Actions. | release plan (repository history) | Owner decision |
@@ -190,7 +190,7 @@ Legacy KD tickets still carried:
 |---|---|---|---|
 | **Repository (`develop`)** | **152** on disk: B9's 145 + B10's five (`20261103120000_pb1_s2_incident_lifecycle_schema`, `20261103130000_pb10_session_presence`, `20261103140000_db010_auditlog_append_only`, `20261103150000_fin_a2_balance_observed`, `20261103160000_fin_e_restricted_cash`) + B11's two (`20261104120000_platform_ai_conversations`, `20261105120000_platform_ai_message_expiry_on_read`). `main` 145; B10 cut 150. | RLS forced on the new PB-1 and B11 tables | VERIFIED 2026-11-07 (`git ls-tree`) |
 | **Preview** | **152 applied**: B10's five on 2026-11-03 (guarded `db:migrate:safe`, verified backups), B11's two on 2026-11-04 (S2 go, precheck PASS). Preview no longer mirrors B10 Production's schema. | `fm_app` / `fm_auth` / `fm_system`, strict | release plan — NOT re-read this pass |
-| **Production** | **145 applied** (B9, 2026-11-02). B10's five are pending owner authorization, to run in one guarded run **before** the B10 code (PB-10, FIN-A2 and FIN-E are required by it). | RLS roles live since the cutover | release plan "B9 deployed" — NOT re-read this pass; read-only preflight pending (§7) |
+| **Production** | **145 applied** (B9, 2026-11-02), last `20261101120000_beta_blocked_identifiers`, none unfinished. B10's five are pending owner authorization, to run in one guarded run **before** the B10 code (PB-10, FIN-A2 and FIN-E are required by it). PostgreSQL 17.6. | `fm_app` / `fm_auth` / `fm_system` / `fm_backup` present | **VERIFIED 2026-11-07** by the read-only preflight (§7) |
 
 Binding rules: [`docs/operations/database-safety.md`](docs/operations/database-safety.md) (never `prisma migrate dev` non-interactively; `db:migrate:safe`; `DATABASE_URL`/`DIRECT_URL` sameness is provable). The `db-authority` baseline (`scripts/lib/db-authority-baseline.json`: owner-client importers, owner-default sites, implicit owner calls) may only shrink.
 
