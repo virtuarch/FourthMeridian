@@ -53,7 +53,7 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Panel } from "@/components/atlas/panels/Panel";
 import { PanelContent, PanelHeader } from "@/components/atlas/panels/PanelParts";
 import { ToneBadge } from "@/components/platform/platform-surface";
-import { answeringFrom } from "./PlatformAiAsk";
+import { PeriodCorrections, answeringFrom } from "./PlatformAiAsk";
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY,
@@ -69,29 +69,33 @@ import {
 /** A typed answer: text as text, a figure with its stale chip, a link only when same-origin. */
 export function TypedAnswerSegments({ segments, staleAsOf }: { segments: readonly ClientSegment[]; staleAsOf: { chip: string; title: string } | null }) {
   return (
-    <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--text-primary)]">
-      {segments.map((s, i) => {
-        if (s.kind === "link") {
-          return isSameOriginPath(s.href)
-            ? <a key={i} href={s.href} className="underline underline-offset-2">{s.text}</a>
-            : <span key={i}>{s.text}</span>;
-        }
-        if (s.kind === "figure") {
-          return (
-            <span key={i}>
-              <span data-platform-ai-figure="" className="tabular-nums font-medium">{s.text}</span>
-              {staleAsOf ? (
-                <span data-platform-ai-stale-chip="" title={staleAsOf.title}
-                  className="ml-1 inline-flex items-center rounded-full border border-[var(--border-hairline)] px-1.5 align-middle text-[10px] font-normal leading-4 text-[var(--text-muted)]">
-                  {staleAsOf.chip}
-                </span>
-              ) : null}
-            </span>
-          );
-        }
-        return <span key={i}>{s.text}</span>;
-      })}
-    </p>
+    <>
+      <PeriodCorrections segments={segments} />
+      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--text-primary)]">
+        {segments.map((s, i) => {
+          if (s.kind === "correction") return null; // rendered ABOVE the answer (PeriodCorrections)
+          if (s.kind === "link") {
+            return isSameOriginPath(s.href)
+              ? <a key={i} href={s.href} className="underline underline-offset-2">{s.text}</a>
+              : <span key={i}>{s.text}</span>;
+          }
+          if (s.kind === "figure") {
+            return (
+              <span key={i}>
+                <span data-platform-ai-figure="" className="tabular-nums font-medium">{s.text}</span>
+                {staleAsOf ? (
+                  <span data-platform-ai-stale-chip="" title={staleAsOf.title}
+                    className="ml-1 inline-flex items-center rounded-full border border-[var(--border-hairline)] px-1.5 align-middle text-[10px] font-normal leading-4 text-[var(--text-muted)]">
+                    {staleAsOf.chip}
+                  </span>
+                ) : null}
+              </span>
+            );
+          }
+          return <span key={i}>{s.text}</span>;
+        })}
+      </p>
+    </>
   );
 }
 

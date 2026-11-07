@@ -420,7 +420,15 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
 
 // ── Link sanitiser (S2 binding 5) ───────────────────────────────────────────
 
-export type AnswerSegment = { kind: "text"; text: string } | { kind: "link"; text: string; href: string };
+/**
+ * S2 F-C1 (ii), 2026-11-08 — a code-written CORRECTION (never model text): replaces the plain
+ * window note when the model's prose restates the asked period (period_mismatch > 0). Built only
+ * from server data (window_phrase, the requestedWindows period, registry labels); a DISTINCT
+ * segment the renderers show prominently ABOVE the answer, and stored typed (B11).
+ */
+export type CorrectionSegment = { kind: "correction"; text: string };
+
+export type AnswerSegment = { kind: "text"; text: string } | { kind: "link"; text: string; href: string } | CorrectionSegment;
 
 export const LINK_REMOVED = "[link removed]";
 const SENTINEL = "\u0000";
@@ -1070,7 +1078,8 @@ export function matchPlaceholderEnvelope(envelopes: readonly MetricEnvelope[], k
 export type TypedAnswerSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: number | string | null }
-  | { kind: "link"; text: string; href: string };
+  | { kind: "link"; text: string; href: string }
+  | CorrectionSegment;
 
 export interface PlaceholderOutcome {
   segments: AnswerSegment[];
@@ -1314,6 +1323,24 @@ export function periodMismatchCount(modelProse: string, asked: readonly { hours:
 }
 
 /** The verdicts that keep the answer; every other one is replaced by the fallback. */
+/** "a", "a and b", "a, b and c" — server labels only. */
+const listLabels = (labels: readonly string[]) => labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+
+/**
+ * S2 F-C1 (ii), 2026-11-08 (wording per S2 on #460) — the CORRECTION text, built ONLY from server
+ * data: the affected envelopes' registry labels, each one's window_phrase (quotableWindowPhrase)
+ * with a leading "in " removed (here only), and the asked period as server-parsed from the
+ * operator's question (requestedWindows: n + unit, pluralised; n = 1 ⇒ "the past day"). No model
+ * text, no invented explanation.
+ *   "Correction: the figures for AI fleet spend vs budget (24 h) cover the last 24 hours, not the past 30 days you asked about; that period cannot be measured for them."
+ */
+export function periodCorrectionText(affected: readonly MetricEnvelope[], asked: readonly { n: number; unit: string }[], labelOf: (metric: string) => string): string {
+  const labels = [...new Set(affected.map((e) => labelOf(e.metric)))];
+  const phrases = [...new Set(affected.map((e) => quotableWindowPhrase(e).replace(/^in /, "")))];
+  const period = asked.map((a) => (a.n === 1 ? `past ${a.unit}` : `past ${a.n} ${a.unit}s`)).join(" / ");
+  return `Correction: the figures for ${listLabels(labels)} cover ${listLabels(phrases)}, not the ${period} you asked about; that period cannot be measured for them.`;
+}
+
 export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE";
 
 // ── The turn ────────────────────────────────────────────────────────────────
@@ -1353,6 +1380,11 @@ export interface PlatformAiAnswer {
      * A count only — no rewrite, no verdict change.
      */
     periodMismatch?: number;
+    /**
+     * S2 F-C1 (ii): 1 when the window note was REPLACED by the server correction segment
+     * (note fired AND periodMismatch > 0); absent otherwise. The verdict stays RESOLVED_WITH_WINDOW_NOTE.
+     */
+    correction?: 1;
     /**
      * S2 2026-11-08 (counts only; present when > 0 and the answer was kept): sentences where the
      * same rendered label came from two {{l:}} placeholders (labelRepeatCount), and window_phrase
@@ -1400,6 +1432,7 @@ export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" 
     + (reasonCounts(DIGIT_KINDS, r.grounding.digitBy) ? ` digitBy=${reasonCounts(DIGIT_KINDS, r.grounding.digitBy)}` : "")
     + (mechanismLeakCount(r.answer) > 0 ? ` mechanismLeak=${mechanismLeakCount(r.answer)}` : "")
     + (typeof r.grounding.periodMismatch === "number" ? ` period_mismatch=${r.grounding.periodMismatch}` : "")
+    + (r.grounding.correction === 1 ? " correction=1" : "")
     + (typeof r.grounding.labelRepeat === "number" ? ` label_repeat=${r.grounding.labelRepeat}` : "")
     + (typeof r.grounding.windowRepeat === "number" ? ` window_repeat=${r.grounding.windowRepeat}` : "");
 }
@@ -1515,16 +1548,28 @@ export async function runPlatformAiTurn(input: {
   const mix = replaced ? null : windowMixNote(placed.placed);
   if (mix) notes.push(mix);
   let periodMismatch: number | undefined;
+  let correction: 1 | undefined;
   if (verdict === "RESOLVED_WITH_WINDOW_NOTE") {
     periodMismatch = periodMismatchCount(placed.modelProse, asked);
+    // The asked period is ALWAYS the server-parsed requestedWindows — never the model's wording.
     const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
     const seenKeys = new Set<string>();
-    const lines = unsupported.filter((e) => !seenKeys.has(e.metric) && seenKeys.add(e.metric)).map((e) => {
-      const def = binding.describeMetric(e.metric);
-      return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
-    });
-    answer = [{ kind: "text", text: `${lines.join(" ")} ` }, ...answer];
-    typed = [{ kind: "text", text: `${lines.join(" ")} ` }, ...typed];
+    const affected = unsupported.filter((e) => !seenKeys.has(e.metric) && seenKeys.add(e.metric));
+    if (periodMismatch > 0) {
+      // S2 F-C1 (ii): the model restated the asked period ⇒ the note becomes a CORRECTION segment
+      // (server data only; the model's prose is neither rewritten, removed nor reordered).
+      const text = periodCorrectionText(affected, asked, (key) => binding.describeMetric(key)?.label ?? key);
+      answer = [{ kind: "correction", text }, ...answer];
+      typed = [{ kind: "correction", text }, ...typed];
+      correction = 1;
+    } else {
+      const lines = affected.map((e) => {
+        const def = binding.describeMetric(e.metric);
+        return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
+      });
+      answer = [{ kind: "text", text: `${lines.join(" ")} ` }, ...answer];
+      typed = [{ kind: "text", text: `${lines.join(" ")} ` }, ...typed];
+    }
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
     answer = href
@@ -1544,6 +1589,7 @@ export async function runPlatformAiTurn(input: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
       grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy, digitBy: placed.digitBy, ...(periodMismatch !== undefined ? { periodMismatch } : {}),
+        ...(correction ? { correction } : {}),
         ...(!replaced && placed.labelRepeat > 0 ? { labelRepeat: placed.labelRepeat } : {}),
         ...(!replaced && placed.windowRepeat > 0 ? { windowRepeat: placed.windowRepeat } : {}) },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
