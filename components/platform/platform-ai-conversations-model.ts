@@ -297,3 +297,82 @@ export const PLATFORM_AI_STARTER_PROMPTS: readonly string[] = [
 ];
 /** Screen-reader label for the in-flight indicator (the three dots). */
 export const PLATFORM_AI_THINKING_LABEL = "Platform AI is answering…";
+
+// ── History (parity PR4) ────────────────────────────────────────────────────
+
+/**
+ * `?c=<conversationId>` — the ONLY thing this surface puts in the URL (S2
+ * 2026-11-07, ruling 3): the opaque conversation id. Never a title, a question
+ * or an area. The id is a selector, never an authority: the server re-applies
+ * every gate (session, grant, the area's fresh guard, ownership, LIVE) and
+ * answers ONE 404 for unknown / foreign / deleted / expired alike, and the
+ * client shows ONE "not found" for all of them (and for a malformed value).
+ * The page sends Referrer-Policy: strict-origin-when-cross-origin
+ * (next.config.ts; pinned by lib/security-headers.test.ts), so the query never
+ * leaves the origin in a Referer header.
+ */
+export const PLATFORM_AI_CONVERSATION_PARAM = "c";
+
+/** A lenient opaque-id shape (cuids fit); anything else is "invalid" ⇒ the same not-found, no request. */
+const OPAQUE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export type ConversationParam = { kind: "none" } | { kind: "id"; id: string } | { kind: "invalid" };
+
+/** Read `?c=` from a location search string. Absent or empty ⇒ none. */
+export function readConversationParam(search: string): ConversationParam {
+  let v: string | null;
+  try { v = new URLSearchParams(search).get(PLATFORM_AI_CONVERSATION_PARAM); } catch { return { kind: "none" }; }
+  if (v === null || v === "") return { kind: "none" };
+  return OPAQUE_ID.test(v) ? { kind: "id", id: v } : { kind: "invalid" };
+}
+
+/** The same location with `?c=` set to `id`, or removed when `id` is null. Other params and the hash are kept. */
+export function conversationHref(loc: { pathname: string; search: string; hash?: string }, id: string | null): string {
+  const p = new URLSearchParams(loc.search);
+  if (id === null) p.delete(PLATFORM_AI_CONVERSATION_PARAM);
+  else p.set(PLATFORM_AI_CONVERSATION_PARAM, id);
+  const qs = p.toString();
+  return `${loc.pathname}${qs ? `?${qs}` : ""}${loc.hash ?? ""}`;
+}
+
+/**
+ * How a selection reaches browser History (the Space history contract,
+ * components/space/shell/useSpaceUrl.ts): the operator OPENING a thread or
+ * starting a new chat PUSHES; the client NORMALISING the URL (opening the
+ * latest on load, a not-found id, a deleted thread, a new conversation's first
+ * id) REPLACES; Back / Forward never write.
+ */
+export type HistoryIntent = "push" | "replace";
+
+export type ConversationGroupKey = "today" | "earlier";
+export interface ConversationGroup { key: ConversationGroupKey; label: "Today" | "Earlier"; conversations: ClientConversation[] }
+
+/**
+ * Today / Earlier by `lastActivityAt`, on the UTC calendar day (the same clock
+ * as `utcStamp`): Today ⇔ last activity at or after 00:00 UTC of `now`'s day.
+ * Order within a group is the input order (the server lists lastActivityAt
+ * desc). An unparseable time is Earlier. Empty groups are omitted.
+ */
+export function groupConversations(conversations: readonly ClientConversation[], now: Date): ConversationGroup[] {
+  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const today: ClientConversation[] = [], earlier: ClientConversation[] = [];
+  for (const c of conversations) {
+    const t = Date.parse(c.lastActivityAt);
+    (Number.isFinite(t) && t >= startOfToday ? today : earlier).push(c);
+  }
+  const out: ConversationGroup[] = [];
+  if (today.length) out.push({ key: "today", label: "Today", conversations: today });
+  if (earlier.length) out.push({ key: "earlier", label: "Earlier", conversations: earlier });
+  return out;
+}
+
+/** After deleting `deletedId`: the most recent remaining conversation (by lastActivityAt; unparseable last), or null. */
+export function nextConversationAfterDelete(conversations: readonly ClientConversation[], deletedId: string): string | null {
+  const at = (c: ClientConversation) => { const t = Date.parse(c.lastActivityAt); return Number.isFinite(t) ? t : -Infinity; };
+  let best: ClientConversation | null = null;
+  for (const c of conversations) if (c.id !== deletedId && (best === null || at(c) > at(best))) best = c;
+  return best?.id ?? null;
+}
+
+/** The one "not found" a missing conversation shows, whatever the reason (no existence oracle). */
+export const NOT_FOUND_PROBLEM: Readonly<{ kind: "NOT_FOUND"; text: string }> = Object.freeze({ kind: "NOT_FOUND", text: NOT_FOUND_COPY });

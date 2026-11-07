@@ -47,9 +47,23 @@
  * renders Markdown answers), `Composer` (the customer `AiDisclosure`, label
  * and placeholder). Neither the transcript cache, Space context nor
  * Talk-about-this is imported anywhere on this path (no barrel import either).
+ *
+ * HISTORY (parity PR4). Conversations are server-stored, so they survive a
+ * refresh, a sign-out and a new session already; `?c=<id>` keeps the
+ * SELECTION too. Only the opaque id goes in the URL (S2 ruling 3, 2026-11-07):
+ * it is a selector, never an authority — the read route re-applies every gate
+ * and answers ONE 404 for unknown / foreign / deleted / expired, and this
+ * client shows ONE not-found for every one of them (and for a malformed id,
+ * without a request), then REPLACES the URL to the cleared state. Writes follow
+ * the Space history contract (useSpaceUrl): opening a thread or "New chat"
+ * PUSHES, normalising REPLACES, Back / Forward never write, and every write
+ * passes `null` state (Next 16 skips its router sync for a state carrying its
+ * private `__NA` marker). The id is never written to browser storage.
+ * While the list and the thread load, the shell shows a skeleton in its
+ * conversation layout — never the empty state first.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { ArrowUp, MessagesSquare, PanelLeftClose, PanelLeftOpen, Plus, SquarePen, Trash2 } from "lucide-react";
 import { AiShell } from "@/components/ai/AiShell";
 import { AnswerFrame } from "@/components/ai/answer-frame";
@@ -66,13 +80,13 @@ import { ToneBadge } from "@/components/platform/platform-surface";
 import { PeriodCorrections, answeringFrom } from "./PlatformAiAsk";
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
 import {
-  CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY,
+  CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_PROBLEM,
   PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_CONVERSATIONS_URL, PLATFORM_AI_PRIVACY_HINT,
   PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS, PLATFORM_AI_THINKING_LABEL,
   RAIL_COLLAPSED_KEY, UNAVAILABLE_COPY, UNREADABLE_COPY,
-  answeredLine, asOfChip, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
-  parseList, parsePair, parseThread, problemFor, questionBefore, relativeTime, utcStamp,
-  type ClientConversation, type ClientLimits, type ClientMessage, type ClientSegment, type SendProblem,
+  answeredLine, asOfChip, conversationHref, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, groupConversations, hasPendingTurn,
+  nextConversationAfterDelete, parseList, parsePair, parseThread, problemFor, questionBefore, readConversationParam, relativeTime, utcStamp,
+  type ClientConversation, type ClientLimits, type ClientMessage, type ClientSegment, type HistoryIntent, type SendProblem,
 } from "./platform-ai-conversations-model";
 
 // ── Presentation (pure; DOM-less tested) ────────────────────────────────────
@@ -228,6 +242,28 @@ export interface ConversationListProps {
   onDelete: (c: ClientConversation) => void;
 }
 
+/** The list while it loads: quiet placeholder rows (no "No conversations yet." before the list is known). */
+function ListSkeleton() {
+  return (
+    <div data-platform-ai-list-loading="" aria-busy="true" className="flex min-w-0 flex-col gap-1.5">
+      <span className="sr-only">Loading conversations</span>
+      {[0, 1, 2].map((i) => <div key={i} aria-hidden className="h-11 w-full min-w-0 animate-pulse rounded-lg bg-[var(--surface-hover)]" />)}
+    </div>
+  );
+}
+
+/** The reading column while a thread (or the first list) loads: a skeleton, never the empty state. */
+function ThreadSkeleton() {
+  return (
+    <div data-platform-ai-thread-loading="" aria-busy="true" className="mt-4 flex min-w-0 flex-col gap-3">
+      <span className="sr-only">Loading conversation</span>
+      <div aria-hidden className="ml-auto h-9 w-2/3 min-w-0 animate-pulse rounded-2xl bg-[var(--surface-hover)]" />
+      <div aria-hidden className="h-4 w-full min-w-0 animate-pulse rounded bg-[var(--surface-hover)]" />
+      <div aria-hidden className="h-4 w-5/6 min-w-0 animate-pulse rounded bg-[var(--surface-hover)]" />
+    </div>
+  );
+}
+
 export function ConversationList({ conversations, selectedId, now, limits, error, onSelect, onNew, onDelete }: ConversationListProps) {
   return (
     <div data-platform-ai-conversation-list="" className="flex min-w-0 flex-col gap-2">
@@ -239,29 +275,35 @@ export function ConversationList({ conversations, selectedId, now, limits, error
         <p className="text-[11px] tabular-nums text-[var(--text-muted)]">{limits.used} of {limits.max} conversations</p>
       ) : null}
       {error ? <p role="status" className="min-w-0 break-words text-xs text-[var(--text-secondary)]">{error}</p> : null}
-      {conversations === null && !error ? <p className="text-xs text-[var(--text-muted)]">Loading…</p> : null}
+      {conversations === null && !error ? <ListSkeleton /> : null}
       {conversations !== null && conversations.length === 0 ? <p className="text-xs text-[var(--text-muted)]">No conversations yet.</p> : null}
-      {conversations && conversations.length > 0 ? (
-        <ul className="flex min-w-0 flex-col gap-1">
-          {conversations.map((c) => (
-            <li key={c.id} className="flex min-w-0 items-stretch gap-1">
-              <button type="button" onClick={() => onSelect(c.id)} aria-current={c.id === selectedId ? "true" : undefined}
-                className={`flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left ${c.id === selectedId ? "bg-[var(--surface-hover)]" : "hover:bg-[var(--surface-hover)]"}`}>
-                <span className="w-full min-w-0 truncate text-sm text-[var(--text-primary)]">{c.label ?? `${c.areaLabel} conversation`}</span>
-                <span className="flex w-full min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-muted)]">
-                  <span data-platform-ai-area-chip="" className="min-w-0 truncate">{c.areaLabel}</span>
-                  <span title={utcStamp(c.lastActivityAt)}>{relativeTime(c.lastActivityAt, now)}</span>
-                  {c.full ? <span>Full</span> : null}
-                </span>
-              </button>
-              <button type="button" onClick={() => onDelete(c)} aria-label={`Delete conversation: ${c.label ?? c.areaLabel}`}
-                className="inline-flex w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]">
-                <Trash2 size={14} aria-hidden />
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {conversations && conversations.length > 0 ? groupConversations(conversations, now).map((g) => (
+        <section key={g.key} data-platform-ai-group={g.key} aria-labelledby={`platform-ai-group-${g.key}`} className="flex min-w-0 flex-col gap-1">
+          <h3 id={`platform-ai-group-${g.key}`} className="px-2.5 pt-1 text-[11px] font-medium text-[var(--text-muted)]">{g.label}</h3>
+          <ul className="flex min-w-0 flex-col gap-1">
+            {g.conversations.map((c) => {
+              const title = c.label ?? `${c.areaLabel} conversation`;
+              return (
+                <li key={c.id} className="flex min-w-0 items-stretch gap-1">
+                  <button type="button" onClick={() => onSelect(c.id)} aria-current={c.id === selectedId ? "true" : undefined}
+                    className={`flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left ${c.id === selectedId ? "bg-[var(--surface-hover)]" : "hover:bg-[var(--surface-hover)]"}`}>
+                    <span title={title} className="w-full min-w-0 truncate text-sm text-[var(--text-primary)]">{title}</span>
+                    <span className="flex w-full min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-muted)]">
+                      <span data-platform-ai-area-chip="" className="min-w-0 truncate">{c.areaLabel}</span>
+                      <span data-platform-ai-last-activity="" title={utcStamp(c.lastActivityAt)}>{relativeTime(c.lastActivityAt, now)}</span>
+                      {c.full ? <span>Full</span> : null}
+                    </span>
+                  </button>
+                  <button type="button" onClick={() => onDelete(c)} aria-label={`Delete conversation: ${c.label ?? c.areaLabel}`}
+                    className="inline-flex w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]">
+                    <Trash2 size={14} aria-hidden />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )) : null}
     </div>
   );
 }
@@ -362,7 +404,11 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
   const full = p.selected?.conversation.full === true || p.problem?.kind === "FULL";
   const atLimit = !p.selected && (p.problem?.kind === "LIMIT" || (p.limits !== null && p.limits.used >= p.limits.max));
   const label = p.selected?.conversation.areaLabel ?? p.areaLabel;
-  const conversationMode = messages.length > 0 || busy || p.threadLoading;
+  // Parity PR4: the first list read counts as loading too, so the shell starts in its
+  // conversation layout (a skeleton) and never flashes the empty state first.
+  const listLoading = p.conversations === null && p.listError === null;
+  const loading = p.threadLoading || (listLoading && !p.selected && !busy);
+  const conversationMode = messages.length > 0 || busy || loading;
   const list = (
     <ConversationList conversations={p.conversations} selectedId={p.selected?.conversation.id ?? null} now={p.now}
       limits={p.limits} error={p.listError} onSelect={p.onSelect} onNew={p.onNew} onDelete={p.onAskDelete} />
@@ -434,7 +480,7 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {atLimit ? (
             <p data-platform-ai-limit="" role="status" className="mx-auto mb-2 w-full min-w-0 max-w-3xl break-words rounded-xl border border-[var(--border-hairline)] p-3 text-sm text-[var(--text-secondary)]">{CONVERSATION_LIMIT_COPY}</p>
           ) : null}
-          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || p.threadLoading} />
+          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading} />
         </>
       )}
     </>
@@ -453,10 +499,10 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
         aside={starters}
         composer={composer}
       >
-        {p.threadLoading && messages.length === 0 ? (
+        {loading && messages.length === 0 ? (
           <div className="mx-auto w-full min-w-0 max-w-3xl px-1 pt-3">
             {areaNotice}
-            <p className="mt-3 text-xs text-[var(--text-muted)]">Loading…</p>
+            <ThreadSkeleton />
           </div>
         ) : (
           <div className="min-w-0">
@@ -505,7 +551,32 @@ function writeRailCollapsed(v: boolean): void {
   try { window.localStorage.setItem(RAIL_COLLAPSED_KEY, v ? "1" : "0"); } catch { /* a convenience only */ }
 }
 
-export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
+/**
+ * The ONE writer of `?c=` (parity PR4). `null` state on every write: Next 16
+ * treats a state carrying its private `__NA` marker as its own and skips the
+ * router sync, after which its HistoryUpdater rewrites the entry back to the
+ * stale URL (components/space/shell/useSpaceUrl.ts). No write when the URL
+ * would not change.
+ */
+function writeConversationParam(id: string | null, intent: HistoryIntent): void {
+  const loc = window.location;
+  const next = conversationHref(loc, id);
+  if (next === `${loc.pathname}${loc.search}${loc.hash}`) return;
+  if (intent === "replace") window.history.replaceState(null, "", next);
+  else window.history.pushState(null, "", next);
+}
+
+export interface PlatformAiConversationsProps {
+  areaLabel: string;
+  /**
+   * Test seam only (the page never passes it): the presentation the state is
+   * handed to. Defaults to PlatformAiConversationsView; the history test passes
+   * a capturing component so the REAL orchestrator runs without a DOM.
+   */
+  View?: ComponentType<PlatformAiConversationsViewProps>;
+}
+
+export function PlatformAiConversations({ areaLabel, View = PlatformAiConversationsView }: PlatformAiConversationsProps) {
   const [now, setNow] = useState(() => new Date());
   const [conversations, setConversations] = useState<ClientConversation[] | null>(null);
   const [limits, setLimits] = useState<ClientLimits | null>(null);
@@ -520,6 +591,8 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ClientConversation | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /** The latest selection request: a slower, older read never overwrites a newer choice. */
+  const openSeq = useRef(0);
 
   // Relative times tick once a minute (no other timer).
   useEffect(() => {
@@ -530,29 +603,64 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setRailCollapsed(readRailCollapsed()); }, []);
 
-  const openConversation = useCallback(async (id: string) => {
+  /** Nothing selected (New chat, a deleted last thread, a not-found id): the empty composer, `?c=` removed. */
+  const clearSelection = useCallback((intent: HistoryIntent | null) => {
+    openSeq.current++;
+    setSelected(null); setThreadLoading(false); setRetry(null);
+    if (intent) writeConversationParam(null, intent);
+  }, []);
+
+  /** ONE not-found for every missing conversation (unknown, foreign, deleted, expired, malformed): no oracle. */
+  const showNotFound = useCallback((id: string | null) => {
+    clearSelection("replace");
+    if (id) setConversations((cs) => (cs ? cs.filter((c) => c.id !== id) : cs));
+    setProblem(NOT_FOUND_PROBLEM);
+  }, [clearSelection]);
+
+  /** Open a thread. `intent` writes `?c=` first (push: the operator chose it; replace: normalising); null = traversal / re-read. */
+  const openConversation = useCallback(async (id: string, intent: HistoryIntent | null = null) => {
+    const seq = ++openSeq.current;
+    if (intent) writeConversationParam(id, intent);
     setThreadLoading(true); setProblem(null); setRetry(null);
     const r = await call(conversationUrl(id));
+    if (seq !== openSeq.current) return; // superseded by a newer selection
     setThreadLoading(false);
     const parsed = r && r.status === 200 ? parseThread(r.body) : null;
     if (parsed) { setSelected(parsed); setNow(new Date()); return; }
+    if (r && r.status === 404) { showNotFound(id); return; }
     setSelected(null);
-    if (r && r.status === 404) setConversations((cs) => (cs ? cs.filter((c) => c.id !== id) : cs));
     setProblem(r ? problemFor(r.status, r.body) : { kind: "NETWORK", text: UNAVAILABLE_COPY });
-  }, []);
+  }, [showNotFound]);
 
   const loadList = useCallback(async (openLatest: boolean) => {
+    const seq = openSeq.current;
     const r = await call(PLATFORM_AI_CONVERSATIONS_URL);
     const parsed = r && r.status === 200 ? parseList(r.body) : null;
     if (!parsed) { setListError(UNAVAILABLE_COPY); setConversations((cs) => cs ?? []); return; }
     setListError(null); setConversations(parsed.conversations); setLimits(parsed.limits);
-    if (openLatest && parsed.conversations.length > 0) await openConversation(parsed.conversations[0].id);
+    if (seq !== openSeq.current) return; // the operator chose something while the list loaded
+    if (openLatest && parsed.conversations.length > 0) await openConversation(parsed.conversations[0].id, "replace");
   }, [openConversation]);
 
-  // §11: the page opens on the latest conversation, or on an empty composer.
+  /** Apply the URL's `?c=` (the first load, and Back / Forward). Never writes, except to normalise a malformed id. */
+  const applyParam = useCallback((first: boolean) => {
+    const param = readConversationParam(window.location.search);
+    if (param.kind === "id") { void openConversation(param.id); if (first) void loadList(false); return; }
+    if (param.kind === "invalid") { showNotFound(null); if (first) void loadList(false); return; }
+    // No `?c=`: §11 — the page opens on the latest conversation (REPLACE), or on an empty composer.
+    if (first) void loadList(true);
+    else { clearSelection(null); setProblem(null); }
+  }, [openConversation, loadList, showNotFound, clearSelection]);
+
   // The first read (an external system); every setState in it runs after the awaited fetch.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void loadList(true); }, [loadList]);
+  useEffect(() => { applyParam(true); }, [applyParam]);
+  // Back / Forward between threads: re-apply the URL, write nothing.
+  useEffect(() => {
+    const onPop = () => applyParam(false);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [applyParam]);
 
   async function send(s: PendingSend) {
     setSending(s); setProblem(null); setRetry(null);
@@ -577,6 +685,8 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
         const prior = cur.messages.filter((m) => m.id !== pair.user.id && m.id !== pair.assistant.id).map((m) => (m.role === "ASSISTANT" ? { ...m, stale: true } : m));
         return { ...cur, messages: [...prior, pair.user, pair.assistant] };
       });
+      // A new conversation now has an id: the cleared URL is normalised to it (REPLACE).
+      if (!s.conversationId && pair.conversation) writeConversationParam(pair.conversation.id, "replace");
       void loadList(false);
       return;
     }
@@ -586,7 +696,7 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
     if (pr.kind === "REFUSED" || pr.kind === "LIMIT" || pr.kind === "FULL") setDraft((d) => (d.length === 0 ? s.question : d));
     if (pr.kind === "FULL") setSelected((cur) => (cur ? { ...cur, conversation: { ...cur.conversation, full: true } } : cur));
     if (pr.kind === "IN_FLIGHT" && s.conversationId) void openConversation(s.conversationId);
-    if (pr.kind === "NOT_FOUND") { setSelected(null); void loadList(false); }
+    if (pr.kind === "NOT_FOUND") { showNotFound(s.conversationId); void loadList(false); }
   }
 
   function onSend() {
@@ -601,8 +711,9 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
     return true;
   }
 
+  /** "New chat": the operator's navigation ⇒ PUSH the cleared URL (Back returns to the thread). */
   function onNew() {
-    setSelected(null); setProblem(null); setRetry(null); setSheetOpen(false);
+    clearSelection("push"); setProblem(null); setSheetOpen(false);
   }
 
   async function onConfirmDelete() {
@@ -612,8 +723,13 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
     const r = await call(conversationUrl(c.id), { method: "DELETE" });
     setDeleting(false); setConfirmDelete(null);
     if (r && (r.status === 204 || r.status === 404)) {
+      const next = nextConversationAfterDelete(conversations ?? [], c.id);
       setConversations((cs) => (cs ? cs.filter((x) => x.id !== c.id) : cs));
-      if (selected?.conversation.id === c.id) onNew();
+      // The open thread was deleted: open the next most recent, or the empty state — REPLACE (the deleted id is gone from History's current entry).
+      if (selected?.conversation.id === c.id) {
+        if (next) void openConversation(next, "replace");
+        else { clearSelection("replace"); setProblem(null); }
+      }
       void loadList(false);
     } else {
       setProblem(r ? problemFor(r.status, r.body) : { kind: "NETWORK", text: UNAVAILABLE_COPY });
@@ -621,7 +737,7 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
   }
 
   return (
-    <PlatformAiConversationsView
+    <View
       areaLabel={areaLabel} now={now}
       conversations={conversations} limits={limits} listError={listError}
       selected={selected} threadLoading={threadLoading}
@@ -633,7 +749,7 @@ export function PlatformAiConversations({ areaLabel }: { areaLabel: string }) {
       onRetrySend={() => { if (retry) void send(retry); }}
       onRetryFailed={(q) => { void send({ conversationId: selected?.conversation.id ?? null, clientRequestId: crypto.randomUUID(), question: q }); }}
       onCheckPending={() => { if (selected) void openConversation(selected.conversation.id); }}
-      onSelect={(id) => { setSheetOpen(false); void openConversation(id); }}
+      onSelect={(id) => { setSheetOpen(false); void openConversation(id, "push"); }}
       onNew={onNew}
       onAskDelete={setConfirmDelete}
       onConfirmDelete={() => { void onConfirmDelete(); }}

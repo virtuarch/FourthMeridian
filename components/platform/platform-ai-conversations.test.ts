@@ -18,6 +18,11 @@
  *  10. shared shell (parity PR3) — AiShell, ConversationLog + ThinkingIndicator,
  *      the answer frame around the typed segments, ComposerFrame (Enter-to-send,
  *      no Stop), starter chips, the rail in the `side` slot
+ *  11. history (parity PR4) — the `?c=` parse and href, Today / Earlier grouping
+ *      (UTC), delete-next, the loading skeleton, the one History writer, no
+ *      rename / per-conversation export, Referrer-Policy. The behaviour on a real
+ *      orchestrator (deep link, PUSH / REPLACE / Back, not-found, delete-next,
+ *      storage) is components/platform/platform-ai-history.test.ts.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/platform-ai-conversations.test.ts
  */
@@ -44,7 +49,8 @@ import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_COPY,
   PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_PRIVACY_HINT,
   PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS, PLATFORM_AI_THINKING_LABEL,
-  RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
+  NOT_FOUND_PROBLEM, PLATFORM_AI_CONVERSATION_PARAM, RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
+  conversationHref, groupConversations, nextConversationAfterDelete, readConversationParam,
   answeredLine, asOfChip, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
   parseList, parseMessage, parsePair, parseThread, problemFor, questionBefore, relativeTime, utcStamp,
   type ClientConversation, type ClientMessage,
@@ -109,6 +115,7 @@ function elements(node: ReactNode | unknown, out: ReactElement[] = []): ReactEle
 }
 
 const COMPONENT = "components/platform/PlatformAiConversations.tsx";
+const UNAVAILABLE_COPY_T = "Platform AI is unavailable right now.";
 const MODEL = "components/platform/platform-ai-conversations-model.ts";
 const PAGE = "app/(shell)/dashboard/platform/ai/page.tsx";
 
@@ -392,8 +399,9 @@ console.log("\n7. layout — 375 px column, the mobile sheet control, the deskto
     && /aria-label="Delete conversation: A{60}…"/.test(listHtml) && /aria-current="true"/.test(listHtml));
   check("delete asks for confirmation: \"Deleted conversations can't be recovered.\"",
     /<ConfirmDialog open=\{p\.confirmDelete !== null\}[^>]*message=\{DELETE_CONFIRM_COPY\}/.test(cmp) && /Deleted conversations can't be recovered\./.test(src(MODEL)));
+  // Parity PR4 (deliberate): opening the latest normalises the URL to its id (REPLACE).
   check("the page opens on the latest conversation (the list is lastActivityAt desc), or an empty composer",
-    /if \(openLatest && parsed\.conversations\.length > 0\) await openConversation\(parsed\.conversations\[0\]\.id\);/.test(cmp) && /void loadList\(true\);/.test(cmp));
+    /if \(openLatest && parsed\.conversations\.length > 0\) await openConversation\(parsed\.conversations\[0\]\.id, "replace"\);/.test(cmp) && /void loadList\(true\);/.test(cmp));
 }
 
 // ── 8. reuse ────────────────────────────────────────────────────────────────
@@ -536,6 +544,102 @@ console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answ
     chips.length === PLATFORM_AI_STARTER_PROMPTS.length && asked.join("|") === PLATFORM_AI_STARTER_PROMPTS.join("|"), asked);
   check("no chips when a new conversation is not allowed (limit reached)", !/data-platform-ai-starters/.test(view({ selected: null, limits: { used: 50, max: 50 } })));
   check("the empty state is the composer's, not a conversation's: no chips once a thread is open", !/data-platform-ai-starters/.test(conv));
+}
+
+// ── 11. history (parity PR4) ────────────────────────────────────────────────
+console.log("\n11. history (parity PR4) — ?c= deep link, grouping, delete-next, skeleton, one writer");
+{
+  // The parse: an opaque id or nothing; anything else is "invalid" (⇒ the same not-found, no request).
+  check("?c= is the param; absent / empty ⇒ none", PLATFORM_AI_CONVERSATION_PARAM === "c"
+    && readConversationParam("").kind === "none" && readConversationParam("?c=").kind === "none" && readConversationParam("?x=1").kind === "none");
+  const ok = readConversationParam("?c=c0000000000000000000000a");
+  check("a cuid-shaped value is an id", ok.kind === "id" && ok.id === "c0000000000000000000000a");
+  check("a malformed value is invalid (never sent)", ["?c=%3Cscript%3E", "?c=a%2Fb", "?c=" + "x".repeat(65), "?c=a b", "?c=..%2F"].every((q) => readConversationParam(q).kind === "invalid"));
+  check("href: sets / replaces / removes ?c= and keeps other params and the hash",
+    conversationHref({ pathname: "/p", search: "" }, "abc") === "/p?c=abc"
+    && conversationHref({ pathname: "/p", search: "?c=old&x=1", hash: "#h" }, "new") === "/p?c=new&x=1#h"
+    && conversationHref({ pathname: "/p", search: "?c=old" }, null) === "/p"
+    && conversationHref({ pathname: "/p", search: "?x=1&c=old" }, null) === "/p?x=1");
+
+  // Grouping: the UTC calendar day of `now` (the clock utcStamp shows).
+  const at = (id: string, lastActivityAt: string): ClientConversation => ({ ...CONV, id, lastActivityAt });
+  const now = new Date("2026-01-10T00:30:00.000Z");
+  const groups = groupConversations([
+    at("t1", "2026-01-10T00:29:00.000Z"), at("t0", "2026-01-10T00:00:00.000Z"),
+    at("e1", "2026-01-09T23:59:59.999Z"), at("e2", "2026-01-02T12:00:00.000Z"), at("bad", "not a time"),
+  ], now);
+  check("Today = at or after 00:00 UTC of now's day; 23:59:59.999 the day before is Earlier; unparseable is Earlier",
+    groups.length === 2 && groups[0].label === "Today" && groups[0].conversations.map((c) => c.id).join() === "t1,t0"
+    && groups[1].label === "Earlier" && groups[1].conversations.map((c) => c.id).join() === "e1,e2,bad", groups.map((x) => [x.label, x.conversations.map((c) => c.id)]));
+  check("the boundary is UTC, not the process's local zone (00:30 UTC: a 23:59 UTC activity is Earlier even where it is the same local day)",
+    groupConversations([at("x", "2026-01-09T23:59:00.000Z")], now)[0].key === "earlier");
+  check("empty groups are omitted", groupConversations([at("e", "2026-01-01T00:00:00.000Z")], now).map((x) => x.label).join() === "Earlier"
+    && groupConversations([], now).length === 0);
+  const listHtml = renderToStaticMarkup(createElement(ConversationList, {
+    conversations: [at("t1", "2026-01-10T11:00:00.000Z"), at("e1", "2026-01-08T11:00:00.000Z")], selectedId: "t1", now: NOW,
+    limits: null, error: null, onSelect: noop, onNew: noop, onDelete: noop,
+  }));
+  check("the list renders 'Today' then 'Earlier' headings, each row with its title (full text in title=) and last activity",
+    listHtml.indexOf(">Today</h3>") > -1 && listHtml.indexOf(">Today</h3>") < listHtml.indexOf(">Earlier</h3>")
+    && (listHtml.match(/<span title="How are providers doing this week\?"[^>]*truncate/g) ?? []).length === 2
+    && /data-platform-ai-last-activity="" title="2026-01-10 11:00 UTC">1 h ago</.test(listHtml) && /title="2026-01-08 11:00 UTC">2 days ago</.test(listHtml), listHtml);
+
+  // Delete-next.
+  check("delete-next: the most recent remaining by lastActivityAt (input order not trusted); none ⇒ null",
+    nextConversationAfterDelete([at("a", "2026-01-10T10:00:00.000Z"), at("b", "2026-01-09T10:00:00.000Z"), at("c", "2026-01-10T11:00:00.000Z")], "c") === "a"
+    && nextConversationAfterDelete([at("a", "2026-01-10T10:00:00.000Z"), at("z", "bad")], "a") === "z"
+    && nextConversationAfterDelete([at("a", "2026-01-10T10:00:00.000Z")], "a") === null && nextConversationAfterDelete([], "a") === null);
+
+  // No empty-state flash.
+  const listLoading = view({ conversations: null, selected: null, limits: null });
+  check("while the first list loads: the conversation layout with skeletons — no empty state, no chips, no 'No conversations yet.', box disabled",
+    /data-ai-layout="conversation"/.test(listLoading) && /data-platform-ai-thread-loading=""[^>]*aria-busy="true"/.test(listLoading)
+    && /data-platform-ai-list-loading=""[^>]*aria-busy="true"/.test(listLoading)
+    && !/data-platform-ai-empty|data-platform-ai-starters|No conversations yet\.|Loading…/.test(listLoading) && /<textarea[^>]*disabled=""/.test(listLoading), listLoading);
+  const threadLoading = view({ selected: null, threadLoading: true });
+  check("while a thread loads: the same skeleton, never the empty state",
+    /data-ai-layout="conversation"/.test(threadLoading) && /data-platform-ai-thread-loading/.test(threadLoading) && !/data-platform-ai-empty/.test(threadLoading));
+  const listFailed = view({ conversations: [], listError: UNAVAILABLE_COPY_T, selected: null });
+  check("a failed list read is not 'loading' forever (the empty composer shows, with the error)", /data-ai-layout="empty"/.test(listFailed) && listFailed.includes(UNAVAILABLE_COPY_T));
+  const notFound = view({ selected: null, problem: NOT_FOUND_PROBLEM });
+  check("the one not-found: the shared copy in the status line", /data-platform-ai-problem="NOT_FOUND"/.test(notFound) && textOf(notFound).includes(NOT_FOUND_COPY) && NOT_FOUND_PROBLEM.text === NOT_FOUND_COPY);
+
+  // The one writer.
+  const cmp = code(COMPONENT);
+  check("ONE pushState and ONE replaceState site, both with null state (Next 16 __NA rule), inside writeConversationParam",
+    (cmp.match(/history\.pushState\(/g) ?? []).length === 1 && (cmp.match(/history\.replaceState\(/g) ?? []).length === 1
+    && /window\.history\.replaceState\(null, "", next\)/.test(cmp) && /window\.history\.pushState\(null, "", next\)/.test(cmp)
+    && /function writeConversationParam\(id: string \| null, intent: HistoryIntent\): void \{[^}]*conversationHref\(loc, id\)/.test(cmp));
+  check("writeConversationParam is called with an id or null only (never a title, question or area)",
+    [...cmp.matchAll(/writeConversationParam\(([^,]+),/g)].map((m) => m[1].trim()).every((a) => /^(id|null|next|pair\.conversation\.id|id: string \| null)$/.test(a)),
+    [...cmp.matchAll(/writeConversationParam\(([^,]+),/g)].map((m) => m[1]));
+  check("open from the list PUSHES; New chat PUSHES the cleared URL; not-found / delete / latest / a new conversation REPLACE",
+    /onSelect=\{\(id\) => \{ setSheetOpen\(false\); void openConversation\(id, "push"\); \}\}/.test(cmp)
+    && /function onNew\(\) \{\s*clearSelection\("push"\);/.test(cmp)
+    && /const showNotFound = useCallback\(\(id: string \| null\) => \{\s*clearSelection\("replace"\);/.test(cmp)
+    && /if \(next\) void openConversation\(next, "replace"\);\s*else \{ clearSelection\("replace"\);/.test(cmp)
+    && /writeConversationParam\(pair\.conversation\.id, "replace"\)/.test(cmp));
+  check("every 404 on open ⇒ the ONE not-found (no branch on the body); Back / Forward never write",
+    /if \(r && r\.status === 404\) \{ showNotFound\(id\); return; \}/.test(cmp)
+    && /const onPop = \(\) => applyParam\(false\);/.test(cmp) && /if \(param\.kind === "id"\) \{ void openConversation\(param\.id\);/.test(cmp));
+  check("no client existence hint: the component never compares the URL id with the list before asking the server",
+    !/conversations[^;\n]*\.(some|find|includes)\([^)]*param/.test(cmp));
+  check("the id is never put in browser storage (only the rail key is ever written)",
+    (cmp.match(/localStorage\.setItem\(/g) ?? []).length === 1 && /localStorage\.setItem\(RAIL_COLLAPSED_KEY,/.test(cmp) && !/sessionStorage|indexedDB|document\.cookie/.test(cmp));
+
+  // S2 rulings: no rename, no per-conversation export.
+  check("no rename and no per-conversation export (the account data export stays the export path)",
+    !/rename|Rename|export conversation|Export|download|Download|Blob\(|createObjectURL/.test(cmp) && !/method: "PATCH"|method: "PUT"/.test(cmp));
+
+  // Referrer-Policy: the query never leaves the origin.
+  const sh = src("lib/security-headers.test.ts");
+  check("Referrer-Policy is strict-origin-when-cross-origin (next.config.ts; pinned by lib/security-headers.test.ts)",
+    /\{ key: "Referrer-Policy", value: "strict-origin-when-cross-origin" \}/.test(src("next.config.ts"))
+    && /headers\.get\("Referrer-Policy"\) === "strict-origin-when-cross-origin"/.test(sh));
+
+  // The view seam is the page's default.
+  check("the page passes no View (the seam is for the history test only)", !/View=/.test(code(PAGE))
+    && /export function PlatformAiConversations\(\{ areaLabel, View = PlatformAiConversationsView \}/.test(cmp));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
