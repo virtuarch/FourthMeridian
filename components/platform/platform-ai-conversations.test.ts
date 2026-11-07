@@ -15,6 +15,9 @@
  *   7. layout — 375 px column, the mobile sheet control, the desktop rail
  *   8. reuse (§11) — MessageCard + FailedTurn only; no customer-only modules
  *   9. privacy — no analytics, no logging, no draft storage, routes only
+ *  10. shared shell (parity PR3) — AiShell, ConversationLog + ThinkingIndicator,
+ *      the answer frame around the typed segments, ComposerFrame (Enter-to-send,
+ *      no Stop), starter chips, the rail in the `side` slot
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/platform-ai-conversations.test.ts
  */
@@ -23,12 +26,16 @@ import "@/lib/test-support/route-env";
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { createElement } from "react";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { env } from "@/lib/env";
 import { PLATFORM_AI_MESSAGE_MAX, PLATFORM_AI_RETENTION_DAYS } from "@/lib/platform/intelligence/ai/conversations/constants";
 import { AnswerSegments, PlatformAiAsk } from "./PlatformAiAsk";
 import { renderStoredAnswer } from "@/lib/platform/intelligence/ai/conversations/handlers";
+import { AiShell } from "@/components/ai/AiShell";
+import { ComposerFrame } from "@/components/ai/Composer";
+import { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
+import { isSendKey } from "@/components/ai/conversation-surface";
 import {
   AssistantAnswer, ConversationList, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
   type PlatformAiConversationsViewProps,
@@ -36,7 +43,8 @@ import {
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_COPY,
   PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING, PLATFORM_AI_PRIVACY_HINT,
-  PLATFORM_AI_RETENTION_DAYS_CLIENT, RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
+  PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS, PLATFORM_AI_THINKING_LABEL,
+  RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
   answeredLine, asOfChip, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
   parseList, parseMessage, parsePair, parseThread, problemFor, questionBefore, relativeTime, utcStamp,
   type ClientConversation, type ClientMessage,
@@ -78,15 +86,26 @@ const answer = (id: string, over: Partial<ClientMessage> = {}): ClientMessage =>
   notes: ["A deterministic note."], failureCode: null, unavailable: false, stale: true, ...over,
 });
 const noop = () => {};
-function view(over: Partial<PlatformAiConversationsViewProps> = {}): string {
-  const props: PlatformAiConversationsViewProps = {
+function viewProps(over: Partial<PlatformAiConversationsViewProps> = {}): PlatformAiConversationsViewProps {
+  return {
     areaLabel: "Platform Operations", now: NOW, conversations: [CONV], limits: { used: 1, max: 50 }, listError: null,
     selected: null, threadLoading: false, draft: "", sendingQuestion: null, problem: null, canRetrySend: false,
     sheetOpen: false, railCollapsed: false, confirmDelete: null, deleting: false,
-    onDraft: noop, onSend: noop, onRetrySend: noop, onRetryFailed: noop, onCheckPending: noop, onSelect: noop, onNew: noop,
+    onDraft: noop, onSend: noop, onStarter: noop, onRetrySend: noop, onRetryFailed: noop, onCheckPending: noop, onSelect: noop, onNew: noop,
     onAskDelete: noop, onConfirmDelete: noop, onCancelDelete: noop, onSheet: noop, onRail: noop, ...over,
   };
-  return renderToStaticMarkup(createElement(PlatformAiConversationsView, props));
+}
+function view(over: Partial<PlatformAiConversationsViewProps> = {}): string {
+  return renderToStaticMarkup(createElement(PlatformAiConversationsView, viewProps(over)));
+}
+/** Every element in a tree of props (function components are NOT expanded): the view is hook-free, so it can be called and walked. */
+function elements(node: ReactNode | unknown, out: ReactElement[] = []): ReactElement[] {
+  if (Array.isArray(node)) { for (const n of node) elements(n, out); return out; }
+  if (isValidElement(node)) {
+    out.push(node);
+    for (const v of Object.values(node.props as Record<string, unknown>)) elements(v, out);
+  }
+  return out;
 }
 
 const COMPONENT = "components/platform/PlatformAiConversations.tsx";
@@ -297,8 +316,12 @@ console.log("\n6. thread — failed / pending / full / limit / expired");
   check("a PENDING turn shows the in-flight state and DISABLES the composer",
     /data-platform-ai-in-flight/.test(pending) && /<textarea[^>]*disabled=""/.test(pending), pending);
   const sending = view({ selected: sel([user("u1", "q"), answer("a1")]), sendingQuestion: "next one", draft: "" });
-  check("while a send is in flight: the question shows, Ask reads 'Asking…' and is disabled",
-    /next one/.test(sending) && /data-platform-ai-in-flight/.test(sending) && /<button type="submit" disabled=""[^>]*>Asking…<\/button>/.test(sending));
+  // Parity PR3 (deliberate): the "Ask"/"Asking…" pill became the shared composer's
+  // round send button. While a send is in flight it shows DISABLED (aria-busy) —
+  // there is no Stop (S2 2026-11-07: an abort would not cancel the server turn).
+  check("while a send is in flight: the question shows, the send button is disabled and busy, and there is no Stop",
+    /next one/.test(sending) && /data-platform-ai-in-flight/.test(sending)
+    && /<button type="submit" disabled="" aria-label="Send message" aria-busy="true"/.test(sending) && !/Stop generating|Stop waiting/.test(sending), sending);
   const full = view({ selected: sel([user("u1", "q"), answer("a1")], true) });
   check("conversation full ⇒ read-only notice + 'Start a new conversation', no composer",
     /data-platform-ai-full/.test(full) && textOf(full).includes(CONVERSATION_FULL_COPY) && /Start a new conversation/.test(full) && !/<textarea/.test(full));
@@ -323,10 +346,13 @@ console.log("\n6. thread — failed / pending / full / limit / expired");
     && !/IN_FLIGHT[^\n]*send\(/.test(sendBody) && problemFor(409, { code: "TURN_IN_FLIGHT" }).kind === "IN_FLIGHT");
   check("a transport failure keeps the SAME PendingSend (setRetry(s)), and Try again resends exactly it",
     /if \(!r\) \{[\s\S]*?setRetry\(s\);/.test(sendBody) && /onRetrySend=\{\(\) => \{ if \(retry\) void send\(retry\); \}\}/.test(cmp));
-  check("an explicit Retry on a FAILED turn mints a NEW id; the only other minting site is a fresh send (onSend)",
+  // Parity PR3 (deliberate): a typed question (onSend) and a starter chip share ONE
+  // fresh-question path, ask(), which is the only other minting site.
+  check("an explicit Retry on a FAILED turn mints a NEW id; the only other minting site is a fresh question (ask: onSend + starter chips)",
     (cmp.match(/crypto\.randomUUID\(\)/g) ?? []).length === 2
     && /onRetryFailed=\{\(q\) => \{ void send\(\{ [^}]*clientRequestId: crypto\.randomUUID\(\)/.test(cmp)
-    && /function onSend\(\) \{[\s\S]*?clientRequestId: crypto\.randomUUID\(\)/.test(cmp));
+    && /function ask\(question: string\): boolean \{[^]*?clientRequestId: crypto\.randomUUID\(\)/.test(cmp)
+    && /function onSend\(\) \{\s*if \(ask\(draft\)\) setDraft\(""\);\s*\}/.test(cmp) && /onStarter=\{\(q\) => \{ ask\(q\); \}\}/.test(cmp));
   const expired = renderToStaticMarkup(createElement(Thread, {
     messages: [user("u9", "later question", H3), answer("a9")], areaLabel: "Platform Operations", now: NOW, sendingQuestion: null, earlierExpired: true, busy: false,
   }));
@@ -346,7 +372,9 @@ console.log("\n7. layout — 375 px column, the mobile sheet control, the deskto
   check("375 px: min-w-0 on every column and break-words on free text", (html.match(/min-w-0/g) ?? []).length >= 12 && /break-words/.test(html));
   check("375 px: nothing scrolls the page sideways (no overflow-x-scroll / whitespace-nowrap blocks / w-screen)", !/overflow-x-(auto|scroll)|w-screen|min-w-max/.test(html));
   check("the 'Conversations' sheet control is mobile-only (lg:hidden) and declares its dialog",
-    /data-platform-ai-sheet-toggle=""[^>]*aria-haspopup="dialog"[^>]*class="[^"]*lg:hidden/.test(html) && /Conversations<\/button>/.test(html));
+    /data-platform-ai-sheet-toggle=""[^>]*aria-haspopup="dialog"[^>]*class="[^"]*lg:hidden/.test(html)
+    // Parity PR3 (deliberate): in the shell header the word is sr-only below sm (icon + name), like "New chat".
+    && /<span class="max-sm:sr-only">Conversations<\/span><\/button>/.test(html));
   check("the desktop rail is hidden below lg and holds the same list", /<aside data-platform-ai-rail="open" aria-label="Conversations" class="hidden [^"]*lg:flex/.test(html)
     && /<aside[\s\S]*data-platform-ai-conversation-list[\s\S]*<\/aside>/.test(html));
   const collapsed = view({ railCollapsed: true });
@@ -376,14 +404,24 @@ console.log("\n8. reuse (§11) — MessageCard and FailedTurn only; nothing cust
 {
   const cmp = code(COMPONENT);
   const imports = [...cmp.matchAll(/^import\s+(?:type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => m[1]).sort();
+  // Parity PR3 (deliberate): the shared PRESENTATION primitives join the list —
+  // AiShell, ConversationLog/ThinkingIndicator, the answer frame (via its own
+  // module name), ComposerFrame and SuggestedPrompt. AiMark now comes with them.
   check("imports: exactly these modules", imports.join() === [
     "./PlatformAiAsk", "./PlatformAiPlaceholder", "./platform-ai-conversations-model",
-    "@/components/ai/AiMark", "@/components/ai/FailedTurn", "@/components/ai/Markdown", "@/components/ai/MessageCard",
+    "@/components/ai/AiShell", "@/components/ai/Composer", "@/components/ai/ConversationView", "@/components/ai/SuggestedPrompt", "@/components/ai/answer-frame",
+    "@/components/ai/FailedTurn", "@/components/ai/Markdown", "@/components/ai/MessageCard",
     "@/components/atlas/ConfirmDialog", "@/components/atlas/panels/Panel", "@/components/atlas/panels/PanelParts",
     "@/components/platform/platform-surface", "lucide-react", "react",
   ].sort().join(), imports);
+  // Parity PR3 (deliberate): the MODULES ConversationView and Composer are now
+  // imported, but only for their shared frames — never the customer components.
+  const named = (mod: string) => (cmp.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
+  check("from ConversationView only ConversationLog + ThinkingIndicator; from Composer only ComposerFrame; nothing from the barrel",
+    named("@/components/ai/ConversationView") === "ConversationLog,ThinkingIndicator" && named("@/components/ai/Composer") === "ComposerFrame"
+    && !/from "@\/components\/ai"/.test(cmp), [named("@/components/ai/ConversationView"), named("@/components/ai/Composer")]);
   check("NOT reused: ConversationView (Markdown answers), Composer (the customer disclosure), the transcript cache, Space context, Talk-about-this",
-    !/ConversationView|components\/ai\/Composer|transcript-cache|TalkAboutThis|talk-about-this|AiDisclosure|AiShell|SpaceContext|useSpace|spaceId/.test(cmp));
+    !/<ConversationView\b|<Composer\b|transcript-cache|TalkAboutThis|talk-about-this|AiDisclosure|StarterLine|SpaceContext|useSpace|spaceId/.test(cmp));
   check("the model module imports nothing", !/^import /m.test(code(MODEL)));
 }
 
@@ -400,6 +438,107 @@ console.log("\n9. privacy — no analytics, no logging, no draft storage, routes
   check("bodies are exactly { clientRequestId, question } (the strict server body)",
     (cmp.match(/\{ clientRequestId: s\.clientRequestId, question: s\.question \}/g) ?? []).length === 2 && !/\barea\b\s*:/.test(cmp.replace(/areaLabel/g, "")));
   check("clientRequestId is a fresh UUID per send", (cmp.match(/crypto\.randomUUID\(\)/g) ?? []).length === 2);
+}
+
+// ── 10. the shared shell (parity PR3) ───────────────────────────────────────
+console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answer frame, composer, starters, rail");
+{
+  const sel = (messages: ClientMessage[]) => ({ conversation: CONV, messages });
+  const conv = view({ selected: sel([user("u1", "q"), answer("a1")]) });
+  check("the page is the shared AiShell: data-ai-layout / data-ai-scroll / data-ai-dock, h1 'Platform AI', the area as context ('Area: ' for screen readers)",
+    /data-ai-layout="conversation"/.test(conv) && /data-ai-scroll/.test(conv) && /data-ai-dock="conversation"/.test(conv)
+    && /<h1[^>]*>Platform AI<\/h1>/.test(conv) && /<span class="sr-only">Area: <\/span>Platform Operations/.test(conv), conv);
+  check("…the composer sits in the dock (once), the reading region scrolls inside the shell",
+    (conv.match(/id="platform-ai-question"/g) ?? []).length === 1 && conv.indexOf("data-ai-dock") < conv.indexOf('id="platform-ai-question"')
+    && conv.indexOf("data-ai-scroll") < conv.indexOf("data-ai-dock"));
+  check("the area notice, privacy hint and OD-5 line are all still on the page",
+    textOf(conv).includes("Answering from Platform Operations data only.") && textOf(conv).includes(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && /data-platform-ai-privacy-hint/.test(conv));
+  check("the thread is the shared reading column (ConversationLog: role=log, max-w-3xl, pb-10)",
+    /<div role="log" aria-label="Conversation" class="max-w-3xl mx-auto w-full space-y-7 px-1 pt-3 pb-10">/.test(conv));
+  check("a header 'New chat' control (the Personal class string) starts a new conversation",
+    /data-platform-ai-new-chat=""[^>]*>[\s\S]*?<span class="max-sm:sr-only">New chat<\/span>/.test(conv));
+
+  // Rail in the side slot.
+  const tree = PlatformAiConversationsView(viewProps({ selected: sel([user("u1", "q"), answer("a1")]) }));
+  const shell = elements(tree).find((e) => e.type === AiShell);
+  const sideRail = shell ? elements((shell.props as { side?: unknown }).side).find((e) => e.type === "aside") : undefined;
+  check("the desktop rail is passed in AiShell's `side` slot (an <aside data-platform-ai-rail>)",
+    !!sideRail && (sideRail.props as Record<string, unknown>)["data-platform-ai-rail"] === "open", shell ? Object.keys(shell.props as object) : "no AiShell");
+  check("…rendered beside the reading region (before data-ai-scroll in the same row), hidden below lg, scrolling on its own",
+    /<div class="flex flex-1 min-h-0 min-w-0"><aside data-platform-ai-rail="open" aria-label="Conversations" class="hidden [^"]*overflow-y-auto[^"]*lg:flex/.test(conv)
+    && conv.indexOf("data-platform-ai-rail") < conv.indexOf("data-ai-scroll"));
+
+  // Thinking indicator while busy.
+  const busy = view({ selected: sel([user("u1", "q"), answer("a1")]), sendingQuestion: "next one" });
+  const dots = (busy.match(/animate-bounce/g) ?? []).length;
+  check("while busy: the shared three-dot ThinkingIndicator (role=status, Platform sr label), not the old 'Answering…' text",
+    dots === 3 && /data-platform-ai-in-flight=""[^>]*><div role="status"/.test(busy) && busy.includes(`<span class="sr-only">${PLATFORM_AI_THINKING_LABEL}</span>`)
+    && !/>Answering…</.test(busy), busy);
+  check("…and the sent question shows above it as the operator's bubble", busy.indexOf("next one") > -1 && busy.indexOf("next one") < busy.indexOf("animate-bounce"));
+  const stored = view({ selected: sel([user("u1", "q"), answer("a1", { status: "PENDING", content: null })]) });
+  check("a stored PENDING turn: the same dots plus 'Check again'", (stored.match(/animate-bounce/g) ?? []).length === 3 && /Check again<\/button>/.test(stored));
+  const idle = view({ selected: sel([user("u1", "q"), answer("a1")]) });
+  check("idle: no thinking indicator", !/animate-bounce|data-platform-ai-in-flight/.test(idle));
+
+  // The answer frame around the typed segments.
+  const CORR = "Correction: these figures cover so far this month, not the period you asked about.";
+  const framed = renderToStaticMarkup(createElement(AssistantAnswer, { message: answer("a5", {
+    stale: false, content: [{ kind: "correction", text: CORR }, { kind: "text", text: "**not bold** <img src=x> " }, { kind: "figure", text: "7", metric: "k@1", window: 7 }],
+  }), areaLabel: "Platform Operations", now: NOW }));
+  const gutter = framed.indexOf('<div class="pt-1.5 shrink-0">'), prose = framed.indexOf("text-[15px]");
+  const corr = framed.indexOf("data-platform-ai-correction"), body = framed.indexOf('<p class="min-w-0 whitespace-pre-wrap');
+  check("the answer sits in the shared frame: AI-mark gutter, 15 px prose column; the bordered card is gone",
+    gutter > -1 && prose > gutter && /<span aria-hidden="true" class="inline-block[^"]*rounded-full/.test(framed.slice(gutter, prose)) /* the AiMark */ && !/rounded-xl border[^"]*p-4/.test(framed), framed);
+  check("the period correction is still its own block ABOVE the answer text, inside the frame", corr > prose && body > corr && framed.includes(CORR));
+  check("no Markdown rendering path: Markdown syntax and HTML stay literal inside the frame",
+    !/<(strong|em|img)\b/.test(framed) && framed.includes("**not bold**") && framed.includes("&lt;img"));
+  const alias = src("components/ai/answer-frame.ts");
+  const card = src("components/ai/AnswerCard.tsx");
+  check("the frame module is a re-export of the frame only, and the frame itself renders no Markdown",
+    /^export \{ AnswerFrame \} from "@\/components\/ai\/AnswerCard";$/m.test(alias) && (alias.match(/^(export|import) /gm) ?? []).length === 1
+    && !/<Markdown/.test(card.slice(card.indexOf("export function AnswerFrame"), card.indexOf("export function AnswerCard("))));
+  check("notes, citations and the area line ride in the frame's extras (after the body)",
+    framed.indexOf("A deterministic note.") > body && framed.indexOf("Provider outcomes") > body && framed.indexOf("Answering from Platform Operations data.") > body);
+
+  // Composer: the shared frame, Enter-to-send, no Stop.
+  let submitted = 0;
+  const composerEl = PlatformAiComposer({ value: "q", onChange: noop, onSubmit: () => { submitted++; }, disabled: false, busy: false }) as ReactElement;
+  const cp = composerEl.props as Record<string, unknown>;
+  check("the Platform composer IS the shared ComposerFrame with v0's box contract",
+    composerEl.type === ComposerFrame && cp.inputId === "platform-ai-question" && cp.maxLength === PLATFORM_AI_COMPOSER_MAX && cp.label === "Ask Platform AI"
+    && cp.describedBy === "platform-ai-privacy-hint platform-ai-conversations-disclosure" && cp.trailing === undefined);
+  (cp.onSubmit as () => void)();
+  check("…its submit is the Platform send (onSubmit passes straight through)", submitted === 1);
+  check("Enter sends; Shift+Enter and an IME-confirming Enter do not (the shared isSendKey)",
+    isSendKey({ key: "Enter", shiftKey: false }) && !isSendKey({ key: "Enter", shiftKey: true }) && !isSendKey({ key: "Enter", shiftKey: false, isComposing: true }) && !isSendKey({ key: "a", shiftKey: false }));
+  const frameSrc = src("components/ai/Composer.tsx");
+  check("…wired in the frame: onKeyDown → isSendKey → preventDefault + onSubmit, enterKeyHint=send",
+    /onKeyDown=\{\(e\) => \{\s*if \(isSendKey\(\{ key: e\.key, shiftKey: e\.shiftKey, isComposing: e\.nativeEvent\.isComposing \}\)\) \{\s*e\.preventDefault\(\);\s*onSubmit\(\);/.test(frameSrc)
+    && /enterkeyhint="send"/i.test(renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false }))));
+  const auto = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false }));
+  check("the box is the auto-growing Atlas Textarea inside the pill (no bare resize-y textarea)", /rounded-\[22px\]/.test(auto) && !/resize-y/.test(auto));
+  const busyComposer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "typing", onChange: noop, onSubmit: noop, disabled: false, busy: true }));
+  check("busy: one disabled send button, never a Stop button",
+    (busyComposer.match(/<button/g) ?? []).length === 1 && /<button type="submit" disabled="" aria-label="Send message" aria-busy="true"/.test(busyComposer) && !/Stop/.test(busyComposer));
+  check("the counter stays beneath the box", /data-platform-ai-counter=""[^>]*>0(<!-- -->)?\/(<!-- -->)?500</.test(auto) && auto.indexOf("data-platform-ai-counter") > auto.indexOf("<textarea"), auto.match(/data-platform-ai-counter[^<]*<[^<]*/)?.[0]);
+
+  // Empty state + starter chips.
+  const empty = view({ selected: null, conversations: [] });
+  check("empty state: a short headline and the starter chips, in the shell's empty layout",
+    /data-ai-layout="empty"/.test(empty) && empty.includes(`>${PLATFORM_AI_STARTER_HEADLINE}</h2>`)
+    && PLATFORM_AI_STARTER_PROMPTS.every((q) => empty.includes(`>${q}</button>`)) && PLATFORM_AI_STARTER_PROMPTS.length >= 3 && PLATFORM_AI_STARTER_PROMPTS.length <= 4);
+  check("starter copy is generic and figure-free (no digits, emails, ids or customer wording)",
+    [PLATFORM_AI_STARTER_HEADLINE, ...PLATFORM_AI_STARTER_PROMPTS].every((t) => !/\d|@|customer|user\b|account number/i.test(t)));
+  const asked: string[] = [];
+  const emptyTree = PlatformAiConversationsView(viewProps({ selected: null, conversations: [], onStarter: (q) => { asked.push(q); } }));
+  const emptyShell = elements(emptyTree).find((e) => e.type === AiShell);
+  const chips = emptyShell ? elements((emptyShell.props as { aside?: unknown }).aside).filter((e) => e.type === SuggestedPrompt) : [];
+  for (const c of chips) (c.props as { onSelect: () => void }).onSelect();
+  check("each chip submits exactly its own text (onStarter → ask → a fresh clientRequestId)",
+    chips.length === PLATFORM_AI_STARTER_PROMPTS.length && asked.join("|") === PLATFORM_AI_STARTER_PROMPTS.join("|"), asked);
+  check("no chips when a new conversation is not allowed (limit reached)", !/data-platform-ai-starters/.test(view({ selected: null, limits: { used: 50, max: 50 } })));
+  check("the empty state is the composer's, not a conversation's: no chips once a thread is open", !/data-platform-ai-starters/.test(conv));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

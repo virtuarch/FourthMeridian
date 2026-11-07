@@ -281,3 +281,21 @@ export function questionBefore(messages: readonly ClientMessage[], assistantInde
 
 /** Per-viewer convenience only (§11): the desktop rail's collapsed state. Never content, never shared. */
 export const RAIL_COLLAPSED_KEY = "fm.platform-ai.rail-collapsed";
+
+// ── Empty state (parity PR3) ────────────────────────────────────────────────
+
+/**
+ * The empty-state headline and starter chips. Static, Platform-owned copy:
+ * generic questions about the kinds of evidence Platform AI reads (jobs,
+ * providers, costs, incidents). No figure, no name, no customer data. A chip
+ * asks exactly its text through the normal send path (a fresh clientRequestId).
+ */
+export const PLATFORM_AI_STARTER_HEADLINE = "What would you like to check?";
+export const PLATFORM_AI_STARTER_PROMPTS: readonly string[] = [
+  "Which jobs failed or ran late recently?",
+  "How are providers performing this week?",
+  "What is driving operating costs this month?",
+  "Are there any open incidents right now?",
+];
+/** Screen-reader label for the in-flight indicator (the three dots). */
+export const PLATFORM_AI_THINKING_LABEL = "Platform AI is answering…";
