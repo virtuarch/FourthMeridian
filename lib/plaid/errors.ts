@@ -14,6 +14,7 @@
  */
 
 import { PlaidItemStatus } from "@prisma/client";
+import { NEEDS_REAUTH_CODES } from "@/lib/plaid/reauth-codes";
 
 // Subset of Plaid error codes we handle explicitly
 const USER_MESSAGES: Record<string, string> = {
@@ -129,9 +130,10 @@ export function plaidErrorSummary(err: unknown): string {
 // parsePlaidError() above: that function's `status` is an HTTP response
 // code for the client, not a health state to persist.
 //
-// NEEDS_REAUTH — credential is dead; Plaid Link re-authentication is the
-// actual fix.
-const NEEDS_REAUTH_CODES = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN"]);
+// NEEDS_REAUTH — the member can fix it: Plaid Link (update mode) is the actual
+// fix. The code list lives in lib/plaid/reauth-codes.ts — the ONE source shared
+// with the webhook receiver, the provider-connection verdict and the member
+// Connections UI. Never re-list the codes here.
 
 // Transient / provider-outage codes — log only, never write PlaidItem.status.
 // Kept out of the ERROR bucket on purpose: today's sync queries only ever
@@ -141,6 +143,10 @@ const NEEDS_REAUTH_CODES = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN
 // docs/initiatives/d2/implementation/D2_STEP7A_CONNECTION_HEALTH_IMPLEMENTATION_CHECKLIST.md
 // §4/§7.
 const TRANSIENT_CODES = new Set([
+  // ITEM_LOCKED stays here, NOT in the update-mode-fixable set: Plaid documents
+  // the fix as the member unlocking the account on the institution's own site
+  // (plaid.com/docs/errors/item/#item_locked), not Link update mode. As a
+  // transient code it never persists ERROR, so it can never lock an item out.
   "ITEM_LOCKED",
   "INSTITUTION_DOWN",
   "INSTITUTION_NOT_RESPONDING",

@@ -47,6 +47,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import { ConnectionTimeline } from "@/components/connections/ConnectionTimeline";
+import { offersReconnect } from "@/lib/connections/connection-summary";
 import { ConnectionDetailTabs } from "@/components/connections/ConnectionDetailTabs";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
@@ -957,7 +958,12 @@ export function ConnectionDetail({ connection, accounts, intelligence, slow }: P
       content = <NeedsReauthContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "error":
-      content = <ErrorContent connection={connection} accounts={accounts} />;
+      // An ERROR item whose code Link update mode fixes gets the SAME Reconnect
+      // content as needs_reauth (lib/plaid/reauth-codes.ts) — otherwise it is a
+      // dead end: no action here, and every sync path selects ACTIVE only.
+      content = offersReconnect(connection)
+        ? <NeedsReauthContent connection={connection} accounts={accounts} intelligence={intelligence} />
+        : <ErrorContent connection={connection} accounts={accounts} />;
       break;
   }
 
