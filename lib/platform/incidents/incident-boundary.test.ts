@@ -71,6 +71,8 @@ const ALL_PRODUCERS = [
   { file: "app/api/investments/opening-position/route.ts",   enveloped: false },
   { file: "app/api/imports/[id]/rollback/route.ts",          enveloped: false },
   { file: "lib/crypto/btc-sync.ts",                          enveloped: false },
+  // Plaid item-level error incident (stage plaid-item-error) — the health chokepoint.
+  { file: "lib/connections/health-transitions.ts",           enveloped: false },
 ] as const;
 
 /**
