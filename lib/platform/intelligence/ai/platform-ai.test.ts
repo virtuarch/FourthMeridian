@@ -49,7 +49,7 @@ import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
   MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS,
-  labelPlaceholdersFor, renderLabel, NO_RANKED_CATEGORY, periodMismatchCount, periodContract, quotableWindowPhrase, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
+  labelPlaceholdersFor, renderLabel, NO_RANKED_CATEGORY, periodMismatchCount, periodContract, quotableWindowPhrase, labelRepeatCount, windowRepeatCount, WINDOW_REPEAT_REACH, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 import { neutraliseBraces } from "./conversations/history";
@@ -1438,6 +1438,49 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   const replayed = neutraliseBraces("see {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}");
   check("B11: neutraliseBraces leaves no placeholder-shaped {{l:}} / {{m:}} (nothing resolves: 0 claims)",
     !/[{}]/.test(replayed) && lr(replayed).summary.claims === 0 && lr(replayed).summary.resolved === 0, replayed);
+
+  // ── S2 2026-11-08: prompt lines + label_repeat / window_repeat (counts only, no rewrite) ──
+  check("S2 2026-11-08: the prompt carries the three ruled lines verbatim (period, ranked label, window)",
+    PLATFORM_AI_SYSTEM_PROMPT.includes("If asked_period_available is false, never name the asked period; describe the time with window_phrase.")
+    && PLATFORM_AI_SYSTEM_PROMPT.includes("Name the ranked category once, using its ranking label placeholder; never also use that category's own label placeholder in the same sentence.")
+    && PLATFORM_AI_SYSTEM_PROMPT.includes("A {{m:…}} figure already states its window; use window_phrase only in a sentence that has no figure, never right after a figure."));
+  const Bobs = await turnWith(["economics-operating-cost"],
+    (ph, lph) => `The largest cost is from ${lph(OP, "largestMeasuredCategory")} for ${lph(OP, "providersUsd")}, amounting to ${ph(OP, "largestMeasuredCategory")} so far this month (since 2026-11-01).`);
+  const bObsT = segmentsText(Bobs.result.answer);
+  check("label_repeat + window_repeat: the observed Q-B answer ⇒ labelRepeat 1, windowRepeat 1 in grounding and trace (counts only)",
+    Bobs.result.grounding.labelRepeat === 1 && Bobs.result.grounding.windowRepeat === 1
+    && traceLine(Bobs.result).endsWith("label_repeat=1 window_repeat=1") && !/Plaid|this month|2026/.test(traceLine(Bobs.result)), [Bobs.result.grounding, traceLine(Bobs.result)]);
+  check("…no rewrite, no verdict change: the label still reads twice, the phrase is still quoted, verdict RESOLVED",
+    Bobs.result.grounding.verdict === "RESOLVED" && !Bobs.result.grounding.replaced && (bObsT.match(/Providers \(Plaid\)/g) ?? []).length === 2
+    && bObsT.endsWith("so far this month (since 2026-11-01)."), bObsT);
+  const hB = await handlePlatformAiAsk({ question: Q_B }, askDeps({ binding: good, generate: copying(["economics-operating-cost"],
+    (ph, lph) => `The largest cost is from ${lph(OP, "largestMeasuredCategory")} for ${lph(OP, "providersUsd")}, amounting to ${ph(OP, "largestMeasuredCategory")} so far this month (since 2026-11-01).`) }));
+  check("…the HTTP body's grounding carries labelRepeat / windowRepeat (counts)",
+    hB.status === 200 && (hB.body.grounding as { labelRepeat?: number }).labelRepeat === 1 && (hB.body.grounding as { windowRepeat?: number }).windowRepeat === 1, hB.body.grounding);
+  const cleanB = await turnWith(["economics-operating-cost"],
+    (ph, lph) => `So far this month (since 2026-11-01), the largest cost is ${lph(OP, "largestMeasuredCategory")}. ${lph(OP, "providersUsd")} is ${ph(OP, "largestMeasuredCategory")}.`);
+  check("label_repeat negative: the same label in DIFFERENT sentences, and a phrase BEFORE the figure ⇒ neither field, no trace flag",
+    cleanB.result.grounding.labelRepeat === undefined && cleanB.result.grounding.windowRepeat === undefined && !/label_repeat|window_repeat/.test(traceLine(cleanB.result)), [cleanB.result.grounding, traceLine(cleanB.result)]);
+  const diffLabels = lr("{{l:economics-operating-cost@1|part=largestMeasuredCategory}} and {{l:economics-operating-cost@1|part=aiUsd}} and {{l:economics-operating-cost@1}}.");
+  const ownText = lr("Providers (Plaid) leads: {{l:economics-operating-cost@1|part=largestMeasuredCategory}}. Providers (Plaid) again.");
+  const sameSentence = lr("{{l:economics-operating-cost@1|part=largestMeasuredCategory}}, that is {{l:economics-operating-cost@1|part=providersUsd}}, at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}. Then {{l:economics-operating-cost@1|part=aiUsd}} and {{l:economics-operating-cost@1|part=aiUsd}}!");
+  check("label_repeat: different labels in one sentence ⇒ 0; model-written text equal to a label ⇒ 0; two sentences each repeating ⇒ 2 (a figure's \"$x.yz\" never ends a sentence)",
+    diffLabels.labelRepeat === 0 && ownText.labelRepeat === 0 && sameSentence.labelRepeat === 2, [diffLabels.labelRepeat, ownText.labelRepeat, sameSentence.labelRepeat]);
+  const PH = "so far this month (since 2026-11-01)";
+  const span = (start: number, end: number, windowPhrase: string | null = PH) => ({ start, end, kind: "figure" as const, text: "", windowPhrase });
+  const at = (gap: number) => `${"F".repeat(10)}${" ".repeat(gap)}${PH}.`;
+  check(`pure windowRepeatCount: threshold — a phrase starting ${WINDOW_REPEAT_REACH} chars after a figure counts, ${WINDOW_REPEAT_REACH + 1} does not`,
+    WINDOW_REPEAT_REACH === 80 && windowRepeatCount(at(80), [span(0, 10)], [PH]) === 1 && windowRepeatCount(at(81), [span(0, 10)], [PH]) === 0 && windowRepeatCount(at(1), [span(0, 10)], [PH]) === 1);
+  check("…negatives: phrase before the figure; figure carries ANOTHER window / no window; phrase not from this turn; phrase inside a server span",
+    windowRepeatCount(`${PH} ${"F".repeat(10)}`, [span(PH.length + 1, PH.length + 11)], [PH]) === 0
+    && windowRepeatCount(at(1), [span(0, 10, "in the last 30 days")], [PH]) === 0 && windowRepeatCount(at(1), [span(0, 10, null)], [PH]) === 0
+    && windowRepeatCount(at(1), [span(0, 10)], ["in the last 30 days"]) === 0
+    && windowRepeatCount(`FFFFFFFFFF ${PH}`, [span(0, 10), { start: 11, end: 11 + PH.length, kind: "label", text: PH, windowPhrase: null }], [PH]) === 0);
+  check("…case-insensitive, one count per quoted occurrence even after two figures",
+    windowRepeatCount(`FFFFFFFFFF GG So Far This Month (since 2026-11-01).`, [span(0, 10), span(11, 13)], [PH]) === 1);
+  check("pure labelRepeatCount: only {{l:}} spans count (two FIGURES with equal text ⇒ 0)",
+    labelRepeatCount("AAA AAA.", [{ start: 0, end: 3, kind: "figure", text: "AAA", windowPhrase: null }, { start: 4, end: 7, kind: "figure", text: "AAA", windowPhrase: null }]) === 0
+    && labelRepeatCount("AAA AAA.", [{ start: 0, end: 3, kind: "label", text: "AAA", windowPhrase: null }, { start: 4, end: 7, kind: "label", text: "AAA", windowPhrase: null }]) === 1);
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────
