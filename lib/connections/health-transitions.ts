@@ -33,7 +33,7 @@
  *   { provider, plaidItemId | connectionId, from, to, errorCode }
  */
 
-import { db, systemDb } from "@/lib/db";
+import { db } from "@/lib/db";
 import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
 import { PlaidItemStatus, ConnectionStatus, type Prisma } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
@@ -172,9 +172,13 @@ async function recordItemErrorIncident(
   seam?: (input: SyncIssueInput) => Promise<void>,
 ): Promise<void> {
   try {
-    const record = seam ?? ((client === db || client === systemDb)
-      ? async (input: SyncIssueInput) => (await import("@/lib/plaid/syncIssues")).recordSyncIssue(input)
-      : null);
+    let record = seam ?? null;
+    if (!record) {
+      const issues = await import("@/lib/plaid/syncIssues");
+      // The global client, or the SYSTEM client (the webhook path) — asked of
+      // the facade, which owns that authority (audit-db-authority).
+      if (client === db || issues.isSystemIncidentClient(client)) record = (input) => issues.recordSyncIssue(input);
+    }
     if (!record) return;
     await record({
       kind:        "UPSERT_ERROR",

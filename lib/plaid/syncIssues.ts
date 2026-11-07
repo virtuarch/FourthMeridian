@@ -46,6 +46,16 @@ export function ambientRunId(): string | null {
   return ledger && ledger.closed !== true && typeof ledger.runId === "string" ? ledger.runId : null;
 }
 
+/**
+ * True when `client` IS the system authority this facade writes through. For a
+ * caller that holds a client of its own (lib/connections/health-transitions.ts)
+ * and must record only when that client is a real root client — never an
+ * injected test fake — without importing `systemDb` itself.
+ */
+export function isSystemIncidentClient(client: unknown): boolean {
+  return client === systemDb;
+}
+
 export interface SyncIssueInput {
   kind:                SyncIssueKind;
   /** OPS-2D-5A-2 — non-Plaid producers (WALLET) name their provider. */
