@@ -48,9 +48,11 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS,
+  labelPlaceholdersFor, renderLabel, NO_RANKED_CATEGORY, periodMismatchCount, periodContract, quotableWindowPhrase, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
+import { neutraliseBraces } from "./conversations/history";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -847,16 +849,16 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   const v0t = segmentsText(v0.result.answer);
   check("OWNER \"…in the past 30 days\" (S2 (d)): the answer is KEPT, the figure states its own 24 h window, and ONE server note says it is not the 30 days asked",
     v0.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !v0.result.grounding.replaced
-    && v0t === "Over the past 30 days, AI spend was about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", v0t);
+    && v0t === "Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about. Over the past 30 days, AI spend was about $12.50 (in the last 24 hours, estimated).", v0t);
   check("…the chip shows the rendered figure (nothing substituted: never another window's figure)", JSON.stringify(v0.result.citations.map((c) => c.figures)) === JSON.stringify([["about $12.50 (in the last 24 hours, estimated)"]]), v0.result.citations);
   const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1|part=pricedUsd}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
   // Changed by S2 option (a) (2026-11-04): a window on a FIXED-window metric is ignored, so the metric's OWN 24 h figure is
   // read and rendered with its own window, and the note states the mismatch. Before (a) the read was refused (UNAVAILABLE).
   check("…a window the metric does not take (get_metric window=30 on a fixed 24 h metric) ⇒ ignored: its OWN 24 h figure, stated as such, plus the note — never another window's figure",
     forced.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && forced.result.trace[0]?.windowIgnored === true
-    && segmentsText(forced.result.answer) === "Over the past 30 days: about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", segmentsText(forced.result.answer));
+    && segmentsText(forced.result.answer) === "Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about. Over the past 30 days: about $12.50 (in the last 24 hours, estimated).", segmentsText(forced.result.answer));
   check("trace: the verdict is an ENUM code and admitted a COUNT (no text, no value)",
-    traceLine(v0.result).endsWith("admitted=1 verdict=RESOLVED_WITH_WINDOW_NOTE") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
+    traceLine(v0.result).endsWith("admitted=1 verdict=RESOLVED_WITH_WINDOW_NOTE period_mismatch=1") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
 }
 
 // ── 4d. window resolution (S2 ruling 2026-11-04) + owner cost-question replays ──
@@ -949,9 +951,9 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const ct = txt(cycleAsked);
   check("asked 30 days + a billing-cycle metric ⇒ answer KEPT (RESOLVED_WITH_WINDOW_NOTE), the cycle stated inline, ONE note",
     !cycleAsked.result.grounding.replaced && cycleAsked.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
-    && /^AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(ct)
+    && /^Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\. AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(ct)
     && notes(ct) === 1, ct);
-  check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE") && !/billing|Note/.test(traceLine(cycleAsked.result)));
+  check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE period_mismatch=0") && !/billing|Note/.test(traceLine(cycleAsked.result)));
   const thirtyAsked = await turn(q30, [[gm("economics-ai-cost")]], "Estimated AI spend in the past 30 days: {{m:economics-ai-cost@1|part=spendUsd}}.");
   check("asked 30 days + a 30-day metric ⇒ no note (RESOLVED)", thirtyAsked.result.grounding.verdict === "RESOLVED" && notes(txt(thirtyAsked)) === 0 && /\(in the last 30 days, estimated\)\.$/.test(txt(thirtyAsked)), txt(thirtyAsked));
   const noneMatch = await turn(q30, [[gm("economics-operating-cost"), gm("ai-fleet-spend-status")]], "Cycle total {{m:economics-operating-cost@1|part=totalUsd}}; fleet spend {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
@@ -1207,7 +1209,7 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
   const fxT = segmentsText(fx.result.answer);
   check("FIXED-window + window arg ⇒ the REAL read (PARTIAL, no UNAVAILABLE), the figure states its own window, and the window NOTE states the mismatch",
     fx.result.trace[0]?.outcome === "PARTIAL" && fx.result.trace[0]?.windowIgnored === true && fx.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
-    && /^Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(fxT), fxT);
+    && /^Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\. Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(fxT), fxT);
   check("…traceLine flags it (+windowIgnored, a flag — never the value the model sent)",
     traceLine(fx.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored ") && !/=30\b|window=/.test(traceLine(fx.result).split(" ")[0]), traceLine(fx.result));
   const fxTool = JSON.parse((fx.transcript.find((m) => (m as { role: string }).role === "tool") as { content: string }).content) as MetricEnvelope;
@@ -1272,7 +1274,7 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   const Q_B = "What's costing me the most money?";
   const MIX = "These figures cover different periods (this UTC calendar month to date vs. the last 30 days) and are not directly comparable.";
   /** A model that reads `ids` and composes its answer by COPYING the placeholders it was handed. */
-  const copying = (ids: string[], compose: (ph: (metric: string, part: string) => string) => string): PlatformAiGenerate => {
+  const copying = (ids: string[], compose: (ph: (metric: string, part: string) => string, lph: (metric: string, part?: string) => string) => string): PlatformAiGenerate => {
     let i = 0;
     return async ({ messages }) => {
       const u = { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 };
@@ -1282,7 +1284,8 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
       }
       const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
       const ph = (metric: string, part: string) => { const r = seen.find((x) => x.metric === metric); return r.placeholders?.[part] ?? r.placeholder; };
-      const content = compose(ph);
+      const lph = (metric: string, part?: string) => { const r = seen.find((x) => x.metric === metric); return part ? r.labelPlaceholders?.[part] : r.labelPlaceholder; };
+      const content = compose(ph, lph);
       return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
     };
   };
@@ -1290,7 +1293,7 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   const OP = "economics-operating-cost@1", AI = "economics-ai-cost@1", PV = "economics-provider-cost@1";
 
   const B = await turnWith(["economics-operating-cost", "economics-ai-cost"],
-    (ph) => `The largest measured cost is ${ph(OP, "largestMeasuredCategory")}. Estimated AI spend is ${ph(AI, "spendUsd")}.`);
+    (ph, lph) => `The largest measured cost is ${lph(OP, "largestMeasuredCategory")}, ${ph(OP, "largestMeasuredCategory")}. Estimated AI spend is ${ph(AI, "spendUsd")}.`);
   const bT = segmentsText(B.result.answer);
   const opEnv = B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === OP) as MetricEnvelope & { placeholders: Record<string, string> };
   const ranked = (opEnv.value as Record<string, unknown>).largestMeasuredCategory as { label: string; figure: number; window: string; qualifier: string };
@@ -1301,13 +1304,14 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   check("…the server computed Providers (Plaid) — the largest MEASURED category (Plaid ≫ AI), never the total",
     ranked.label === "Providers (Plaid)" && ranked.figure === vals.providersUsd && vals.providersUsd > vals.aiUsd && ranked.figure !== vals.totalUsd && vals.infrastructureUsd === null, opEnv.value);
   check("OWNER B replay: answer KEPT (RESOLVED), both placeholders resolved",
-    !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 2, resolved: 2, unresolved: 0, admitted: 0 }), { g: B.result.grounding, c: B.result.claims, t: bT });
+    !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 3, resolved: 3, unresolved: 0, admitted: 0 }), { g: B.result.grounding, c: B.result.claims, t: bT });
   const providerFig = renderPlaceholder(opEnv, "providersUsd")!;
-  check("…the ranking renders label + the category's OWN figure wording (status, window, estimated) + the fixed qualifier — all server text",
+  check("…{{l:…|part=ranking}} names the ranked category and {{m:…|part=ranking}} renders the category's OWN figure wording (status, window, estimated) + the fixed qualifier — all server text (S2 F-C2)",
     bT === `The largest measured cost is Providers (Plaid), ${providerFig}; ranking among measured categories; some categories are incomplete. Estimated AI spend is ${renderPlaceholder(B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === AI), "spendUsd")}.`
     && /^at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)$/.test(providerFig), bT);
-  check("…the rendered figure span is typed as an operating-cost figure (stored answers keep it as a figure, B11)",
-    B.record.typed.some((x) => x.kind === "figure" && x.metric === OP && x.text.startsWith("Providers (Plaid), at least $")), B.record.typed);
+  check("…the rendered figure span is typed as an operating-cost figure (figure only); the label is stored as text (B11)",
+    B.record.typed.some((x) => x.kind === "figure" && x.metric === OP && x.text.startsWith("at least $"))
+    && B.record.typed.some((x) => x.kind === "text" && x.text.includes("Providers (Plaid)")) && !B.record.typed.some((x) => x.kind === "figure" && x.text.includes("Providers")), B.record.typed);
   check("…the cited figures cover two windows (cycle MTD + 30 d) ⇒ exactly ONE window-mixing note, code-written", B.result.notes.filter((n) => n === MIX).length === 1 && B.result.notes.filter((n) => /different periods/.test(n)).length === 1, B.result.notes);
 
   // Window mixing (S2 ruling 2026-11-05): decided from the PLACED envelopes, never prose.
@@ -1334,7 +1338,106 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   const undeclared = { ...opEnv, partRoles: null } as unknown as MetricEnvelope;
   check("a ranked object under a part NOT declared \"ranking\" is unresolvable (null — the fallback)", renderPlaceholder(undeclared, "largestMeasuredCategory") === null);
   const measured = { ...opEnv, status: "MEASURED", basis: { ...opEnv.basis, kind: "measured" }, window: { ...opEnv.window, start: null }, value: { ...vals, largestMeasuredCategory: { ...ranked, qualifier: null } } } as unknown as MetricEnvelope;
-  check("…a complete ranking (no qualifier) renders label + figure only", /^Providers \(Plaid\), \$[\d,.]+ \(this UTC calendar month to date\)$/.test(renderPlaceholder(measured, "largestMeasuredCategory") ?? ""), renderPlaceholder(measured, "largestMeasuredCategory"));
+  check("…a complete ranking (no qualifier) renders the figure only (S2 F-C2: the name is {{l:…}})", /^\$[\d,.]+ \(this UTC calendar month to date\)$/.test(renderPlaceholder(measured, "largestMeasuredCategory") ?? ""), renderPlaceholder(measured, "largestMeasuredCategory"));
+
+  // ── S2 F-C1 / F-C2 (2026-11-07): owner Question C ──────────────────────────
+  const Q_C = "What's costing me the most money in the past 30 days?";
+  const NOTE_C = "Note: Estimated operating cost this cycle (by category) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about.";
+  const toolResults = (t: { transcript: unknown[] }) => t.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
+
+  // F-C1 contract: the model is handed the TRUE window as a quotable phrase, and whether the asked period is offered.
+  const C = await turnWith([OP, AI].map((k) => k.split("@")[0]),
+    (ph, lph) => `In the past 30 days, the largest cost category is ${lph(OP, "largestMeasuredCategory")} with a figure of ${ph(OP, "largestMeasuredCategory")}; estimated AI spend is ${ph(AI, "spendUsd")}.`, Q_C);
+  const cOp = toolResults(C).find((x) => x.metric === OP), cAi = toolResults(C).find((x) => x.metric === AI);
+  check("F-C1 contract: the cycle metric's tool result carries window_phrase \"so far this month (since 2026-11-01)\" and asked_period_available false",
+    cOp?.window_phrase === "so far this month (since 2026-11-01)" && cOp?.asked_period_available === false && !("asked_period_window" in cOp), { w: cOp?.window_phrase, a: cOp?.asked_period_available });
+  check("…a 30-day read asked about 30 days ⇒ asked_period_available true, its phrase is the envelope label",
+    cAi?.window_phrase === "in the last 30 days" && cAi?.asked_period_available === true && !("asked_period_window" in cAi), { w: cAi?.window_phrase, a: cAi?.asked_period_available });
+  const noAsk = await turnWith(["economics-operating-cost"], (ph) => `${ph(OP, "totalUsd")}.`);
+  const noAskOp = toolResults(noAsk).find((x) => x.metric === OP);
+  check("…no period in the question ⇒ window_phrase only (no asked_period_available)", noAskOp?.window_phrase === "so far this month (since 2026-11-01)" && !("asked_period_available" in noAskOp), noAskOp);
+  const aiDef = METRICS.find((m) => metricKey(m) === AI)!;
+  const ai7 = { ...cAi, window: { ...cAi.window, days: 7, label: "in the last 7 days" } } as MetricEnvelope;
+  check("pure periodContract: a 7-day read of a metric that OFFERS 30 ⇒ available, asked_period_window 30; not offered ⇒ false; none asked ⇒ no field",
+    JSON.stringify(periodContract(ai7, aiDef, [{ hours: 720 }])) === JSON.stringify({ window_phrase: "in the last 7 days", asked_period_available: true, asked_period_window: 30 })
+    && JSON.stringify(periodContract(ai7, aiDef, [{ hours: 24 * 14 }])) === JSON.stringify({ window_phrase: "in the last 7 days", asked_period_available: false })
+    && JSON.stringify(periodContract(ai7, aiDef, [])) === JSON.stringify({ window_phrase: "in the last 7 days" }));
+  check("pure quotableWindowPhrase: cycle without a start ⇒ \"so far this month\"; a point in time ⇒ \"right now\"",
+    quotableWindowPhrase({ ...cOp, window: { ...cOp.window, start: null } } as MetricEnvelope) === "so far this month"
+    && quotableWindowPhrase({ ...cOp, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null } } as MetricEnvelope) === "right now");
+  const quoted = await turnWith(["economics-operating-cost"], (ph) => `In the last 30 days, nothing; so far this month (since 2026-11-01) operating cost is ${ph(OP, "totalUsd")}.`, Q_C);
+  const quoted7 = await turnWith(["economics-ai-cost"], (ph) => `Over the last 7 days: ${ph(AI, "spendUsd")}.`);
+  check("…a quoted window_phrase is server text: its digits are allowlisted (no UNGROUNDED_DIGIT); other digits still are not",
+    !quoted.result.grounding.replaced && quoted7.result.grounding.verdict === "UNGROUNDED_DIGIT", [quoted.result.grounding, quoted7.result.grounding]);
+
+  // F-C1 (b): the note is PREPENDED (code-written), the model's prose kept verbatim after it.
+  const cT = segmentsText(C.result.answer);
+  check("F-C1 (b): the window note comes FIRST — answer[0] and typed[0] are the server note, then the model's prose unchanged",
+    C.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !C.result.grounding.replaced
+    && C.result.answer[0]?.kind === "text" && C.result.answer[0].text === `${NOTE_C} ` && C.record.typed[0]?.kind === "text" && (C.record.typed[0] as { text: string }).text === `${NOTE_C} `
+    && cT.startsWith(`${NOTE_C} In the past 30 days, the largest cost category is Providers (Plaid) with a figure of at least $`), cT);
+
+  // F-C2: no duplicated label in the simulated Q-C answer.
+  check("F-C2: the simulated Q-C answer names Providers (Plaid) exactly ONCE ({{l:}} = the name, {{m:}} = the figure + qualifier)",
+    (cT.match(/Providers \(Plaid\)/g) ?? []).length === 1 && /with a figure of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\); ranking among measured categories; some categories are incomplete; /.test(cT), cT);
+  const typedOwn = await turnWith(["economics-operating-cost"], (ph) => `The largest cost category is Providers (Plaid) with a figure of ${ph(OP, "largestMeasuredCategory")}.`);
+  check("…even when the model types the name itself (the observed Q-C prose), the name appears once (the figure no longer carries it)",
+    (segmentsText(typedOwn.result.answer).match(/Providers \(Plaid\)/g) ?? []).length === 1 && !typedOwn.result.grounding.replaced, segmentsText(typedOwn.result.answer));
+
+  // F-C1 (c): period_mismatch — counts only, trace + HTTP grounding, no rewrite, no verdict change.
+  check("F-C1 (c): \"In the past 30 days\" over a month-to-date figure ⇒ grounding.periodMismatch 1, trace period_mismatch=1 (a count: no phrase, no value)",
+    C.result.grounding.periodMismatch === 1 && traceLine(C.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE period_mismatch=1") && !/past|30 days|Plaid/.test(traceLine(C.result)), traceLine(C.result));
+  const cleanC = await turnWith(["economics-operating-cost"], (ph, lph) => `So far this month, the largest is ${lph(OP, "largestMeasuredCategory")} at ${ph(OP, "largestMeasuredCategory")}.`, Q_C);
+  check("…a lead that states the TRUE window (\"so far this month\") ⇒ the note still fires, period_mismatch=0, verdict unchanged",
+    cleanC.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && cleanC.result.grounding.periodMismatch === 0 && traceLine(cleanC.result).endsWith("period_mismatch=0"), traceLine(cleanC.result));
+  const noNote = await turnWith(["economics-ai-cost"], (ph) => `In the past 30 days, AI spend is ${ph(AI, "spendUsd")}.`, Q_C);
+  check("…NO note (the cited 30-day window IS the asked period) ⇒ no periodMismatch and no trace flag",
+    noNote.result.grounding.verdict === "RESOLVED" && noNote.result.grounding.periodMismatch === undefined && !/period_mismatch/.test(traceLine(noNote.result)), traceLine(noNote.result));
+  const A30 = [{ hours: 720 }];
+  check("pure periodMismatchCount: asked-period phrases (past/last N, N-unit, number words, last month ≈ 30 days) are counted",
+    periodMismatchCount("In the past 30 days", A30) === 1 && periodMismatchCount("over 30 days, last month, the last thirty days, the trailing 30-day", A30) === 4
+    && periodMismatchCount("the past year", [{ hours: 8760 }]) === 1 && periodMismatchCount("in the last 7 days", [{ hours: 168 }]) === 1);
+  check("…negatives: other periods, calendar to-date phrases (so far this month, this year), no period phrase",
+    periodMismatchCount("in the last 7 days, the past year", A30) === 0 && periodMismatchCount("so far this month, this month, this year, month to date", A30) === 0
+    && periodMismatchCount("The largest category is AI.", A30) === 0 && periodMismatchCount("In the past 30 days", []) === 0);
+  const hC = await handlePlatformAiAsk({ question: Q_C }, askDeps({ binding: good, generate: copying(["economics-operating-cost"], (ph, lph) => `In the past 30 days, ${lph(OP, "largestMeasuredCategory")} cost ${ph(OP, "largestMeasuredCategory")}.`) }));
+  check("…the HTTP body's grounding carries periodMismatch (a count) like digitBy", hC.status === 200 && (hC.body.grounding as { periodMismatch?: number }).periodMismatch === 1, hC.body.grounding);
+
+  // F-C2: {{l:}} rendering and its unresolved / malformed handling (exactly like {{m:}}).
+  const lp = labelPlaceholdersFor(cOp as MetricEnvelope);
+  check("labelPlaceholdersFor: the metric label + one per category / ranking part (never the total), server-built",
+    lp.labelPlaceholder === "{{l:economics-operating-cost@1}}" && JSON.stringify(Object.keys(lp.labelPlaceholders ?? {}).sort()) === JSON.stringify(["aiUsd", "infrastructureUsd", "largestMeasuredCategory", "providersUsd"])
+    && lp.labelPlaceholders?.largestMeasuredCategory === "{{l:economics-operating-cost@1|part=largestMeasuredCategory}}"
+    && cOp.labelPlaceholder === lp.labelPlaceholder && cAi.labelPlaceholder === "{{l:economics-ai-cost@1|window=30}}" && !("labelPlaceholders" in cAi), { lp, ai: cAi.labelPlaceholder });
+  const opLabel = METRICS.find((m) => metricKey(m) === OP)!.label;
+  check("pure renderLabel: no part ⇒ the metric label; ranking ⇒ the ranked category; category ⇒ its declared label; total ⇒ the metric label; other / unknown part ⇒ null",
+    renderLabel(cOp, null, opLabel) === opLabel && renderLabel(cOp, "largestMeasuredCategory", opLabel) === "Providers (Plaid)"
+    && renderLabel(cOp, "aiUsd", opLabel) === "AI" && renderLabel(cOp, "infrastructureUsd", opLabel) === "Infrastructure" && renderLabel(cOp, "totalUsd", opLabel) === opLabel
+    && renderLabel(cOp, "nope", opLabel) === null && renderLabel(cAi, "spendUsd", "x") === null);
+  check("…a ranking with no measured category / an UNAVAILABLE envelope ⇒ \"no measured category\" (never a category, never the total)",
+    renderLabel({ ...cOp, value: { ...cOp.value, largestMeasuredCategory: null } } as MetricEnvelope, "largestMeasuredCategory", opLabel) === NO_RANKED_CATEGORY
+    && renderLabel({ ...cOp, status: "UNAVAILABLE", value: null } as MetricEnvelope, "largestMeasuredCategory", opLabel) === NO_RANKED_CATEGORY);
+  const lr = (text: string) => resolvePlaceholders([{ kind: "text", text }], [cOp as MetricEnvelope], new Set());
+  const unknownL = lr("{{l:no-such-metric@1}} is {{m:economics-operating-cost@1|part=totalUsd}}.");
+  const unreadL = lr("{{l:economics-ai-cost@1}}.");
+  const badPartL = lr("{{l:economics-operating-cost@1|part=nope}}.");
+  const malL = lr("{{l:Providers Plaid}} and {{l:economics-operating-cost@1|bogus=1}}.");
+  check("{{l:}} with an unknown key / unread key / unknown part ⇒ UNRESOLVED (UNKNOWN_KEY / NOT_READ / UNKNOWN_PART) — never model text",
+    unknownL.summary.verdict === "UNRESOLVED_PLACEHOLDER" && unknownL.unresolvedBy.UNKNOWN_KEY === 1
+    && unreadL.summary.verdict === "UNRESOLVED_PLACEHOLDER" && unreadL.unresolvedBy.NOT_READ === 1
+    && badPartL.summary.verdict === "UNRESOLVED_PLACEHOLDER" && badPartL.unresolvedBy.UNKNOWN_PART === 1, [unknownL.unresolvedBy, unreadL.unresolvedBy, badPartL.unresolvedBy]);
+  check("…a malformed {{l:}} ⇒ MALFORMED_PLACEHOLDER (NOT_A_KEY, BAD_OPTION)", malL.summary.verdict === "MALFORMED_PLACEHOLDER" && malL.malformedBy.NOT_A_KEY === 1 && malL.malformedBy.BAD_OPTION === 1, malL.malformedBy);
+  const unknownTurn = await turnWith(["economics-operating-cost"], (ph) => `{{l:no-such-metric@1}} is ${ph(OP, "totalUsd")}.`, Q_C);
+  check("…in a turn: an unknown {{l:}} key ⇒ the answer is REPLACED by the fallback (no window note, no period flag)",
+    unknownTurn.result.grounding.replaced && segmentsText(unknownTurn.result.answer).startsWith(UNVERIFIED_FALLBACK) && unknownTurn.result.grounding.periodMismatch === undefined, segmentsText(unknownTurn.result.answer));
+  const labelDigits = lr("{{l:economics-operating-cost@1}}: {{m:economics-operating-cost@1|part=totalUsd}}.");
+  check("…a {{l:}} is not a unit-checked figure and its server text never counts as a leftover digit; it is a claim (resolved)",
+    labelDigits.summary.verdict === "RESOLVED" && labelDigits.summary.claims === 2 && labelDigits.summary.resolved === 2 && labelDigits.figures.get(OP)?.length === 1, labelDigits.summary);
+
+  // B11: stored history neutralises {{l:}} exactly like {{m:}} — a replayed one cannot ground.
+  const replayed = neutraliseBraces("see {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}");
+  check("B11: neutraliseBraces leaves no placeholder-shaped {{l:}} / {{m:}} (nothing resolves: 0 claims)",
+    !/[{}]/.test(replayed) && lr(replayed).summary.claims === 0 && lr(replayed).summary.resolved === 0, replayed);
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────
@@ -1516,8 +1619,9 @@ console.log("\n7. prompt injection — no write tools exist; no image exfil");
     PLATFORM_AI_SYSTEM_PROMPT.includes("The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns."));
   const lmDesc = (platformAiToolSchemas([]) as { function: { name: string; description: string } }[]).find((x) => x.function.name === "list_metrics")!.function.description;
   check("…and list_metrics names largestMeasuredCategory for 'most' / 'largest' questions", /largestMeasuredCategory/.test(lmDesc) && /never a category/.test(lmDesc), lmDesc);
-  check("S2 2026-11-05: the prompt forbids mentioning placeholders and repeating a ranked figure's category",
-    /Never mention placeholders\. A ranked figure already names its category, so do not repeat the category name before it\./.test(PLATFORM_AI_SYSTEM_PROMPT));
+  check("S2 2026-11-05 / F-C2: the prompt forbids mentioning placeholders and typing a figure's name ({{l:…}} names it)",
+    /Never mention placeholders\. \{\{m:…\}\} renders a figure only, never a name, and you never type a name for one: copy "labelPlaceholder"/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /\{\{l:<metric>\|part=<name>\|window=<days>\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT));
   {
     const { mechanismLeakCount } = await import("./core");
     check("mechanismLeakCount: whole word, case-insensitive, plural too; not inside another word",

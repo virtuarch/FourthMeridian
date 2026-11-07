@@ -217,6 +217,12 @@ export interface MetricEnvelope {
   unwindowedParts: UnwindowedParts | null;
   /** Each part's role (PartRole: total / category / ranking); null = not declared (S2 ruling 2026-11-05). */
   partRoles: Readonly<Record<string, PartRole>> | null;
+  /**
+   * Each CATEGORY part's server label (the declaration's `label`, e.g. "Providers (Plaid)");
+   * null / absent = no category parts declared. What Platform AI's {{l:<key>|part=<category>}}
+   * renders (S2 F-C2, 2026-11-07) — never model text.
+   */
+  partLabels?: Readonly<Record<string, string>> | null;
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
@@ -747,6 +753,12 @@ export const rankingPartsOf = (parts: PartDeclarations | undefined): string[] =>
 const partRolesOf = (parts: PartDeclarations | undefined): Readonly<Record<string, PartRole>> | null =>
   parts ? Object.fromEntries(Object.entries(parts).map(([k, d]) => [k, d.role])) : null;
 
+/** The category parts' server labels (null when the metric declares no category part). */
+const partLabelsOf = (parts: PartDeclarations | undefined): Readonly<Record<string, string>> | null => {
+  const cats = Object.entries(parts ?? {}).flatMap(([k, d]) => (d.role === "category" ? [[k, d.label] as const] : []));
+  return cats.length > 0 ? Object.fromEntries(cats) : null;
+};
+
 // ── Retrieval ────────────────────────────────────────────────────────────────
 
 const iso = (d: Date | string | null | undefined): string | null =>
@@ -837,6 +849,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     estimatedParts,
     unwindowedParts,
     partRoles: partRolesOf(parts),
+    partLabels: partLabelsOf(parts),
     value,
     status,
     reason,
