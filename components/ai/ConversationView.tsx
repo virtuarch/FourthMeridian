@@ -15,7 +15,7 @@
  * first line instead of its last.
  */
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { AiMark } from "@/components/ai/AiMark";
 import { MessageCard } from "@/components/ai/MessageCard";
 import { AnswerCard } from "@/components/ai/AnswerCard";
@@ -48,24 +48,74 @@ function scrollToTurn(el: HTMLElement | null, align: "start" | "end"): void {
   container.scrollTo({ top, behavior });
 }
 
-export function ConversationView({ messages, busy, renderExtras, onRetry, announceFailureIndex = null }: ConversationViewProps) {
+/** The in-flight indicator: a pulsing AI mark and three dots, announced as a status. */
+export function ThinkingIndicator({ srLabel = "Fourth Meridian AI is thinking…" }: { srLabel?: string }) {
+  return (
+    <div role="status" className="ai-turn-enter flex gap-3">
+      <div className="pt-1.5 shrink-0"><AiMark className="animate-pulse" /></div>
+      <div aria-hidden className="flex gap-1.5 items-center h-6">
+        <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "0ms", background: "var(--text-muted)" }} />
+        <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "150ms", background: "var(--text-muted)" }} />
+        <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "300ms", background: "var(--text-muted)" }} />
+      </div>
+      <span className="sr-only">{srLabel}</span>
+    </div>
+  );
+}
+
+export interface ConversationLogProps {
+  /** The rendered turns. */
+  children: ReactNode;
+  /** Changes whenever the turn list changes; re-runs the auto-scroll. */
+  scrollKey: unknown;
+  /** Number of turns; nothing scrolls when there are none. */
+  turnCount: number;
+  /** The newest turn is a settled answer: bring `anchorRef` (its question) to the top. */
+  answered: boolean;
+  /** The newest user turn. */
+  anchorRef: RefObject<HTMLElement | null>;
+  busy?: boolean;
+  /** Shown while busy. Defaults to the three-dot `ThinkingIndicator`. */
+  busyNode?: ReactNode;
+}
+
+/**
+ * The reading column (`role="log"`) and its auto-scroll: a new question or the
+ * busy state scrolls to the end; an arriving answer scrolls its question to the
+ * top. Scrolls the nearest `[data-ai-scroll]` container, never the document.
+ */
+export function ConversationLog({ children, scrollKey, turnCount, answered, anchorRef, busy, busyNode }: ConversationLogProps) {
   const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (turnCount === 0) return;
+    if (answered) scrollToTurn(anchorRef.current, "start");
+    else scrollToTurn(endRef.current, "end");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- same triggers as before the extraction: the turn list and busy
+  }, [scrollKey, busy]);
+
+  return (
+    <div role="log" aria-label="Conversation" className="max-w-3xl mx-auto w-full space-y-7 px-1 pt-3 pb-10">
+      {children}
+
+      {busy && (busyNode ?? <ThinkingIndicator />)}
+
+      <div ref={endRef} />
+    </div>
+  );
+}
+
+export function ConversationView({ messages, busy, renderExtras, onRetry, announceFailureIndex = null }: ConversationViewProps) {
   const lastUserRef = useRef<HTMLDivElement>(null);
 
   let lastUserIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") { lastUserIndex = i; break; }
   }
-
-  useEffect(() => {
-    if (messages.length === 0) return;
-    const answered = messages[messages.length - 1].role === "assistant" && !busy;
-    if (answered) scrollToTurn(lastUserRef.current, "start");
-    else scrollToTurn(endRef.current, "end");
-  }, [messages, busy]);
+  const answered = messages.length > 0 && messages[messages.length - 1].role === "assistant" && !busy;
 
   return (
-    <div role="log" aria-label="Conversation" className="max-w-3xl mx-auto w-full space-y-7 px-1 pt-3 pb-10">
+    <ConversationLog scrollKey={messages} turnCount={messages.length} answered={answered} anchorRef={lastUserRef} busy={busy}>
       {messages.map((m, i) => (
         <div key={i} ref={i === lastUserIndex ? lastUserRef : undefined} className="ai-turn-enter">
           {m.role === "assistant" && m.status === "failed" ? (
@@ -78,20 +128,6 @@ export function ConversationView({ messages, busy, renderExtras, onRetry, announ
           )}
         </div>
       ))}
-
-      {busy && (
-        <div role="status" className="ai-turn-enter flex gap-3">
-          <div className="pt-1.5 shrink-0"><AiMark className="animate-pulse" /></div>
-          <div aria-hidden className="flex gap-1.5 items-center h-6">
-            <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "0ms", background: "var(--text-muted)" }} />
-            <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "150ms", background: "var(--text-muted)" }} />
-            <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ animationDelay: "300ms", background: "var(--text-muted)" }} />
-          </div>
-          <span className="sr-only">Fourth Meridian AI is thinking…</span>
-        </div>
-      )}
-
-      <div ref={endRef} />
-    </div>
+    </ConversationLog>
   );
 }
