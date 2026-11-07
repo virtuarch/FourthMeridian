@@ -1233,6 +1233,19 @@ Checklist additions:
 | — | **Do not invite beta users** | Standing until the owner says otherwise |
 | OD-7 | **Platform AI conversations retention: 90-day per-message expiry** (owner approved, 2026-11-04) | B11 scope (#424, merged `8acb690`); not in B10 |
 
+### B10 deployed (2026-11-07 21:00–21:21Z) — owner authorizations 2026-11-07 (release + pooler-route update)
+
+| Item | Result |
+|---|---|
+| Gates | S2 final GO (conditions C1–C5 closed); #455 required checks green at `d6a60f7`; read-only Production preflight PASS; owner authorization (verbatim, private store) + update approving the session-pooler migration route |
+| Connectivity | The direct host is IPv6-only and unreachable from the operator machine; the session pooler drops startup `options` (STOP-1, nothing executed). Owner-approved S2 route: per migration `psql -1` with `SET LOCAL lock_timeout = '5s'` + an in-transaction gate asserting 5s + the unchanged file, then `prisma migrate resolve --applied`; rehearsed on PostgreSQL 17 against a `migrate deploy` twin (identical schema and checksums) |
+| Order | Read-only pooler probe (5s inside, 0 after) → crons paused (Vercel) → no running JobRun → guard → backup (snapshot-verified, encrypted, Keychain round trip, plaintext removed) → pre-migrate gate (ledger, schema absence, policies, no lock waits) → 5 migrations → post-check (ledger 150, 0 failed; 12/12 PB-1 CHECKs validated; RLS forced on the 3 new tables; DB-010 policy set; `migrate status` up to date) |
+| Merge / deploy | `gh pr merge 455 --match-head-commit d6a60f7` → `main` **`2a6dad0`** (parents `dc76711`, `d6a60f7`; tree `a1e5ac17` = cut); **`dpl_Bj1uPgrkNcints57gQ81kRKWonwg`** READY, git sha `2a6dad0`, aliased app.fourthmeridian.com; health ok, overdue jobs 0; S2 health GET ok; crons re-enabled |
+| Smoke (read-only) | access-request forged/missing token → 400; Platform AI ask and B11 conversations → 404; incident lists, filters and drawer; Economics Overview/Providers/Entitlements; provider and connection health; public site |
+| Rollback kit | `dpl_HBqJux4eMTdfcgNkZS5bW4C8nxyw` (`fd62d17`), unaliased; rollback = `vercel promote` of the kit (owner pre-authorized on authentication failure, sustained 5xx, wrong totals, incident-processing failure). **Runbook lesson:** `vercel link` pulls a development `.env.local` and edits `.gitignore`; remove/revert both before `vercel deploy` (done) |
+| F2 | D = 2026-11-07; **deadline D+80 = 2027-01-26** |
+| Monitoring (72 h) | first alert evaluation; first `purge-trash` (#378 reap); first snapshot totals vs intended changes |
+
 ### B11 on develop (NOT in B10)
 
 B10 promotes only from `release/batch-10` at `d6a60f7`. Everything below merged to develop after the cut and must not reach a B10 promotion, by cherry-pick or otherwise, without a separate S2 review and owner gate.
