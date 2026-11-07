@@ -51,7 +51,9 @@ export const PLATFORM_AI_COMPOSER_MAX = 500;
 export type ClientSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: string | number | null }
-  | { kind: "link"; text: string; href: string };
+  | { kind: "link"; text: string; href: string }
+  /** S2 F-C1 (ii): the server's period correction — rendered prominently ABOVE the answer. */
+  | { kind: "correction"; text: string };
 
 export interface ClientCitation { metric: string; label: string; window: string }
 
@@ -95,6 +97,7 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 function parseSegment(s: unknown): ClientSegment | null {
   if (!isObj(s) || typeof s.text !== "string") return null;
   if (s.kind === "text") return { kind: "text", text: s.text };
+  if (s.kind === "correction") return { kind: "correction", text: s.text };
   if (s.kind === "figure" && typeof s.metric === "string") {
     const w = s.window;
     return { kind: "figure", text: s.text, metric: s.metric, window: typeof w === "string" || typeof w === "number" ? w : null };

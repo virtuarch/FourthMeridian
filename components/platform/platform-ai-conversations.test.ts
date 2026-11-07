@@ -27,7 +27,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { env } from "@/lib/env";
 import { PLATFORM_AI_MESSAGE_MAX, PLATFORM_AI_RETENTION_DAYS } from "@/lib/platform/intelligence/ai/conversations/constants";
-import { PlatformAiAsk } from "./PlatformAiAsk";
+import { AnswerSegments, PlatformAiAsk } from "./PlatformAiAsk";
+import { renderStoredAnswer } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import {
   AssistantAnswer, ConversationList, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
   type PlatformAiConversationsViewProps,
@@ -226,6 +227,32 @@ console.log("\n4. no Markdown parser — typed segments only; links only same-or
   check("no AnswerCard (the customer Markdown answer)", !/AnswerCard/.test(cmp));
   check("links come from the server's re-resolved href only: the model has no page→href logic and no stored URL field",
     !/\bpage\b\s*:/.test(model.replace(/kind: "link", text: "no href", page/g, "")) && /if \(s\.kind === "link" && typeof s\.href === "string"\)/.test(model));
+}
+
+// ── 4b. S2 F-C1 (ii): the server correction segment ─────────────────────────
+console.log("\n4b. the period CORRECTION segment — its own block, prominent, ABOVE the answer (v0 + conversations)");
+{
+  const CORR = "Correction: these figures cover so far this month (since 2026-11-01), not the 30 days. Estimated operating cost this cycle (by category) cannot be measured for that period.";
+  const PROSE = "In the past 30 days, the largest cost category is Providers (Plaid).";
+  const conv = renderToStaticMarkup(createElement(TypedAnswerSegments, { staleAsOf: null, segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
+  const v0 = renderToStaticMarkup(createElement(AnswerSegments, { segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
+  for (const [name, html] of [["conversations (TypedAnswerSegments)", conv], ["v0 (AnswerSegments)", v0]] as const) {
+    const block = /<div role="note" data-platform-ai-correction=""[^>]*>(.*?)<\/div>/.exec(html);
+    check(`${name}: the correction is its OWN prominent block (role=note, warning border, medium weight) — not inline text in the answer paragraph`,
+      !!block && block[1].includes(CORR) && /border-\[var\(--accent-warning\)\]/.test(html) && /font-medium/.test(block[0]) && (html.match(new RegExp(CORR.slice(0, 40).replace(/[()]/g, "\\$&"), "g")) ?? []).length === 1, html);
+    check(`${name}: placed ABOVE the answer paragraph, and the model's prose is shown unchanged`,
+      html.indexOf("data-platform-ai-correction") < html.indexOf("<p class=\"min-w-0 whitespace-pre-wrap") && html.includes(PROSE)
+      && !/<p class="min-w-0 whitespace-pre-wrap[^"]*"[^>]*>[^]*Correction:/.test(html), html);
+  }
+  const plain = renderToStaticMarkup(createElement(TypedAnswerSegments, { staleAsOf: null, segments: [{ kind: "text", text: "Note: x. " }, { kind: "text", text: PROSE }] }));
+  check("no correction segment ⇒ no correction block (the plain note stays inline text)", !/data-platform-ai-correction/.test(plain));
+  const parsed = parseMessage({
+    id: "m9", role: "ASSISTANT", status: "COMPLETE", createdAt: H3, completedAt: H3, failureCode: null, unavailable: false, stale: true,
+    content: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }], citations: [], notes: [],
+  });
+  check("the client parser keeps a correction segment (typed), first", !!parsed && Array.isArray(parsed.content) && parsed.content[0]?.kind === "correction" && parsed.content[0].text === CORR, parsed);
+  const rendered = renderStoredAnswer({ v: 1, segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }], citations: [], notes: [], stop: "ANSWERED" }, null);
+  check("the stored answer is served with the correction typed (renderStoredAnswer)", rendered[0]?.kind === "correction" && rendered[0].text === CORR && rendered.length === 2, rendered);
 }
 
 // ── 5. disclosure + privacy hint ────────────────────────────────────────────

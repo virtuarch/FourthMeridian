@@ -50,15 +50,35 @@ const REFUSAL_COPY: Record<string, string> = {
   NO_SURFACE: "Your access does not include Platform AI.",
 };
 
+/**
+ * S2 F-C1 (ii): the server's period CORRECTION segments (code-written, never model text),
+ * shown as a prominent block ABOVE the answer — never inline in the prose. Shared by the v0
+ * answer and the conversations answer (TypedAnswerSegments).
+ */
+export function PeriodCorrections({ segments }: { segments: readonly { kind: string; text: string }[] }) {
+  const corrections = segments.filter((s) => s.kind === "correction");
+  if (corrections.length === 0) return null;
+  return (
+    <div role="note" data-platform-ai-correction=""
+      className="mb-3 min-w-0 rounded-lg border border-[var(--accent-warning)] border-l-4 px-3 py-2 text-sm font-medium leading-relaxed text-[var(--text-primary)]">
+      {corrections.map((c, i) => <p key={i} className="min-w-0 break-words">{c.text}</p>)}
+    </div>
+  );
+}
+
 export function AnswerSegments({ segments }: { segments: readonly AnswerSegment[] }) {
   return (
-    <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--text-primary)]">
-      {segments.map((s, i) =>
-        s.kind === "link" && isSameOriginPath(s.href)
-          ? <a key={i} href={s.href} className="underline underline-offset-2">{s.text}</a>
-          : <span key={i}>{s.text}</span>,
-      )}
-    </p>
+    <>
+      <PeriodCorrections segments={segments} />
+      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--text-primary)]">
+        {segments.map((s, i) =>
+          s.kind === "correction" ? null
+            : s.kind === "link" && isSameOriginPath(s.href)
+              ? <a key={i} href={s.href} className="underline underline-offset-2">{s.text}</a>
+              : <span key={i}>{s.text}</span>,
+        )}
+      </p>
+    </>
   );
 }
 

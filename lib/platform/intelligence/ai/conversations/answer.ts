@@ -33,7 +33,9 @@ export type StoredSegment =
   /** A figure span: the server-rendered text plus the metric it came from (and its window). */
   | { kind: "figure"; text: string; metric: string; window: string | number | null }
   /** A link: a registry page id plus params — NEVER an href (re-resolved on every read). */
-  | { kind: "link"; text: string; page: string; params: Record<string, string> };
+  | { kind: "link"; text: string; page: string; params: Record<string, string> }
+  /** S2 F-C1 (ii): the server's code-written period CORRECTION (shown above the answer; never model text). */
+  | { kind: "correction"; text: string };
 
 export interface StoredCitation { metric: string; label: string; window: string }
 
@@ -61,7 +63,8 @@ const exactKeys = (o: Record<string, unknown>, keys: readonly string[]) =>
 function validSegment(s: unknown): s is StoredSegment {
   if (!isObj(s)) return false;
   switch (s.kind) {
-    case "text": return exactKeys(s, ["kind", "text"]) && isText(s.text);
+    case "text":
+    case "correction": return exactKeys(s, ["kind", "text"]) && isText(s.text);
     case "figure":
       return exactKeys(s, ["kind", "text", "metric", "window"]) && isText(s.text, 120) && isRefId(s.metric)
         && (s.window === null || (typeof s.window === "number" && Number.isInteger(s.window) && s.window > 0 && s.window <= 3660) || isText(s.window, 120));

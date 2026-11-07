@@ -146,7 +146,8 @@ const isFull = (messageCount: number) => messageCount + 2 > PLATFORM_AI_CONVERSA
 export type RenderedSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: string | number | null }
-  | { kind: "link"; text: string; href: string };
+  | { kind: "link"; text: string; href: string }
+  | { kind: "correction"; text: string };
 
 /** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text. */
 export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null): RenderedSegment[] {
@@ -155,6 +156,7 @@ export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null)
       const r = access?.resolvePage(s.page, s.params) ?? null;
       return r ? { kind: "link", text: s.text, href: r.href } : { kind: "text", text: s.text };
     }
+    if (s.kind === "correction") return { kind: "correction", text: s.text };
     return s.kind === "figure" ? { kind: "figure", text: s.text, metric: s.metric, window: s.window } : { kind: "text", text: s.text };
   });
 }
