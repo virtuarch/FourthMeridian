@@ -16,20 +16,18 @@
 // ── The OD-5 disclosure line ────────────────────────────────────────────────
 
 /**
- * ⚠️ OD-5 WORDING PENDING OWNER. Placeholder only — NOT legal or policy text.
+ * OD-5 — owner-approved operator notice (approved 2026-11-07).
  *
- * The design (§8) flags that the public AI and privacy pages describe the
+ * The design (§8) flagged that the public AI and privacy pages describe the
  * customer AI only, and that how operators are told their Platform AI
- * conversations are stored is OWNER DECISION OD-5 (public change, internal
- * operator notice, or this in-page line). PR C ships the one line, in one
- * place, with neutral placeholder wording; the owner's wording replaces this
- * string and nothing else. It states no retention period, no provider term and
- * no policy commitment.
+ * conversations are stored is OWNER DECISION OD-5. The owner approved this
+ * in-page wording on 2026-11-07, after S2 verified each claim against develop
+ * 3451c3a (the claim table is kept privately). It is in-app only; the public
+ * pages are unchanged. Change it only with a new owner approval and a fresh S2
+ * claim check — the test pins the exact string.
  */
 export const PLATFORM_AI_CONVERSATIONS_DISCLOSURE =
-  "Conversations are saved to your operator account so you can come back to them. [OD-5: disclosure wording pending owner]";
-/** Marker the tests (and a reviewer's grep) use to find the placeholder. */
-export const PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING = "OD-5: disclosure wording pending owner";
+  "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 90 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.";
 
 /**
  * The v0 privacy hint, UNCHANGED (components/platform/PlatformAiAsk.tsx renders

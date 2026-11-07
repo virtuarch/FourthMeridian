@@ -759,7 +759,7 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
   - At the limit, the page shows "Delete a conversation to start another".
   - Refusals use v0's copy, and the question is returned to the box, because nothing was stored.
   - The thread shows "Earlier messages in this conversation have expired" only when the conversation is at least `PLATFORM_AI_RETENTION_DAYS` old **and** its first remaining message was written well after the conversation was created. Retention is the only way messages disappear, and it can't act sooner (S2 on #434). The client duplicates the constant, and a test pins it equal to `constants.ts`.
-- **Disclosure (OD-5 pending).** The disclosure is one constant, `PLATFORM_AI_CONVERSATIONS_DISCLOSURE`, with placeholder wording marked `[OD-5: disclosure wording pending owner]`. It states no retention period, provider term or policy. It renders under v0's privacy hint, which is kept verbatim (`data-platform-ai-privacy-hint`, same id, `aria-describedby`).
+- **Disclosure (OD-5 approved 2026-11-07).** The disclosure is one constant, `PLATFORM_AI_CONVERSATIONS_DISCLOSURE`. It carries the owner-approved OD-5 wording (approved 2026-11-07, S2-verified against develop 3451c3a; claim table kept privately), pinned exactly by a test. It renders under v0's privacy hint, which is kept verbatim (`data-platform-ai-privacy-hint`, same id, `aria-describedby`).
 - **Privacy.** There is no draft persistence, no keystroke handler beyond the controlled textarea, no analytics and no console output.
 
 ---
@@ -844,7 +844,7 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
 **Enable checklist (per environment).**
 - [ ] S2 retention clearance (R1–R6) recorded.
 - [ ] Migration applied by the guarded path; `npm run report:platform-ai-conversations-precheck -- --env=<env>` PASS, output recorded.
-- [ ] **OD-5 disclosure (S2 on #434).** `PLATFORM_AI_CONVERSATIONS_DISCLOSURE` (`components/platform/platform-ai-conversations-model.ts`) is replaced with the owner-approved OD-5 wording, and S2 has fact-checked that wording against the B11 storage code (the #415 §2 PENDING-IMPLEMENTATION lines), **BEFORE any flag-on**. Until then the constant still carries "pending owner", and a test pins it, so the placeholder can't ship unnoticed.
+- [x] **OD-5 disclosure (S2 on #434).** Landed with the PR "Platform AI: owner-approved conversation notice (OD-5) replaces the placeholder": `PLATFORM_AI_CONVERSATIONS_DISCLOSURE` (`components/platform/platform-ai-conversations-model.ts`) carries the owner-approved OD-5 wording (2026-11-07), S2-verified against develop 3451c3a, and a test pins the exact string. In-app only; public pages unchanged. Production publication still gated on: Production purge enabled and running.
 - [ ] `PLATFORM_AI_PURGE_ENABLED=true` **and** `PLATFORM_AI_CONVERSATIONS_ENABLED=true` set together (with `PLATFORM_AI_ENABLED=true`). Setting only the conversations flag leaves the feature OFF by design.
 - [ ] **Preview only — the purge cadence.** Preview never runs crons, so the scheduled job never purges there. **While conversations are enabled on Preview, an operator runs the purge dispatch at least daily:**
   - **Who:** the engineering lead on duty (Session 1) or an operator it designates; the owner may run it too.
