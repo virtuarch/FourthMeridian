@@ -9,6 +9,12 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { chromeSurface } from '@/components/ui/chrome-surface';
+import { visibleNotices, TWO_FACTOR_TEXT, type AppNoticeStatus } from '@/components/notices/notice-model';
+import { NoticeRailView } from '@/components/notices/NoticeRail';
+import { BottomNavBar, PlatformBottomBar } from '@/components/ui/BottomNav';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -26,13 +32,22 @@ const menu = read('components', 'ui', 'UserMenu.tsx');
 const noticeRail = read('components', 'notices', 'NoticeRail.tsx');
 const noticeModel = read('components', 'notices', 'notice-model.ts');
 const settingsIndex = read('app', '(shell)', 'dashboard', 'settings', 'page.tsx');
+const surfaceSrc = read('components', 'ui', 'chrome-surface.ts');
 
-console.log('notice rail: ONE mount for the shell; 2FA reminder not on the AI page');
+console.log('notice rail: ONE mount for the shell; 2FA reminder not on the Personal AI page');
 {
-  check('the route predicate is the existing AI destination rule',
-    /const conversationSurface = isPrimaryDestActive\("ai", pathname\);/.test(chrome));
-  check('the rail is mounted exactly once, told whether this is the AI surface',
-    /<NoticeRail initialStatus=\{noticeStatus\} conversationSurface=\{conversationSurface\} \/>/.test(chrome) && (chrome.match(/<NoticeRail/g) ?? []).length === 1);
+  // DELIBERATE pin change (parity PR2, S2 ruling 2026-11-07): the chrome now asks
+  // ONE pure helper (chrome-surface.ts) two separate questions. LAYOUT: Personal
+  // Space AI and Platform AI are conversation pages. NOTICES: only Personal Space
+  // AI withholds the 2FA reminder (AI-4); Platform AI never hides it by path.
+  // Formerly: `const conversationSurface = isPrimaryDestActive("ai", pathname);`.
+  check('the route predicates come from the one pure chrome-surface helper',
+    /const \{ conversationLayout: conversationSurface, noticeConversationSurface \} = chromeSurface\(pathname\);/.test(chrome)
+    && /conversationLayout: personalAi \|\| isPlatformAiPath\(pathname\)/.test(surfaceSrc)
+    && /noticeConversationSurface: personalAi,/.test(surfaceSrc)
+    && /const personalAi = isPrimaryDestActive\("ai", pathname\);/.test(surfaceSrc));
+  check('the rail is mounted exactly once, told whether this is the PERSONAL AI surface (not the layout flag)',
+    /<NoticeRail initialStatus=\{noticeStatus\} conversationSurface=\{noticeConversationSurface\} \/>/.test(chrome) && (chrome.match(/<NoticeRail/g) ?? []).length === 1);
   check('the old 2FA card is gone', !/TotpNudgeBanner/.test(chrome.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')));
   check('no CSS suppression of the rail', !/NoticeRail[^\n]*(hidden|display)/.test(chrome));
   check('other routes reserve the original spacing plus the safe area', chrome.includes('"min-w-0 flex-1 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-6 lg:pb-16"'));
@@ -60,6 +75,52 @@ console.log('AI page geometry: the numbers in three files agree');
   check('no ResizeObserver / document-offset sizing left in AiShell (code, not comments)',
     !/ResizeObserver|window\.scrollY|style\.height|paddingBottom/.test(shellCode));
   check('no lg:-mb-12 hack and no min-h-[360px] floor', !shell.includes('-mb-12') && !shell.includes('min-h-[360px]'));
+}
+
+console.log('parity PR2: Platform AI is a conversation page for LAYOUT only; its 2FA banner stays');
+{
+  const s = (p: string) => chromeSurface(p);
+  check('Personal Space AI: conversation layout AND the AI-4 notice rule (unchanged)',
+    s('/dashboard/analyze').conversationLayout && s('/dashboard/analyze').noticeConversationSurface);
+  check('Platform AI: conversation layout, but NOT the notice rule (S2 2026-11-07)',
+    s('/dashboard/platform/ai').conversationLayout && !s('/dashboard/platform/ai').noticeConversationSurface
+    && s('/dashboard/platform/ai/x').conversationLayout);
+  check('the Platform directory, a Platform area, look-alike paths and other pages are not conversation pages',
+    ['/dashboard/platform', '/dashboard/platform/SECURITY_OPS', '/dashboard/platform/aix', '/dashboard', '/dashboard/spaces', '']
+      .every((p) => !s(p).conversationLayout && !s(p).noticeConversationSurface));
+
+  const NONE = { maintenanceCollapsed: false, twoFactorDismissed: false, connectDismissed: false };
+  const noTotp: AppNoticeStatus = { maintenance: false, twoFactorReminder: true };
+  const withTotp: AppNoticeStatus = { maintenance: false, twoFactorReminder: false };
+  const railFor = (p: string, status: AppNoticeStatus) => visibleNotices(status, NONE, { conversationSurface: s(p).noticeConversationSurface });
+  const html = (p: string, status: AppNoticeStatus) =>
+    renderToStaticMarkup(createElement(NoticeRailView, { notices: railFor(p, status), onDismiss: () => {}, onExpand: () => {} }));
+
+  const platformHtml = html('/dashboard/platform/ai', noTotp);
+  check('Platform AI page + user without TOTP ⇒ the 2FA banner is present (rendered)',
+    platformHtml.includes('data-notice="two-factor"') && platformHtml.includes(TWO_FACTOR_TEXT) && platformHtml.includes('href="/dashboard/settings/security"'), platformHtml);
+  check('…with maintenance on, both show, maintenance first',
+    railFor('/dashboard/platform/ai', { maintenance: true, twoFactorReminder: true }).map((n) => n.id).join() === 'maintenance,two-factor');
+  check('Platform AI page + user WITH TOTP ⇒ no 2FA banner (its own TOTP condition decides)',
+    html('/dashboard/platform/ai', withTotp) === '');
+  check('Personal Space AI + user without TOTP ⇒ still withheld (AI-4 unchanged)',
+    !html('/dashboard/analyze', noTotp).includes('data-notice="two-factor"'));
+  check('the rail publishes its height on every route, so AiShell leaves room for the banner',
+    noticeRail.includes('"--fm-notice-rail-h"') && shell.includes('var(--fm-notice-rail-h,0px)'));
+
+  // Bottom-bar height parity: AiShell and <main> reserve ONE footprint
+  // (h-14 + 1px border-t + safe-area); the Platform bar must occupy exactly that.
+  const navAttrs = (h: string) => {
+    const nav = h.match(/<nav [^>]*class="([^"]+)"[^>]*style="([^"]+)"/);
+    const row = h.match(/<nav [^>]*>\s*<div class="([^"]+)"/);
+    return { cls: nav?.[1], style: nav?.[2], row: row?.[1] };
+  };
+  const personal = navAttrs(renderToStaticMarkup(createElement(BottomNavBar, { pathname: '/dashboard/analyze' })));
+  const platform = navAttrs(renderToStaticMarkup(createElement(PlatformBottomBar, { pathname: '/dashboard/platform/ai', current: null })));
+  check('PlatformBottomBar footprint = BottomNav footprint (same frame classes, same safe-area style, same h-14 row)',
+    !!personal.cls && personal.cls === platform.cls && personal.style === platform.style && personal.row === platform.row
+    && personal.row === 'flex h-14 items-stretch' && /border-t/.test(personal.cls ?? '') && /padding-bottom:env\(safe-area-inset-bottom\)/.test(personal.style ?? ''),
+    JSON.stringify({ personal, platform }));
 }
 
 console.log('account menu: Settings stays, the duplicate Profile goes');
