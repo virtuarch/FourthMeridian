@@ -10,7 +10,7 @@
  *   2. the client model — defensive parsing, problem copy, time labels
  *   3. stale chip (§4.3) — every prior answer and every prior figure
  *   4. no Markdown parser — typed segments only; links only same-origin
- *   5. the disclosure line (OD-5 placeholder) and the v0 privacy hint
+ *   5. the disclosure line (OD-5, owner-approved) and the v0 privacy hint
  *   6. thread states — failed / pending / full / limit / expired
  *   7. layout — 375 px column, the mobile sheet control, the desktop rail
  *   8. reuse (§11) — MessageCard + FailedTurn only; no customer-only modules
@@ -42,7 +42,7 @@ import {
 } from "./PlatformAiConversations";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_COPY,
-  PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING, PLATFORM_AI_PRIVACY_HINT,
+  PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_PRIVACY_HINT,
   PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS, PLATFORM_AI_THINKING_LABEL,
   RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
   answeredLine, asOfChip, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
@@ -275,16 +275,13 @@ console.log("\n4b. the period CORRECTION segment — its own block, prominent, A
 }
 
 // ── 5. disclosure + privacy hint ────────────────────────────────────────────
-console.log("\n5. the disclosure line (OD-5 placeholder) and the v0 privacy hint");
+console.log("\n5. the disclosure line (OD-5, owner-approved) and the v0 privacy hint");
 {
-  check("the disclosure is ONE exported constant, clearly marked OD-5 pending owner",
-    PLATFORM_AI_CONVERSATIONS_DISCLOSURE.includes(PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING) && /OD-5 WORDING PENDING OWNER/.test(src(MODEL)));
-  check("…and states no retention period, provider term or policy commitment (placeholder, not legal text)",
-    !/\d|days?|retain|retention|OpenAI|policy|privacy|legal|deleted after|encrypt/i.test(PLATFORM_AI_CONVERSATIONS_DISCLOSURE.replace(PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING, "")));
-  check("SHIP GUARD (S2 on #434): the disclosure STILL contains 'pending owner' — when the owner's OD-5 wording lands, this pin is updated in the same PR, never by accident",
-    PLATFORM_AI_CONVERSATIONS_DISCLOSURE.includes("pending owner"));
+  check("the disclosure is the owner-approved OD-5 wording (2026-11-07), exactly — changing it needs a new owner approval and S2 claim check",
+    PLATFORM_AI_CONVERSATIONS_DISCLOSURE === "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 90 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.");
+  check("…and no longer claims anything is pending", !/pending/i.test(PLATFORM_AI_CONVERSATIONS_DISCLOSURE) && !/PENDING OWNER|DISCLOSURE_PENDING/.test(src(MODEL)));
   const literalUses: string[] = [];
-  for (const rel of [COMPONENT, PAGE, "components/platform/PlatformAiAsk.tsx"]) if (src(rel).includes("Conversations are saved")) literalUses.push(rel);
+  for (const rel of [COMPONENT, PAGE, "components/platform/PlatformAiAsk.tsx"]) if (src(rel).includes("saved encrypted to your operator account")) literalUses.push(rel);
   check("the wording lives only in the model constant (no second copy)", literalUses.length === 0, literalUses);
   const composer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false }));
   check("the composer renders the disclosure line", /data-platform-ai-conversations-disclosure/.test(composer) && textOf(composer).includes(PLATFORM_AI_CONVERSATIONS_DISCLOSURE));

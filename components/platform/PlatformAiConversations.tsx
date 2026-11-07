@@ -35,7 +35,7 @@
  * Privacy: no draft persistence, no keystroke handling beyond the controlled
  * textarea, no analytics, no logging. The v0 privacy hint is kept verbatim
  * (`data-platform-ai-privacy-hint`), and the OD-5 disclosure line is ONE
- * exported constant with placeholder wording (platform-ai-conversations-model).
+ * exported constant with the owner-approved wording (platform-ai-conversations-model).
  *
  * REUSE (§11; parity PR3). Shared PRESENTATION only, all props-driven:
  * `AiShell` (frame), `ConversationLog` + `ThinkingIndicator` (reading column,
