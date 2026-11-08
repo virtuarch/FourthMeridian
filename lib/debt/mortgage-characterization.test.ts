@@ -30,6 +30,9 @@ import { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { computeDebtService, netAfterDebtPaydown } from "@/lib/transactions/debt-service";
 import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
 import { tierResolver, classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { LIQUIDITY_REASON_LABEL } from "@/lib/transactions/liquidity-breakdown";
+import { resolveDestinationEvidence, maturityForEvidence } from "@/lib/transactions/transfer-maturation";
+import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { LIABILITY_PAYMENT_DETAILS } from "@/lib/transactions/transfer-debt-payment-correction";
 import { computeDebtAggregate } from "@/lib/debt/aggregates";
@@ -146,18 +149,39 @@ console.log(`H2. Mortgage payment from checking: paydown vs spending — ${LABEL
   const econI = economicTotals(rowsI as never);
   check("H2b with a lender interest row: netPaydown = 1,000, spending = 1,500", sI.netPaydown === 1_000 && econI.spend === 1_500, { sI, spend: econI.spend });
 
-  // (c) Mortgage NOT connected: unpaired cash leg, no counterparty, no maturity.
+  // (c) Mortgage NOT connected: unpaired cash leg, no counterparty. The transfer
+  //     authority sees the provider's mortgage-payee detail and NO owned
+  //     destination, and names the leaf UNTRACKED_LOAN_PAYMENT (Mortgage F10).
   const ctxU = tierResolver([{ id: "chk", type: "checking" }]);
-  const unpaired = [tx({ own: "chk", amount: 8_000, flowType: "INCOME" }), tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT" })];
+  const noDest = resolveDestinationEvidence([], { movementForm: null, competingSourceCount: 1 });
+  const untrackedMaturity = maturityForEvidence(noDest, {
+    accountType: "checking", amount: -2_500, providerFamily: "LOAN_PAYMENTS", persistedCounterpartyAccountId: null,
+    railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+  });
+  check("H2c the transfer authority names an unconnected mortgage payment UNTRACKED_LOAN_PAYMENT (F10)", untrackedMaturity === "UNTRACKED_LOAN_PAYMENT", untrackedMaturity);
+  const unpaired = [
+    tx({ own: "chk", amount: 8_000, flowType: "INCOME" }),
+    tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT", transferMaturity: untrackedMaturity }),
+  ];
   const sel = selectDebtPaymentCashLegs(unpaired, ctxU);
   const sU = computeDebtService(unpaired, ctxU, abs);
   const econU = economicTotals(unpaired as never);
-  console.log(`    observed (c): counted=${sel.counted.length} payments=${sU.payments} netPaydown=${sU.netPaydown} spend=${econU.spend}`);
-  check("H2c unattested unpaired leg: NOT counted as a debt payment (payments = 0)", sel.counted.length === 0 && sU.payments === 0, sU);
-  check("H2c ... and still not in spending (spend = 0) — the 2,500 is in neither figure", econU.spend === 0, econU);
-  // SUSPECTED DEFECT (c): an unconnected mortgage payment vanishes from both
-  // spending and paydown on the economic axis. Expected: at least the housing
-  // cost (interest + escrow) is visible somewhere, or the gap is disclosed.
+  const liqU = classifyLiquidity(unpaired[1], ctxU);
+  console.log(`    observed (c): counted=${sel.counted.length} payments=${sU.payments} netPaydown=${sU.netPaydown} untracked=${sU.untrackedLoanPayments} spend=${econU.spend} cashOut=${cashOut(unpaired, ctxU)}`);
+  // FIXED by F10 — desired behaviour: still NOT a counted (tracked) debt payment
+  // and NOT paydown — there is no tracked liability for it to pay down …
+  check("H2c FIXED by F10 — not a tracked debt payment: payments = 0, netPaydown = 0", sel.counted.length === 0 && sU.payments === 0 && sU.netPaydown === 0, sU);
+  // FIXED by F10 — … and not discretionary spending …
+  check("H2c FIXED by F10 — not in spending (spend = 0)", econU.spend === 0, econU);
+  // FIXED by F10 — desired behaviour: … but VISIBLE: counted once in Cash Out as
+  // debt service to an untracked loan, labelled as an unsplit loan payment, and
+  // subtracted once from the after-debt net (it was a vanishing payment before).
+  check("H2c FIXED by F10 — in Cash Out once (2,500) as UNTRACKED_LOAN_PAYMENT, labelled 'loan payment (principal + interest + escrow, not split)'",
+    cashOut(unpaired, ctxU) === 2_500 && liqU.effect === "CASH_OUT" && liqU.reason === "UNTRACKED_LOAN_PAYMENT"
+      && LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT.includes(UNSPLIT_LOAN_PAYMENT_LABEL)
+      && UNSPLIT_LOAN_PAYMENT_LABEL === "loan payment (principal + interest + escrow, not split)", liqU);
+  check("H2c FIXED by F10 — untrackedLoanPayments = 2,500; after-debt net = 8,000 − 2,500 = 5,500",
+    sU.untrackedLoanPayments === 2_500 && netAfterDebtPaydown(econU.net, sU) === 5_500, { sU, net: econU.net });
 
   // (d) Unpaired leg, transfer authority proved a liability destination TYPE.
   const attested = [tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT", transferMaturity: "DEBT_PAYMENT" })];

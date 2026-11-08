@@ -73,6 +73,9 @@ export type LiquidityReason =
   | "ASSET_CONVERSION"   // INVESTMENT activity within the asset tier (sale kept on platform)
   | "DEBT_PROCEEDS"      // liability tier → liquid (loan/advance funded to cash)
   | "DEBT_PAYMENT"       // liquid → liability tier (card/loan payment)
+  | "UNTRACKED_LOAN_PAYMENT" // Mortgage F10: liquid → an installment loan that is NOT
+                         // connected (transfer authority leaf UNTRACKED_LOAN_PAYMENT).
+                         // Cash Out; never a counted debt payment, never paydown.
   | "INTERNAL_TRANSFER"  // liquidity-neutral movement (liquid↔liquid, or non-liquid leg)
   | "NON_CASH"           // ADJUSTMENT / non-economic artifact
   | "UNRESOLVED";        // counterparty / tier unknowable → not guessed
@@ -257,7 +260,25 @@ export function classifyLiquidity(tx: LiquidityTx, ctx: LiquidityContext): Liqui
       // is a movement whose purpose is not established. It is resolved as the
       // transfer it structurally is, which leaves it UNRESOLVED when the
       // destination is genuinely unknown rather than asserting a debt payment.
-      if (!attested) return classifyTransfer(tx, ownTier, ctx);
+      if (!attested) {
+        // Mortgage F10 (S2 ruling) — EXCEPT a payment the transfer authority named
+        // as going to an installment loan that is NOT connected (the provider named
+        // the loan payee; no owned account qualified). That money left spendable
+        // cash for certain, so it is CASH_OUT — but under its OWN reason, never
+        // DEBT_PAYMENT: there is no tracked liability for it to pay down, so the
+        // debt-payment authority (which selects reason DEBT_PAYMENT) never counts
+        // it and debt-service never calls it paydown. Before F10 it fell through
+        // to classifyTransfer ⇒ UNRESOLVED and vanished from every total.
+        // A persisted counterparty (any tier) means the destination is NOT
+        // untracked; the authority never names this leaf for such a row, and the
+        // guard keeps a stale DTO from saying otherwise.
+        if (tx.counterpartyAccountId == null
+            && (tx as { transferMaturity?: string | null }).transferMaturity === "UNTRACKED_LOAN_PAYMENT"
+            && tx.amount < 0) {
+          return make(ft, "CASH_OUT", "UNTRACKED_LOAN_PAYMENT", 0.9);
+        }
+        return classifyTransfer(tx, ownTier, ctx);
+      }
       return make(ft, "CASH_OUT", "DEBT_PAYMENT", 1);
     }
     return make(ft, "NEUTRAL", "DEBT_PAYMENT", 0.8);

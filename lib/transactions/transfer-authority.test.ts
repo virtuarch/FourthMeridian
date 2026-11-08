@@ -38,7 +38,7 @@ function mk(o: Partial<TransferLeg> & { id: string }): TransferLeg {
   };
 }
 const own = (o: Partial<Parameters<typeof maturityForEvidence>[1]> & { accountType: string; amount: number }) =>
-  ({ railType: null, venueClass: null, counterpartyClass: null, ...o });
+  ({ railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null, ...o });
 
 // ═══ PHASE 1 — canonical admission ══════════════════════════════════════════
 
