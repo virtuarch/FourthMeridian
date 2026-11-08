@@ -31,17 +31,19 @@
  * passes `isSameOriginPath` (the AI Markdown renderer's own boundary). Stored
  * URLs do not exist.
  *
- * Stale evidence (§4.3, as amended by the owner 2026-11-08): ONE quiet
- * "Answered <time> · figures are as of then" line above the first prior answer
- * at least an hour old; every prior answer carries its UTC time as a title. A
- * figure is never refreshed in place. Sources and notes sit in a collapsed
+ * Stale evidence (§4.3; owner 2026-11-08 + S2): ONE answer-level "Figures as of
+ * <time>" chip when every figure shares one observation time, and a per-figure
+ * "as of" chip on any figure whose time differs (`staleChips`). A figure is
+ * never refreshed in place. Sources and notes sit in a collapsed
  * "Sources" disclosure under each answer.
  *
  * Privacy: no draft persistence, no keystroke handling beyond the controlled
  * textarea, no analytics, no logging. The v0 privacy hint and the OD-5 notice
- * are each ONE exported constant (platform-ai-conversations-model), in the DOM
- * as the composer's aria-describedby targets and shown in full in the
- * disclosure's About panel.
+ * are each ONE exported constant (platform-ai-conversations-model). S2 rulings
+ * C1–C4 (2026-11-08): a short line is always visible under the composer; its
+ * "Privacy & retention" control expands the full notice inline; the notice is
+ * expanded by default on a first visit (server-derived: no conversations); the
+ * full text is always in the DOM as the composer's aria-describedby target.
  *
  * REUSE (§11; parity PR3/PR6). Shared PRESENTATION only, all props-driven:
  * `AiShell` (frame), `ConversationLog` + `ThinkingIndicator` (reading column,
@@ -49,9 +51,8 @@
  * wraps Platform's OWN typed-segment renderer — never the Markdown answer),
  * `MessageCard`, `FailedTurn`, and — through platform-ai-presentation (shared
  * with v0) — `ComposerFrame` (NO Stop: an abort would not cancel the server
- * turn — S2 accepted), `StarterLine`, `SuggestedPrompt` and `AiDisclosure`
- * (with Platform's own copy). NOT reused: `ConversationView` (it renders
- * Markdown answers), `Composer` (the customer disclosure copy). Neither the
+ * turn — S2 accepted), `StarterLine` and `SuggestedPrompt`. NOT reused: `ConversationView` (it renders
+ * Markdown answers), `Composer` and `AiDisclosure` (the customer disclosure copy). Neither the
  * transcript cache, Space context nor Talk-about-this is imported anywhere on
  * this path (no barrel import either).
  *
@@ -81,14 +82,14 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Panel } from "@/components/atlas/panels/Panel";
 import { PanelContent, PanelHeader } from "@/components/atlas/panels/PanelParts";
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
-import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
+import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiNotice, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_PROBLEM,
   PLATFORM_AI_CONVERSATIONS_URL, PLATFORM_AI_THINKING_LABEL,
   RAIL_COLLAPSED_KEY, UNAVAILABLE_COPY, UNREADABLE_COPY,
-  answeredLine, conversationHref, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, groupConversations, hasPendingTurn,
+  answerAsOf, asOfChip, conversationHref, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, groupConversations, hasPendingTurn,
   nextConversationAfterDelete, parseList, parsePair, parseThread, problemFor, questionBefore, readConversationParam, relativeTime,
-  showConversationCount, staleNoteIndex, utcStamp,
+  noticeDefaultOpen, showConversationCount, staleChips, utcStamp,
   type ClientConversation, type ClientLimits, type ClientMessage, type HistoryIntent, type SendProblem,
 } from "./platform-ai-conversations-model";
 
@@ -96,12 +97,15 @@ import {
 
 /**
  * One answer in the shared answer frame (AI-mark gutter + prose): Platform's
- * typed segments, then — collapsed — its sources and notes. `staleNote` puts
- * the ONE quiet "Answered … · figures are as of then" line above it (the
- * thread passes it to the first prior answer that is at least an hour old).
+ * typed segments, then — collapsed — its sources and notes. Stale evidence
+ * (§4.3, `staleChips`): ONE answer-level "Figures as of …" chip when every
+ * figure shares one observation time, plus an "as of …" chip on any figure
+ * whose time differs. A prior answer always says when it was true.
  */
-export function AssistantAnswer({ message, now, staleNote = false }: { message: ClientMessage; now: Date; staleNote?: boolean }) {
+export function AssistantAnswer({ message, now }: { message: ClientMessage; now: Date }) {
   const segments = Array.isArray(message.content) ? message.content : null;
+  const stale = staleChips(message, now);
+  const figureChips = new Map([...stale.figures].map(([i, iso]) => [i, { chip: asOfChip(iso, now), title: utcStamp(iso) }]));
   const sources = message.citations.length + message.notes.length > 0 ? (
     <AnswerSources count={message.citations.length}>
       {message.citations.length > 0 ? (
@@ -119,14 +123,17 @@ export function AssistantAnswer({ message, now, staleNote = false }: { message: 
   ) : null;
   return (
     <section aria-label="Answer" data-platform-ai-answer={message.stale ? "stale" : "current"} title={message.stale ? utcStamp(message.createdAt) : undefined} className="min-w-0">
-      {staleNote ? (
-        <p data-platform-ai-stale-line="" title={utcStamp(message.createdAt)} className="mb-3 min-w-0 break-words text-center text-[11px] text-[var(--text-muted)]">
-          {answeredLine(message.createdAt, now)}
-        </p>
-      ) : null}
       <AnswerFrame extras={sources}>
+        {stale.answer && segments && !message.unavailable ? (
+          <p className="mb-2 min-w-0">
+            <span data-platform-ai-stale-chip="answer" title={utcStamp(stale.answer)}
+              className="inline-flex items-center rounded-full border border-[var(--border-hairline)] px-2 text-[11px] leading-5 text-[var(--text-secondary)]">
+              {answerAsOf(stale.answer, now)}
+            </span>
+          </p>
+        ) : null}
         {segments && !message.unavailable
-          ? <TypedAnswerSegments segments={segments} />
+          ? <TypedAnswerSegments segments={segments} chips={figureChips} />
           : <p className="min-w-0 break-words text-[var(--text-secondary)]">{UNREADABLE_COPY}</p>}
       </AnswerFrame>
     </section>
@@ -166,7 +173,6 @@ export function Thread({ messages, now, sendingQuestion, earlierExpired, onRetry
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "USER") { lastUser = i; break; }
   const last = messages[messages.length - 1];
   const answered = !sending && !!last && last.role === "ASSISTANT" && last.status !== "PENDING";
-  const staleAt = staleNoteIndex(messages, now);
   return (
     <ConversationLog scrollKey={messages} turnCount={messages.length + (sending ? 1 : 0)} answered={answered} anchorRef={anchorRef}
       busy={sending} busyNode={<InFlight />}>
@@ -190,7 +196,7 @@ export function Thread({ messages, now, sendingQuestion, earlierExpired, onRetry
             </div>
           );
         }
-        return <div key={m.id} className="ai-turn-enter min-w-0"><AssistantAnswer message={m} now={now} staleNote={i === staleAt} /></div>;
+        return <div key={m.id} className="ai-turn-enter min-w-0"><AssistantAnswer message={m} now={now} /></div>;
       })}
       {sending ? (
         <div ref={anchorRef} className="ai-turn-enter min-w-0"><MessageCard content={sendingQuestion} /></div>
@@ -304,6 +310,9 @@ export interface PlatformAiConversationsViewProps {
   onCancelDelete: () => void;
   onSheet: (open: boolean) => void;
   onRail: (collapsed: boolean) => void;
+  /** The operator's own toggle of the full notice; null ⇒ the server-derived default (noticeDefaultOpen, S2 C3). */
+  noticeOpen?: boolean | null;
+  onNotice?: (open: boolean) => void;
 }
 
 /** Header action: the same quiet "New chat" control Personal Space AI shows. */
@@ -368,6 +377,17 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
   );
 
   const starters = atLimit || full ? null : <PlatformAiStarters onStarter={p.onStarter} />;
+  // S2 C3: expanded on a first visit (the server's list is empty, nothing open); the operator's toggle wins.
+  const noticeOpen = p.noticeOpen ?? noticeDefaultOpen(p.conversations, p.selected !== null);
+  // In the empty state the full notice sits at the top of the reading region (never clipped by the dock);
+  // in a conversation it sits under the short line. Either way it is rendered exactly once.
+  const noticeIn = conversationMode ? "footer" : "lead";
+  const lead = (
+    <>
+      {noticeIn === "lead" ? <div data-platform-ai-notice-lead="" className="mx-auto mb-6 w-full min-w-0 max-w-xl"><PlatformAiNotice open={noticeOpen} saved /></div> : null}
+      <PlatformAiLead />
+    </>
+  );
 
   const problemLine = p.problem && p.problem.kind !== "FULL" && p.problem.kind !== "LIMIT" ? (
     <ProblemLine text={p.problem.text} kind={p.problem.kind} busy={busy}
@@ -387,7 +407,8 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {atLimit ? (
             <p data-platform-ai-limit="" role="status" className="mx-auto mb-2 w-full min-w-0 max-w-3xl break-words rounded-xl border border-[var(--border-hairline)] p-3 text-sm text-[var(--text-secondary)]">{CONVERSATION_LIMIT_COPY}</p>
           ) : null}
-          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading} />
+          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
+            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} />
         </>
       )}
     </>
@@ -402,7 +423,7 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
         contextPrefix="Answering from: "
         controls={controls}
         side={side}
-        lead={<PlatformAiLead />}
+        lead={lead}
         aside={starters}
         composer={composer}
       >
@@ -493,6 +514,8 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
   const [problem, setProblem] = useState<SendProblem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(true);
+  /** null ⇒ the server-derived default (S2 C3); reset when a first message lands or every conversation is deleted. */
+  const [noticeOpen, setNoticeOpen] = useState<boolean | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ClientConversation | null>(null);
   const [deleting, setDeleting] = useState(false);
   /** The latest selection request: a slower, older read never overwrites a newer choice. */
@@ -580,6 +603,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
     const pair = r.status === 200 || r.status === 201 ? parsePair(r.body) : null;
     if (pair) {
       setNow(new Date());
+      if (!s.conversationId) setNoticeOpen(null); // a new conversation exists: back to the default (collapsed)
       setSelected((cur) => {
         if (!s.conversationId) {
           return pair.conversation ? { conversation: pair.conversation, messages: [pair.user, pair.assistant] } : cur;
@@ -628,6 +652,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
     setDeleting(false); setConfirmDelete(null);
     if (r && (r.status === 204 || r.status === 404)) {
       const next = nextConversationAfterDelete(conversations ?? [], c.id);
+      if (!next) setNoticeOpen(null); // every conversation deleted: the first-visit default (expanded) again
       setConversations((cs) => (cs ? cs.filter((x) => x.id !== c.id) : cs));
       // The open thread was deleted: open the next most recent, or the empty state — REPLACE (the deleted id is gone from History's current entry).
       if (selected?.conversation.id === c.id) {
@@ -660,6 +685,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
       onCancelDelete={() => { if (!deleting) setConfirmDelete(null); }}
       onSheet={setSheetOpen}
       onRail={(v) => { setRailCollapsed(v); writeRailCollapsed(v); }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
     />
   );
 }

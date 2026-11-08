@@ -18,7 +18,6 @@
 
 import type { ReactNode } from "react";
 import { ArrowUp, Info } from "lucide-react";
-import { AiDisclosure } from "@/components/ai/AiDisclosure";
 import { ComposerFrame } from "@/components/ai/Composer";
 import { isSameOriginPath } from "@/components/ai/Markdown";
 import { StarterLine } from "@/components/ai/StarterLine";
@@ -32,16 +31,20 @@ import {
 // ── The answer body ─────────────────────────────────────────────────────────
 
 /**
- * S2 F-C1 (ii): the server's period CORRECTION segments (code-written, never
- * model text) — their own note ABOVE the answer, never inline in the prose.
- * Owner 2026-11-08: a quiet note (info glyph, secondary text), not a warning box.
+ * S2 F-C1 (ii) / #460: the server's period CORRECTION segments (code-written,
+ * never model text) — their own callout ABOVE the answer, never inline in the
+ * prose, and visually distinct from it: a bordered, tinted callout with an
+ * accent rule (Personal's note idiom, not the old orange warning box), primary
+ * text, role="note" with its own accessible name. Each correction is rendered
+ * whole (never split); model text never enters this block.
  */
 export function PeriodCorrections({ segments }: { segments: readonly { kind: string; text: string }[] }) {
   const corrections = segments.filter((s) => s.kind === "correction");
   if (corrections.length === 0) return null;
   return (
-    <div role="note" data-platform-ai-correction="" className="mb-2 flex min-w-0 gap-1.5 text-[13px] leading-relaxed text-[var(--text-secondary)]">
-      <Info size={14} aria-hidden className="mt-[3px] shrink-0 text-[var(--text-muted)]" />
+    <div role="note" aria-label="Correction" data-platform-ai-correction=""
+      className="mb-3 flex min-w-0 gap-2 rounded-lg border border-[var(--border-hairline-strong)] border-l-[3px] border-l-[var(--accent-info)] bg-[var(--surface-inset)] px-3 py-2 text-sm font-medium leading-relaxed text-[var(--text-primary)]">
+      <Info size={15} aria-hidden className="mt-[3px] shrink-0 text-[var(--accent-info)]" />
       <div className="min-w-0">
         {corrections.map((c, i) => <p key={i} className="min-w-0 break-words">{c.text}</p>)}
       </div>
@@ -49,22 +52,41 @@ export function PeriodCorrections({ segments }: { segments: readonly { kind: str
   );
 }
 
-function Inline({ s }: { s: InlineSegment }) {
+/** A stale chip: the relative time, the UTC stamp as its title. */
+export interface ChipText { chip: string; title: string }
+
+function Inline({ s, chips }: { s: InlineSegment; chips?: ReadonlyMap<number, ChipText> }) {
   if (s.kind === "link") {
     return isSameOriginPath(s.href)
       ? <a href={s.href} className="underline underline-offset-2">{s.text}</a>
       : <span>{s.text}</span>;
   }
-  if (s.kind === "figure") return <span data-platform-ai-figure="" className="tabular-nums font-medium text-[var(--text-primary)]">{s.text}</span>;
+  if (s.kind === "figure") {
+    const chip = chips?.get(s.seg);
+    return (
+      <span>
+        <span data-platform-ai-figure="" className="tabular-nums font-medium text-[var(--text-primary)]">{s.text}</span>
+        {chip ? (
+          <span data-platform-ai-stale-chip="figure" title={chip.title}
+            className="ml-1 inline-flex items-center rounded-full border border-[var(--border-hairline)] px-1.5 align-middle text-[10px] font-normal leading-4 text-[var(--text-secondary)]">
+            {chip.chip}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
   return <span>{s.text}</span>;
 }
 
-function Line({ line }: { line: readonly InlineSegment[] }) {
-  return <>{line.map((s, i) => <Inline key={i} s={s} />)}</>;
+function Line({ line, chips }: { line: readonly InlineSegment[]; chips?: ReadonlyMap<number, ChipText> }) {
+  return <>{line.map((s, i) => <Inline key={i} s={s} chips={chips} />)}</>;
 }
 
-/** A typed answer: the correction note, then paragraphs / lists of text, figures and same-origin links. */
-export function TypedAnswerSegments({ segments }: { segments: readonly ClientSegment[] }) {
+/**
+ * A typed answer: the correction callout, then paragraphs / lists of text, figures
+ * and same-origin links. `chips`: per-figure "as of" chips by segment index.
+ */
+export function TypedAnswerSegments({ segments, chips }: { segments: readonly ClientSegment[]; chips?: ReadonlyMap<number, ChipText> }) {
   const blocks = answerBlocks(segments);
   return (
     <>
@@ -74,14 +96,14 @@ export function TypedAnswerSegments({ segments }: { segments: readonly ClientSeg
           if (b.kind === "p") {
             return (
               <p key={i} className="min-w-0">
-                {b.lines.map((l, j) => <span key={j}>{j > 0 ? <br /> : null}<Line line={l} /></span>)}
+                {b.lines.map((l, j) => <span key={j}>{j > 0 ? <br /> : null}<Line line={l} chips={chips} /></span>)}
               </p>
             );
           }
           const List = b.kind === "ul" ? "ul" : "ol";
           return (
             <List key={i} className={`min-w-0 space-y-1 pl-5 ${b.kind === "ul" ? "list-disc" : "list-decimal"}`}>
-              {b.items.map((item, j) => <li key={j} className="min-w-0"><Line line={item} /></li>)}
+              {b.items.map((item, j) => <li key={j} className="min-w-0"><Line line={item} chips={chips} /></li>)}
             </List>
           );
         })}
@@ -134,29 +156,49 @@ export function PlatformAiStarters({ onStarter }: { onStarter: (prompt: string) 
 
 // ── The composer and its one disclosure line ────────────────────────────────
 
-/** The OD-5 notice's id: the composer's aria-describedby target (always in the DOM). */
+/** The full-text element ids: the composer's aria-describedby targets, ALWAYS in the DOM (S2 C4). */
 export const PLATFORM_AI_DISCLOSURE_ID = "platform-ai-conversations-disclosure";
 export const PLATFORM_AI_PRIVACY_HINT_ID = "platform-ai-privacy-hint";
+/** The expandable region (aria-controls of the "Privacy & retention" control). */
+export const PLATFORM_AI_NOTICE_REGION_ID = "platform-ai-notice";
 
 /**
- * ONE visible line ("Read-only · Chats hidden after N days · Don't enter personal
- * details · About"), Personal's AiDisclosure. The full owner-approved OD-5 text
- * and the v0 privacy hint stay in the DOM as the composer's aria-describedby
- * targets (screen-reader only) and are shown in full in the About panel.
+ * The FULL notice region (S2 C2/C4): the owner-approved OD-5 text (conversations)
+ * or the not-saved sentence (v0), and the v0 privacy hint, unchanged. Rendered
+ * exactly once on the page and always in the DOM; collapsed ⇒ `hidden` (still a
+ * valid describedby target). Never in a scroll box of its own.
  */
-export function PlatformAiDisclosure({ saved }: { saved: boolean }) {
+export function PlatformAiNotice({ open, saved }: { open: boolean; saved: boolean }) {
   return (
-    <div data-platform-ai-disclosure={saved ? "conversations" : "session"} className="min-w-0">
-      <p id={PLATFORM_AI_PRIVACY_HINT_ID} data-platform-ai-privacy-hint="" className="sr-only">{PLATFORM_AI_PRIVACY_HINT}</p>
+    <div id={PLATFORM_AI_NOTICE_REGION_ID} data-platform-ai-notice={open ? "open" : "closed"} hidden={!open}
+      className="min-w-0 space-y-1.5 text-left text-xs leading-relaxed text-[var(--text-secondary)]">
       {saved ? (
-        <p id={PLATFORM_AI_DISCLOSURE_ID} data-platform-ai-conversations-disclosure="" className="sr-only">{PLATFORM_AI_CONVERSATIONS_DISCLOSURE}</p>
-      ) : null}
-      <AiDisclosure line={saved ? PLATFORM_AI_CONVERSATIONS_LINE : PLATFORM_AI_SESSION_LINE} title="About Platform AI">
-        <p>{PLATFORM_AI_PRIVACY_HINT}</p>
-        <p data-platform-ai-notice-full="">{saved ? PLATFORM_AI_CONVERSATIONS_DISCLOSURE : PLATFORM_AI_SESSION_NOT_SAVED}</p>
-        <p>Answers use only the Platform figures you can already see.</p>
-      </AiDisclosure>
+        <p id={PLATFORM_AI_DISCLOSURE_ID} data-platform-ai-conversations-disclosure="" className="min-w-0 break-words">{PLATFORM_AI_CONVERSATIONS_DISCLOSURE}</p>
+      ) : (
+        <p data-platform-ai-session-notice="" className="min-w-0 break-words">{PLATFORM_AI_SESSION_NOT_SAVED}</p>
+      )}
+      <p id={PLATFORM_AI_PRIVACY_HINT_ID} data-platform-ai-privacy-hint="" className="min-w-0 break-words">{PLATFORM_AI_PRIVACY_HINT}</p>
     </div>
+  );
+}
+
+/**
+ * The short line + its control (S2 C1/C2): the line is always visible and wraps
+ * (never truncated); "Privacy & retention" is a real button with aria-expanded /
+ * aria-controls that expands the full notice INLINE (no modal, no scroll box);
+ * focus stays on the button.
+ */
+export function PlatformAiDisclosureLine({ saved, open, onToggle }: { saved: boolean; open: boolean; onToggle: (open: boolean) => void }) {
+  return (
+    <p data-platform-ai-disclosure={saved ? "conversations" : "session"} className="min-w-0 break-words text-center leading-5">
+      <span data-platform-ai-line="">{saved ? PLATFORM_AI_CONVERSATIONS_LINE : PLATFORM_AI_SESSION_LINE}</span>
+      <span aria-hidden> · </span>
+      <button type="button" data-platform-ai-notice-toggle="" aria-expanded={open} aria-controls={PLATFORM_AI_NOTICE_REGION_ID}
+        onClick={() => onToggle(!open)}
+        className="inline-flex min-h-7 items-center rounded px-0.5 font-medium text-[var(--text-primary)] underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
+        {saved ? "Privacy & retention" : "Privacy"}
+      </button>
+    </p>
   );
 }
 
@@ -171,15 +213,25 @@ export interface PlatformAiComposerProps {
   busy: boolean;
   /** Conversations (saved, the OD-5 notice) or v0 (a single session, nothing saved). */
   saved?: boolean;
+  /** Whether the full notice is expanded. */
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
+  /**
+   * Where the full notice region lives: here, under the line (default), or —
+   * "lead" — at the top of the empty state's reading region (the view renders it
+   * there, so a first visit's expanded notice is never clipped by the dock).
+   */
+  noticeIn?: "footer" | "lead";
 }
 
 /**
  * The Platform composer: the shared `ComposerFrame` (docked pill, integrated
  * send, auto-grow, Enter-to-send, IME-safe) bound to v0's box contract — the
- * `platform-ai-question` id and 500 characters — with the one disclosure line
- * beneath. The counter appears only near the limit.
+ * `platform-ai-question` id and 500 characters — with the short disclosure line
+ * beneath. The counter appears only near the limit. aria-describedby points at
+ * the full-text elements (S2 C4).
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true }: PlatformAiComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer" }: PlatformAiComposerProps) {
   return (
     <ComposerFrame
       value={value}
@@ -197,8 +249,9 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, 
         </button>
       ) : undefined}
       footer={
-        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col items-center px-1 text-[11px] text-[var(--text-secondary)]">
-          <PlatformAiDisclosure saved={saved} />
+        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col items-center gap-1.5 px-1 text-[11px] text-[var(--text-secondary)]">
+          <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} />
+          {noticeIn === "footer" ? <PlatformAiNotice open={noticeOpen} saved={saved} /> : null}
           {showComposerCounter(value.length) ? (
             <span data-platform-ai-counter="" className="tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>
           ) : null}

@@ -20,34 +20,40 @@ const KEYBOARD_OPEN = [[320,440],[320,480],[360,440],[375,440],[390,440]];
 const STARTERS = 6;
 const textOf = (loc) => loc.evaluate((el) => el.textContent.replace(/\s+/g, ' ').trim());
 /**
- * Personal parity PR6: ONE disclosure line under the composer (Read-only · retention ·
- * don't enter personal details · About), on screen above the bottom bar, at most two
- * lines tall; the full OD-5 text is in the DOM (sr-only) as the box's describedby
- * target, and "About" opens a dialog that shows it in full.
+ * S2 C1–C4: the short line is visible beneath the composer at every width (never
+ * truncated: its text fits its box), the "Privacy & retention" button is reachable by
+ * keyboard and expands the FULL OD-5 text inline (no dialog, no scroll ancestor other
+ * than the reading region, nothing clipped), focus stays on the button, and the full
+ * text is always in the DOM as the box's aria-describedby target.
  */
-async function disclosureLine(page, width, height, at, { open = false } = {}) {
-  const line = page.locator('[data-ai-dock] [data-ai-disclosure] button');
-  assert.equal(await line.count(), 1, 'one disclosure line at ' + at);
-  assert(await line.isVisible(), 'disclosure line visible at ' + at);
+async function disclosureLine(page, width, height, at, { expand = false } = {}) {
+  const line = page.locator('[data-ai-dock] [data-platform-ai-line]');
+  assert.equal(await line.count(), 1, 'one short line at ' + at);
+  assert(await line.isVisible(), 'short line visible at ' + at);
   const b = await line.boundingBox();
-  assert(inside(b, width) && b.y + b.height <= height - 40, 'disclosure line on screen at ' + at + ' ' + JSON.stringify(b));
-  assert(b.height <= 40, 'disclosure line at most two lines at ' + at + ' ' + b.height);
+  assert(inside(b, width) && b.y + b.height <= height - 40, 'short line on screen at ' + at + ' ' + JSON.stringify(b));
+  assert(await line.evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis'), 'short line not truncated at ' + at);
   assert.equal(await page.locator('#platform-ai-conversations-disclosure').count(), 1, 'OD-5 describedby target in the DOM at ' + at);
-  assert.equal(await textOf(page.locator('#platform-ai-conversations-disclosure')), OD5, 'OD-5 text identical at ' + at);
-  assert(!(await page.locator('#platform-ai-privacy-hint').isVisible()) || (await page.locator('#platform-ai-privacy-hint').boundingBox()).width <= 1, 'privacy hint is sr-only at ' + at);
-  assert.equal(await page.locator('[data-platform-ai-notice-toggle]').count(), 0, 'no notice toggle at ' + at);
-  if (!open) return;
-  await line.click();
-  const dialog = page.getByRole('dialog', { name: 'About Platform AI' });
-  await dialog.waitFor();
-  await page.waitForTimeout(350);
-  assert((await textOf(dialog)).includes(OD5), 'About shows the full OD-5 text at ' + at);
-  const d = await dialog.boundingBox();
-  assert(d.x >= -1 && d.x + d.width <= width + 1, 'About panel inside the viewport at ' + at);
-  if (width === 375) await page.screenshot({ path: `${evidence}/platform-ai-375-about.png` });
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  assert.equal(await page.getByRole('dialog').count(), 0, 'About closes at ' + at);
+  assert.equal(await page.getByRole('textbox', { name: 'Ask Platform AI' }).getAttribute('aria-describedby'), 'platform-ai-privacy-hint platform-ai-conversations-disclosure');
+  const toggle = page.locator('[data-platform-ai-notice-toggle]');
+  assert(await toggle.isVisible(), 'Privacy & retention visible at ' + at);
+  if (!expand) return;
+  const wasOpen = (await toggle.getAttribute('aria-expanded')) === 'true';
+  if (!wasOpen) { await toggle.focus(); await page.keyboard.press('Enter'); }
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'expands by keyboard at ' + at);
+  assert(await toggle.evaluate((el) => document.activeElement === el) || wasOpen, 'focus stays on the control at ' + at);
+  assert.equal(await page.getByRole('dialog').count(), 0, 'no dialog at ' + at);
+  const notice = page.locator('#platform-ai-conversations-disclosure');
+  assert(await notice.isVisible(), 'full notice visible at ' + at);
+  assert.equal(await textOf(notice), OD5, 'OD-5 text identical at ' + at);
+  const scrollers = await notice.evaluate((el) => { const out = []; for (let n = el; n && n !== document.documentElement; n = n.parentElement) { const cs = getComputedStyle(n); if (/(auto|scroll)/.test(cs.overflowY + ' ' + cs.overflowX)) out.push(n.hasAttribute('data-ai-scroll') ? 'log' : n.outerHTML.slice(0, 80)); } return out; });
+  assert(scrollers.every((x) => x === 'log'), 'no scroll box around the notice at ' + at + ' ' + JSON.stringify(scrollers));
+  if (!scrollers.length) {
+    const shell = await page.locator('[data-ai-layout]').boundingBox(); const n = await notice.boundingBox();
+    assert(n.y >= shell.y - 1 && n.y + n.height <= shell.y + shell.height + 1, 'footer notice not clipped at ' + at + ' ' + JSON.stringify({ n, shell }));
+  }
+  if (width === 375) await page.screenshot({ path: `${evidence}/platform-ai-375-notice-${wasOpen ? 'first' : 'expanded'}.png` });
+  if (!wasOpen) { await toggle.click(); assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'collapses at ' + at); assert(!(await notice.isVisible()), 'hidden again at ' + at); }
 }
 /**
  * Scrolled to its end, the reading region shows every starter chip clear of the dock: no
@@ -106,7 +112,7 @@ try {
     const box = page.getByRole('textbox', { name: 'Ask Platform AI' });
     assert(await box.isVisible(), 'composer visible at ' + at);
     assert.equal(await box.getAttribute('aria-describedby'), 'platform-ai-privacy-hint platform-ai-conversations-disclosure', 'describedby at ' + at);
-    await disclosureLine(page, width, height, 'thread ' + at, { open: height >= 560 });
+    await disclosureLine(page, width, height, 'thread ' + at, { expand: height >= 560 });
     assert.equal(await page.locator('[data-platform-ai-counter]').count(), 0, 'no counter on an empty draft at ' + at);
     assert.equal(await page.getByRole('button', { name: /Stop/ }).count(), 0, 'no Stop at ' + at);
 
@@ -175,11 +181,18 @@ try {
     const emptyDock = await page.locator('[data-ai-dock]').boundingBox();
     assert(emptyDock.y + emptyDock.height <= height - 40, 'empty: composer above the bottom bar at ' + at);
     await disclosureLine(page, width, height, 'empty ' + at);
+    // First visit (no conversations): the full notice is expanded in the empty state's reading region.
+    await page.goto(`${base}/?platform-ai=first`);
+    await page.locator('[data-platform-ai-notice-lead] #platform-ai-notice').waitFor();
+    assert.equal(await page.locator('[data-platform-ai-notice-toggle]').getAttribute('aria-expanded'), 'true', 'first visit expanded at ' + at);
+    await disclosureLine(page, width, height, 'first ' + at, { expand: true });
+    await page.goto(`${base}/?platform-ai=empty`);
+    await page.locator('[data-platform-ai-starters]').waitFor();
     if (shots.includes(width)) await page.screenshot({ path: `${evidence}/platform-ai-empty-${width}.png` });
     const clearDock = await startersClearDock(page, 'empty ' + at);
     if (width === 375 && height === 688) await page.screenshot({ path: `${evidence}/platform-ai-empty-375x688-scrolled.png` });
 
-    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'collapsed rail+centred', header: 'pass', starters: 'pass', disclosure: 'one line', startersClearDock: clearDock });
+    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'collapsed rail+centred', header: 'pass', starters: 'pass', disclosure: 'line + inline notice', startersClearDock: clearDock });
   }
 
   // Input growth and a simulated shorter viewport keep the dock above the bar; the counter appears near the limit only.
@@ -215,7 +228,7 @@ try {
     }
   }
 
-  // WCAG AA contrast (4.5:1) of the visible disclosure line against its actual
+  // WCAG AA contrast (4.5:1) of the visible short line against its actual
   // (composited) background, in both themes, from computed styles.
   const contrast = {};
   for (const theme of ['dark', 'light']) {
@@ -225,7 +238,7 @@ try {
       await page.evaluate((t) => { document.documentElement.setAttribute('data-theme', t); }, theme);
       await page.waitForTimeout(100);
       for (const id of ['line']) {
-        const r = await page.locator('[data-ai-dock] [data-ai-disclosure] button > span').evaluate((el) => {
+        const r = await page.locator('[data-ai-dock] [data-platform-ai-line]').evaluate((el) => {
           const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) throw new Error('unparsed colour ' + c); const v = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 }; };
           const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
           // Background: composite every ancestor's background colour, bottom-up, over white.
@@ -246,7 +259,7 @@ try {
     }
   }
   fs.writeFileSync(path.join(evidence, 'platform-ai-results.json'), JSON.stringify({ scope: 'Synthetic Platform AI conversation scene (fabricated data, pure view, no API)', results, contrast, softwareKeyboard: 'not verified; requires a device' }, null, 2));
-  console.log('PASS', results.length, 'Platform AI viewport fixtures (thread, sheet/collapsed rail, empty starters, one-line disclosure + About) + input growth + keyboard-open');
+  console.log('PASS', results.length, 'Platform AI viewport fixtures (thread, sheet/collapsed rail, empty starters, short line + inline Privacy & retention + first visit) + input growth + keyboard-open');
 } finally {
   await browser.close();
 }

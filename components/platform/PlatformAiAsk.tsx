@@ -6,7 +6,8 @@
  * PLATFORM_AI_ENABLED on, conversations off: the SAME layout as Platform AI
  * conversations and Personal Space AI (owner 2026-11-08, Personal parity PR6) —
  * the shared `AiShell`, the starter headline and chips, the docked composer with
- * one disclosure line ("… · Not saved · …"), and natural answers in the shared
+ * the short disclosure line ("… · Not saved · …" + a "Privacy" control that
+ * expands the privacy text inline), and natural answers in the shared
  * answer frame with their sources collapsed beneath. One session in memory:
  * nothing is stored — no history, no draft persistence; leaving the page clears
  * it. Each question is its own POST /api/platform/ai/ask (the route re-applies
@@ -117,10 +118,13 @@ export interface PlatformAiSessionViewProps {
   onSend: () => void;
   onAsk: (question: string) => void;
   onNew: () => void;
+  /** The "Privacy" control (collapsed by default: nothing is stored here). */
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
 }
 
 /** Pure (no hooks except the log's anchor): the v0 page in the shared shell. */
-export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew }: PlatformAiSessionViewProps) {
+export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice }: PlatformAiSessionViewProps) {
   const anchorRef = useRef<HTMLDivElement>(null);
   const mode = turns.length > 0 ? "conversation" : "empty";
   const last = turns[turns.length - 1];
@@ -142,7 +146,7 @@ export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraf
         controls={controls}
         lead={<PlatformAiLead />}
         aside={<PlatformAiStarters onStarter={onAsk} />}
-        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} />}
+        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} />}
       >
         <ConversationLog scrollKey={turns} turnCount={turns.length} answered={answered} anchorRef={anchorRef}
           busy={pending} busyNode={<div data-platform-ai-in-flight=""><ThinkingIndicator srLabel={PLATFORM_AI_THINKING_LABEL} /></div>}>
@@ -168,6 +172,7 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
+  const [noticeOpen, setNoticeOpen] = useState(false);
   const nextId = useRef(0);
 
   async function ask(question: string): Promise<boolean> {
@@ -202,6 +207,7 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
       onSend={() => { if (draft.trim() && !pending) { void ask(draft); setDraft(""); } }}
       onAsk={(q) => { void ask(q); }}
       onNew={() => { if (!pending) { setTurns([]); setDraft(""); } }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
     />
   );
 }

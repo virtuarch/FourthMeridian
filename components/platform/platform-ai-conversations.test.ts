@@ -8,9 +8,9 @@
  *   1. flag gating — the page decides server-side, after every gate; the
  *      component is mounted by the page alone; flags unset ⇒ OFF
  *   2. the client model — defensive parsing, problem copy, time labels
- *   3. stale evidence (§4.3, owner 2026-11-08) — ONE quiet line, only when old
+ *   3. stale evidence (§4.3; owner + S2) — answer-level chip when figures share one time, per-figure otherwise
  *   4. no Markdown parser — typed segments only; links only same-origin
- *   5. ONE disclosure line; the OD-5 notice + v0 privacy hint behind About (and as describedby targets)
+ *   5. the short line + "Privacy & retention" (S2 C1–C4)
  *   6. thread states — failed / pending / full / limit / expired
  *   7. layout — 375 px column, the mobile sheet control, the desktop rail
  *   8. reuse (§11) — shared presentation only; no customer-only modules
@@ -47,16 +47,15 @@ import {
   type PlatformAiConversationsViewProps,
 } from "./PlatformAiConversations";
 import { PlatformAiComposer, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
-import { AiDisclosure } from "@/components/ai/AiDisclosure";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_COPY,
   PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_CONVERSATIONS_LINE, PLATFORM_AI_COUNTER_FROM, PLATFORM_AI_PRIVACY_HINT,
   PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_SESSION_LINE, PLATFORM_AI_SESSION_NOT_SAVED, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS, PLATFORM_AI_THINKING_LABEL,
-  NOT_FOUND_PROBLEM, PLATFORM_AI_CONVERSATION_PARAM, RAIL_COLLAPSED_KEY, REFUSAL_COPY, STALE_NOTE_AFTER_MS, TURN_IN_FLIGHT_COPY,
-  answerBlocks, conversationHref, groupConversations, nextConversationAfterDelete, readConversationParam, showConversationCount, staleNoteIndex,
-  answeredLine, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
+  NOT_FOUND_PROBLEM, PLATFORM_AI_CONVERSATION_PARAM, RAIL_COLLAPSED_KEY, REFUSAL_COPY, STALE_AFTER_MS, TURN_IN_FLIGHT_COPY, PLATFORM_AI_PROVIDER,
+  answerBlocks, conversationHref, groupConversations, nextConversationAfterDelete, readConversationParam, showConversationCount, staleChips, noticeDefaultOpen,
+  answerAsOf, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
   parseList, parseMessage, parsePair, parseThread, problemFor, questionBefore, relativeTime, utcStamp,
-  type ClientConversation, type ClientMessage,
+  type ClientConversation, type ClientMessage, type ClientSegment,
 } from "./platform-ai-conversations-model";
 
 const ROOT = path.resolve(__dirname, "../..");
@@ -224,27 +223,41 @@ console.log("\n2. client model — defensive parsing, copy, time");
 }
 
 // ── 3. stale evidence ───────────────────────────────────────────────────────
-console.log("\n3. stale evidence (§4.3, owner 2026-11-08) — ONE quiet line above the first old prior answer; no per-figure chips");
+console.log("\n3. stale evidence (§4.3; owner + S2) — one answer-level chip when figures share one time; per-figure chips otherwise; never stale-as-current");
 {
-  const thread = (messages: ClientMessage[], now = NOW) => renderToStaticMarkup(createElement(Thread, {
-    messages, now, sendingQuestion: null, earlierExpired: false, busy: false,
-  }));
-  const two = thread([user("u1", "q1"), answer("a1"), user("u2", "q2"), answer("a2")]);
-  check("two prior answers 3 h old ⇒ exactly ONE 'Answered 3 h ago · figures are as of then' line (UTC title), above the first",
-    (two.match(/data-platform-ai-stale-line/g) ?? []).length === 1 && textOf(two).includes(answeredLine(H3, NOW))
-    && answeredLine(H3, NOW) === "Answered 3 h ago · figures are as of then" && /data-platform-ai-stale-line="" title="2026-01-10 09:00 UTC"/.test(two)
-    && two.indexOf("data-platform-ai-stale-line") < two.indexOf("data-platform-ai-figure"), textOf(two));
-  check("no 'as of' chip on any figure (the per-figure chip is gone)", !/data-platform-ai-stale-chip|as of \d/.test(two));
-  check("every prior answer still carries its UTC time as a title", (two.match(/data-platform-ai-answer="stale" title="2026-01-10 09:00 UTC"/g) ?? []).length === 2, two);
+  const render = (m: ClientMessage, now = NOW) => renderToStaticMarkup(createElement(AssistantAnswer, { message: m, now }));
+  const shared = render(answer("a1"));
+  check("all figures share one observation time (the answer's; no observedAt from the server) ⇒ ONE answer-level 'Figures as of 3 h ago' chip, UTC title, no per-figure chip",
+    (shared.match(/data-platform-ai-stale-chip="answer"/g) ?? []).length === 1 && /data-platform-ai-stale-chip="answer" title="2026-01-10 09:00 UTC"[^>]*>Figures as of 3 h ago</.test(shared)
+    && !/data-platform-ai-stale-chip="figure"/.test(shared) && answerAsOf(H3, NOW) === "Figures as of 3 h ago", shared);
+  check("…the chip sits above the answer body", shared.indexOf('data-platform-ai-stale-chip="answer"') < shared.indexOf("data-platform-ai-body"));
+  const sharedOther = render(answer("a1b", { content: [
+    { kind: "figure", text: "1", metric: "k@1", window: 7, observedAt: "2026-01-10T06:00:00.000Z" },
+    { kind: "text", text: " and " }, { kind: "figure", text: "2", metric: "j@1", window: 7, observedAt: "2026-01-10T06:00:00.000Z" },
+  ] }));
+  check("all figures share an observedAt that differs from the answer time ⇒ the ONE answer-level chip states THAT time", /Figures as of 6 h ago/.test(sharedOther) && !/data-platform-ai-stale-chip="figure"/.test(sharedOther));
+  const mixedMsg = answer("a2", { content: [
+    { kind: "text", text: "Jobs " }, { kind: "figure", text: "5", metric: "k@1", window: 7 },
+    { kind: "text", text: ", providers " }, { kind: "figure", text: "9", metric: "j@1", window: 7, observedAt: "2026-01-09T12:00:00.000Z" },
+  ] });
+  const mixed = render(mixedMsg);
+  check("figures with DIFFERENT observation times ⇒ the answer chip (the answer's time) + an 'as of' chip on the figure whose time differs only",
+    /Figures as of 3 h ago/.test(mixed) && (mixed.match(/data-platform-ai-stale-chip="figure"/g) ?? []).length === 1
+    && /data-platform-ai-figure=""[^>]*>9<\/span><span data-platform-ai-stale-chip="figure" title="2026-01-09 12:00 UTC"[^>]*>as of 1 day ago</.test(mixed)
+    && !/>5<\/span><span data-platform-ai-stale-chip/.test(mixed), mixed);
+  const sc = staleChips(mixedMsg, NOW);
+  check("staleChips: per-figure map keyed by segment index", sc.answer === H3 && sc.figures.size === 1 && sc.figures.get(3) === "2026-01-09T12:00:00.000Z");
   const recent = "2026-01-10T11:30:00.000Z";
-  const fresh = thread([user("u1", "q", recent), answer("a1", { createdAt: recent })]);
-  check("a prior answer under an hour old ⇒ no line", !/data-platform-ai-stale-line/.test(fresh) && STALE_NOTE_AFTER_MS === 60 * 60 * 1000);
-  const current = thread([user("u1", "q"), answer("a1", { stale: false })]);
-  check("a just-answered (current) answer ⇒ no line, data-platform-ai-answer=current", !/data-platform-ai-stale/.test(current) && /data-platform-ai-answer="current"/.test(current));
-  check("staleNoteIndex: the first ASSISTANT that is stale AND old; none ⇒ -1",
-    staleNoteIndex([user("u", "q"), answer("a", { stale: false }), answer("b"), answer("c")], NOW) === 2
-    && staleNoteIndex([answer("a", { createdAt: recent })], NOW) === -1 && staleNoteIndex([answer("a", { createdAt: "nope" })], NOW) === -1);
-  check("the figure text is the server's stored text, never refreshed in place", /data-platform-ai-figure=""[^>]*>12</.test(two) && /data-platform-ai-figure=""[^>]*>3</.test(two));
+  const currentFresh = render(answer("a3", { stale: false, createdAt: recent }));
+  check("a just-answered current answer under the threshold ⇒ no chip", !/data-platform-ai-stale-chip/.test(currentFresh) && /data-platform-ai-answer="current"/.test(currentFresh) && STALE_AFTER_MS === 60 * 60 * 1000);
+  check("a PRIOR answer is never shown as current: chip even when under the threshold", /Figures as of 30 min ago/.test(render(answer("a4", { createdAt: recent }))));
+  check("a current answer older than the threshold ⇒ chip", /Figures as of 3 h ago/.test(render(answer("a5", { stale: false }))));
+  check("…and a current answer whose differing figure is old ⇒ that figure's chip even with the answer fresh",
+    staleChips(answer("a6", { stale: false, createdAt: recent, content: [{ kind: "figure", text: "1", metric: "k@1", window: 7 }, { kind: "figure", text: "2", metric: "j@1", window: 7, observedAt: H3 }] }), NOW).figures.get(1) === H3);
+  check("no figures ⇒ no chip", staleChips(answer("a7", { content: [{ kind: "text", text: "Nothing measured." }] }), NOW).answer === null);
+  check("observedAt is parsed only as a valid time string", (parseMessage({ id: "m", role: "ASSISTANT", status: "COMPLETE", createdAt: H3, content: [{ kind: "figure", text: "1", metric: "k@1", observedAt: "bad" }, { kind: "figure", text: "2", metric: "k@1", observedAt: H3 }] })?.content as { observedAt?: string }[]).map((x) => x.observedAt ?? "-").join() === `-,${H3}`);
+  check("every prior answer carries its UTC time as a title", /data-platform-ai-answer="stale" title="2026-01-10 09:00 UTC"/.test(shared));
+  check("the figure text is the server's stored text, never refreshed in place", /data-platform-ai-figure=""[^>]*>12</.test(shared) && /data-platform-ai-figure=""[^>]*>3</.test(shared));
   const cmp = code(COMPONENT);
   check("the orchestrator marks every earlier answer stale when a new pair lands (as a re-read would)", /role === "ASSISTANT" \? \{ \.\.\.m, stale: true \}/.test(cmp));
 }
@@ -279,6 +292,28 @@ console.log("\n4. no Markdown parser — typed segments only (paragraph / list S
     && blocks[4].kind === "p" && blocks[4].lines[0][0].text === "**not a list**", JSON.stringify(blocks));
   check("answerBlocks: the marker is dropped from the item text, nothing else is rewritten; corrections are not in the body",
     blocks[2].kind === "ul" && blocks[2].items[1][0].text === "second" && !JSON.stringify(blocks).includes("Correction"));
+  // S2 pre-flag 4: typed server segments are never split or interpreted.
+  const fig = { kind: "figure" as const, text: "1\n\n- 2", metric: "k@1", window: 7 };
+  const atStart = answerBlocks([{ kind: "text", text: "Intro.\n" }, { kind: "figure", text: "- 5", metric: "k@1", window: 7 }, { kind: "text", text: " jobs.\n\n" }, fig, { kind: "link", text: "a\n\n1. b", href: "/x" }]);
+  const inl = atStart.flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.items.flat()));
+  check("answerBlocks: a {{m:}} figure segment is never split and never read as a list marker, even when its text holds newlines or '- '",
+    atStart.every((b) => b.kind === "p") && inl.filter((x) => x.kind === "figure").map((x) => x.text).join("|") === "- 5|1\n\n- 2"
+    && inl.some((x) => x.kind === "figure" && x.seg === 1) && inl.some((x) => x.kind === "figure" && x.seg === 3), JSON.stringify(atStart));
+  check("answerBlocks: a server link segment is never split either", inl.filter((x) => x.kind === "link").map((x) => x.text).join() === "a\n\n1. b");
+  check("answerBlocks: splitting happens ONLY inside model text — the figures, links and text come back in order, text unchanged except newlines and list markers",
+    (() => {
+      const segsIn: ClientSegment[] = [{ kind: "text", text: "Costs " }, { kind: "figure", text: "$1", metric: "c@1", window: 30 }, { kind: "text", text: " for Providers (Plaid).\n\n- Jobs: " }, { kind: "figure", text: "4", metric: "j@1", window: 7 }];
+      const out = answerBlocks(segsIn).flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.items.flat())).map((x) => x.text).join("");
+      return out === "Costs $1 for Providers (Plaid).Jobs: 4";
+    })());
+  const CORR2 = "Correction: these cover this month.\n\n- not a list\n1. not numbered";
+  const corrSegs: ClientSegment[] = [{ kind: "text", text: "Model prose\n- item" }, { kind: "correction", text: CORR2 }, { kind: "text", text: "\nmore model text" }];
+  check("answerBlocks: a correction segment is never part of the body, never split", !JSON.stringify(answerBlocks(corrSegs)).includes("Correction") && !JSON.stringify(answerBlocks(corrSegs)).includes("not a list"));
+  const corrHtml = renderToStaticMarkup(createElement(TypedAnswerSegments, { segments: corrSegs }));
+  const callout = (/<div role="note" aria-label="Correction" data-platform-ai-correction=""[\s\S]*?<\/div><\/div>/.exec(corrHtml) ?? [""])[0];
+  check("the correction renders WHOLE in its callout (one paragraph, verbatim), and NO model text ever appears inside the callout",
+    (callout.match(/<p /g) ?? []).length === 1 && callout.includes(CORR2.replace(/\n/g, "\n")) && !/Model prose|more model text|<li|<ul|<ol/.test(callout), callout);
+  check("…while the model's prose lays out below it", corrHtml.indexOf("Model prose") > corrHtml.indexOf("data-platform-ai-correction") && /<li class="min-w-0"><span>item<\/span><\/li>/.test(corrHtml));
   check("answerBlocks: no segment ⇒ no block; whitespace-only text ⇒ no block", answerBlocks([]).length === 0 && answerBlocks([{ kind: "text", text: " \n\n " }]).length === 0);
   const cmp = code(COMPONENT), model = code(MODEL), pres = code(PRESENTATION), v0 = code(V0);
   check("the Markdown module contributes ONLY isSameOriginPath (presentation + v0); nothing renders <Markdown>, no parser, no innerHTML",
@@ -297,11 +332,13 @@ console.log("\n4b. the period CORRECTION segment — its own quiet note ABOVE th
   const conv = renderToStaticMarkup(createElement(TypedAnswerSegments, { segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
   const v0 = renderToStaticMarkup(createElement(AnswerSegments, { segments: [{ kind: "correction", text: CORR }, { kind: "text", text: PROSE }] }));
   for (const [name, html] of [["conversations (TypedAnswerSegments)", conv], ["v0 (AnswerSegments)", v0]] as const) {
-    const block = /<div role="note" data-platform-ai-correction=""[^>]*>([\s\S]*?)<\/div><\/div>/.exec(html);
+    const block = /<div role="note" aria-label="Correction" data-platform-ai-correction=""[^>]*>([\s\S]*?)<\/div><\/div>/.exec(html);
     check(`${name}: the correction is its OWN note (role=note) — not inline text in the answer body — and appears once`,
       !!block && block[1].includes(CORR) && (html.match(new RegExp(CORR.slice(0, 40).replace(/[()]/g, "\\$&"), "g")) ?? []).length === 1, html);
-    check(`${name}: quiet (owner 2026-11-08): no warning border or box, secondary text`,
-      !/accent-warning|border-l-4|rounded-lg border/.test(block?.[0] ?? "x") && /text-\[var\(--text-secondary\)\]/.test(block?.[0] ?? ""), block?.[0]);
+    check(`${name}: prominent and distinct from the prose (#460): a bordered, tinted callout with an accent rule, primary text, medium weight — not the old orange box, not muted`,
+      /rounded-lg border /.test(block?.[0] ?? "") && /border-l-\[var\(--accent-info\)\]/.test(block?.[0] ?? "") && /bg-\[var\(--surface-inset\)\]/.test(block?.[0] ?? "")
+      && /text-\[var\(--text-primary\)\]/.test(block?.[0] ?? "") && /font-medium/.test(block?.[0] ?? "")
+      && !/accent-warning|text-\[var\(--text-(muted|secondary)\)\]/.test((block?.[0] ?? "x").replace(/<svg[\s\S]*?<\/svg>/, "")), block?.[0]);
     check(`${name}: placed ABOVE the answer body, and the model's prose is shown unchanged`,
       html.indexOf("data-platform-ai-correction") < html.indexOf("data-platform-ai-body") && html.includes(PROSE)
       && !/data-platform-ai-body[^]*Correction:/.test(html), html);
@@ -317,48 +354,79 @@ console.log("\n4b. the period CORRECTION segment — its own quiet note ABOVE th
   check("the stored answer is served with the correction typed (renderStoredAnswer)", rendered[0]?.kind === "correction" && rendered[0].text === CORR && rendered.length === 2, rendered);
 }
 
-// ── 5. disclosure + privacy hint ────────────────────────────────────────────
-console.log("\n5. ONE disclosure line; the OD-5 notice and the v0 privacy hint behind 'About' and as describedby targets");
+// ── 5. disclosure + privacy hint (S2 C1–C4) ─────────────────────────────────
+console.log("\n5. the short line + 'Privacy & retention' (S2 C1–C4): full OD-5 inline, first-visit expanded, describedby on the full text");
 {
-  check("the disclosure is the owner-approved OD-5 wording (2026-11-07), exactly — changing it needs a new owner approval and S2 claim check",
+  check("the disclosure is the owner-approved OD-5 wording, exactly — changing it needs a new owner approval and S2 claim check",
     PLATFORM_AI_CONVERSATIONS_DISCLOSURE === "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 7 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.");
   check("…and no longer claims anything is pending", !/pending/i.test(PLATFORM_AI_CONVERSATIONS_DISCLOSURE) && !/PENDING OWNER|DISCLOSURE_PENDING/.test(src(MODEL)));
   const literalUses: string[] = [];
   for (const rel of [COMPONENT, PAGE, V0, PRESENTATION]) if (src(rel).includes("saved encrypted to your operator account")) literalUses.push(rel);
   check("the wording lives only in the model constant (no second copy)", literalUses.length === 0, literalUses);
-  check("the one line: Read-only · the retention days FROM the retention constant · don't enter personal details; 'hidden', never 'deleted'",
-    PLATFORM_AI_CONVERSATIONS_LINE === `Read-only · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`
-    && PLATFORM_AI_CONVERSATIONS_LINE.includes("Chats hidden after 7 days") && /\$\{PLATFORM_AI_RETENTION_DAYS_CLIENT\}/.test(src(MODEL)) && !/delet|remov|purg/i.test(PLATFORM_AI_CONVERSATIONS_LINE + PLATFORM_AI_SESSION_LINE));
-  const composer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false }));
-  const footer = (composer.match(/<div data-platform-ai-composer-footer=""[\s\S]*$/) ?? [""])[0];
-  const visible = textOf(footer.replace(/<p [^>]*class="sr-only"[^>]*>[\s\S]*?<\/p>/g, ""));
-  check("beneath the composer: ONE visible line + 'About' (a dialog trigger) — no long notice, no hint paragraph, no toggle",
-    visible === `${PLATFORM_AI_CONVERSATIONS_LINE} · About` && /<button[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/.test(footer)
-    && !/data-platform-ai-notice-toggle|data-platform-ai-notice=/.test(composer), visible);
-  check("the full OD-5 text and the privacy hint stay in the DOM (sr-only) as the box's aria-describedby targets",
-    /<p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" class="sr-only">/.test(composer)
-    && /<p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" class="sr-only">/.test(composer)
-    && textOf((composer.match(/data-platform-ai-conversations-disclosure="" class="sr-only">([\s\S]*?)<\/p>/) ?? [])[1] ?? "") === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
-    && textOf((composer.match(/data-platform-ai-privacy-hint="" class="sr-only">([\s\S]*?)<\/p>/) ?? [])[1] ?? "").replace(/&#x2019;/g, "’") === PLATFORM_AI_PRIVACY_HINT
-    && /aria-describedby="platform-ai-privacy-hint platform-ai-conversations-disclosure"/.test(composer));
-  // The About panel's body (the AiDisclosure children): the hint and the full OD-5 text, unchanged.
-  const disclosureEl = elements(PlatformAiComposer({ value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false })).flatMap((e) => elements((e.props as { footer?: unknown }).footer));
-  const platformDisclosure = disclosureEl.find((e) => typeof e.type === "function" && (e.type as { name?: string }).name === "PlatformAiDisclosure");
-  const inner = platformDisclosure ? elements((platformDisclosure.type as (p: unknown) => ReactNode)(platformDisclosure.props)) : [];
-  const about = inner.find((e) => e.type === AiDisclosure);
-  const aboutHtml = about ? renderToStaticMarkup(createElement("div", null, (about.props as { children?: ReactNode }).children)) : "";
-  check("'About' opens the shared AiDisclosure panel (Platform's own title/line) holding the privacy hint and the FULL OD-5 text",
-    !!about && (about.props as { line?: string }).line === PLATFORM_AI_CONVERSATIONS_LINE && (about.props as { title?: string }).title === "About Platform AI"
-    && textOf(aboutHtml).replace(/&#x2019;/g, "’").includes(PLATFORM_AI_PRIVACY_HINT) && textOf(aboutHtml).includes(textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)), aboutHtml);
-  check("Personal's AiDisclosure renders exactly as before with no props (defaults)",
-    /About Fourth Meridian AI|AI-generated insights · Not professional financial advice · Processed by OpenAI/.test(renderToStaticMarkup(createElement(AiDisclosure))));
-  check("a 500-character box", /<textarea[^>]*maxLength="500"/i.test(composer));
-  const near = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "x".repeat(PLATFORM_AI_COUNTER_FROM), onChange: noop, onSubmit: noop, disabled: false, busy: false }));
+  // C1 — the exact short line.
+  check("C1: the short line, exactly (read-only · provider as OD-5 names it · 'hidden' after the retention days · don't enter personal details)",
+    PLATFORM_AI_CONVERSATIONS_LINE === "Read-only · Sent to OpenAI · Chats hidden after 7 days · Don’t enter personal details"
+    && PLATFORM_AI_SESSION_LINE === "Read-only · Sent to OpenAI · Not saved · Don’t enter personal details");
+  check("C1: built from PLATFORM_AI_RETENTION_DAYS_CLIENT (no literal days) and the provider constant; the provider is the one OD-5 names; never 'deleted'",
+    /`Read-only · Sent to \$\{PLATFORM_AI_PROVIDER\} · Chats hidden after \$\{PLATFORM_AI_RETENTION_DAYS_CLIENT\} days/.test(src(MODEL))
+    && PLATFORM_AI_CONVERSATIONS_DISCLOSURE.includes(`sent to ${PLATFORM_AI_PROVIDER}`) && !/delet|remov|purg/i.test(PLATFORM_AI_CONVERSATIONS_LINE + PLATFORM_AI_SESSION_LINE));
+  const mk = (over: Partial<Parameters<typeof PlatformAiComposer>[0]> = {}) =>
+    renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false, ...over }));
+  const closed = mk();
+  const opened = mk({ noticeOpen: true });
+  const lineHtml = (closed.match(/<p data-platform-ai-disclosure="conversations"[^>]*>[\s\S]*?<\/p>/) ?? [""])[0];
+  check("C1: the line is rendered (not truncated / ellipsized / clamped / hidden at any width) with its exact text, beneath the box",
+    textOf(lineHtml).replace(/&#x2019;/g, "’").startsWith(PLATFORM_AI_CONVERSATIONS_LINE) && /break-words/.test(lineHtml)
+    && !/truncate|text-ellipsis|line-clamp|whitespace-nowrap|\bhidden\b|max-sm:|sr-only/.test([...lineHtml.matchAll(/class="([^"]*)"/g)].map((m) => m[1]).join(" ")) && !/ hidden=""/.test(lineHtml) && closed.indexOf("data-platform-ai-disclosure") > closed.indexOf("<textarea"), lineHtml);
+  // C2 — the control.
+  const toggle = /<button type="button" data-platform-ai-notice-toggle="" aria-expanded="(true|false)" aria-controls="platform-ai-notice"[^>]*>Privacy &amp; retention<\/button>/;
+  check("C2: 'Privacy & retention' is a real button (keyboard-reachable, in the composer's tab order after the box) with aria-expanded + aria-controls",
+    toggle.exec(closed)?.[1] === "false" && toggle.exec(opened)?.[1] === "true" && closed.indexOf("data-platform-ai-notice-toggle") > closed.indexOf("<textarea"));
+  check("C2: expanding shows the FULL OD-5 text inline — no dialog, no modal, no scroll container, nothing clipped",
+    /<div id="platform-ai-notice" data-platform-ai-notice="open" class="[^"]*"/.test(opened) && !/<div id="platform-ai-notice"[^>]*hidden/.test(opened)
+    && textOf((opened.match(/data-platform-ai-conversations-disclosure=""[^>]*>([\s\S]*?)<\/p>/) ?? [])[1] ?? "") === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && !/aria-haspopup|role="dialog"|overflow-(y-|x-)?(auto|scroll|hidden)|max-h-|line-clamp|truncate/.test((opened.match(/<div data-platform-ai-composer-footer=""[\s\S]*$/) ?? [""])[0]));
+  {
+    let toggled: boolean | null = null;
+    const el = PlatformAiComposer({ value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false, noticeOpen: false, onNotice: (v) => { toggled = v; } }) as ReactElement;
+    const lineEl = elements((el.props as { footer?: unknown }).footer).find((e) => typeof e.type === "function" && (e.type as { name?: string }).name === "PlatformAiDisclosureLine");
+    const btn = lineEl ? elements((lineEl.type as (p: unknown) => ReactNode)(lineEl.props)).find((e) => (e.props as Record<string, unknown>)["data-platform-ai-notice-toggle"] === "") : undefined;
+    (btn?.props as { onClick?: () => void } | undefined)?.onClick?.();
+    check("C2: the button toggles through onNotice (focus stays on it: no navigation, no dialog)", toggled === true && !/focus\(|autoFocus/.test(code(PRESENTATION)));
+  }
+  // C4 — describedby on the full text, always in the DOM.
+  check("C4: the box's aria-describedby points at the full-text elements, which are in the DOM collapsed (hidden) and expanded",
+    /aria-describedby="platform-ai-privacy-hint platform-ai-conversations-disclosure"/.test(closed)
+    && /<div id="platform-ai-notice" data-platform-ai-notice="closed" hidden=""/.test(closed)
+    && /id="platform-ai-conversations-disclosure"/.test(closed) && /id="platform-ai-privacy-hint"/.test(closed)
+    && textOf((closed.match(/data-platform-ai-privacy-hint=""[^>]*>([\s\S]*?)<\/p>/) ?? [])[1] ?? "").replace(/&#x2019;/g, "’") === PLATFORM_AI_PRIVACY_HINT);
+  // C3 — first visit, server-derived.
+  check("C3: noticeDefaultOpen = the server's list is empty and nothing is open (never storage); unknown list ⇒ collapsed",
+    noticeDefaultOpen([], false) && !noticeDefaultOpen([CONV], false) && !noticeDefaultOpen([], true) && !noticeDefaultOpen(null, false)
+    && !/localStorage[^\n]*notice|notice[^\n]*localStorage/i.test(code(COMPONENT)));
+  const firstVisit = view({ conversations: [], selected: null });
+  check("C3: first visit (zero conversations) ⇒ the full notice EXPANDED in the empty state (top of the reading region), exactly once",
+    /data-ai-layout="empty"/.test(firstVisit) && /data-platform-ai-notice-lead=""[^>]*><div id="platform-ai-notice" data-platform-ai-notice="open"/.test(firstVisit)
+    && firstVisit.indexOf("data-platform-ai-notice-lead") > firstVisit.indexOf("data-ai-scroll") && firstVisit.indexOf("data-platform-ai-notice-lead") < firstVisit.indexOf("data-ai-dock")
+    && (firstVisit.match(/id="platform-ai-notice"/g) ?? []).length === 1 && (firstVisit.match(/id="platform-ai-conversations-disclosure"/g) ?? []).length === 1
+    && /data-platform-ai-notice-toggle="" aria-expanded="true"/.test(firstVisit), firstVisit);
+  check("C3: sending the first message keeps it expanded while in flight; once a conversation exists ⇒ collapsed",
+    /data-platform-ai-notice="open"/.test(view({ conversations: [], selected: null, sendingQuestion: "first?" }))
+    && /data-platform-ai-notice="closed"/.test(view({ conversations: [CONV], selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] } })));
+  check("C3: a returning operator (conversations exist) ⇒ collapsed, even on an empty composer", /data-platform-ai-notice="closed"/.test(view({ conversations: [CONV], selected: null })));
+  check("C3: every conversation deleted ⇒ expanded again (the default is recomputed from the list)", /data-platform-ai-notice="open"/.test(view({ conversations: [], selected: null, noticeOpen: null })));
+  check("C3: the operator's toggle wins over the default", /data-platform-ai-notice="closed"/.test(view({ conversations: [], selected: null, noticeOpen: false }))
+    && /data-platform-ai-notice="open"/.test(view({ conversations: [CONV], selected: null, noticeOpen: true })));
+  const cmp = code(COMPONENT);
+  check("C3: the toggle override resets to the default when a first message creates a conversation and when the last one is deleted",
+    /if \(!s\.conversationId\) setNoticeOpen\(null\);/.test(cmp) && /if \(!next\) setNoticeOpen\(null\);/.test(cmp) && /const \[noticeOpen, setNoticeOpen\] = useState<boolean \| null>\(null\);/.test(cmp));
+  check("a 500-character box", /<textarea[^>]*maxLength="500"/i.test(closed));
+  const near = mk({ value: "x".repeat(PLATFORM_AI_COUNTER_FROM) });
   check("the counter shows only near the limit (from 400 of 500), beneath the box",
-    !/data-platform-ai-counter/.test(composer) && PLATFORM_AI_COUNTER_FROM === 400
+    !/data-platform-ai-counter/.test(closed) && PLATFORM_AI_COUNTER_FROM === 400
     && /data-platform-ai-counter=""[^>]*>400(<!-- -->)?\/(<!-- -->)?500</.test(near) && near.indexOf("data-platform-ai-counter") > near.indexOf("<textarea"));
-  check("contrast: the footer line uses the secondary-text token (muted measured below AA on the dark base)",
-    /data-platform-ai-composer-footer=""[^>]*text-\[var\(--text-secondary\)\]/.test(composer));
+  check("contrast: the footer and the notice use the secondary-text token (muted measured below AA on the dark base)",
+    /data-platform-ai-composer-footer=""[^>]*text-\[var\(--text-secondary\)\]/.test(closed) && /data-platform-ai-notice="closed" hidden="" class="[^"]*text-\[var\(--text-secondary\)\]/.test(closed));
 }
 
 // ── 6. thread states ────────────────────────────────────────────────────────
@@ -475,7 +543,7 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
     "lucide-react", "react",
   ].sort().join(), importsOf(cmp));
   check("shared presentation imports: exactly these modules (the shared AI primitives + the model)", importsOf(pres).join() === [
-    "./platform-ai-conversations-model", "@/components/ai/AiDisclosure", "@/components/ai/Composer", "@/components/ai/Markdown",
+    "./platform-ai-conversations-model", "@/components/ai/Composer", "@/components/ai/Markdown",
     "@/components/ai/StarterLine", "@/components/ai/SuggestedPrompt", "lucide-react", "react",
   ].sort().join(), importsOf(pres));
   const named = (c: string, mod: string) => (c.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
@@ -484,9 +552,7 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
     && !/from "@\/components\/ai"/.test(cmp + pres + code(V0)));
   check("NOT reused: ConversationView (Markdown answers), Composer (the customer disclosure copy), the transcript cache, Space context, Talk-about-this",
     !/<ConversationView\b|<Composer\b|transcript-cache|TalkAboutThis|talk-about-this|SpaceContext|useSpace|spaceId/.test(cmp + pres + code(V0)));
-  check("AiDisclosure is used ONLY with Platform's own line (never the customer default copy)",
-    (pres.match(/<AiDisclosure\b/g) ?? []).length === 1 && /<AiDisclosure line=\{saved \? PLATFORM_AI_CONVERSATIONS_LINE : PLATFORM_AI_SESSION_LINE\} title="About Platform AI">/.test(pres)
-    && !/AI_DISCLOSURE_LINE|AI_DISCLOSURE_ABOUT/.test(pres));
+  check("the customer AiDisclosure (its copy and modal) is not used on Platform", !/<AiDisclosure\b|components\/ai\/AiDisclosure|AI_DISCLOSURE_LINE|AI_DISCLOSURE_ABOUT/.test(cmp + pres + code(V0)));
   check("the model module imports nothing", !/^import /m.test(code(MODEL)));
 }
 
@@ -517,7 +583,7 @@ console.log("\n10. shared shell — frame, log, thinking dots, answer frame + So
   check("…the composer sits in the dock (once), the reading region scrolls inside the shell",
     (conv.match(/id="platform-ai-question"/g) ?? []).length === 1 && conv.indexOf("data-ai-dock") < conv.indexOf('id="platform-ai-question"')
     && conv.indexOf("data-ai-scroll") < conv.indexOf("data-ai-dock"));
-  check("no Read-only badge in the header (it is in the disclosure line)", !/data-tone|ToneBadge/.test(conv.slice(0, conv.indexOf("</header>"))) && textOf(conv).includes(PLATFORM_AI_CONVERSATIONS_LINE));
+  check("no Read-only badge in the header (it is in the disclosure line)", !/data-tone|ToneBadge/.test(conv.slice(0, conv.indexOf("</header>"))) && textOf(conv).replace(/&#x2019;/g, "’").includes(PLATFORM_AI_CONVERSATIONS_LINE));
   check("the thread is the shared reading column (ConversationLog: role=log, max-w-3xl, pb-10)",
     /<div role="log" aria-label="Conversation" class="max-w-3xl mx-auto w-full space-y-7 px-1 pt-3 pb-10">/.test(conv));
   check("ONE 'New chat' on the page (the header, Personal's class string); no 'New conversation' in the rail",
@@ -587,7 +653,7 @@ console.log("\n10. shared shell — frame, log, thinking dots, answer frame + So
     && /enterkeyhint="send"/i.test(auto));
   check("the box is the auto-growing Atlas Textarea inside the pill with the integrated send button", /rounded-\[22px\]/.test(auto) && !/resize-y/.test(auto) && /aria-label="Send message"/.test(auto));
   const busyComposer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "typing", onChange: noop, onSubmit: noop, disabled: false, busy: true }));
-  check("busy: one disabled send button (plus the About trigger), never a Stop button",
+  check("busy: one disabled send button, never a Stop button",
     (busyComposer.match(/<button type="submit"/g) ?? []).length === 1 && /<button type="submit" disabled="" aria-label="Send message" aria-busy="true"/.test(busyComposer) && !/Stop/.test(busyComposer));
 
   // Empty state + starter chips.
@@ -628,8 +694,9 @@ console.log("\n12. v0 parity — flag on, conversations off: the same shell, a s
     && PLATFORM_AI_STARTER_PROMPTS.every((s) => emptyV0.includes(`>${s.label.replace(/&/g, "&amp;")}</button>`)) && /data-ai-dock="empty"/.test(emptyV0)
     && !/resize-y|>Ask<|Asking…|Nothing here is saved/.test(emptyV0) && /<textarea[^>]*maxLength="500"/i.test(emptyV0));
   check("v0's line says nothing is saved; no OD-5 element (nothing stored), the box described by the privacy hint only",
-    textOf(emptyV0).includes(PLATFORM_AI_SESSION_LINE) && !/platform-ai-conversations-disclosure/.test(emptyV0)
-    && /aria-describedby="platform-ai-privacy-hint"/.test(emptyV0) && /<p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" class="sr-only">/.test(emptyV0)
+    textOf(emptyV0).replace(/&#x2019;/g, "’").includes(PLATFORM_AI_SESSION_LINE) && !/platform-ai-conversations-disclosure/.test(emptyV0)
+    && /aria-describedby="platform-ai-privacy-hint"/.test(emptyV0) && /<div id="platform-ai-notice" data-platform-ai-notice="closed" hidden=""[^>]*><p data-platform-ai-session-notice=""/.test(emptyV0)
+    && /id="platform-ai-privacy-hint" data-platform-ai-privacy-hint=""/.test(emptyV0) && /data-platform-ai-notice-toggle="" aria-expanded="false" aria-controls="platform-ai-notice"[^>]*>Privacy<\/button>/.test(emptyV0)
     && PLATFORM_AI_SESSION_NOT_SAVED.length > 0 && /PLATFORM_AI_SESSION_NOT_SAVED/.test(code(PRESENTATION)));
   const ANSWER = {
     surface: "Platform Operations", notes: ["A v0 note."], grounding: {} as never,

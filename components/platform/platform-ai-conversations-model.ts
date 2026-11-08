@@ -49,7 +49,12 @@ export const PLATFORM_AI_COMPOSER_MAX = 500;
 /** A rendered answer segment as the server sends it (handlers.ts RenderedSegment). */
 export type ClientSegment =
   | { kind: "text"; text: string }
-  | { kind: "figure"; text: string; metric: string; window: string | number | null }
+  /**
+   * `observedAt`: when the figure's value was read, if the server sends it. Today the
+   * server does not (handlers.ts RenderedSegment), so every figure of an answer shares
+   * the answer's own time (createdAt) — see `staleChips`.
+   */
+  | { kind: "figure"; text: string; metric: string; window: string | number | null; observedAt?: string }
   | { kind: "link"; text: string; href: string }
   /** S2 F-C1 (ii): the server's period correction — rendered prominently ABOVE the answer. */
   | { kind: "correction"; text: string };
@@ -99,7 +104,10 @@ function parseSegment(s: unknown): ClientSegment | null {
   if (s.kind === "correction") return { kind: "correction", text: s.text };
   if (s.kind === "figure" && typeof s.metric === "string") {
     const w = s.window;
-    return { kind: "figure", text: s.text, metric: s.metric, window: typeof w === "string" || typeof w === "number" ? w : null };
+    return {
+      kind: "figure", text: s.text, metric: s.metric, window: typeof w === "string" || typeof w === "number" ? w : null,
+      ...(typeof s.observedAt === "string" && Number.isFinite(Date.parse(s.observedAt)) ? { observedAt: s.observedAt } : {}),
+    };
   }
   if (s.kind === "link" && typeof s.href === "string") return { kind: "link", text: s.text, href: s.href };
   return null; // an unknown kind is dropped, never shown as raw text
@@ -238,8 +246,10 @@ export function utcStamp(iso: string): string {
   return `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-/** §4.3 (owner 2026-11-08): the ONE quiet line above the first old prior answer. */
-export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime(iso, now)} · figures are as of then`;
+/** §4.3: the answer-level chip (every figure of the answer shares one observation time). */
+export const answerAsOf = (iso: string, now: Date) => `Figures as of ${relativeTime(iso, now)}`;
+/** §4.3: the chip on a figure whose observation time differs from the answer's. */
+export const asOfChip = (iso: string, now: Date) => `as of ${relativeTime(iso, now)}`;
 
 /**
  * = PLATFORM_AI_RETENTION_DAYS in lib/platform/intelligence/ai/conversations/constants.ts.
@@ -305,19 +315,31 @@ export const PLATFORM_AI_THINKING_LABEL = "Platform AI is answering…";
 // ── Quiet chrome (Personal parity PR6) ──────────────────────────────────────
 
 /**
- * The ONE visible disclosure line beneath the composer (Personal's AiDisclosure
- * idiom). "About" opens the panel with the full OD-5 text and the v0 privacy
- * hint, both unchanged. The retention figure is the client retention constant,
- * so it follows PLATFORM_AI_RETENTION_DAYS (pinned equal in the test). "Hidden
- * after" — never "deleted" (removal is the next purge, stated in the OD-5 text).
+ * S2 ruling C1 (2026-11-08): the short line, ALWAYS visible beneath the composer
+ * (every viewport, never truncated): read-only, the AI provider as the OD-5 notice
+ * names it, the retention from the retention constant with the word "hidden"
+ * (never "deleted" — removal is the next purge, stated in the full notice), and
+ * "don't enter personal details". The test pins the exact string.
  */
+export const PLATFORM_AI_PROVIDER = "OpenAI";
 export const PLATFORM_AI_CONVERSATIONS_LINE =
-  `Read-only · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
+  `Read-only · Sent to ${PLATFORM_AI_PROVIDER} · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
 /** The same line for v0 (flag on, conversations off): nothing is stored. */
-export const PLATFORM_AI_SESSION_LINE = "Read-only · Not saved · Don’t enter personal details";
-/** v0's About panel adds this sentence (the v0 route stores nothing; platform-ai.test.ts §10 pins the route). */
+export const PLATFORM_AI_SESSION_LINE = `Read-only · Sent to ${PLATFORM_AI_PROVIDER} · Not saved · Don’t enter personal details`;
+/** v0's expanded privacy text adds this sentence (the v0 route stores nothing; platform-ai.test.ts §10 pins the route). */
 export const PLATFORM_AI_SESSION_NOT_SAVED =
   "Questions and answers here are not saved. Leaving or reloading the page clears them.";
+
+/**
+ * S2 ruling C3: the full OD-5 notice is expanded by default on a first visit —
+ * SERVER-derived: the operator's conversation list (from the list route) is
+ * empty and nothing is open. It collapses once a conversation exists (after
+ * the first message is sent) and expands again when every conversation is
+ * deleted. An operator's own toggle wins until one of those transitions.
+ */
+export function noticeDefaultOpen(conversations: readonly unknown[] | null, hasSelection: boolean): boolean {
+  return conversations !== null && conversations.length === 0 && !hasSelection;
+}
 
 /** The character counter appears only from here (80 % of the 500 limit). */
 export const PLATFORM_AI_COUNTER_FROM = 400;
@@ -329,23 +351,41 @@ export const showConversationCount = (limits: ClientLimits | null) =>
   limits !== null && limits.max - limits.used <= PLATFORM_AI_LIMIT_WARN_WITHIN;
 
 /**
- * Stale evidence, quietly (§4.3 as amended by the owner 2026-11-08): no chip per
- * figure; ONE muted line above the first prior answer that is at least this old.
- * A figure is still never refreshed in place.
+ * Stale evidence (§4.3; owner 2026-11-08 + S2 pre-flag 3). Never present a stale
+ * figure as current:
+ *   - every figure's observation time is its `observedAt`, or the answer's
+ *     createdAt when the server sends none (today: always);
+ *   - when ALL figures share one observation time, ONE answer-level chip
+ *     ("Figures as of …") replaces the per-figure chips;
+ *   - otherwise the answer-level chip states the answer's time, and every figure
+ *     whose observation time differs keeps its OWN "as of …" chip;
+ *   - a chip shows when the answer is a prior (stale) one, or when that time is at
+ *     least STALE_AFTER_MS old.
  */
-export const STALE_NOTE_AFTER_MS = 60 * 60 * 1000;
-export function staleNoteIndex(messages: readonly Pick<ClientMessage, "role" | "stale" | "createdAt">[], now: Date): number {
-  return messages.findIndex((m) => {
-    if (m.role !== "ASSISTANT" || !m.stale) return false;
-    const t = Date.parse(m.createdAt);
-    return Number.isFinite(t) && now.getTime() - t >= STALE_NOTE_AFTER_MS;
-  });
+export const STALE_AFTER_MS = 60 * 60 * 1000;
+export interface StaleChips {
+  /** The answer-level chip's time, or null (nothing to show). */
+  answer: string | null;
+  /** Per-figure chips by the figure's index in the segment list. */
+  figures: ReadonlyMap<number, string>;
+}
+export function staleChips(message: Pick<ClientMessage, "content" | "createdAt" | "stale">, now: Date): StaleChips {
+  const segments = Array.isArray(message.content) ? message.content : [];
+  const observed: [number, string][] = [];
+  segments.forEach((s, i) => { if (s.kind === "figure") observed.push([i, s.observedAt ?? message.createdAt]); });
+  const times = new Set(observed.map(([, t]) => Date.parse(t)));
+  const answerAt = times.size === 1 ? observed[0][1] : message.createdAt;
+  const old = (iso: string) => { const t = Date.parse(iso); return Number.isFinite(t) && now.getTime() - t >= STALE_AFTER_MS; };
+  const show = (iso: string) => message.stale || old(iso);
+  const figures = new Map<number, string>();
+  if (times.size > 1) for (const [i, t] of observed) if (Date.parse(t) !== Date.parse(answerAt) && show(t)) figures.set(i, t);
+  return { answer: observed.length > 0 && show(answerAt) ? answerAt : null, figures };
 }
 
 // ── Answer blocks (paragraphs and lists inside typed segments) ──────────────
 
-/** An inline piece of an answer: the typed segment kinds, never markup. */
-export type InlineSegment = Exclude<ClientSegment, { kind: "correction" }>;
+/** An inline piece of an answer: the typed segment kinds, never markup. A figure carries its index in the segment list (`seg`). */
+export type InlineSegment = Exclude<ClientSegment, { kind: "correction" | "figure" }> | (Extract<ClientSegment, { kind: "figure" }> & { seg: number });
 export type AnswerBlock =
   | { kind: "p"; lines: InlineSegment[][] }
   | { kind: "ul" | "ol"; items: InlineSegment[][] };
@@ -363,14 +403,16 @@ const NUMBERED = /^[ \t]*\d{1,2}[.)][ \t]+/;
  */
 export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] {
   const lines: InlineSegment[][] = [[]];
-  for (const s of segments) {
-    if (s.kind === "correction") continue;
-    if (s.kind !== "text") { lines[lines.length - 1].push(s); continue; }
+  segments.forEach((s, seg) => {
+    if (s.kind === "correction") return;
+    // A figure ({{m:}}) and a link are typed server segments: never split, never read as a list marker.
+    if (s.kind === "figure") { lines[lines.length - 1].push({ ...s, seg }); return; }
+    if (s.kind === "link") { lines[lines.length - 1].push(s); return; }
     s.text.split("\n").forEach((part, i) => {
       if (i > 0) lines.push([]);
       if (part) lines[lines.length - 1].push({ kind: "text", text: part });
     });
-  }
+  });
   const blocks: AnswerBlock[] = [];
   let para: InlineSegment[][] | null = null;
   const lineText = (l: InlineSegment[]) => l.map((x) => x.text).join("");
