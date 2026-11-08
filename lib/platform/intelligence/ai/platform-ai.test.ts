@@ -2391,6 +2391,16 @@ console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · co
     (() => { const order = ["customers saw", "broken now", "reconnect", "provider"].map((k) => bullets.findIndex((b) => b.includes(k))); return order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])); })(), bullets);
   check("S1: the composed body is ≤ 7 lines (5 bullets + one summary paragraph + the coverage line); figures well under the battery's 17",
     (many.result.briefing?.lines ?? 99) <= 7 && composedLineCount(many.record.typed) <= 9 && (many.result.briefing?.figures ?? 99) <= 14, { lines: many.result.briefing?.lines, figures: many.result.briefing?.figures, t: txt(many) });
+  // S2 condition (#499): the overflow count is SERVER text — model prose may never cite its key (any part / window).
+  const cites = ["{{m:briefing-more-items@1}}", "{{m:briefing-more-items@1|part=count}}", "{{m:briefing-more-items@1|window=7}}", "{{l:briefing-more-items@1}}"];
+  const modelCites = await Promise.all(cites.map((ph) => runModel("How many incidents are broken now?", opsBinding(OPS),
+    script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `${ph} more items need attention.` }]))));
+  const framed = await runComposed("How are we looking today?", opsBinding(OPS), frame(JSON.stringify({ framing: "{{m:briefing-more-items@1}} things need attention.", next_actions: [] })));
+  check("S2 (#499): {{m:/l:briefing-more-items@1}} in MODEL prose (any part / window) is refused as an unknown key — never resolved from the server overflow count",
+    modelCites.every((r) => r.result.grounding.replaced && r.result.grounding.verdict === "UNRESOLVED_PLACEHOLDER" && r.result.grounding.unresolvedBy.UNKNOWN_KEY === 1 && !r.record.typed.some((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY))
+    && framed.result.briefing?.framing === "DROPPED" && framed.result.briefing?.framingVerdict === "UNRESOLVED_PLACEHOLDER"
+    && framed.record.typed.filter((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY).length === 1,
+    modelCites.map((r) => r.result.grounding));
   check("S1: the coverage line stays; healthy domains in one sentence", /Platform AI doesn't cover /.test(txt(many)) && (txt(many).match(/look(s)? fine\./g) ?? []).length <= 1);
   check("S1: trace carries shown / overflow / lines", new RegExp(`shown=5 overflow=${many.result.briefing?.overflow} lines=${many.result.briefing?.lines}`).test(traceLine(many.result)), traceLine(many.result));
 
