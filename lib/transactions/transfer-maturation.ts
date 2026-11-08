@@ -135,7 +135,7 @@ export type TransferMaturity =
   // DERIVED, never stamped, like the external leaves: when the loan is later
   // connected and its receiving leg pairs, the evidence becomes ACCOUNT_CERTAIN
   // and the row matures to DEBT_PAYMENT — counted once, as a tracked payment.
-  /** A payment to an installment loan that is not connected here (unsplit). */
+  /** A payment to an installment loan with no connected destination matched (unsplit): the loan is not connected, or its servicer posted no pairable leg. */
   | "UNTRACKED_LOAN_PAYMENT";
 
 /** The external leaves, in one place, so no consumer re-lists them. */
@@ -1542,7 +1542,7 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   EXTERNAL_DEPOSITORY_TRANSFER: "Moved to a bank account that is not connected here — destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "Reached a brokerage or exchange that is not connected here",
   EXTERNAL_UNKNOWN_TRANSFER:    "The provider attests a counterparty that cannot be one of your accounts",
-  UNTRACKED_LOAN_PAYMENT:       `The provider names an installment-loan payee and no connected account qualifies, so this is a ${UNSPLIT_LOAN_PAYMENT_LABEL} to a loan that is not connected here`,
+  UNTRACKED_LOAN_PAYMENT:       `The provider names an installment-loan payee and no connected account was matched as the destination, so this is a ${UNSPLIT_LOAN_PAYMENT_LABEL} not matched to a connected loan`,
 };
 
 /**
@@ -1566,7 +1566,7 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   EXTERNAL_DEPOSITORY_TRANSFER: "Destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "External investment transfer",
   EXTERNAL_UNKNOWN_TRANSFER:    "External transfer",
-  UNTRACKED_LOAN_PAYMENT:       "Untracked loan payment",
+  UNTRACKED_LOAN_PAYMENT:       "Loan payment (not matched to a connected loan)",
 };
 
 /** Presentation wording for a named limitation. One place. */

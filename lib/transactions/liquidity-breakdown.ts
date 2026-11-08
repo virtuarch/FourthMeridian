@@ -38,9 +38,10 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   // the creditCardPurchases context figure, and as cash only when the card is paid.
   REAL_COST:         "Direct cash spending",
   DEBT_PAYMENT:      "Debt payments",
-  // Mortgage F10 — a payment to a loan that is not connected: visible in Cash Out
+  // Mortgage F10 — a loan payment with no connected destination matched (the loan
+  // is not connected, OR it is but the servicer posted no pairable leg): visible in Cash Out
   // as debt service, never as paydown of a tracked debt. F6 interim wording.
-  UNTRACKED_LOAN_PAYMENT: `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}`,
+  UNTRACKED_LOAN_PAYMENT: `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL}`,
   ASSET_DEPLOYMENT:  "Asset deployment",
   // CF-2 — evidence-based investment venue movements (no proven sale).
   INVESTMENT_INFLOW:  "From investments",

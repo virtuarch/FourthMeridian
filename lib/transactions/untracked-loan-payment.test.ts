@@ -83,7 +83,7 @@ function untrackedCase(label: string, pfcDetailed: string): void {
   const line = breakdown.cashOut.find((l) => l.reason === "UNTRACKED_LOAN_PAYMENT");
   check(`${label}: Cash Out = 2,500 exactly once, under the unsplit-loan label`,
     facts.cashOut === 2_500 && breakdown.cashOut.length === 1 && line?.amount === 2_500
-      && line.label === `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}` && facts.unresolved === 0, { facts, breakdown });
+      && line.label === LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT && facts.unresolved === 0, { facts, breakdown });
 
   const sel = selectDebtPaymentCashLegs(rows, ctxChkOnly);
   const svc = computeDebtService(rows, ctxChkOnly, abs);
@@ -181,10 +181,11 @@ console.log("F10-5. Boundaries");
     xo.maturity === "UNRESOLVED_TRANSFER" && xo.unresolvedReason === "CROSS_OWNER_BOUNDARY", xo);
 
   check("leaf implies DEBT_PAYMENT (a debt payment, just not a tracked one)", impliedFlowType("UNTRACKED_LOAN_PAYMENT") === "DEBT_PAYMENT");
-  check("presentation label is 'Untracked loan payment'", MATURITY_LABEL.UNTRACKED_LOAN_PAYMENT === "Untracked loan payment");
+  check("presentation label is 'Loan payment (not matched to a connected loan)'",
+    MATURITY_LABEL.UNTRACKED_LOAN_PAYMENT === "Loan payment (not matched to a connected loan)");
   check("liquidity side of UNTRACKED_LOAN_PAYMENT is 'out'", LIQUIDITY_REASON_SIDE.UNTRACKED_LOAN_PAYMENT === "out");
   check("liquidity label reuses the ONE unsplit constant",
-    LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT === `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}`);
+    LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT === `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL}`);
   check("isInstallmentLoanPaymentDetail is case-insensitive and refuses card/other",
     isInstallmentLoanPaymentDetail("loan_payments_mortgage_payment") && !isInstallmentLoanPaymentDetail("LOAN_PAYMENTS_CREDIT_CARD_PAYMENT")
       && !isInstallmentLoanPaymentDetail("LOAN_PAYMENTS_OTHER_PAYMENT") && !isInstallmentLoanPaymentDetail(null));
@@ -205,6 +206,37 @@ console.log("F10-6. Agreement with the write-time transfer correction");
     check(`correction keeps an unpaired ${d} leg as DEBT_PAYMENT (never rewritten to TRANSFER)`,
       decision.action === "KEEP" && "code" in decision && decision.code === "LIABILITY_EVIDENCE", decision);
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-7. CONNECTED mortgage, servicer posts no pairable receiving leg (S2 deviation 3)");
+{
+  // The mortgage account IS owned and connected (mtg in the matcher context and
+  // the liquidity tier map); only the receiving leg is missing. The leaf is still
+  // UNTRACKED_LOAN_PAYMENT, so no copy for it may claim the loan is not connected.
+  const leg = rel({ id: "pay", financialAccountId: "chk", amount: -2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" });
+  const m = matchTransferCandidate(leg, [], MATCH_CTX);
+  check("connected mortgage, no receiving leg: leaf UNTRACKED_LOAN_PAYMENT, no counterparty",
+    MATCH_CTX.accountTypeById.get("mtg") === "debt" && m.maturity === "UNTRACKED_LOAN_PAYMENT" && m.counterpartyAccountId === null, m);
+  const rows = [dto("inc", "chk", 8_000, "INCOME", null), dto("pay", "chk", -2_500, "DEBT_PAYMENT", m.maturity)];
+  const facts = aggregateDayFacts(rows, ctxAll);
+  const breakdown = groupLiquidityByReason(facts);
+  check("connected mortgage, no receiving leg: counted once in Cash Out (2,500) as UNTRACKED_LOAN_PAYMENT",
+    facts.cashOut === 2_500 && breakdown.cashOut.length === 1 && facts.byReason.UNTRACKED_LOAN_PAYMENT === 2_500, { facts, breakdown });
+  const svc = computeDebtService(rows, ctxAll, abs);
+  check("connected mortgage, no receiving leg: untracked = 2,500, payments = netPaydown = 0",
+    svc.untrackedLoanPayments === 2_500 && svc.payments === 0 && svc.netPaydown === 0, svc);
+  const nature = resolveTransactionNature({
+    flowType: "DEBT_PAYMENT", amount: -2_500, flowAuthority: "CLASSIFIER", transferMaturity: m.maturity,
+    ownAccountType: "checking", hasOwnedCounterparty: false,
+  });
+  check("connected mortgage, no receiving leg: nature UNTRACKED_LOAN_PAYMENT", nature.nature === "UNTRACKED_LOAN_PAYMENT", nature);
+  const copy = [
+    MATURITY_LABEL.UNTRACKED_LOAN_PAYMENT, LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT,
+    NATURE_DESCRIPTION.UNTRACKED_LOAN_PAYMENT, breakdown.cashOut[0]?.label ?? "",
+  ];
+  check("connected mortgage, no receiving leg: no label/description claims 'not connected' or 'untracked'",
+    copy.every((c) => !/not connected|untracked/i.test(c)), copy);
 }
 
 if (failures > 0) {

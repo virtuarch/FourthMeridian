@@ -166,7 +166,7 @@ export const NATURE_DESCRIPTION: Record<TransactionNature, string> = {
   EXTERNAL_TRANSFER:          "Sent to or received from an account that is not yours — purpose not stated",
   TRANSFER_DESTINATION_UNCONFIRMED: "Moved to or from a bank account not connected here — destination not yet confirmed; not spending, not a debt payment",
   CASH_MOVEMENT:              "Cash withdrawal or deposit",
-  UNTRACKED_LOAN_PAYMENT:     `Payment to a loan that is not connected here — ${UNSPLIT_LOAN_PAYMENT_LABEL}; counted in cash out, not as paydown of a tracked debt, not spending`,
+  UNTRACKED_LOAN_PAYMENT:     `Loan payment where no connected account was matched as the destination — ${UNSPLIT_LOAN_PAYMENT_LABEL}; counted in cash out, not as paydown of a tracked debt, not spending`,
   UNCLASSIFIED_MOVEMENT:      "Money movement whose purpose is not established — do not call it a debt payment, spending or income",
   SPENDING:                   "Spending",
   INCOME:                     "Income",
