@@ -42,6 +42,7 @@ import {
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { TransferDisposition } from "@/lib/transactions/transfer-evidence";
+import { unsplitLoanKind, type UnsplitLoanKind } from "@/lib/debt/liability-kind";
 
 // ─── Perspective ────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,13 @@ export interface DayFacts {
    * payments made from accounts not connected to Fourth Meridian (no liquid leg).
    */
   byReason: Partial<Record<LiquidityReason, number>>;
+  /**
+   * Owner F6 / S2 D3 — the loan-type variants (unsplitLoanKind) of the rows in
+   * `byReason.UNTRACKED_LOAN_PAYMENT`, so the Cash Out line's unsplit label can
+   * say "escrow" only when every such payment is a mortgage payment. Labelling
+   * only — no amount reads it. Absent ⇒ the neutral label.
+   */
+  untrackedLoanKinds?: UnsplitLoanKind[];
   // Economic axis
   income:     number;   // Σ|amount| INCOME
   spendGross: number;   // Σ|amount| cost flows (SPENDING+FEE+INTEREST), pre-refund
@@ -156,6 +164,11 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   const c = classifyLiquidity(t, liqCtx);
   if (c.effect === "CASH_IN")  { acc.cashIn += amt;  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
   else if (c.effect === "CASH_OUT") { acc.cashOut += amt; acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
+  if (c.effect === "CASH_OUT" && c.reason === "UNTRACKED_LOAN_PAYMENT") {
+    const kind = unsplitLoanKind(t.loanPaymentDetail);
+    const kinds = (acc.untrackedLoanKinds ??= []);
+    if (!kinds.includes(kind)) kinds.push(kind);
+  }
   else if (c.effect === "UNRESOLVED") { acc.unresolved += amt; }
   // NEUTRAL: record ONLY the pure-context reasons; a straddle reason's neutral leg
   // is skipped so it never pollutes the Cash In/Out reason partition (see byReason doc).

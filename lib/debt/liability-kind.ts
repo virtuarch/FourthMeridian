@@ -280,10 +280,98 @@ export function isInstallmentLoanPaymentDetail(pfcDetailed: string | null | unde
 }
 
 /**
- * The F6 INTERIM label for a loan payment whose principal / interest / escrow
- * split is not known. ONE constant: every surface that names such a payment
- * (Mortgage F10's untracked-loan Cash Out line, the transfer authority's leaf
- * wording, the resolved-nature description) builds its words from this, so the
- * F6 owner decision replaces one string.
+ * Owner F6 (approved 2026-11-08) + S2 ruling D3 — the label for a loan payment
+ * whose components are not individually known. Until exact payment components
+ * are available a payment is shown UNSPLIT, saying plainly that its parts have
+ * not been individually verified — never an invented allocation, never the
+ * whole payment as principal reduction.
+ *
+ * D3: the label is TYPE-AWARE. Escrow is a MORTGAGE concept; naming it on an
+ * auto, student or personal loan payment is false. One constant per variant (no
+ * string building), chosen by ONE selector (`unsplitLoanPaymentLabel`). Every
+ * surface that names such a payment (Mortgage F10's untracked-loan Cash Out
+ * line, the resolved-nature description / AI natureNote, the transfer
+ * authority's leaf wording) reads these.
  */
-export const UNSPLIT_LOAN_PAYMENT_LABEL = "loan payment (principal + interest + escrow, not split)";
+export const UNSPLIT_MORTGAGE_PAYMENT_LABEL = "loan payment (principal + interest + escrow, not split)";
+/** Auto / student / personal (and any other non-mortgage installment) loan. */
+export const UNSPLIT_INSTALLMENT_LOAN_PAYMENT_LABEL = "loan payment (principal + interest, not split)";
+/** Loan type not established — names no component it cannot vouch for. */
+export const UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL = "loan payment (not split)";
+
+/** Which unsplit-label variant a payment takes. */
+export type UnsplitLoanKind = "mortgage" | "installment" | "unknown";
+
+export const UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND: Readonly<Record<UnsplitLoanKind, string>> = {
+  mortgage:    UNSPLIT_MORTGAGE_PAYMENT_LABEL,
+  installment: UNSPLIT_INSTALLMENT_LOAN_PAYMENT_LABEL,
+  unknown:     UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL,
+};
+
+/** Provider detailed category → variant. Exactly INSTALLMENT_LOAN_PAYMENT_DETAILS (pinned by test). */
+const PFC_DETAIL_TO_UNSPLIT_KIND: Readonly<Record<string, UnsplitLoanKind>> = {
+  LOAN_PAYMENTS_MORTGAGE_PAYMENT:      "mortgage",
+  LOAN_PAYMENTS_CAR_PAYMENT:           "installment",
+  LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT:  "installment",
+  LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT: "installment",
+};
+
+/** DebtType → variant (fallback when the row names no loan type): mortgage ⇒
+ *  escrow; every other installment type ⇒ P+I; revolving / unknown ⇒ neutral. */
+const DEBT_TYPE_TO_UNSPLIT_KIND: Readonly<Record<DebtType, UnsplitLoanKind>> = {
+  mortgage:                "mortgage",
+  auto_loan:               "installment",
+  student_loan:            "installment",
+  personal_installment:    "installment",
+  other_installment:       "installment",
+  credit_card:             "unknown",
+  heloc:                   "unknown",
+  personal_line_of_credit: "unknown",
+  overdraft:               "unknown",
+  other_revolving:         "unknown",
+  unknown:                 "unknown",
+};
+
+/**
+ * The variant for one payment. Evidence order: the row's provider detailed
+ * category (pfcDetailed) when it names a loan type; otherwise the destination
+ * account's `debtType` (e.g. a connected servicer leg identified by account
+ * type): mortgage ⇒ mortgage; any other installment type ⇒ installment;
+ * anything else / no evidence ⇒ unknown (neutral).
+ */
+export function unsplitLoanKind(
+  pfcDetailed: string | null | undefined,
+  fallbackDebtType?: DebtType | null,
+): UnsplitLoanKind {
+  const d = pfcDetailed?.trim().toUpperCase();
+  const fromPfc = d ? PFC_DETAIL_TO_UNSPLIT_KIND[d] : undefined;
+  if (fromPfc) return fromPfc;
+  return fallbackDebtType != null ? DEBT_TYPE_TO_UNSPLIT_KIND[fallbackDebtType] : "unknown";
+}
+
+/** THE selector: the unsplit-payment label for one payment (see `unsplitLoanKind`). */
+export function unsplitLoanPaymentLabel(
+  pfcDetailed: string | null | undefined,
+  fallbackDebtType?: DebtType | null,
+): string {
+  return UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND[unsplitLoanKind(pfcDetailed, fallbackDebtType)];
+}
+
+/**
+ * The variant for an AGGREGATE of payments (a Cash Out line). One kind ⇒ that
+ * kind; none or a mix ⇒ unknown — a mortgage + auto total is neither "with
+ * escrow" nor "without", so it names no component.
+ */
+export function unsplitLoanKindOf(kinds: Iterable<UnsplitLoanKind>): UnsplitLoanKind {
+  const set = new Set(kinds);
+  return set.size === 1 ? [...set][0] : "unknown";
+}
+
+/**
+ * The AI-facing disclosure for unsplit payments (F6): attached wherever the AI
+ * receives an unsplit loan-payment figure, so the model never narrates the
+ * payment as principal reduction or invents a split.
+ */
+export const UNSPLIT_LOAN_PAYMENT_AI_NOTE =
+  "Unsplit loan payments: principal, interest and (for a mortgage) escrow have NOT been individually verified. "
+  + "Do not present any part of such a payment as principal reduction or paydown, and do not estimate a split.";
