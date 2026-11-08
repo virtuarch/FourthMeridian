@@ -109,7 +109,9 @@ function script(steps: Step[]) {
   let i = 0;
   const generate: PlatformAiGenerate = async ({ messages, tools }) => {
     seen.push({ tools, messages: JSON.parse(JSON.stringify(messages)) });
-    const s = steps[i] ?? { content: "done" };
+    // B1 (S2): past the script, the fake model REPEATS its last answer — so a refused answer stays refused
+    // through the one corrective retry (B2: the fallback, as before). A script of tool calls only still ends "done".
+    const s = steps[i] ?? [...steps].reverse().find((x) => x.content !== undefined && !(x.calls ?? []).length) ?? { content: "done" };
     i++;
     const toolCalls = (s.calls ?? []).map((c, k) => ({ id: `call_${i}_${k}`, name: c.name, arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args) }));
     const raw = { role: "assistant", content: s.content ?? null, ...(toolCalls.length ? { tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) } : {}) };
@@ -188,7 +190,10 @@ async function main(): Promise<void> {
       && JSON.stringify((t3.outcome as { answer: unknown }).answer).includes(UNVERIFIED_FALLBACK) && !(t3.outcome as { answer: StoredAnswerV1 }).answer.segments.some((s) => s.kind === "figure"), t3.result?.grounding);
   const t3b = await turn("And the same figure again?", hist, [{ content: `It is still ${fig1?.text ?? "$1.00"}.` }]);
   check("typing the remembered value ⇒ UNGROUNDED_DIGIT, replaced", t3b.result?.grounding.replaced === true, t3b.result?.grounding);
-  check("the old value never reached the model in either turn", !sent(t3.seen).includes(fig1?.text ?? "@@") && !sent(t3b.seen).includes(fig1?.text ?? "@@"));
+  // B1: the retry call carries the model's OWN refused answer back to it (its text, not the server's); the server never sent the old value.
+  check("the old value never reached the model in either turn (from the server: history, tools, the corrective message)",
+    !sent(t3.seen).includes(fig1?.text ?? "@@") && !sent(t3b.seen.slice(0, 1)).includes(fig1?.text ?? "@@")
+    && !JSON.stringify(t3b.seen.flatMap((x) => x.messages).filter((m) => (m as { role: string }).role !== "assistant")).includes(fig1?.text ?? "@@"));
 
   // ── 4. injection in history ──────────────────────────────────────────────
   console.log("\n4. injection in history can't change scope or call writes");
@@ -477,7 +482,8 @@ async function main(): Promise<void> {
       listPages: (f) => listNavigationTargets("CUSTOMER_SUCCESS", ct, f),
       resolvePage: (id, p) => resolveNavigationTarget("CUSTOMER_SUCCESS", ct, id, p, { now: NOW }),
     };
-    const r = await turn("How are we looking today?", [], [
+    // Not briefing-class (A1): this pins the MODEL path's area scope.
+    const r = await turn("Customers needing help, and the platform posture?", [], [
       { calls: [gm("ops-overall-posture"), gm("economics-ai-cost"), gm("cs-needs-help"), { name: "open_page", args: { id: "PLATFORM_OPS:platform-incidents:open" } }] },
       { content: "Customers needing help: {{m:cs-needs-help@1}}. Posture: {{m:ops-overall-posture@1|part=failed}}." },
     ], csBinding);

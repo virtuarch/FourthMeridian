@@ -171,7 +171,9 @@ function script(steps: Step[] | ((i: number) => Step)): Script {
   let i = 0;
   const generate: PlatformAiGenerate = async ({ messages, tools }) => {
     seen.push({ tools, messages: JSON.parse(JSON.stringify(messages)) });
-    const s = typeof steps === "function" ? steps(i) : (steps[i] ?? { content: "done" });
+    // B1 (S2): past the script, the fake model REPEATS its last answer — so a refused answer stays refused
+    // through the one corrective retry (B2: the fallback, as before). A script of tool calls only still ends "done".
+    const s = typeof steps === "function" ? steps(i) : (steps[i] ?? [...steps].reverse().find((x) => x.content !== undefined && !(x.calls ?? []).length) ?? { content: "done" });
     i++;
     const toolCalls = (s.calls ?? []).map((c, k) => ({ id: `call_${i}_${k}`, name: c.name, arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args) }));
     const raw = { role: "assistant", content: s.content ?? null, ...(toolCalls.length ? { tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) } : {}) };
@@ -180,8 +182,10 @@ function script(steps: Step[] | ((i: number) => Step)): Script {
   return { generate, seen };
 }
 const toolResultsOf = (r: { transcript: unknown[] }) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
-const run = (question: string, binding: PlatformAiBinding, sc: Script) =>
-  runPlatformAiTurn({ question, binding, generate: sc.generate, model: "gpt-4o-mini" });
+const run = (question: string, binding: PlatformAiBinding, sc: Script, opts: { classifyBriefing?: boolean } = {}) =>
+  runPlatformAiTurn({ question, binding, generate: sc.generate, model: "gpt-4o-mini", ...opts });
+/** The MODEL path for a briefing-phrased question (A1 off) — pins that path's own defences, which still guard every non-briefing turn. */
+const runModel = (question: string, binding: PlatformAiBinding, sc: Script) => run(question, binding, sc, { classifyBriefing: false });
 
 const IDENTITY = [/subjectUserId/, /\buser #/i, /\boperator #/i, /\bc[a-z0-9]{24,}\b/, /[^\s@"\\]+@[^\s@"\\]+\.[a-z]{2,}/i];
 const identityHits = (s: string) => IDENTITY.filter((r) => r.test(s)).map(String);
@@ -553,7 +557,7 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
       / mechanismLeak=1$/.test(leak.line) && leak.v === "NONE", leak.line);
     const dig = await why("Costs over the last 30 days were high.");
     check("a turn that writes \"30 days\" ⇒ UNGROUNDED_DIGIT with digitBy=WINDOW_LIKE:1 in the trace (the verdict is unchanged: a diagnosis, never an allowance)",
-      dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
+      dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1 retry=FAIL(UNGROUNDED_DIGIT)") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
   }
 }
 
@@ -834,7 +838,7 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
 {
   const b = opsBinding(OPS);
   const spend = [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }];
-  const ask = (q: string, content: string, steps: Step[] = spend) => run(q, b, script([...steps, { content }]));
+  const ask = (q: string, content: string, steps: Step[] = spend) => runModel(q, b, script([...steps, { content }]));
   const env30 = { surface: "PLATFORM_OPS", tier: "OPS", unit: "count", valueUnits: "count", reason: null, status: "MEASURED", metric: "x@1", value: 30,
     window: { kind: "UTC_DAYS", description: "d", days: 30, hours: null }, freshness: { asOf: null, source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as unknown as MetricEnvelope;
   const env11 = { ...env30, value: 11 } as MetricEnvelope;
@@ -1166,7 +1170,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
   check("the prompt teaches: copy the placeholder (the server built its window); never drill.href",
-    /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /never drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
 }
 
@@ -1807,7 +1811,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
 {
   const dir = "lib/platform/intelligence/ai";
   const files = readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/${f}`);
-  check("the module is core.ts + ledger.ts", files.sort().join() === `${dir}/core.ts,${dir}/ledger.ts`, files);
+  check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
   for (const f of files) {
     const s = code(src(f));
     check(`${f}: never imports db / systemDb / prisma client, never fetches`, !/@\/lib\/db|systemDb|\bprisma\.|new PrismaClient|\bfetch\(|withTenantDb/.test(s));
@@ -1818,7 +1822,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./briefing", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   const ledger = src(`${dir}/ledger.ts`);
   check("ledger.ts calls the ONE provider chokepoint (generateWithTools) inside runWithAiInvocationContext with surface platform_ai — no parallel AI client",
     /runWithAiInvocationContext\(\s*\{[^}]*surface: PLATFORM_AI_ASK_SURFACE/.test(ledger) && /generateWithTools\(/.test(ledger) && !/from "openai"|new OpenAI/.test(ledger));
@@ -1925,7 +1929,7 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
   // Window fix: the schema lists the windows; a refused window names the ones to use; a corrected read supersedes the refusal.
   const gm = (platformAiToolSchemas([]) as { function: { name: string; parameters: { properties: Record<string, { enum?: number[] }> } } }[]).find((x) => x.function.name === "get_metric")!;
   check("get_metric schema: window is an enum of the declared day windows (1 / 7 / 30 / 90)", JSON.stringify(gm.function.parameters.properties.window.enum) === "[1,7,30,90]", gm.function.parameters.properties.window);
-  const today = await run("How are we looking today?", opsBinding(OPS), script([
+  const today = await runModel("How are we looking today?", opsBinding(OPS), script([
     { calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 1 } }] },
     { calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 7 } }] },
     { content: "Estimated AI cost is {{m:economics-ai-cost@1|part=spendUsd|window=7}}." },
@@ -1954,7 +1958,7 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
       + "Incidents: {{m:incident-broken-now@1}} broken now, {{m:incident-needs-verification@1}} need verification. Connections: {{m:connection-health-summary@1|part=reconnectNeeded}} need the customer to reconnect. "
       + "Jobs: {{m:scheduled-job-health@1|part=overdue}} overdue (evaluate-alerts). Next: review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline)." },
   ]);
-  const b = await run("How are we looking today?", both, briefing);
+  const b = await runModel("How are we looking today?", both, briefing);
   const reads = b.result.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]);
   const firstCost = reads.findIndex((k) => /^economics-|^ai-/.test(k));
   check("briefing turn: posture, customer impact, incidents, connections and jobs are read, none after a cost metric (no cost read at all here)",
@@ -1969,7 +1973,7 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
     cov.health === "read" && cov.impact === "read" && cov.incidents === "read" && cov.sync === "read" && cov.reliability === "read" && cov.costs === "not_read", cov);
   check("briefing coverage note: code-written, names the gaps and the not-yet-covered domains",
     b.result.notes.some((n) => /^Coverage: no data in this answer for Costs and unusual activity \(not checked in this answer\); not yet covered by Platform AI: security/.test(n)), b.result.notes);
-  const opsCov = await run("How are we looking today?", opsOnly, script([{ calls: [{ name: "get_metric", args: { id: "ops-overall-posture" } }, { name: "get_metric", args: { id: "customer-impact-24h" } }] }, { content: "Fine." }]));
+  const opsCov = await runModel("How are we looking today?", opsOnly, script([{ calls: [{ name: "get_metric", args: { id: "ops-overall-posture" } }, { name: "get_metric", args: { id: "customer-impact-24h" } }] }, { content: "Fine." }]));
   check("an Ops-only operator: the CS-only metric is listed as not available, and the domain read through Ops stays read",
     (opsCov.result.coverage ?? []).find((d) => d.key === "impact")?.status === "read" && !/cs-needs-help@1/.test((opsCov.transcript[0] as { content: string }).content));
   // S2 #483 R2: refresh-pipeline's window is the server's "since yesterday (UTC)", verbatim — never "the last 24 h".
@@ -2024,14 +2028,14 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   check("…an invented figure in the Question C answer is still refused (UNGROUNDED_DIGIT)", invented.result.grounding.replaced && invented.result.grounding.verdict === "UNGROUNDED_DIGIT");
 
   // S2 N1: counts written as words are figures.
-  const words = await run("How are we looking today?", b, script([
+  const words = await runModel("How are we looking today?", b, script([
     { calls: [gm("ops-overall-posture"), gm("incident-broken-now")] },
     { content: "There are two active incidents and one failed domain." },
   ]));
   check("N1: \"two active incidents\" without a placeholder ⇒ refused (UNGROUNDED_DIGIT, digitBy NUMBER_WORD), the verify fallback",
     words.result.grounding.replaced && words.result.grounding.verdict === "UNGROUNDED_DIGIT" && words.result.grounding.digitBy.NUMBER_WORD === 2 && txt(words).startsWith(UNVERIFIED_FALLBACK)
     && traceLine(words.result).includes("digitBy=NUMBER_WORD:2"), words.result.grounding);
-  const viaPh = await run("How are we looking today?", b, script([
+  const viaPh = await runModel("How are we looking today?", b, script([
     { calls: [gm("ops-overall-posture"), gm("incident-broken-now")] },
     { content: "Active incidents: {{m:incident-broken-now@1}}. Degraded domains: {{m:ops-overall-posture@1|part=degraded}}." },
   ]));
@@ -2051,7 +2055,7 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   check("briefing step 6: cost only when asked or anomalous — no economics read for a general status question (prompt + coverage block)",
     /\(6\) costs or unusual activity, ONLY if the operator asked or a figure is anomalous — otherwise read no economics metric/.test(PLATFORM_AI_SYSTEM_PROMPT) && /read Costs only when the operator asks about cost/.test(sys));
   check("briefing step 7: next actions must each be a find_page / open_page (or drill.page) link (coverage block)", /Next actions \(step 7\): each one is a Markdown link to an href find_page \/ open_page returned/.test(sys));
-  const nextBare = await run("How are we looking today?", b, script([{ calls: [gm("ops-overall-posture")] }, { content: "Next: open https://evil.test/x and [connections](/dashboard/platform/PLATFORM_OPS?view=nope)." }]));
+  const nextBare = await runModel("How are we looking today?", b, script([{ calls: [gm("ops-overall-posture")] }, { content: "Next: open https://evil.test/x and [connections](/dashboard/platform/PLATFORM_OPS?view=nope)." }]));
   check("step 7: a next action whose link was not returned this turn is stripped (no URL, no unreturned href renders)", nextBare.result.answer.every((x) => x.kind !== "link") && !/https?:|evil/.test(txt(nextBare)), txt(nextBare));
 }
 
@@ -2062,7 +2066,7 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
   const QL = "How are we looking today? Please give me the issues as a short bulleted list."; // the Preview question, verbatim
   const READS = ["ops-overall-posture", "alerts-firing-now", "customer-impact-24h", "incident-broken-now", "incident-needs-verification", "connection-health-summary", "scheduled-job-health"]
     .map((id) => ({ name: "get_metric", args: { id } }));
-  const brief = (content: string, binding = b, q = QL) => run(q, binding, script([{ calls: READS }, { content }]));
+  const brief = (content: string, binding = b, q = QL) => runModel(q, binding, script([{ calls: READS }, { content }]));
   const txt = (r: Awaited<ReturnType<typeof run>>) => segmentsText(r.result.answer);
 
   // (C) root cause: the model numbered its list items; each "1." marker was a leftover digit (UNGROUNDED_DIGIT, digitBy OTHER) ⇒ the fallback.
@@ -2084,7 +2088,7 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
     seven.result.grounding.verdict === "UNGROUNDED_DIGIT" && gap.result.grounding.verdict === "UNGROUNDED_DIGIT" && seq.result.grounding.verdict === "RESOLVED" && !seq.result.grounding.replaced,
     [seven.result.grounding.verdict, gap.result.grounding.verdict, seq.result.grounding.verdict]);
   // A marker that continues the list in a LATER segment (after a link) is still in sequence.
-  const acrossLink = await run(QL, b, script([{ calls: [...READS, { name: "find_page", args: { query: "connections" } }] }, { content: "1. Review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline).\n2. {{m:incident-broken-now@1}} incidents are active." }]));
+  const acrossLink = await runModel(QL, b, script([{ calls: [...READS, { name: "find_page", args: { query: "connections" } }] }, { content: "1. Review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline).\n2. {{m:incident-broken-now@1}} incidents are active." }]));
   check("L1: the sequence carries across segments (a link in item 1, then '2.')", !acrossLink.result.grounding.replaced, acrossLink.result.grounding);
   const stillDigits = await brief("1. 2 incidents are active.\n2. Jobs: 3 overdue.");
   check("(C) …a count typed after a marker is still a leftover digit (refused)", stillDigits.result.grounding.replaced && stillDigits.result.grounding.verdict === "UNGROUNDED_DIGIT");
@@ -2150,6 +2154,211 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
   check("F-3: the envelope lists exactParts (server data) — refresh parts and the customer count are not in it", JSON.stringify(env?.exactParts) === JSON.stringify(["aiFailures", "briefFailed", "needsReauth"]), env?.exactParts);
   check("F-3: renderPlaceholder — PARTIAL + an exact part ⇒ plain; PARTIAL + a part not listed ⇒ 'at least'",
     renderPlaceholder({ ...env, status: "PARTIAL" } as MetricEnvelope, "aiFailures") === "2 (in the last 24 hours)" && renderPlaceholder({ ...env, status: "PARTIAL" } as MetricEnvelope, "refreshFailed") === "at least 4 (in the last 24 hours)");
+}
+
+// ── 4s. Server-composed briefing (A1–A4) + one corrective retry (B1–B3), S2-approved 2026-11-08 ──
+console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B1–B3)");
+{
+  const { classifyBriefingQuestion, BRIEFING_PATTERNS, composeBriefing, checkFraming, checkActions, parseFramingReply, BRIEFING_FRAMING_PROMPT } = await import("./briefing");
+  const { correctiveRetryMessage, RETRYABLE_VERDICTS } = await import("./core");
+  const txt = (r: { result: { answer: { text: string }[] } }) => r.result.answer.map((x) => x.text).join("");
+  const QL = "How are we looking today? Please give me the issues as a short bulleted list.";
+  const QC = "What's costing me the most money in the past 30 days?";
+
+  // ── A1: the listed, tested pattern set (deterministic; never the model's tool choices) ──
+  const POS: [string, string][] = [
+    ["How are we looking today?", "HOW_LOOKING"], [QL, "HOW_LOOKING"], ["How is the platform looking today? Summarise anything that needs attention.", "HOW_LOOKING"],
+    ["How are things going?", "HOW_LOOKING"], ["How’s it looking?", "HOWS_IT"], ["Is anything wrong?", "ANYTHING_WRONG"], ["Anything broken right now?", "ANYTHING_WRONG"],
+    ["What's broken?", "WHATS_BROKEN"], ["What is failing today?", "WHATS_BROKEN"], ["Any issues today?", "ANY_ISSUES"], ["What needs my attention?", "NEEDS_ATTENTION"],
+    ["Status today", "STATUS"], ["Platform status?", "STATUS"], ["status?", "STATUS"], ["Brief me", "BRIEF_ME"], ["Give me the daily briefing", "BRIEF_ME"], ["Is everything OK?", "ALL_OK"],
+  ];
+  const posOut = POS.map(([q, id]) => [q, classifyBriefingQuestion(q).pattern, id]);
+  check("A1: every listed briefing phrasing classifies, with its pattern id", posOut.every(([, got, want]) => got === want), posOut.filter(([, g, w]) => g !== w));
+  const NEG = [QC, "How many incidents are broken now?", "Show connection health", "Which jobs are overdue?", "What's the AI error rate over the last 7 days?", "How are AI costs trending?",
+    "Customer-impacting issues", "Open incidents", "Sync & connection health", "What did the refresh pipeline do since yesterday?", "Customers needing help, and the platform posture?"];
+  check("A1: narrow questions (incl. Question C and the other starter chips) take the normal path", NEG.every((q) => !classifyBriefingQuestion(q).briefing), NEG.filter((q) => classifyBriefingQuestion(q).briefing));
+  check("A1: the list-request variant and a cost mention are detected", classifyBriefingQuestion(QL).list && !classifyBriefingQuestion("How are we looking?").list
+    && classifyBriefingQuestion("How are we looking on costs today?").cost && !classifyBriefingQuestion("How are we looking today?").cost);
+  check("A1: the pattern set is a fixed list of 9 ids", BRIEFING_PATTERNS.map((p) => p.id).join() === "HOW_LOOKING,HOWS_IT,ANYTHING_WRONG,WHATS_BROKEN,ANY_ISSUES,NEEDS_ATTENTION,STATUS,BRIEF_ME,ALL_OK");
+
+  // Fixture readers: QUIET (all healthy, no alert firing) and variations of it.
+  const quiet = (over: Partial<RetrievalReaders> = {}) => readers({
+    providerHealth: async () => ({ checkedAt: NOW, providers: [{ key: "A", label: "A", execution: { verdict: "HEALTHY" }, connections: { verdict: null, tally: { active: 3, error: 0, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [], callsToday: 4, calls30d: 90, syncFailures: 0 }] }) as never,
+    operationsOverview: async () => ({ checkedAt: NOW.toISOString(), worst: "HEALTHY", domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key, state: "HEALTHY", title: key, headline: "",
+      facts: key === "pipeline" ? [{ label: "Executions", value: "12" }, { label: "Failed", value: "0" }, { label: "Running now", value: "0" }] : [] })), latestFailures: [] }) as never,
+    attention: async () => ({ checkedAt: NOW.toISOString(), items: [], userImpact: { windowHours: 24, rows: [], counts: { "refresh-failed": 0, "refresh-partial": 0, "ai-failure": 0, "brief-failed": 0, "needs-reauth": 0 },
+      usersAffected: { count: 0, reason: null }, sourcesAffected: 0, authorities: { checked: ["refresh-executions", "ai-failures", "brief-ops", "connection-health"], failed: [] }, floors: [] } }) as never,
+    alertRuns: async () => [{ evaluatedAtISO: NOW.toISOString(), deliveryStatus: "DELIVERED", destination: null, counts: {}, rules: [{ id: "job-failing", kind: "job", enabled: true, live: true, firing: false, breaches: 0, severity: null }] }] as never,
+    connectionHealth: async () => ({ total: 6, counts: { HEALTHY: 6, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy",
+      retired: { revoked: 0, ownerInactive: 0 }, bySource: { PLAID: { active: 6, revoked: 0, faults: [] } } }) as never,
+    jobHealth: async () => ({ checkedAt: NOW, jobs: [{ job: "sync-banks", status: "healthy" }, { job: "evaluate-alerts", status: "healthy" }] }) as never,
+    resourceFreshness: async () => ({ checkedAt: NOW, resources: [{ resource: "fx-rates", label: "FX", healthState: "fresh" }] }) as never,
+    incidentSearch: async () => ({ items: [], total: 0, page: 1, pageSize: 25, truncated: false, scanned: 0, facets: { providers: [], operations: [], codes: [] } }) as never,
+    ...over,
+  });
+  /** A fake model for the framing call: answers `reply(userMessage)` (JSON), recording what it was offered. */
+  const framer = (reply: (user: string) => string | { calls: { name: string; args: unknown }[] }) => {
+    const seen: { tools: unknown[]; messages: unknown[] }[] = [];
+    const generate: PlatformAiGenerate = async ({ messages, tools }) => {
+      seen.push({ tools, messages: JSON.parse(JSON.stringify(messages)) });
+      const user = (messages[1] as { content: string }).content;
+      const r = reply(user);
+      if (typeof r === "string") return { content: r, toolCalls: [], raw: { role: "assistant", content: r }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+      const toolCalls = r.calls.map((c, k) => ({ id: `c${seen.length}_${k}`, name: c.name, arguments: JSON.stringify(c.args) }));
+      return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+    };
+    return { generate, seen };
+  };
+  const firstPage = (user: string) => /PAGES you may link:\n- [^\n]*?: (\/dashboard\/\S+)/.exec(user)?.[1] ?? "/none";
+  const brief = (q: string, R: RetrievalReaders, m = framer(() => "{}"), binding?: PlatformAiBinding) =>
+    runPlatformAiTurn({ question: q, binding: binding ?? opsBinding(OPS, R), generate: m.generate, model: "gpt-4o-mini" });
+
+  // ── A2: OK — the server reads, composes; nothing to fix ──
+  const ok = await brief("How are we looking today?", quiet());
+  const okReads = ok.result.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]);
+  check("A2: a briefing-class question is COMPOSED by the server (briefing.composed, never the fallback, never replaced)",
+    ok.result.briefing?.composed === true && !ok.result.grounding.replaced && !txt(ok).includes(UNVERIFIED_FALLBACK), ok.result.briefing);
+  check("A2: the server read the briefing metrics in protocol order (health → impact → incidents → sync → reliability), no cost metric (not asked, nothing firing)",
+    okReads.join() === ["ops-overall-posture@1", "alerts-firing-now@1", "customer-impact-24h@1", "incident-broken-now@1", "incident-needs-verification@1", "incident-resolved-window@1",
+      "connection-health-summary@1", "refresh-pipeline@1", "provider-connection@2", "data-freshness@1", "scheduled-job-health@1", "provider-outcome@1", "provider-call-volume@1"].join(), okReads);
+  check("A2 OK: every domain OK, costs NOT_READ; 'Nothing needs attention' + 'look fine' + costs-not-checked + not-yet-covered, no list",
+    JSON.stringify(ok.result.briefing?.domains) === JSON.stringify({ health: "OK", impact: "OK", incidents: "OK", sync: "OK", reliability: "OK", costs: "NOT_READ" })
+    && /^Nothing needs attention right now\. Overall health, customer impact, incidents, connections and job\/provider reliability look fine\./.test(txt(ok))
+    && /Costs weren't checked; ask about costs to include them\./.test(txt(ok)) && /Platform AI doesn't cover security \(sign-in anomalies, sessions\), email delivery or operator and customer MFA yet\./.test(txt(ok))
+    && !/\n- /.test(txt(ok)), txt(ok));
+
+  // ── A2: degraded / failed health, the default (noisy) fixture ⇒ several issues ⇒ a list ──
+  const failedPosture = quiet({ operationsOverview: async () => ({ checkedAt: NOW.toISOString(), worst: "FAILED", domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key,
+    state: key === "pipeline" ? "FAILED" : "HEALTHY", title: key, headline: "", facts: key === "pipeline" ? [{ label: "Executions", value: "12" }, { label: "Failed", value: "3" }, { label: "Running now", value: "0" }] : [] })), latestFailures: [] }) as never });
+  const fp = await brief("Is anything wrong?", failedPosture);
+  check("A2 failed: a failed domain + failed refreshes ⇒ ATTENTION in health and sync; each figure is a typed figure segment; the window is stated once in words",
+    fp.result.briefing?.domains.health === "ATTENTION" && fp.result.briefing?.domains.sync === "ATTENTION"
+    && /- Platform health needs attention, with 1 failed domain — Refresh pipeline \(failed\)\./.test(txt(fp)) && /- Since yesterday \(UTC\), 3 of 12 refresh executions failed\./.test(txt(fp))
+    && fp.record.typed.filter((x) => x.kind === "figure").length === fp.result.briefing?.figures && (fp.result.briefing?.figures ?? 0) >= 3, txt(fp));
+  const degraded = quiet({ operationsOverview: async () => ({ checkedAt: NOW.toISOString(), worst: "DEGRADED", domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key,
+    state: key === "sources" ? "DEGRADED" : "HEALTHY", title: key, headline: "", facts: key === "pipeline" ? [{ label: "Executions", value: "12" }, { label: "Failed", value: "0" }, { label: "Running now", value: "0" }] : [] })), latestFailures: [] }) as never });
+  const dg = await brief("How are we looking today?", degraded);
+  check("A2 degraded: ONE issue ⇒ short prose (no list): the degraded domain, named, then what looks fine",
+    /^Platform health needs attention, with 1 degraded domain — Connections \(degraded\)\. Customer impact, incidents, connections and job\/provider reliability look fine\./.test(txt(dg)) && dg.result.briefing?.list === false, txt(dg));
+  const ql = await brief(QL, degraded);
+  check("A2 list-request variant: one issue + 'bulleted list' asked ⇒ a '- ' list item", ql.result.briefing?.list === true && /^- Platform health needs attention/.test(txt(ql)), txt(ql));
+
+  // ── A2: UNAVAILABLE and NOT_PERMITTED domains are SAID ──
+  const boom = async () => { throw new Error("down"); };
+  const unav = await brief("How are we looking today?", quiet({ connectionHealth: boom as never, operationsOverview: boom as never, providerHealth: boom as never, resourceFreshness: boom as never }));
+  check("A2 unavailable: every sync metric unreadable ⇒ 'Connection health couldn't be checked right now' (never implied fine), domain UNAVAILABLE",
+    unav.result.briefing?.domains.sync === "UNAVAILABLE" && /Connection health couldn't be checked right now — its figures are unavailable\./.test(txt(unav)) && /^Nothing needs attention in what could be checked\. Overall health, customer impact, incidents and job\/provider reliability look fine\./.test(txt(unav)), txt(unav));
+  check("A2 unavailable: a domain only PARTLY unreadable names the metric (health: posture unreadable, alerts read)",
+    unav.result.briefing?.domains.health === "OK" && /Platform operating posture is unavailable right now\./.test(txt(unav)), txt(unav));
+  const csOnly = await brief("How are we looking today?", quiet(), framer(() => "{}"), csBinding(CS, quiet()));
+  const csDomains = csOnly.result.briefing?.domains ?? {};
+  check("A2 not permitted: a CS-only operator ⇒ the Ops-only domains are NOT_PERMITTED and listed as outside their access; nothing read for them",
+    Object.values(csDomains).includes("NOT_PERMITTED") && /Your access doesn't include [^.]*, so (it isn't|they aren't) covered here\./.test(txt(csOnly))
+    && csOnly.result.trace.filter((t) => t.tool === "get_metric").every((t) => t.outcome !== "NOT_FOUND"), { d: csDomains, t: txt(csOnly) });
+
+  // ── A2: costs — asked vs not asked; a firing alert includes them ──
+  const costAsked = await brief("How are we looking on costs today?", quiet());
+  check("A2 cost asked ⇒ costs read and composed (cost=ASKED), estimates worded 'about … (estimated)'",
+    costAsked.result.briefing?.cost === "ASKED" && costAsked.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && /the estimated operating cost is (at least|about) \$/.test(txt(costAsked)), txt(costAsked));
+  check("A2 cost not asked, nothing firing ⇒ no economics read at all", !ok.result.trace.some((t) => /^(economics-|ai-)/.test(t.refs[0] ?? "")) && ok.result.briefing?.cost === null);
+  const firing = await brief("How are we looking today?", readers());
+  check("A2 firing alert (alerts-firing-now) ⇒ costs included (cost=ALERT_FIRING) and the alert is an issue",
+    firing.result.briefing?.cost === "ALERT_FIRING" && firing.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && /1 alert rule is firing now — job-failing \(firing\)\./.test(txt(firing)), txt(firing));
+  check("A2 several issues ⇒ a '- ' list; every bullet a full sentence ending in '.'",
+    firing.result.briefing?.list === true && txt(firing).split("\n").filter((l) => l.startsWith("- ")).every((l) => /\.$/.test(l)) && txt(firing).split("\n").filter((l) => l.startsWith("- ")).length >= 3, txt(firing));
+  check("A2: F-3 wording kept — a capped (PARTIAL) count says 'at least', an exact one does not",
+    await (() => { const capped = readers({ attention: async () => ({ checkedAt: NOW.toISOString(), items: [], userImpact: { windowHours: 24, rows: [], counts: { "refresh-failed": 4, "refresh-partial": 0, "ai-failure": 2, "brief-failed": 0, "needs-reauth": 1 },
+      usersAffected: { count: null, reason: "x" }, sourcesAffected: 3, authorities: { checked: ["refresh-executions", "ai-failures", "brief-ops", "connection-health"], failed: [] }, floors: ["Refresh: 4 FAILED/PARTIAL executions shown — the seam had a further page (a floor, not a total)."] } }) as never });
+      return brief("How are we looking today?", capped).then((r) => { return /In the last 24 hours, customers saw at least 4 failed refreshes, 2 AI failures and 1 connection needing reauthentication\./.test(txt(r)) && /is AI, at least \$/.test(txt(r)) && !/at at least/.test(txt(r)); }); })());
+  check("A2: no figure text in the composed answer outside a figure segment's own text (identity-free too)",
+    identityHits(JSON.stringify([firing.result.answer, firing.record.typed])).length === 0 && firing.record.typed.every((x) => x.kind !== "figure" || /^(at least |about )?[\d$]/.test(x.text)));
+
+  // ── A3: the model's framing + next actions ──
+  const kept = await brief("How are we looking today?", degraded, framer((u) => JSON.stringify({ framing: "Mostly calm; connections are worth a look first.", next_actions: [{ label: "Review connections", href: firstPage(u) }] })));
+  check("A3: a clean framing sentence is KEPT first; a next action to a PAGES href renders as a link (≤ 3), under 'Next steps:'",
+    kept.result.briefing?.framing === "KEPT" && txt(kept).startsWith("Mostly calm; connections are worth a look first. Platform health")
+    && kept.result.answer.filter((x) => x.kind === "link").length === 1 && /\n\nNext steps:\n- Review connections$/.test(txt(kept)), txt(kept));
+  const offered = framer(() => "{}");
+  await brief("How are we looking today?", degraded, offered);
+  check("A3: the framing call is offered find_page / open_page ONLY (no get_metric), and its prompt + message carry no figure",
+    JSON.stringify(offered.seen[0].tools.map((x) => (x as { function: { name: string } }).function.name)) === JSON.stringify(["find_page", "open_page"])
+    && (offered.seen[0].messages[0] as { content: string }).content === BRIEFING_FRAMING_PROMPT && !/\b\d+\b(?! ?days| ?hours)/.test((offered.seen[0].messages[1] as { content: string }).content.split("PAGES")[0].replace(/@\d/g, "")));
+  const words = await brief("How are we looking today?", degraded, framer(() => JSON.stringify({ framing: "There are two problems and one degraded domain today.", next_actions: [] })));
+  check("A3: number words in the framing ⇒ the framing is DROPPED (UNGROUNDED_DIGIT), the facts stay intact (never the fallback)",
+    words.result.briefing?.framing === "DROPPED" && words.result.briefing?.framingVerdict === "UNGROUNDED_DIGIT" && words.result.grounding.digitBy.NUMBER_WORD === 2
+    && txt(words).startsWith("Platform health needs attention, with 1 degraded domain") && !words.result.grounding.replaced, words.result.briefing);
+  const digit = await brief("How are we looking today?", degraded, framer(() => JSON.stringify({ framing: "3 things to check.", next_actions: [] })));
+  check("A3: a digit in the framing ⇒ DROPPED, facts intact", digit.result.briefing?.framing === "DROPPED" && txt(digit).startsWith("Platform health"));
+  const abs = await brief("How are we looking today?", degraded, framer((u) => JSON.stringify({ framing: "Worth a look.", next_actions: [
+    { label: "Open evil", href: "https://evil.test/x" }, { label: "Open ours absolutely", href: `https://app.example.test${firstPage(u)}` }, { label: "Unreturned", href: "/dashboard/platform/PLATFORM_OPS?view=nope" }, { label: "Review 2 connections", href: firstPage(u) }] })));
+  check("A3: absolute URLs REMOVED (never rewritten), an unreturned href dropped, a label with a digit replaced by the registry page label",
+    abs.result.briefing?.absoluteStripped === 2 && abs.result.briefing?.actions === 1 && abs.result.briefing?.actionsDropped === 3 && !/https?:|evil/.test(txt(abs))
+    && abs.result.answer.filter((x) => x.kind === "link").every((x) => !/\d/.test(x.text) || x.text !== "Review 2 connections") && abs.result.sanitised.kinds.url === 2, { b: abs.result.briefing, t: txt(abs) });
+  const greedy = await brief("How are we looking today?", degraded, framer(() => ({ calls: [{ name: "get_metric", args: { id: "economics-ai-cost" } }] })));
+  check("A3: a model get_metric is never executed in a composed briefing (NOT_FOUND, no new envelope); a model that never answers still gets the facts (≤ 4 rounds)",
+    greedy.result.trace.some((t) => t.tool === "get_metric" && t.outcome === "NOT_FOUND") && !greedy.record.metricsRead.some((m) => m.metric === "economics-ai-cost@1")
+    && greedy.result.usage.rounds === PLATFORM_AI_MAX_ROUNDS && greedy.result.briefing?.framing === "NONE" && txt(greedy).startsWith("Platform health"), greedy.result.usage);
+  const plainText = parseFramingReply("Things look mostly calm.\n- [Connections](/dashboard/platform/PLATFORM_OPS?view=pipeline)\n- [Bad](https://x.test/y)");
+  check("A3: a non-JSON reply is parsed tolerantly (first plain line = framing, Markdown links = actions)",
+    plainText.framing === "Things look mostly calm." && plainText.actions.length === 2);
+  check("A3: checkFraming keeps only the FIRST sentence; a URL / link / 'placeholder' drops it",
+    checkFraming("Calm today. Second sentence here.", "").text === "Calm today." && checkFraming("See https://x.test", "").outcome === "DROPPED" && checkFraming("A placeholder leak.", "").outcome === "DROPPED");
+  check("A3: checkActions caps at 3 and de-duplicates", checkActions([1, 2, 3, 4, 5].map((i) => ({ label: `L`, href: `/p${i}` })).concat([{ label: "L", href: "/p1" }]),
+    { hrefs: new Set(["/p1", "/p2", "/p3", "/p4", "/p5"]), pages: new Map() }, () => null, "").kept.length === 3);
+  const err = await brief("How are we looking today?", degraded, { generate: async () => { throw new Error("provider down"); }, seen: [] });
+  check("A3: a provider error during framing leaves the composed facts standing (modelError, no framing, no actions)",
+    err.result.briefing?.modelError === true && err.result.briefing?.framing === "NONE" && txt(err).startsWith("Platform health needs attention"));
+
+  // ── A4: stored + replayed as typed segments ──
+  const stored = storedAnswerOf(kept.result, kept.record);
+  check("A4: the composed answer stores as a valid StoredAnswerV1 — figures typed with their metric key, the next action as a registry page id (never an href)",
+    isStoredAnswer(stored) && stored.segments.some((x) => x.kind === "figure" && x.metric === "ops-overall-posture@1") && stored.segments.some((x) => x.kind === "link" && !("href" in x)), stored.segments);
+  check("A4: replay / export render the same composed text", renderAnswerText(stored).startsWith("Mostly calm; connections are worth a look first. Platform health needs attention")
+    && replayAnswer(stored, NOW).includes("Platform health needs attention"));
+  check("A4: never retried — a composed briefing has no retry field", !("retry" in ok.result.grounding) && !("retry" in firing.result.grounding));
+  check("trace: the composed briefing is marked in the metadata line (pattern, issues, figures, framing, actions)",
+    /briefing=composed:HOW_LOOKING list=false cost=none issues=1 figures=1 framing=KEPT actions=1 actionsDropped=0 absolute=0/.test(traceLine(kept.result)), traceLine(kept.result));
+  check("route-shaped composition (no model at all): composeBriefing is pure over envelopes", composeBriefing([], { describeMetric: () => null }, { list: false, cost: null }).domains.every((d) => d.state === "NOT_PERMITTED"));
+
+  // ── B1–B2: ONE corrective retry for NON-briefing questions ──
+  const b = opsBinding(OPS);
+  const gm = (id: string) => ({ name: "get_metric", args: { id } });
+  const Q = "How many incidents are broken now and how many need verification?";
+  const fixed = script([{ calls: [gm("incident-broken-now"), gm("incident-needs-verification")] }, { content: "There are three broken incidents and three needing verification." },
+    { content: "{{m:incident-broken-now@1}} incidents are broken now and {{m:incident-needs-verification@1}} need verification." }]);
+  const r1 = await run(Q, b, fixed);
+  check("B1: number words ⇒ ONE corrective retry; the corrected answer is shown (retry PASS, RESOLVED, not replaced)",
+    r1.result.grounding.retry?.outcome === "PASS" && r1.result.grounding.verdict === "RESOLVED" && !r1.result.grounding.replaced && txt(r1) === "3 incidents are broken now and 3 need verification." && r1.result.usage.rounds === 3, { g: r1.result.grounding, t: txt(r1) });
+  const corr = (fixed.seen[2].messages.at(-1) as { role: string; content: string });
+  check("B1: the retry carries a SERVER message listing the exact available placeholders (and no tools)",
+    corr.role === "system" && /^SERVER CHECK: your answer was NOT shown to the operator because it wrote counts as words\./.test(corr.content)
+    && corr.content.includes("{{m:incident-broken-now@1}}") && corr.content.includes("{{m:incident-needs-verification@1}}") && (fixed.seen[2].tools as unknown[]).length === 0, corr);
+  const stubborn = script([{ calls: [gm("incident-broken-now")] }, { content: "There are two incidents." }]);
+  const r2 = await run(Q, b, stubborn);
+  check("B2: a retry that still fails ⇒ the fallback as today (retry FAIL, replaced, UNGROUNDED_DIGIT)",
+    r2.result.grounding.retry?.outcome === "FAIL" && r2.result.grounding.replaced && txt(r2).startsWith(UNVERIFIED_FALLBACK) && stubborn.seen.length === 3, r2.result.grounding);
+  const wm = await run(Q, b, script([{ calls: [gm("incident-broken-now")] }, { content: "{{m:incident-broken-now@1|window=7}} broken." }, { content: "{{m:incident-broken-now@1}} broken." }]));
+  check("B1: WINDOW_MISMATCH is retried too", wm.result.grounding.retry?.outcome === "PASS" && txt(wm) === "3 broken.", wm.result.grounding);
+  const unres = script([{ calls: [gm("incident-broken-now")] }, { content: "{{m:no-such-metric@1}} broken." }]);
+  const r3 = await run(Q, b, unres);
+  check("B1: other verdicts (UNRESOLVED_PLACEHOLDER) are NOT retried — fallback at once, no extra call", !r3.result.grounding.retry && r3.result.grounding.replaced && unres.seen.length === 2);
+  const late = script([{ calls: [gm("incident-broken-now")] }, { calls: [gm("incident-needs-verification")] }, { calls: [gm("incident-resolved-window")] }, { content: "two" }]);
+  const r4 = await run(Q, b, late);
+  check(`B1: the retry stays inside the bounds — answered in the last of ${PLATFORM_AI_MAX_ROUNDS} rounds ⇒ no retry (no extra call)`, !r4.result.grounding.retry && late.seen.length === PLATFORM_AI_MAX_ROUNDS && r4.result.grounding.replaced);
+  const heavy = script([{ calls: [gm("incident-broken-now")], tokens: 20_000 }, { content: "two", tokens: 20_000 }]);
+  const r5 = await run(Q, b, heavy);
+  check("B1: …and at the token ceiling ⇒ no retry", !r5.result.grounding.retry && heavy.seen.length === 2 && r5.result.grounding.replaced);
+  check("B1: RETRYABLE_VERDICTS is exactly UNGROUNDED_DIGIT + WINDOW_MISMATCH; the 10-call / 4-round / 40k bounds are unchanged",
+    RETRYABLE_VERDICTS.join() === "UNGROUNDED_DIGIT,WINDOW_MISMATCH" && PLATFORM_AI_MAX_TOOL_CALLS === 10 && PLATFORM_AI_MAX_ROUNDS === 4 && PLATFORM_AI_TURN_TOKEN_CEILING === 40_000);
+  check("B1: trace line carries retry=PASS(<verdict>)", /retry=PASS\(RESOLVED\)/.test(traceLine(r1.result)) && /retry=FAIL\(UNGROUNDED_DIGIT\)/.test(traceLine(r2.result)));
+  check("B1: the corrective message never contains a value (placeholders and registry keys only)",
+    !/\d|\$/.test(corr.content.replace(/\{\{[^}]*\}\}/g, "")) && /none: answer without figures/.test(correctiveRetryMessage("UNGROUNDED_DIGIT", { OTHER: 1 }, [])));
+  const qc = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Over the past thirty days the largest is about four dollars." },
+    { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
+  check("B1 Question C: a number-word answer is retried and the placeholder answer kept (with the window note)", qc.result.grounding.retry?.outcome === "PASS" && !qc.result.grounding.replaced && qc.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE", qc.result.grounding);
+  // Static: briefing.ts imports only core (functions, used lazily) and retrieve-core types.
+  const bImports = [...src("lib/platform/intelligence/ai/briefing.ts").matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
+  check("briefing.ts imports: ./core and retrieve-core TYPES only", bImports.join() === ["./core", "type @/lib/platform/intelligence/metrics/retrieve-core"].sort().join(), bImports);
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
