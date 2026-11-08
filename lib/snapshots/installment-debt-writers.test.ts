@@ -174,8 +174,9 @@ async function d2(): Promise<void> {
     "query is Space-scoped only — no status, no deletedAt filter");
   assert.equal(await spaceEverHeldInstallmentLiability(fake([chk, mtg]).client, "sp"), true, "current mortgage ⇒ segmented");
   assert.equal(await spaceEverHeldInstallmentLiability(fake([chk, card]).client, "sp"), false, "never held one ⇒ joined");
+  assert.equal(await spaceEverHeldInstallmentLiability(fake([]).client, "sp"), true, "a read that sees no account cannot prove 'never' ⇒ segmented (fail safe)");
   const routeSrc = src("../../app/api/spaces/[id]/snapshots/route.ts");
-  assert.ok(/spaceEverHeldInstallmentLiability\(systemDb/.test(routeSrc) && /\.catch\(\(\) => true\)/.test(routeSrc), "route: systemDb read, fails safe to segmented");
+  assert.ok(/spaceEverHeldInstallmentLiability\(db as/.test(routeSrc) && /\.catch\(\(\) => true\)/.test(routeSrc), "route: systemDb read, fails safe to segmented");
   assert.ok(/typeof s\.installmentDebt === "number" \? s : \{ \.\.\.s, liquidLegacyRowsCurrent: true as const \}/.test(routeSrc), "route: stamps legacy rows only, only when never held");
 
   // No-installment Space: legacy rows stamped ⇒ ONE joined series, no marker.

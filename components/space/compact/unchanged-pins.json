@@ -30,7 +30,7 @@
  "lib/debt/balance-semantics.ts": "62518023cefb3d8c3513dea5f187d1f4f976e76578ff4a4382e070a70bfd0002",
  "lib/debt/display-conversion.ts": "24dde3d88f7d640a96ee1194b8937e1175f317aa1fe3eba837445ee73e2f5c70",
  "lib/debt/effective-terms.ts": "e4ac4a1bd92cc233f077ec769fe342c0e7e0b3635211df5891035136ded960a5",
- "lib/debt/installment-history.ts": "9a24d811edc774a298cc3d08e2258e8757cde37daf02e78962545cd407ffdd8e",
+ "lib/debt/installment-history.ts": "f7f9462396ee2c923ff1b50144d5b0d9f62b144db997dd7522287d729278119e",
  "lib/debt/interest-cost.ts": "6401bdc97e2d7d0492f5ee092bc9e5577c7d6d8f1775f8306bbc4128286af366",
  "lib/debt/liability-kind.ts": "4099010413e8c5959a47f7b55c26be9acfbcc7bb7020ceedd603c27a976b28c6",
  "lib/debt/liquid-net-worth.ts": "7fe60b3b88096015d19e6b52a5484daf20bb58b394524d63d539cf60a61d4fac",

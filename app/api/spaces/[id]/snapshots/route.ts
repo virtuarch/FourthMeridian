@@ -42,7 +42,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole, ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getRecentSnapshots }        from "@/lib/data/snapshots";
-import { db, systemDb }              from "@/lib/db";
+import { db }                        from "@/lib/db";
 import { withTenantDb }              from "@/lib/db/tenant-context";
 import { spaceEverHeldInstallmentLiability, type InstallmentHistoryClient } from "@/lib/debt/installment-history";
 
@@ -114,10 +114,10 @@ export async function GET(
   // definition: stamped per legacy row, so the chart reads one joined series.
   // Deliberately NOT withTenantDb: revoked links and soft-deleted accounts are
   // exactly what a tenant read may not see, and missing one would join a series
-  // whose old definition really did subtract a mortgage. systemDb (the role the
-  // snapshot writers read links with), scoped to this authorised Space; returns
-  // only a boolean. A failed read FAILS SAFE: segmented, never joined.
-  const everHeldInstallment = await spaceEverHeldInstallmentLiability(systemDb as unknown as InstallmentHistoryClient, spaceId)
+  // whose old definition really did subtract a mortgage. Same `db` authority as
+  // the PlaidItem probe above, scoped to this authorised Space; returns only a
+  // boolean. A failed or empty read FAILS SAFE: segmented, never joined.
+  const everHeldInstallment = await spaceEverHeldInstallmentLiability(db as unknown as InstallmentHistoryClient, spaceId)
     .catch(() => true);
   const out = everHeldInstallment
     ? snapshots

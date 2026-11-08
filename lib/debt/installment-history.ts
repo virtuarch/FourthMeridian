@@ -30,5 +30,9 @@ export async function spaceEverHeldInstallmentLiability(client: InstallmentHisto
     where:  { spaceId },
     select: { financialAccount: { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true } } },
   });
-  return everHeldInstallmentLiability(links.flatMap((l) => (l.financialAccount ? [l.financialAccount] : [])));
+  const accounts = links.flatMap((l) => (l.financialAccount ? [l.financialAccount] : []));
+  // FAIL SAFE: a read that sees NO linked account (a Space with history always
+  // had some) cannot prove "never held" — segmented, never joined.
+  if (accounts.length === 0) return true;
+  return everHeldInstallmentLiability(accounts);
 }
