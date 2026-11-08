@@ -540,7 +540,7 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
   // S2 2026-11-05 — the UNGROUNDED_DIGIT diagnosis: counts by kind, never the digits or the text.
   {
     const { classifyDigitRuns, DIGIT_KINDS } = await import("./core");
-    check("DIGIT_KINDS is the closed list WINDOW_LIKE, MONEY_LIKE, PERCENT_LIKE, OTHER", JSON.stringify(DIGIT_KINDS) === JSON.stringify(["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER"]));
+    check("DIGIT_KINDS is the closed list WINDOW_LIKE, MONEY_LIKE, PERCENT_LIKE, OTHER, NUMBER_WORD (S2 N1)", JSON.stringify(DIGIT_KINDS) === JSON.stringify(["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER", "NUMBER_WORD"]));
     const k = (t: string) => JSON.stringify(classifyDigitRuns(t));
     check("time units ⇒ WINDOW_LIKE (30 days, 7d, 24 hours, 3-month, 2 weeks)", k("over 30 days and 7d, 24 hours, 3-month, 2 weeks") === JSON.stringify({ WINDOW_LIKE: 5 }), k("over 30 days and 7d, 24 hours, 3-month, 2 weeks"));
     check("currency ⇒ MONEY_LIKE ($3.33, $ 1,200, 5 dollars, 9 USD)", k("$3.33 and $ 1,200 then 5 dollars or 9 USD") === JSON.stringify({ MONEY_LIKE: 4 }), k("$3.33 and $ 1,200 then 5 dollars or 9 USD"));
@@ -921,7 +921,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   check("…a key not read this turn ⇒ UNREAD; the key match is exact", M([], null) === "UNREAD" && matchPlaceholderEnvelope([e(30)], "k@2", null).kind === "UNREAD" && matchPlaceholderEnvelope([e(30)], "K@1", null).kind === "UNREAD");
   check("the rule lives in ONE exported function the resolver calls",
     /export function matchPlaceholderEnvelope\(envelopes: readonly MetricEnvelope\[\], key: string, window: number \| null\): PlaceholderEnvelopeMatch/.test(src("lib/platform/intelligence/ai/core.ts"))
-    && /matchPlaceholderEnvelope\(envelopes, key, opts\.window\)/.test(src("lib/platform/intelligence/ai/core.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+    && /matchPlaceholderEnvelope\(envelopes, key, fixedWindowOption\(envelopes, key, opts\.window, askedDays\)\)/.test(src("lib/platform/intelligence/ai/core.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
 
   // Through real turns (fake model).
   const one = await turn("AI spend this week?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
@@ -1982,6 +1982,75 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
     texts.every((t) => !/pipeline[^.\n]*\b24\s*(?:h\b|hours?)|\b24\s*(?:h\b|hours?)[^.\n]*pipeline/i.test(t)) && ![rpDef.label, rpDef.summary, rpDef.window.label ?? ""].some((t) => /24/.test(t)));
   check("a narrow question (one domain) gets no coverage note", briefingCoverageNote([{ label: "A", status: "read" }, { label: "B", status: "not_read" }]) === null);
   check("trace + answer carry no identity from the briefing readers' payloads", identityHits(JSON.stringify([b.result.answer, b.result.citations, b.result.trace, b.result.notes])).length === 0);
+}
+
+// ── 4q. Question C regression + number words (S2 N1), 2026-11-08 ─────────────
+console.log("\n4q. Question C (fixed-window placeholder |window = the asked period) + number words are figures (S2 N1)");
+{
+  const b = opsBinding(OPS);
+  const QC = "What's costing me the most money in the past 30 days?"; // Question C, EXACT owner wording (work queue 11-07)
+  const gm = (id: string, window?: number) => ({ name: "get_metric", args: window === undefined ? { id } : { id, window } });
+  const txt = (r: Awaited<ReturnType<typeof run>>) => segmentsText(r.result.answer);
+  const toolResults = (r: Awaited<ReturnType<typeof run>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
+
+  // The Preview failure (2026-11-08 ~10:30Z): window=30 sent to the fixed-cycle metric (ignored at the read), then |window=30 written on its placeholders.
+  const preview = await run(QC, b, script([
+    { calls: [gm("economics-operating-cost", 30), gm("economics-ai-cost", 30)] },
+    { content: "In the past 30 days, the largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory|window=30}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory|window=30}}, out of an estimated {{m:economics-operating-cost@1|part=totalUsd|window=30}}. AI spend was {{m:economics-ai-cost@1|part=spendUsd|window=30}}." },
+  ]));
+  const pt = txt(preview);
+  check("Question C (Preview replay): NOT the verify fallback — answer kept, RESOLVED_WITH_WINDOW_NOTE, every placeholder resolved",
+    !preview.result.grounding.replaced && preview.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !pt.includes(UNVERIFIED_FALLBACK)
+    && preview.result.claims.unresolved === 0 && preview.result.claims.resolved === 4, { g: preview.result.grounding, c: preview.result.claims, t: pt });
+  check("…the server CORRECTION segment comes first and states the period mismatch (cycle, not the asked 30 days)",
+    preview.result.answer[0]?.kind === "correction" && /not the past 30 days you asked about/.test(preview.result.answer[0].text) && preview.result.grounding.correction === 1 && preview.result.grounding.periodMismatch === 1,
+    preview.result.answer[0]);
+  check("…every cycle figure states its OWN window (month to date), the 30-day AI figure its own — nothing substituted",
+    /at least \$[\d,.]+ \(this UTC calendar month to date, since \d{4}-\d{2}-\d{2}, estimated\)/.test(pt) && /about \$[\d,.]+ \(in the last 30 days, estimated\)/.test(pt) && !/\(in the last 30 days[^)]*\)[^.]*operating/.test(pt), pt);
+  const opResult = toolResults(preview).find((x) => x.metric === "economics-operating-cost@1");
+  check("…the get_metric result says the sent window was ignored and its placeholders take no |window",
+    typeof opResult?.window_ignored === "string" && /take no \|window/.test(opResult.window_ignored) && !/\|window=/.test(JSON.stringify(opResult.placeholders)) && toolResults(preview).find((x) => x.metric === "economics-ai-cost@1")?.window_ignored === undefined);
+  const plain = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
+  check("Question C, placeholders copied verbatim ⇒ answer kept with the window note (unchanged behaviour)",
+    !plain.result.grounding.replaced && plain.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /^Note: .*not the 30 days you asked about\./.test(txt(plain)), txt(plain));
+  // The relaxation is narrow: only a fixed-window key, only the asked period.
+  const notAsked = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Total {{m:economics-operating-cost@1|part=totalUsd|window=7}}." }]));
+  check("…|window=N that the operator did NOT ask for, on a fixed-window metric ⇒ still WINDOW_MISMATCH (fallback)", notAsked.result.grounding.verdict === "WINDOW_MISMATCH" && txt(notAsked).startsWith(UNVERIFIED_FALLBACK));
+  const dayMetric = await run(QC, b, script([{ calls: [gm("economics-ai-cost", 7)] }, { content: "AI spend {{m:economics-ai-cost@1|part=spendUsd|window=30}}." }]));
+  check("…a DAY-window metric read with 7, placeholder |window=30 ⇒ still WINDOW_MISMATCH (never another window's figure)", dayMetric.result.grounding.verdict === "WINDOW_MISMATCH" && txt(dayMetric).startsWith(UNVERIFIED_FALLBACK));
+  const invented = await run(QC, b, script([{ calls: [gm("economics-operating-cost", 30)] }, { content: "In the past 30 days AI cost you $4.10." }]));
+  check("…an invented figure in the Question C answer is still refused (UNGROUNDED_DIGIT)", invented.result.grounding.replaced && invented.result.grounding.verdict === "UNGROUNDED_DIGIT");
+
+  // S2 N1: counts written as words are figures.
+  const words = await run("How are we looking today?", b, script([
+    { calls: [gm("ops-overall-posture"), gm("incident-broken-now")] },
+    { content: "There are two active incidents and one failed domain." },
+  ]));
+  check("N1: \"two active incidents\" without a placeholder ⇒ refused (UNGROUNDED_DIGIT, digitBy NUMBER_WORD), the verify fallback",
+    words.result.grounding.replaced && words.result.grounding.verdict === "UNGROUNDED_DIGIT" && words.result.grounding.digitBy.NUMBER_WORD === 2 && txt(words).startsWith(UNVERIFIED_FALLBACK)
+    && traceLine(words.result).includes("digitBy=NUMBER_WORD:2"), words.result.grounding);
+  const viaPh = await run("How are we looking today?", b, script([
+    { calls: [gm("ops-overall-posture"), gm("incident-broken-now")] },
+    { content: "Active incidents: {{m:incident-broken-now@1}}. Degraded domains: {{m:ops-overall-posture@1|part=degraded}}." },
+  ]));
+  check("N1: the same counts via their placeholders ⇒ rendered (RESOLVED)", !viaPh.result.grounding.replaced && viaPh.result.grounding.verdict === "RESOLVED" && /^Active incidents: 3\. Degraded domains: 1\.$/.test(txt(viaPh)), txt(viaPh));
+  const { numberWordCount } = await import("./core");
+  const previewN1 = ["one failed domain", "two degraded domains", "two active incidents and one needing verification", "one customer needing reauthentication and eight connections requiring reconnection", "a dozen jobs", "it failed twice", "a single connection"];
+  check("N1: every Preview phrasing (and dozen / twice / a single) counts as a number word", previewN1.every((p) => numberWordCount(p) > 0), previewN1.map((p) => numberWordCount(p)));
+  const fine = ["No one needs to act.", "Open the connections page to see which one failed.", "Once it reconnects, the figure updates.", "Several domains are healthy.", "Most important first.", "None of the alerts are firing.", "Someone, anyone, everyone."];
+  check("N1: idioms and excluded words are not counts (no one / which one / once / several / first / none / someone)", fine.every((p) => numberWordCount(p) === 0), fine.map((p) => numberWordCount(p)));
+  check("N1: \"one of the domains\" IS counted (conservative: it asserts a count)", numberWordCount("One of the domains is degraded.") === 1);
+  check("N1: the operator's own worded window is admitted (\"past thirty days\" in the question), not otherwise",
+    numberWordCount("In the past thirty days.", "costs in the past thirty days?") === 0 && numberWordCount("In the past thirty days.", "costs lately?") === 1 && numberWordCount("thirty connections", "past thirty days") === 1);
+  check("N1 (b): the prompt tells the model counts are figures and to copy the count part's placeholder",
+    /never write one as a word/.test(PLATFORM_AI_SYSTEM_PROMPT) && /count part's placeholder/.test(PLATFORM_AI_SYSTEM_PROMPT));
+  // Minor (S2): cost only when asked / anomalous; next actions carry a find_page / open_page link.
+  const sys = (words.transcript[0] as { content: string }).content;
+  check("briefing step 6: cost only when asked or anomalous — no economics read for a general status question (prompt + coverage block)",
+    /\(6\) costs or unusual activity, ONLY if the operator asked or a figure is anomalous — otherwise read no economics metric/.test(PLATFORM_AI_SYSTEM_PROMPT) && /read Costs only when the operator asks about cost/.test(sys));
+  check("briefing step 7: next actions must each be a find_page / open_page (or drill.page) link (coverage block)", /Next actions \(step 7\): each one is a Markdown link to an href find_page \/ open_page returned/.test(sys));
+  const nextBare = await run("How are we looking today?", b, script([{ calls: [gm("ops-overall-posture")] }, { content: "Next: open https://evil.test/x and [connections](/dashboard/platform/PLATFORM_OPS?view=nope)." }]));
+  check("step 7: a next action whose link was not returned this turn is stripped (no URL, no unreturned href renders)", nextBare.result.answer.every((x) => x.kind !== "link") && !/https?:|evil/.test(txt(nextBare)), txt(nextBare));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
