@@ -154,6 +154,32 @@ function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number | null {
   return amt === null ? null : Math.abs(amt);
 }
 
+/**
+ * The liquidity-axis half of the fold: ONE classification lands in AT MOST ONE of
+ * cashIn / cashOut / unresolved / neutral-context byReason (pinned for every
+ * reason × effect pair by cash-flow-projection.test.ts). Exported for that test.
+ */
+export function foldLiquidityEffect(
+  acc: DayFacts,
+  c: { effect: LiquidityEffect; reason: LiquidityReason },
+  amt: number,
+  loanPaymentDetail?: string | null,
+): void {
+  if (c.effect === "CASH_IN")  { acc.cashIn += amt;  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
+  else if (c.effect === "CASH_OUT") { acc.cashOut += amt; acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt;
+    // Owner F6 / S2 D3 — labelling only: which loan types the untracked line holds.
+    if (c.reason === "UNTRACKED_LOAN_PAYMENT") {
+      const kind = unsplitLoanKind(loanPaymentDetail);
+      const kinds = (acc.untrackedLoanKinds ??= []);
+      if (!kinds.includes(kind)) kinds.push(kind);
+    }
+  }
+  else if (c.effect === "UNRESOLVED") { acc.unresolved += amt; }
+  // NEUTRAL: record ONLY the pure-context reasons; a straddle reason's neutral leg
+  // is skipped so it never pollutes the Cash In/Out reason partition (see byReason doc).
+  else if (NEUTRAL_CONTEXT_REASONS.has(c.reason)) { acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
+}
+
 /** Fold one row into an accumulator, reading BOTH canonical axes exactly once. */
 function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, moneyCtx?: ConversionContext): void {
   const amt = rowMagnitude(t, moneyCtx);
@@ -161,18 +187,7 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   const ft = t.flowType ?? null;
 
   // ── Liquidity axis (spendable-cash effect) ──
-  const c = classifyLiquidity(t, liqCtx);
-  if (c.effect === "CASH_IN")  { acc.cashIn += amt;  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
-  else if (c.effect === "CASH_OUT") { acc.cashOut += amt; acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
-  if (c.effect === "CASH_OUT" && c.reason === "UNTRACKED_LOAN_PAYMENT") {
-    const kind = unsplitLoanKind(t.loanPaymentDetail);
-    const kinds = (acc.untrackedLoanKinds ??= []);
-    if (!kinds.includes(kind)) kinds.push(kind);
-  }
-  else if (c.effect === "UNRESOLVED") { acc.unresolved += amt; }
-  // NEUTRAL: record ONLY the pure-context reasons; a straddle reason's neutral leg
-  // is skipped so it never pollutes the Cash In/Out reason partition (see byReason doc).
-  else if (NEUTRAL_CONTEXT_REASONS.has(c.reason)) { acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
+  foldLiquidityEffect(acc, classifyLiquidity(t, liqCtx), amt, t.loanPaymentDetail);
 
   // ── Economic axis (real value, tier-independent — includes card purchases) ──
   // income / spendGross / refunds come from the SINGLE economic-fold authority

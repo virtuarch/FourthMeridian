@@ -115,7 +115,7 @@
  "lib/transactions/canonical-spending.ts": "9fca9465a3dd296b2eda6bd36d11be55f495133f791d198c10c2001d53f63dec",
  "lib/transactions/cash-flow-compare.ts": "53c08c131aa1b6858ef31bb264e7e4123d72d3eb533572b0947c69cbbf20b31e",
  "lib/transactions/cash-flow-context.ts": "c67f4a4f9b4ac29a8ba67eadc9c6cd9ff7171f0bca27b675617e4f7f4e54c942",
- "lib/transactions/cash-flow-projection.ts": "8afe76df87f04bc2c1d94677f3a694cdfe04ce43b7b5925e0fe3afed695d1217",
+ "lib/transactions/cash-flow-projection.ts": "3641c2f454c29147c0751c9fb10fcf4264f3bfee057c37c746ba3586c3ae21a1",
  "lib/transactions/cash-flow-space-data.ts": "91a180afba3c135c2c3b14cbb143ae7303c94e4e549e523e727b89d69ca4c797",
  "lib/transactions/cash-flow.ts": "951b97201b25566fd0fa5e97008ca74658399a29131e65fccee68f43eefed063",
  "lib/transactions/cash-movement.ts": "3d560a4597208a6a5ba13c505d5794eb5070d542407fc06f654ebed4feb8529c",
