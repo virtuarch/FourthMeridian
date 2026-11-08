@@ -13,6 +13,8 @@
  *   3. requireFreshPlatformAccess(area, "READ") on the operator's FIRST area in
  *      registry order — the grant, operator 2FA when enforced, the live
  *      session-revocation re-check and the break-glass rules, re-read fresh → 401 / 403
+ *      (multi-area, 2026-11-08: after the limiter, every OTHER held area is guarded
+ *      the same way, on its own; a refused area is left out of the binding)
  *   4. the #352 per-operator limiter (limitPlatformMutation)  → 429
  *   5. handlePlatformAiAsk: body → kill switch → global cost freeze → the
  *      per-operator daily turn cap → the turn                 → 400 / 503 / 429
@@ -45,7 +47,10 @@ import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audie
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
-import { handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, platformAiAreaFor, type PlatformAiBinding } from "@/lib/platform/intelligence/ai/core";
+import {
+  composePlatformAiBindings, handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, platformAiAreaFor, platformAiAreasFor,
+  type PlatformAiAreaBinding, type PlatformAiBinding,
+} from "@/lib/platform/intelligence/ai/core";
 import { classifyPlatformAiFailure, makePlatformAiGenerate, platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import type { PlatformArea } from "@prisma/client";
 
@@ -122,7 +127,24 @@ export async function POST(req: NextRequest) {
 
   const metricToken = metricAccessFor(auth);
   const incidentToken = incidentAudienceFor(auth);
-  const binding = metricToken && auth.grant ? bindingFor(auth.grant.area, { metricToken, incidentToken }) : null;
+  const primary = metricToken && auth.grant ? bindingFor(auth.grant.area, { metricToken, incidentToken }) : null;
+
+  // MULTI-AREA (owner 2026-11-08): every OTHER area the operator holds, each behind ITS OWN
+  // fresh guard (grant, operator 2FA, live revocation). A refused / revoked area is skipped —
+  // never bound. Tokens are minted from that area's own guard result; the surface is still a
+  // literal per case in bindingFor. Composition is pure (core.ts composePlatformAiBindings).
+  const parts: PlatformAiAreaBinding[] = primary && auth.grant ? [{ area: auth.grant.area, binding: primary }] : [];
+  if (primary) {
+    for (const other of platformAiAreasFor(rows)) {
+      if (other === area) continue;
+      const [otherAuth, otherErr] = await requireFreshPlatformAccess(other, "READ", { probe: true });
+      if (otherErr || !otherAuth.grant || otherAuth.grant.area !== other || otherAuth.user.id !== auth.user.id) continue;
+      const otherToken = metricAccessFor(otherAuth);
+      const otherBinding = otherToken ? bindingFor(otherAuth.grant.area, { metricToken: otherToken, incidentToken: incidentAudienceFor(otherAuth) }) : null;
+      if (otherBinding) parts.push({ area: other, binding: otherBinding });
+    }
+  }
+  const binding = composePlatformAiBindings(parts);
 
   let body: unknown;
   try { body = await req.json(); } catch { body = null; }
