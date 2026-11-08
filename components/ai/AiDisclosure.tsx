@@ -1,7 +1,7 @@
 "use client";
 
 /** Persistent AI boundary copy; details open in the shared responsive panel. */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Panel } from "@/components/atlas/panels/Panel";
 import { PanelHeader, PanelContent } from "@/components/atlas/panels/PanelParts";
 
@@ -24,7 +24,16 @@ export const AI_DISCLOSURE_ABOUT: readonly string[] = [
   "Fourth Meridian AI is not a licensed financial adviser, broker, tax adviser or attorney, and an AI answer shouldn't be the only basis for an important financial decision.",
 ];
 
-export function AiDisclosure() {
+/**
+ * `line` / `title` / `children` let another AI surface (Platform AI) reuse the
+ * same one-line disclosure and its panel with its own copy; the defaults render
+ * Personal Space AI unchanged.
+ */
+export function AiDisclosure({
+  line = AI_DISCLOSURE_LINE,
+  title = "About Fourth Meridian AI",
+  children,
+}: { line?: string; title?: string; children?: ReactNode } = {}) {
   const [open, setOpen] = useState(false);
   return (
     <div data-ai-disclosure className="text-center">
@@ -35,13 +44,13 @@ export function AiDisclosure() {
         onClick={() => setOpen(true)}
         className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]"
       >
-        <span>{AI_DISCLOSURE_LINE} <span aria-hidden>· </span><span className="underline decoration-dotted underline-offset-2">About</span></span>
+        <span>{line} <span aria-hidden>· </span><span className="underline decoration-dotted underline-offset-2">About</span></span>
       </button>
-      <Panel open={open} onClose={() => setOpen(false)} ariaLabel="About Fourth Meridian AI" size="sm">
-        <PanelHeader title="About Fourth Meridian AI" />
+      <Panel open={open} onClose={() => setOpen(false)} ariaLabel={title} size="sm">
+        <PanelHeader title={title} />
         <PanelContent className="space-y-3 text-left text-sm leading-relaxed text-[var(--text-secondary)]">
-          <p className="font-medium text-[var(--text-primary)]">{AI_DISCLOSURE_LINE}</p>
-          {AI_DISCLOSURE_ABOUT.map((s) => <p key={s}>{s}</p>)}
+          <p className="font-medium text-[var(--text-primary)]">{line}</p>
+          {children ?? AI_DISCLOSURE_ABOUT.map((s) => <p key={s}>{s}</p>)}
         </PanelContent>
       </Panel>
     </div>

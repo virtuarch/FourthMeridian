@@ -237,10 +237,8 @@ export function utcStamp(iso: string): string {
   return `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-/** §4.3: the line over every prior answer. */
-export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime(iso, now)}. Figures are as of then.`;
-/** §4.3: the chip on each prior figure. */
-export const asOfChip = (iso: string, now: Date) => `as of ${relativeTime(iso, now)}`;
+/** §4.3 (owner 2026-11-08): the ONE quiet line above the first old prior answer. */
+export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime(iso, now)} · figures are as of then`;
 
 /**
  * = PLATFORM_AI_RETENTION_DAYS in lib/platform/intelligence/ai/conversations/constants.ts.
@@ -280,23 +278,120 @@ export function questionBefore(messages: readonly ClientMessage[], assistantInde
 /** Per-viewer convenience only (§11): the desktop rail's collapsed state. Never content, never shared. */
 export const RAIL_COLLAPSED_KEY = "fm.platform-ai.rail-collapsed";
 
-// ── Empty state (parity PR3) ────────────────────────────────────────────────
+// ── Empty state (parity PR3; Personal parity PR6) ───────────────────────────
 
 /**
- * The empty-state headline and starter chips. Static, Platform-owned copy:
- * generic questions about the kinds of evidence Platform AI reads (jobs,
- * providers, costs, incidents). No figure, no name, no customer data. A chip
- * asks exactly its text through the normal send path (a fresh clientRequestId).
+ * The empty-state headline (rendered by the shared StarterLine at Personal's
+ * size) and the starter chips: a SHORT label on the chip, the full question
+ * behind it (Personal's StarterPrompt shape). Static, Platform-owned copy about
+ * the kinds of evidence Platform AI reads. No figure, no name, no customer data.
+ * A chip asks exactly its `prompt` through the normal send path (a fresh
+ * clientRequestId). The first chip is the general check-in.
  */
 export const PLATFORM_AI_STARTER_HEADLINE = "What would you like to check?";
-export const PLATFORM_AI_STARTER_PROMPTS: readonly string[] = [
-  "Which jobs failed or ran late recently?",
-  "How are providers performing this week?",
-  "What is driving operating costs this month?",
-  "Are there any open incidents right now?",
+export interface PlatformAiStarter { label: string; prompt: string }
+export const PLATFORM_AI_STARTER_PROMPTS: readonly PlatformAiStarter[] = [
+  { label: "How are we looking today?", prompt: "How is the platform looking today? Summarise anything that needs attention." },
+  { label: "Customer-impacting issues", prompt: "Is anything affecting customers right now?" },
+  { label: "Open incidents", prompt: "Are there any open incidents right now?" },
+  { label: "Sync & connection health", prompt: "How healthy are syncs and provider connections this week?" },
+  { label: "Jobs & providers", prompt: "Which jobs failed or ran late recently, and how are providers performing?" },
+  { label: "Costs this month", prompt: "What is driving operating costs this month?" },
 ];
 /** Screen-reader label for the in-flight indicator (the three dots). */
 export const PLATFORM_AI_THINKING_LABEL = "Platform AI is answering…";
+
+// ── Quiet chrome (Personal parity PR6) ──────────────────────────────────────
+
+/**
+ * The ONE visible disclosure line beneath the composer (Personal's AiDisclosure
+ * idiom). "About" opens the panel with the full OD-5 text and the v0 privacy
+ * hint, both unchanged. The retention figure is the client retention constant,
+ * so it follows PLATFORM_AI_RETENTION_DAYS (pinned equal in the test). "Hidden
+ * after" — never "deleted" (removal is the next purge, stated in the OD-5 text).
+ */
+export const PLATFORM_AI_CONVERSATIONS_LINE =
+  `Read-only · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
+/** The same line for v0 (flag on, conversations off): nothing is stored. */
+export const PLATFORM_AI_SESSION_LINE = "Read-only · Not saved · Don’t enter personal details";
+/** v0's About panel adds this sentence (the v0 route stores nothing; platform-ai.test.ts §10 pins the route). */
+export const PLATFORM_AI_SESSION_NOT_SAVED =
+  "Questions and answers here are not saved. Leaving or reloading the page clears them.";
+
+/** The character counter appears only from here (80 % of the 500 limit). */
+export const PLATFORM_AI_COUNTER_FROM = 400;
+export const showComposerCounter = (length: number) => length >= PLATFORM_AI_COUNTER_FROM;
+
+/** "N of 50 conversations" appears only this close to the cap. */
+export const PLATFORM_AI_LIMIT_WARN_WITHIN = 5;
+export const showConversationCount = (limits: ClientLimits | null) =>
+  limits !== null && limits.max - limits.used <= PLATFORM_AI_LIMIT_WARN_WITHIN;
+
+/**
+ * Stale evidence, quietly (§4.3 as amended by the owner 2026-11-08): no chip per
+ * figure; ONE muted line above the first prior answer that is at least this old.
+ * A figure is still never refreshed in place.
+ */
+export const STALE_NOTE_AFTER_MS = 60 * 60 * 1000;
+export function staleNoteIndex(messages: readonly Pick<ClientMessage, "role" | "stale" | "createdAt">[], now: Date): number {
+  return messages.findIndex((m) => {
+    if (m.role !== "ASSISTANT" || !m.stale) return false;
+    const t = Date.parse(m.createdAt);
+    return Number.isFinite(t) && now.getTime() - t >= STALE_NOTE_AFTER_MS;
+  });
+}
+
+// ── Answer blocks (paragraphs and lists inside typed segments) ──────────────
+
+/** An inline piece of an answer: the typed segment kinds, never markup. */
+export type InlineSegment = Exclude<ClientSegment, { kind: "correction" }>;
+export type AnswerBlock =
+  | { kind: "p"; lines: InlineSegment[][] }
+  | { kind: "ul" | "ol"; items: InlineSegment[][] };
+
+const BULLET = /^[ \t]*(?:[-*•])[ \t]+/;
+const NUMBERED = /^[ \t]*\d{1,2}[.)][ \t]+/;
+
+/**
+ * Lay the typed segments out as paragraphs and simple lists — STRUCTURE ONLY.
+ * A blank line ends a paragraph; a line that starts with "- ", "* ", "• " or
+ * "1. " is a list item (the marker is dropped). Nothing else is interpreted:
+ * `**x**`, `<b>`, `[a](b)` stay literal text, a link is still only a server
+ * `link` segment, and every piece is still rendered as React text. Correction
+ * segments are not part of the body (they render above it).
+ */
+export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] {
+  const lines: InlineSegment[][] = [[]];
+  for (const s of segments) {
+    if (s.kind === "correction") continue;
+    if (s.kind !== "text") { lines[lines.length - 1].push(s); continue; }
+    s.text.split("\n").forEach((part, i) => {
+      if (i > 0) lines.push([]);
+      if (part) lines[lines.length - 1].push({ kind: "text", text: part });
+    });
+  }
+  const blocks: AnswerBlock[] = [];
+  let para: InlineSegment[][] | null = null;
+  const lineText = (l: InlineSegment[]) => l.map((x) => x.text).join("");
+  for (const line of lines) {
+    if (lineText(line).trim() === "") { para = null; continue; }
+    const first = line[0];
+    const marker = first?.kind === "text" ? (BULLET.exec(first.text) ?? NUMBERED.exec(first.text)) : null;
+    if (marker && first.kind === "text") {
+      const kind = BULLET.test(first.text) ? "ul" : "ol";
+      const rest = first.text.slice(marker[0].length);
+      const item: InlineSegment[] = [...(rest ? [{ kind: "text" as const, text: rest }] : []), ...line.slice(1)];
+      const prev = blocks[blocks.length - 1];
+      if (para === null && prev && prev.kind === kind) prev.items.push(item);
+      else blocks.push({ kind, items: [item] });
+      para = null;
+      continue;
+    }
+    if (para) para.push(line);
+    else { para = [line]; blocks.push({ kind: "p", lines: para }); }
+  }
+  return blocks;
+}
 
 // ── History (parity PR4) ────────────────────────────────────────────────────
 
