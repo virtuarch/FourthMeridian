@@ -16,7 +16,9 @@
  */
 
 import { type LiquidityReason } from "@/lib/transactions/liquidity";
-import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
+import {
+  UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND, UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL, unsplitLoanKindOf, type UnsplitLoanKind,
+} from "@/lib/debt/liability-kind";
 import type { DayFacts } from "@/lib/transactions/cash-flow-projection";
 
 /** User-facing labels — liquidity terminology, not economic (see doctrine). */
@@ -40,8 +42,10 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   DEBT_PAYMENT:      "Debt payments",
   // Mortgage F10 — a loan payment with no connected destination matched (the loan
   // is not connected, OR it is but the servicer posted no pairable leg): visible in Cash Out
-  // as debt service, never as paydown of a tracked debt. F6 interim wording.
-  UNTRACKED_LOAN_PAYMENT: `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL}`,
+  // as debt service, never as paydown of a tracked debt. Owner F6 / S2 D3: this
+  // static entry is the NEUTRAL variant; the Cash Out line itself is labelled by
+  // the loan types it holds (untrackedLoanPaymentLineLabel).
+  UNTRACKED_LOAN_PAYMENT: `Loan payment not matched to a connected loan — ${UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL}`,
   ASSET_DEPLOYMENT:  "Asset deployment",
   // CF-2 — evidence-based investment venue movements (no proven sale).
   INVESTMENT_INFLOW:  "From investments",
@@ -118,12 +122,30 @@ export interface LiquidityBreakdown {
   internalTransfers: number;
 }
 
+/** Owner F6 / S2 D3 — the untracked-loan Cash Out line, one per variant. */
+const UNTRACKED_LOAN_PAYMENT_LINE_LABEL: Readonly<Record<UnsplitLoanKind, string>> = {
+  mortgage:    `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.mortgage}`,
+  installment: `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.installment}`,
+  unknown:     `Loan payment not matched to a connected loan — ${UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.unknown}`,
+};
+
+/** The untracked-loan line's label for the loan types it aggregates (mixed/none ⇒ neutral). */
+export function untrackedLoanPaymentLineLabel(kinds: readonly UnsplitLoanKind[] | undefined): string {
+  return UNTRACKED_LOAN_PAYMENT_LINE_LABEL[unsplitLoanKindOf(kinds ?? [])];
+}
+
+function reasonLabel(facts: DayFacts, reason: LiquidityReason): string {
+  return reason === "UNTRACKED_LOAN_PAYMENT"
+    ? untrackedLoanPaymentLineLabel(facts.untrackedLoanKinds)
+    : LIQUIDITY_REASON_LABEL[reason];
+}
+
 /** Non-zero, descending reason lines for one side, read off DayFacts.byReason. */
 function toLines(facts: DayFacts, side: "in" | "out"): LiquiditySliceLine[] {
   const lines: LiquiditySliceLine[] = [];
   for (const [reason, amount] of Object.entries(facts.byReason) as [LiquidityReason, number][]) {
     if (amount > 0 && LIQUIDITY_REASON_SIDE[reason] === side) {
-      lines.push({ reason, label: LIQUIDITY_REASON_LABEL[reason], amount });
+      lines.push({ reason, label: reasonLabel(facts, reason), amount });
     }
   }
   return lines.sort((a, b) => b.amount - a.amount);

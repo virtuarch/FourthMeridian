@@ -56,7 +56,7 @@ import { accountTier, type AccountTier } from "@/lib/account-classifier";
 import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
 import { USER_CATEGORY_SOURCES } from "@/lib/transactions/transfer-debt-payment-correction";
 import { EXTERNAL_MATURITIES, type TransferMaturity } from "@/lib/transactions/transfer-maturation";
-import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
+import { UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL, unsplitLoanPaymentLabel } from "@/lib/debt/liability-kind";
 
 /** What a row IS, for narration and filtering. */
 export type TransactionNature =
@@ -152,6 +152,11 @@ export const INTERNAL_NATURES: ReadonlySet<TransactionNature> = new Set<Transact
   "INTERNAL_SAVINGS_TRANSFER", "INTERNAL_CHECKING_TRANSFER", "BROKERAGE_TRANSFER", "INTERNAL_TRANSFER",
 ]);
 
+function untrackedLoanPaymentDescription(unsplitLabel: string): string {
+  return `Loan payment where no connected account was matched as the destination — ${unsplitLabel}; `
+    + "counted in cash out, not as paydown of a tracked debt, not spending";
+}
+
 /**
  * Plain words for a nature — the ONLY phrasing an AI surface may attach to a row.
  * Internal transfers say "moved between your accounts"; nothing but a liability
@@ -166,7 +171,9 @@ export const NATURE_DESCRIPTION: Record<TransactionNature, string> = {
   EXTERNAL_TRANSFER:          "Sent to or received from an account that is not yours — purpose not stated",
   TRANSFER_DESTINATION_UNCONFIRMED: "Moved to or from a bank account not connected here — destination not yet confirmed; not spending, not a debt payment",
   CASH_MOVEMENT:              "Cash withdrawal or deposit",
-  UNTRACKED_LOAN_PAYMENT:     `Loan payment where no connected account was matched as the destination — ${UNSPLIT_LOAN_PAYMENT_LABEL}; counted in cash out, not as paydown of a tracked debt, not spending`,
+  // Owner F6 / S2 D3 — the row-free entry is the NEUTRAL variant; a row's own
+  // description names its loan type via natureDescription().
+  UNTRACKED_LOAN_PAYMENT:     untrackedLoanPaymentDescription(UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL),
   UNCLASSIFIED_MOVEMENT:      "Money movement whose purpose is not established — do not call it a debt payment, spending or income",
   SPENDING:                   "Spending",
   INCOME:                     "Income",
@@ -176,6 +183,17 @@ export const NATURE_DESCRIPTION: Record<TransactionNature, string> = {
   ADJUSTMENT:                 "Balance adjustment",
   UNCLASSIFIED:               "Not classified",
 };
+
+/**
+ * The description for ONE row. Identical to NATURE_DESCRIPTION except the
+ * untracked-loan nature, whose unsplit label is chosen by the row's provider
+ * detailed category (owner F6 / S2 D3: escrow only for a mortgage payment).
+ */
+export function natureDescription(nature: TransactionNature, loanPaymentDetail?: string | null): string {
+  return nature === "UNTRACKED_LOAN_PAYMENT"
+    ? untrackedLoanPaymentDescription(unsplitLoanPaymentLabel(loanPaymentDetail))
+    : NATURE_DESCRIPTION[nature];
+}
 
 const MOVEMENT_FLOWS = new Set(["DEBT_PAYMENT", "TRANSFER"]);
 

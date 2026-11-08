@@ -21,7 +21,7 @@ import { TRANSACTION_FETCH_LIMIT } from '@/lib/ai/assemblers/transactions';
 import { scrubDescriptor } from '@/lib/ai/privacy/scrub';
 import { FlowType } from '@prisma/client';
 import {
-  categoryForNature, natureEvidenceFromRow, resolveTransactionNature, NATURE_DESCRIPTION,
+  categoryForNature, natureEvidenceFromRow, resolveTransactionNature, natureDescription,
   type ResolvedTransactionNature,
 } from '@/lib/transactions/resolved-nature';
 import type { Transaction } from '@/types';
@@ -256,7 +256,8 @@ export const getTransactions: ToolDefinition = {
         // DEBT_PAYMENT until its write reaches the row) reads `Transfer`.
         category: categoryForNature(r.category, evidence, resolved), pending: r.pending,
         nature: resolved.nature,
-        natureNote: NATURE_DESCRIPTION[resolved.nature],
+        // Owner F6 / S2 D3 — an unsplit loan payment names its own loan type.
+        natureNote: natureDescription(resolved.nature, r.loanPaymentDetail),
         // ⚠️ WHICH SIDE OF THE MOVEMENT THIS ROW IS. A card payment posts TWICE —
         // once on the checking account it left and once on the card it landed on —
         // and the two rows used to arrive as `-5,000 Payment to Chase card` and

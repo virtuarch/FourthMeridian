@@ -113,6 +113,7 @@ import { selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-autho
 // card are already inside `spending`, and subtracting their settlement as well
 // counted the same consumption twice.
 import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt-service';
+import { UNSPLIT_LOAN_PAYMENT_AI_NOTE } from '@/lib/debt/liability-kind';
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
@@ -1281,6 +1282,9 @@ async function assembleTransactions(
     // reason: what was paid, what of it settled charges already in spending,
     // what was borrowed, and what is left as genuine paydown.
     debtService,
+    // Owner F6 — unsplit loan payments carry no verified P / I / escrow split;
+    // the model is told so explicitly whenever such payments are in the figure.
+    ...(debtService.untrackedLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}),
     estimated:        windowEstimated, // MC1 P3 Slice 4 (D-7) — data-only until Phase 4
 
     pendingCreditCount,

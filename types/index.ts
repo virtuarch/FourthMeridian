@@ -381,6 +381,11 @@ export interface Transaction {
    *  Absent when the read did not assess the row (e.g. it already had a
    *  persisted counterparty, or it is not transfer-shaped). */
   transferMaturity?:    string | null;
+  /** Owner F6 / S2 D3 — the provider's detailed category (pfcDetailed), exposed
+   *  ONLY on rows the transfer authority matured to UNTRACKED_LOAN_PAYMENT, so
+   *  the unsplit loan-payment label can name the loan type (escrow only for a
+   *  mortgage). Absent on every other row. */
+  loanPaymentDetail?:   string | null;
   /** L8-B1 — the logical event this row projects (pending and posted share one).
    *  Absent when the read did not select it; null outside the banking event
    *  domain (self-custody crypto). */

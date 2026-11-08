@@ -1102,6 +1102,12 @@ export interface TransactionsSummaryData {
    */
   debtService?: DebtService;
   /**
+   * Owner F6 — present only when `debtService.untrackedLoanPayments` > 0: the
+   * explicit statement that principal, interest and escrow of those unsplit
+   * payments are not individually verified (UNSPLIT_LOAN_PAYMENT_AI_NOTE).
+   */
+  unsplitLoanPaymentNote?: string;
+  /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
    * totals above was estimated (rate walked back / missing, or null-residue
    * provenance). Data-only until Phase 4.

@@ -48,7 +48,7 @@
 
 import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
 // Mortgage F10 — the ONE list of provider details that name an installment-loan payee.
-import { isInstallmentLoanPaymentDetail, UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
+import { isInstallmentLoanPaymentDetail, UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 
 /** The classification ladder. Rank rises with evidence; it never falls. */
 export type TransferMaturity =
@@ -1542,7 +1542,7 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   EXTERNAL_DEPOSITORY_TRANSFER: "Moved to a bank account that is not connected here — destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "Reached a brokerage or exchange that is not connected here",
   EXTERNAL_UNKNOWN_TRANSFER:    "The provider attests a counterparty that cannot be one of your accounts",
-  UNTRACKED_LOAN_PAYMENT:       `The provider names an installment-loan payee and no connected account was matched as the destination, so this is a ${UNSPLIT_LOAN_PAYMENT_LABEL} not matched to a connected loan`,
+  UNTRACKED_LOAN_PAYMENT:       `The provider names an installment-loan payee and no connected account was matched as the destination, so this is a ${UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL} not matched to a connected loan`, // per-leaf, row-free ⇒ neutral F6 variant (S2 D3)
 };
 
 /**
