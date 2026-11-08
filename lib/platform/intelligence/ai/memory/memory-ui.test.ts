@@ -35,7 +35,7 @@ import { runPlatformAiTurn, MEMORY_LIVE_NOT_CHECKED, type PlatformAiBinding, typ
 import { isStoredAnswer, MEMORY_SPAN_SHAPE } from "../conversations/answer";
 import { PLATFORM_AI_CONVERSATIONS_LINE } from "@/components/platform/platform-ai-conversations-model";
 import { PLATFORM_AI_MEMORY_LINE, PLATFORM_AI_MEMORY_NOTICE, PLATFORM_AI_MEMORY_PANEL_HEADER } from "@/components/platform/platform-ai-memory-model";
-import { PlatformAiDisclosureLine } from "@/components/platform/platform-ai-presentation";
+import { PlatformAiComposer, PlatformAiDisclosureLine } from "@/components/platform/platform-ai-presentation";
 import { PlatformAiMemoryPanelView, PlatformAiMemoryConfirmCardView } from "@/components/platform/PlatformAiMemory";
 import { MEMORY_SHINGLES_MAX } from "./constants";
 import { isMemoryEffective } from "./gate";
@@ -112,6 +112,7 @@ function fakeStore(initial: MemoryFactRecord[]) {
     async softDeleteFact(_op, id) { const r = rows.get(id); if (!r || r.deleted) return { deleted: 0 }; r.deleted = true; return { deleted: 1 }; },
     async softDeleteAllFacts() { let n = 0; for (const r of rows.values()) if (!r.deleted) { r.deleted = true; n++; } return { deleted: n }; },
     async recordProposalRefusals(_op, _area, codes) { refusals.push(...codes); },
+    async countVisibleFacts(_op, areas) { return [...rows.values()].filter((r) => !r.deleted && r.invalidReason === null && areas.includes(r.f.area)).length; },
   };
   return { store, rows, inserted, refusals };
 }
@@ -306,7 +307,7 @@ async function main(): Promise<void> {
     const revoked = await ret(s.store, null);
     const panelRevoked = await handleListMemory(OP, deps(s.store, readers(), []));
     check("area revoked (no readers, no held area) ⇒ injection and panel show 0, nothing invalidated here (the purge removes it)",
-      revoked.facts.length === 0 && JSON.stringify(panelRevoked.body) === JSON.stringify({ areas: [] }) && s.rows.get(f0.id)?.invalidReason === null);
+      revoked.facts.length === 0 && JSON.stringify(panelRevoked.body) === JSON.stringify({ areas: [], more: 0 }) && s.rows.get(f0.id)?.invalidReason === null);
   }
 
   console.log("\n5. renew (revalidates first)");
@@ -349,17 +350,78 @@ async function main(): Promise<void> {
       && PLATFORM_AI_MEMORY_NOTICE.endsWith("Removed data may remain in backups until those backups expire.") && html.includes("Items for live status expire after 72 hours"));
   }
   check("S2 CHECKLIST: memory ON ⇒ the corrected short line, exactly",
-    PLATFORM_AI_MEMORY_LINE === "Saves only items you choose to remember · Sent to OpenAI · Chats hidden after 7 days · Don’t enter personal details");
+    PLATFORM_AI_MEMORY_LINE === "Can't change anything · Remembers only what you choose · Sent to OpenAI · Chats hidden after 7 days · Don’t enter personal details");
   check("…memory OFF ⇒ the original line, unchanged", PLATFORM_AI_CONVERSATIONS_LINE === "Read-only · Sent to OpenAI · Chats hidden after 7 days · Don’t enter personal details");
-  const lineOn = renderToStaticMarkup(createElement(PlatformAiDisclosureLine, { saved: true, open: false, onToggle: () => {}, memory: true })).replace(/&#x2019;/g, "’");
+  const lineOn = renderToStaticMarkup(createElement(PlatformAiDisclosureLine, { saved: true, open: false, onToggle: () => {}, memory: true })).replace(/&#x2019;/g, "’").replace(/&#x27;/g, "'");
   const lineOff = renderToStaticMarkup(createElement(PlatformAiDisclosureLine, { saved: true, open: false, onToggle: () => {} })).replace(/&#x2019;/g, "’");
   check("the rendered line: memory ⇒ the memory line (never 'Read-only'); flag off ⇒ the conversations line", lineOn.includes(PLATFORM_AI_MEMORY_LINE) && !lineOn.includes("Read-only") && lineOff.includes(PLATFORM_AI_CONVERSATIONS_LINE));
+  {
+    // The existing truncation guard (platform-ai-conversations.test.ts C1), on the MEMORY line as the composer renders it:
+    // it wraps at every width (break-words, 320 px included) and is never truncated / ellipsized / clamped / hidden.
+    const composer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: () => {}, onSubmit: () => {}, disabled: false, busy: false, memory: true }));
+    const lineHtml = (composer.match(/<p data-platform-ai-disclosure="memory"[^>]*>[\s\S]*?<\/p>/) ?? [""])[0];
+    const classes = [...lineHtml.matchAll(/class="([^"]*)"/g)].map((m) => m[1]).join(" ");
+    check("the memory line wraps without truncation at 320 px: its full text, break-words, no truncate / ellipsis / clamp / nowrap / hidden / max-sm",
+      lineHtml.replace(/&#x2019;/g, "’").replace(/&#x27;/g, "'").includes(PLATFORM_AI_MEMORY_LINE) && /break-words/.test(lineHtml)
+        && !/truncate|text-ellipsis|line-clamp|whitespace-nowrap|\bhidden\b|max-sm:|sr-only/.test(classes) && !/ hidden=""/.test(lineHtml), lineHtml);
+  }
   const card = renderToStaticMarkup(createElement(PlatformAiMemoryConfirmCardView, {
     proposal: { token: "t", factType: "OPERATIONAL_STATE", concern: "DEGRADATION", subjectLabel: "Provider outcome verdict", note: null, ttlChoices: ["H72"] },
     note: "cost 5k", ttl: "H72", busy: false, problem: null, onNote: () => {}, onTtl: () => {}, onRemember: () => {}, onNotNow: () => {},
   }));
   check("confirm card: live guard shown, Remember disabled while it refuses, OPERATIONAL_STATE TTL fixed (72 hours)",
     /data-platform-ai-memory-note-guard/.test(card) && /<button type="button"[^>]*disabled=""[^>]*>Remember<\/button>/.test(card) && /<select[^>]*disabled=""/.test(card) && card.includes("72 hours"));
+
+  console.log("\n8. S2 review of #493 — C1–C5 and the rotated key");
+  {
+    // C1: the model echoes a saved note ⇒ the STORED answer carries "[your saved note]", never the note.
+    const { runConversationTurn } = await import("../conversations/turn");
+    const NOTE = "watch the amber falcon tower drill tonight";
+    const nf = fact({ note: NOTE });
+    const t = buildMemoryTurn({ operatorId: OP, area: AREA, question: QUESTION, historyNewestFirst: [], metricLabel: () => null, pageLabel: () => "Open incidents", now: () => NOW,
+      facts: [{ fact: nf, check: { status: "UNCHANGED", was: null, now: null, label: "Open incidents", currentRefs: nf.refs, refs: [] }, shown: "UNCHANGED" }] });
+    const sc = scripted([{ content: `Your note says: ${NOTE.toUpperCase()}! Still open.` }]);
+    const run = await runConversationTurn({ conversationId: "cconv", question: QUESTION, binding, history: [], generate: sc.generate, model: "m", classify: () => "PROVIDER", memory: t });
+    const stored = run.outcome.status === "COMPLETE" ? JSON.stringify(run.outcome.answer) : "";
+    check("C1: an echoed note (any case / punctuation) is replaced in the STORED answer; the live answer may keep it",
+      stored.includes("[your saved note]") && !stored.toLowerCase().includes("amber falcon") && JSON.stringify(run.result?.answer ?? []).toLowerCase().includes("amber falcon"), stored);
+    // C2: the shingle MAC key is HKDF(info "<purpose>:shingle") — not the seal subkey.
+    const { createHmac, hkdfSync } = await import("node:crypto");
+    const root = Buffer.from(process.env.ENCRYPTION_KEY!, "hex");
+    const { macWithPurpose } = await import("@/lib/plaid/encryption");
+    const mac = macWithPurpose("probe", EncryptionPurpose.PLATFORM_AI_MEMORY_TOKEN).mac;
+    const k = (info: string) => Buffer.from(hkdfSync("sha256", root, Buffer.alloc(0), info, 32));
+    check("C2: the shingle MAC uses HKDF info 'platform_ai_memory_token:shingle', a key separate from the seal subkey",
+      mac.equals(createHmac("sha256", k("platform_ai_memory_token:shingle")).update("probe").digest()) && !mac.equals(createHmac("sha256", k("platform_ai_memory_token")).update("probe").digest()));
+    // C3: revalidation UNVERIFIED ⇒ 503, nothing written.
+    const f3 = fakeStore([]);
+    const r3 = await handleConfirm(OP, { token: signed.token, ttl: "D7" }, deps(f3.store, readers({ metric: async () => { throw new Error("timeout"); } })));
+    check("C3: confirm while the record cannot be re-checked (UNVERIFIED) ⇒ 503 \"Couldn't check the record right now — try again\", nothing inserted",
+      r3.status === 503 && (r3.body as { error: string }).error === "Couldn't check the record right now — try again" && f3.inserted.length === 0);
+    // C4: the client id is validated BEFORE any reader sees it.
+    let readerCalls = 0;
+    const spy = readers({ incident: async () => { readerCalls++; return read("OPEN"); }, job: async () => { readerCalls++; return read("FAILED"); }, provider: async () => { readerCalls++; return read("OK"); } });
+    const bad4 = await Promise.all([
+      handleRemember(OP, { area: AREA, kind: "INCIDENT", id: "the customer said", factType: "WATCHING_ISSUE", ttl: "D7" }, deps(fakeStore([]).store, spy)),
+      handleRemember(OP, { area: AREA, kind: "JOB", id: "not-a-job", factType: "WATCHING_ISSUE", ttl: "D7" }, deps(fakeStore([]).store, spy)),
+      handleRemember(OP, { area: AREA, kind: "PROVIDER", id: "jane@example.com", factType: "WATCHING_ISSUE", ttl: "D7" }, deps(fakeStore([]).store, spy)),
+    ]);
+    check("C4: an id failing its type's pattern / registry ⇒ 404 and NO reader is called", bad4.every((r) => r.status === 404) && readerCalls === 0, readerCalls);
+    // C5: at most 50 newest, a "more" count; the GET route carries the per-operator read limiter.
+    const many = Array.from({ length: 55 }, (_, i) => fact({ createdAt: new Date(NOW.getTime() - i * 60_000) }));
+    const r5 = await handleListMemory(OP, deps(fakeStore(many).store));
+    const b5 = r5.body as { areas: Array<{ facts: unknown[] }>; more: number };
+    const { readFileSync } = await import("node:fs");
+    const route = readFileSync("app/api/platform/ai/memory/route.ts", "utf8");
+    check("C5: the panel returns ≤ 50 facts and more = 5; GET is behind limitByUser(…, PLATFORM_AI_MEMORY_READ_ROUTE, MEMORY_READ_LIMIT)",
+      b5.areas[0].facts.length === 50 && b5.more === 5 && /export async function GET[\s\S]*limitByUser\(auth\.user\.id, PLATFORM_AI_MEMORY_READ_ROUTE, MEMORY_READ_LIMIT\)[\s\S]*export async function DELETE/.test(route));
+    // A key rotation mid-proposal (the shingles' kid is no longer in the keyring) ⇒ 409, never a 500.
+    const { sealWithPurpose } = await import("@/lib/plaid/encryption");
+    const rotated = sealWithPurpose(JSON.stringify({ ...signed.proposal, jti: "rotated-jti", k: "deadbeef" }), EncryptionPurpose.PLATFORM_AI_MEMORY_TOKEN);
+    const rk = await handleConfirm(OP, { token: rotated, ttl: "D7", note: "a different note" }, deps(fakeStore([]).store));
+    check("an unknown key id on confirm (rotation mid-proposal) ⇒ 409 \"This suggestion expired — ask again\"",
+      rk.status === 409 && (rk.body as { error: string; code: string }).error === "This suggestion expired — ask again" && (rk.body as { code: string }).code === "PROPOSAL_EXPIRED");
+  }
 
   console.log("\n7. the gate, the stored span, remember");
   check("isMemoryEffective: env flag AND retention ≤ 7 days", isMemoryEffective({ isPlatformAiMemoryEnabled: true }) && !isMemoryEffective({ isPlatformAiMemoryEnabled: false }) && !isMemoryEffective({ isPlatformAiMemoryEnabled: true }, 90));

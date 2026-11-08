@@ -401,6 +401,27 @@ async function main(): Promise<number> {
         && !/conversation|message|transcript/i.test(plain.map((x) => `${x.pl}${x.refs}`).join("")) && cuidsOutsideIncident.length === 0,
       JSON.stringify({ w: words6.filter((w) => purgedNorm.some((p) => p.includes(w))), c: cuidsOutsideIncident }));
 
+    // S2 C1 — a saved CANARY note the model echoes never reaches the stored transcript (PlatformAiMessage, decrypted).
+    {
+      const CANARY_NOTE = "watch the amber falcon tower drill tonight";
+      const ins1 = await store.insertFact({ operatorId: D, area: "PLATFORM_OPS", factType: "WATCHING_ISSUE", origin: "OPERATOR_EXPLICIT", concern: null, note: CANARY_NOTE, payload: {}, refs: [{ t: "PAGE", id: PAGE, observedState: "OK" }], ttl: "D7", proposalJti: null });
+      const { retrieveFacts } = await import("@/lib/platform/intelligence/ai/memory/retrieve");
+      const { runConversationTurn } = await import("@/lib/platform/intelligence/ai/conversations/turn");
+      const { facts } = await retrieveFacts({ operatorId: D, areas: ["PLATFORM_OPS"], readersFor: async () => pageReaders, store, mode: "inject" });
+      const mt = buildMemoryTurn({ operatorId: D, area: "PLATFORM_OPS", facts, question: "what was I watching", historyNewestFirst: [], metricLabel: () => null, pageLabel: () => "Open incidents", now: () => new Date() });
+      const fakeBinding = { surfaceLabel: "Platform Operations", listMetrics: () => [], describeMetric: () => null, readMetric: async () => null,
+        listPages: () => [{ id: PAGE, label: "Open incidents", workspaceLabel: null, areaLabel: "Platform Operations", metrics: [], params: [] }], resolvePage: () => null } as never;
+      const generate = (async () => ({ content: `You noted: ${CANARY_NOTE}.`, toolCalls: [], raw: { role: "assistant", content: `You noted: ${CANARY_NOTE}.` }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 5, reasoningTokens: 0 } })) as never;
+      const c2 = await convStore.createConversation({ operatorId: D, area: "PLATFORM_OPS", createRequestId: crypto.randomUUID(), scrubbedQuestion: "what was I watching" });
+      if (c2.kind !== "CREATED" || ins1.kind !== "CREATED") throw new Error("C1 fixture");
+      const run = await runConversationTurn({ conversationId: c2.conversation.id, question: "what was I watching", binding: fakeBinding, history: [], generate, model: "m", classify: () => "PROVIDER", memory: mt });
+      if (run.outcome.status === "COMPLETE") await convStore.settleTurn(D, c2.conversation.id, c2.pair.assistant.id, run.outcome);
+      const ciphers = psql(owner, `select coalesce("contentEncrypted",'') from "PlatformAiMessage" where "conversationId"='${c2.conversation.id}';`).out.split("\n").filter(Boolean);
+      const plainMsgs = ciphers.map((c) => encMod.decryptWithPurpose(c, encMod.EncryptionPurpose.PLATFORM_AI_MESSAGE)).join("\n").toLowerCase();
+      check(63, "S2 C1 LOOPHOLE: the model echoed a saved canary note; the decrypted PlatformAiMessage rows never contain it ('[your saved note]' instead)",
+        run.outcome.status === "COMPLETE" && plainMsgs.includes("[your saved note]") && !plainMsgs.includes("amber falcon"), plainMsgs.slice(0, 300));
+    }
+
     // D13 — the operator's own data export: held areas only, the note in plaintext, type, refs and dates; EXPORTED audit = count only.
     const { assembleUserExport } = await import("@/lib/export/assemble");
     const quietly = async <X,>(f: () => Promise<X>): Promise<X> => { const o = { log: console.log, error: console.error, warn: console.warn }; console.log = () => {}; console.error = () => {}; console.warn = () => {}; try { return await f(); } finally { Object.assign(console, o); } };

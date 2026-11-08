@@ -29,7 +29,8 @@
 import type { PlatformArea } from "@prisma/client";
 import type { PlatformAiMemoryHooks, ToolEvidence } from "../core";
 import { MEMORY_CONCERNS, MEMORY_METRIC_WINDOWS, MEMORY_TTL_CHOICES, type MemoryConcern, type MemoryFactType, type MemoryTtl } from "./constants";
-import { hasVerbatimSpan, validateOperatorNote, type NoteRefusal } from "./note-guard";
+import { hasVerbatimSpan, redactNoteSpans, validateOperatorNote, type NoteRefusal } from "./note-guard";
+import type { StoredAnswerV1 } from "../conversations/answer";
 import { liveCheckPhrase, memPlaceholderText, neutraliseNote, type RetrievedFact } from "./retrieve";
 import { metricObservedState, refProblem, type MemoryRef } from "./schema";
 import { signProposal } from "./token";
@@ -71,6 +72,12 @@ export interface MemoryTurnInput {
 
 export interface MemoryTurn {
   hooks: PlatformAiMemoryHooks;
+  /**
+   * S2 C1 — before an answer is STORED: every span of a note injected (or recalled)
+   * this turn that the answer repeats is replaced by "[your saved note]" in the stored
+   * segments (the live display may keep it). The transcript never keeps a note.
+   */
+  redactStored(answer: StoredAnswerV1): StoredAnswerV1;
   /** After the turn: the confirm card (or null), and any refusal codes (audited, no content). */
   finalize(answerText: string): { card: MemoryProposalCard | null; refusals: NoteRefusal[] };
 }
@@ -160,8 +167,17 @@ export function buildMemoryTurn(input: MemoryTurnInput): MemoryTurn {
     },
   };
 
+  const notes = shown.map((r) => r.fact.note).filter((n): n is string => typeof n === "string" && n.length > 0);
   return {
     hooks,
+    redactStored(answer) {
+      if (notes.length === 0) return answer;
+      const red = (t: string) => notes.reduce((acc, n) => redactNoteSpans(acc, n), t);
+      return {
+        ...answer,
+        segments: answer.segments.map((s) => (s.kind === "text" || s.kind === "correction" || s.kind === "link" ? { ...s, text: red(s.text) } : s)),
+      };
+    },
     finalize(answerText) {
       const p = pending as Pending | null;
       if (!p) return { card: null, refusals: [...refusals] };

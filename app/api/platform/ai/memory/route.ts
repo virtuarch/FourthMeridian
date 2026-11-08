@@ -13,6 +13,8 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
+import { limitByUser } from "@/lib/rate-limit";
+import { MEMORY_READ_LIMIT, PLATFORM_AI_MEMORY_READ_ROUTE } from "@/lib/platform/intelligence/ai/memory/constants";
 import { loadPlatformDirectory } from "@/lib/platform/directory.server";
 import { env } from "@/lib/env";
 import { platformAiAreaFor } from "@/lib/platform/intelligence/ai/core";
@@ -41,6 +43,9 @@ export async function GET(req: Request) {
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err) return err;
   if (!auth.grant) return FORBIDDEN();
+  // S2 C5: the per-operator read limiter (every read re-checks records live).
+  const readLimited = await limitByUser(auth.user.id, PLATFORM_AI_MEMORY_READ_ROUTE, MEMORY_READ_LIMIT);
+  if (readLimited) return readLimited;
   // ?probe=1 — the Remember buttons' one check that memory is effective (after every gate; reads no fact).
   if (new URL(req.url).searchParams.get("probe") === "1") return NextResponse.json({ enabled: true }, { status: 200, headers: NO_STORE });
   try { return respond(await handleListMemory(auth.user.id, memoryDeps(auth.user.id))); }

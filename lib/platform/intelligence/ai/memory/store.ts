@@ -122,6 +122,12 @@ export async function visibleFacts(
   return rows.map((r) => toFactRecord(r, opts.decrypt));
 }
 
+/** The operator's visible fact count in these areas (the panel's "more"). */
+export async function countVisibleFacts(operatorId: string, areas: readonly PlatformArea[]): Promise<number> {
+  if (areas.length === 0) return 0;
+  return withTenantDb(operatorId, (tx) => tx.platformAiMemoryFact.count({ where: { ...VISIBLE(operatorId), platformArea: { in: [...areas] } } }));
+}
+
 // ── Insert (confirm / remember) ─────────────────────────────────────────────
 
 export interface InsertFactInput {

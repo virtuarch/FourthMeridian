@@ -18,7 +18,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import {
-  MEMORY_CONCERNS, MEMORY_TTL_CHOICES,
+  MEMORY_CONCERNS, MEMORY_PANEL_MAX, MEMORY_TTL_CHOICES,
   type MemoryConcern, type MemoryFactType, type MemoryTtl,
 } from "./constants";
 import { validateOperatorNote } from "./note-guard";
@@ -26,7 +26,7 @@ import { memPlaceholderText, notedDate, retrieveFacts, type RetrieveStore } from
 import { revalidateFact, type MemoryReaders } from "./revalidate";
 import { refProblem, type MemoryRef } from "./schema";
 import type { InsertFactInput, InsertOutcome, MemoryFactRecord, RenewOutcome } from "./store";
-import { noteHitsShingles, verifyProposalToken } from "./token";
+import { noteHitsShingles, proposalKeyKnown, verifyProposalToken } from "./token";
 
 export interface MemoryHttp { status: number; body: Record<string, unknown> | null }
 
@@ -35,6 +35,8 @@ const notFound = (): MemoryHttp => ({ status: 404, body: { ...NOT_FOUND_BODY } }
 const bad = (code: string, error: string, status = 400): MemoryHttp => ({ status, body: { error, code } });
 
 export interface MemoryStoreSeam extends RetrieveStore {
+  /** S2 C5: how many facts the operator can see in these areas (the panel's "more" count). */
+  countVisibleFacts(operatorId: string, areas: readonly PlatformArea[]): Promise<number>;
   insertFact(input: InsertFactInput): Promise<InsertOutcome>;
   renewFact(operatorId: string, id: string, currentRefs: readonly MemoryRef[]): Promise<RenewOutcome>;
   softDeleteFact(operatorId: string, id: string): Promise<{ deleted: number }>;
@@ -73,7 +75,9 @@ export interface PanelRow {
 
 export async function handleListMemory(operatorId: string, deps: MemoryDeps): Promise<MemoryHttp> {
   const held = [...(await deps.heldAreas())];
-  const { facts } = await retrieveFacts({ operatorId, areas: held, readersFor: deps.readersFor, store: deps.store, mode: "panel" });
+  // S2 C5: at most MEMORY_PANEL_MAX, newest first; the rest is a count.
+  const { facts } = await retrieveFacts({ operatorId, areas: held, readersFor: deps.readersFor, store: deps.store, mode: "panel", take: MEMORY_PANEL_MAX });
+  const total = held.length === 0 ? 0 : await deps.store.countVisibleFacts(operatorId, held);
   const areas = held
     .map((area) => ({
       area, areaLabel: areaLabel(area),
@@ -85,7 +89,7 @@ export async function handleListMemory(operatorId: string, deps: MemoryDeps): Pr
             badge: r.shown, canRenew: true }),
     }))
     .filter((a) => a.facts.length > 0);
-  return { status: 200, body: { areas } };
+  return { status: 200, body: { areas, more: Math.max(0, total - MEMORY_PANEL_MAX) } };
 }
 
 // ── DELETE ──────────────────────────────────────────────────────────────────
@@ -114,6 +118,8 @@ export async function handleConfirm(operatorId: string, body: unknown, deps: Mem
   const v = verifyProposalToken(b.token, { operatorId, areaAllowed: (a) => held.has(a as PlatformArea), now: deps.now() });
   if (!v.ok) return bad("PROPOSAL_INVALID", "This proposal is no longer valid.");
   const p = v.proposal;
+  // Key rotation mid-proposal: the shingles' key is gone ⇒ the suggestion cannot be checked — never a 500.
+  if (!proposalKeyKnown(p)) return bad("PROPOSAL_EXPIRED", "This suggestion expired — ask again", 409);
   const refuse = async (code: string, status: number, error: string) => {
     await deps.store.recordProposalRefusals(operatorId, p.area, [code]).catch(() => {});
     return bad(code, error, status);
@@ -135,6 +141,8 @@ export async function handleConfirm(operatorId: string, body: unknown, deps: Mem
   if (!readers) return notFound();
   const check = await revalidateFact({ refs: p.r, observedAt: new Date(p.iat) }, readers);
   if (check.status === "GONE" || check.status === "CHANGED") return bad("RECORD_CHANGED", "This has changed since it was proposed. Ask again to save the current state.", 409);
+  // S2 C3: a record that could not be re-checked is never saved as if current (every fact type).
+  if (check.status === "UNVERIFIED") return bad("RECORD_UNVERIFIED", "Couldn't check the record right now — try again", 503);
   // 5–6. insert with proposalJti (a replay hits the unique index ⇒ 409) + the CONFIRMED audit, one transaction.
   const out = await deps.store.insertFact({
     operatorId, area: p.area, factType: p.ft, origin: "TOOL_DERIVED", concern: p.c, note: guarded.note,
@@ -169,13 +177,14 @@ export async function handleRemember(operatorId: string, body: unknown, deps: Me
     await deps.store.recordProposalRefusals(operatorId, area, [guarded.reason]).catch(() => {});
     return bad(guarded.reason, "That note can't be saved.", 422);
   }
+  const kind = b.kind as (typeof REMEMBER_KINDS)[number];
+  // S2 C4: the client's id must match its type's registry / pattern BEFORE any reader sees it.
+  if (refProblem({ t: kind, id: b.id, observedState: "UNKNOWN" }) !== null) return notFound();
   const readers = await deps.readersFor(area);
   if (!readers) return notFound();
-  const kind = b.kind as (typeof REMEMBER_KINDS)[number];
   const read = kind === "INCIDENT" ? await readers.incident(b.id) : kind === "JOB" ? await readers.job(b.id) : await readers.provider(b.id);
   if (!read) return notFound();
   const ref: MemoryRef = { t: kind, id: b.id, observedState: read.state };
-  if (refProblem(ref) !== null) return notFound();
   const out = await deps.store.insertFact({
     operatorId, area, factType, origin: "OPERATOR_EXPLICIT", concern: concern as MemoryConcern | null, note: guarded.note,
     payload: {}, refs: [ref], ttl: b.ttl, proposalJti: null,

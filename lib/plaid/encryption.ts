@@ -415,10 +415,14 @@ export function openWithPurposeReportingKey(sealed: string, purpose: EncryptionP
 
 // ─── Purpose-keyed HMAC (Platform AI memory shingles, design v2 B5) ──────────
 
+/** The HKDF info suffix of a purpose's MAC key: one primitive per key (S2 C2) — never the cipher subkey. */
+export const MAC_KEY_INFO_SUFFIX = ":shingle";
+
 /**
- * HMAC-SHA256 of `message` under the PURPOSE subkey of a keyring root key (the
- * same HKDF derivation as the ciphers, so the MAC key is domain-separated by
- * purpose and never the root key). `kid` selects the keyring entry (current by
+ * HMAC-SHA256 of `message` under a MAC key derived from a keyring root key with
+ * HKDF info `<purpose>:shingle` — a SEPARATE key from the purpose's cipher /
+ * seal subkey (S2 C2: one primitive per key), domain-separated by purpose and
+ * never the root key. `kid` selects the keyring entry (current by
  * default; the previous key during a rotation) — a proposal token records the
  * kid its shingles were computed under, and its confirm recomputes under the
  * same one. Throws (value-free) for an unknown kid. Never logs.
@@ -427,7 +431,8 @@ export function macWithPurpose(message: string, purpose: EncryptionPurpose, opts
   const k = getKeyring();
   const entry = opts.kid === undefined ? k.current : [k.current, k.previous].find((e) => e !== null && e.kid === opts.kid) ?? null;
   if (!entry) throw new Error("Unknown key id for this keyring");
-  return { mac: crypto.createHmac("sha256", deriveKey(purpose, entry.rootKey)).update(message, "utf8").digest(), kid: entry.kid };
+  const macKey = Buffer.from(crypto.hkdfSync("sha256", entry.rootKey, Buffer.alloc(0), `${purpose}${MAC_KEY_INFO_SUFFIX}`, 32));
+  return { mac: crypto.createHmac("sha256", macKey).update(message, "utf8").digest(), kid: entry.kid };
 }
 
 export function openWithPurpose(sealed: string, purpose: EncryptionPurpose): string {

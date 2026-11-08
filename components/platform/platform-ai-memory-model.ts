@@ -10,9 +10,13 @@
 
 import { PLATFORM_AI_PROVIDER, PLATFORM_AI_RETENTION_DAYS_CLIENT } from "./platform-ai-conversations-model";
 
-/** The short line while memory is effective (S2 checklist): "Read-only" would be false. */
+/**
+ * The short line while memory is effective (S2 checklist + S2 wording 2026-11-08): "Read-only" would
+ * be false (Remember writes a row). "Can't" keeps the straight apostrophe the existing copy uses for
+ * can't (DELETE_CONFIRM_COPY, UNREADABLE_COPY); "Don’t" keeps the line's typographic one. Pinned.
+ */
 export const PLATFORM_AI_MEMORY_LINE =
-  `Saves only items you choose to remember · Sent to ${PLATFORM_AI_PROVIDER} · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
+  `Can't change anything · Remembers only what you choose · Sent to ${PLATFORM_AI_PROVIDER} · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
 
 /** §9 — the Platform AI memory notice, VERBATIM (B4). Changing it needs a new owner approval and S3's claim check. */
 export const PLATFORM_AI_MEMORY_NOTICE_TITLE = "Platform AI memory.";
@@ -58,6 +62,9 @@ export interface ClientMemoryRow {
   noted: string; expiresAt: string; badge: string; canRenew: boolean;
 }
 export interface ClientMemoryArea { area: string; areaLabel: string; facts: ClientMemoryRow[] }
+
+/** S2 C5: facts beyond the panel's newest 50 (a count only). */
+export const parsePanelMore = (body: unknown): number => (isObj(body) && typeof body.more === "number" && body.more > 0 ? Math.floor(body.more) : 0);
 
 export function parsePanel(body: unknown): ClientMemoryArea[] | null {
   if (!isObj(body) || !Array.isArray(body.areas)) return null;

@@ -28,7 +28,7 @@ import {
   MEMORY_BADGE_LABEL, MEMORY_CONCERN_LABEL, MEMORY_TTL_LABEL, MEMORY_TYPE_LABEL,
   PLATFORM_AI_MEMORY_CONFIRM_URL, PLATFORM_AI_MEMORY_NOTICE, PLATFORM_AI_MEMORY_NOTICE_ID, PLATFORM_AI_MEMORY_NOTICE_TITLE,
   PLATFORM_AI_MEMORY_PANEL_HEADER, PLATFORM_AI_MEMORY_RENEW_CHANGED,
-  PLATFORM_AI_MEMORY_URL, expiresLabel, memoryFactUrl, memoryRenewUrl, parsePanel,
+  PLATFORM_AI_MEMORY_URL, expiresLabel, memoryFactUrl, memoryRenewUrl, parsePanel, parsePanelMore,
   type ClientMemoryArea, type ClientMemoryProposal, type ClientMemoryRow,
 } from "./platform-ai-memory-model";
 
@@ -97,6 +97,8 @@ export interface MemoryPanelViewProps {
   /** The §9 notice, expanded inline under the header. */
   noticeOpen: boolean;
   onNotice: (open: boolean) => void;
+  /** S2 C5: how many older items are not shown (newest 50 only). */
+  more?: number;
 }
 
 /** PURE — every state renders from props. */
@@ -124,6 +126,7 @@ export function PlatformAiMemoryPanelView(p: MemoryPanelViewProps) {
           </ul>
         </div>
       ))}
+      {p.more && p.more > 0 ? <p data-platform-ai-memory-more="" className="text-xs text-[var(--text-secondary)]">{`${p.more} older item${p.more === 1 ? "" : "s"} not shown.`}</p> : null}
       {p.areas && p.areas.length > 0 ? (
         p.confirmAll ? (
           <div role="group" aria-label="Delete all my memory" className="flex flex-wrap items-center gap-2 text-xs">
@@ -154,12 +157,13 @@ export function PlatformAiMemoryPanel() {
   const [confirmAll, setConfirmAll] = useState(false);
   const [renewRefused, setRenewRefused] = useState<ReadonlySet<string>>(new Set());
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const [more, setMore] = useState(0);
 
   const load = useCallback(async () => {
     const r = await call(PLATFORM_AI_MEMORY_URL);
     const parsed = r && r.status === 200 ? parsePanel(r.body) : null;
     if (!parsed) { setError("Memory is unavailable right now."); setAreas((a) => a ?? []); return; }
-    setError(null); setAreas(parsed);
+    setError(null); setAreas(parsed); setMore(parsePanelMore(r?.body));
   }, []);
   // The first read (an external system); setState runs after the awaited fetch.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -168,7 +172,7 @@ export function PlatformAiMemoryPanel() {
   const act = async (f: () => Promise<void>) => { setBusy(true); try { await f(); } finally { setBusy(false); } };
   return (
     <PlatformAiMemoryPanelView
-      areas={areas} error={error} busy={busy} confirmAll={confirmAll} renewRefused={renewRefused} noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+      areas={areas} error={error} busy={busy} confirmAll={confirmAll} renewRefused={renewRefused} noticeOpen={noticeOpen} onNotice={setNoticeOpen} more={more}
       onDelete={(id) => void act(async () => { await call(memoryFactUrl(id), { method: "DELETE" }); await load(); })}
       onRenew={(id) => void act(async () => {
         const r = await call(memoryRenewUrl(id), { method: "POST" });
@@ -257,7 +261,9 @@ export function PlatformAiMemoryConfirmCard({ proposal, onDone, post = postConfi
     const code = r && typeof r.body === "object" && r.body !== null ? (r.body as { code?: unknown }).code : null;
     setProblem(typeof code === "string" && NOTE_REFUSAL_COPY[code] ? NOTE_REFUSAL_COPY[code]
       : code === "RECORD_CHANGED" ? "This has changed since it was proposed. Ask again to save the current state."
-        : code === "REPLAY" ? "Already saved." : "Couldn’t save this. Try again.");
+        : code === "REPLAY" ? "Already saved."
+          : code === "RECORD_UNVERIFIED" ? "Couldn't check the record right now — try again"
+            : code === "PROPOSAL_EXPIRED" ? "This suggestion expired — ask again" : "Couldn’t save this. Try again.");
   }
   return (
     <PlatformAiMemoryConfirmCardView proposal={proposal} note={note} ttl={ttl} busy={busy} problem={problem}

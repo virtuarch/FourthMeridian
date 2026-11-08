@@ -156,7 +156,8 @@ export async function runConversationTurn(input: ConversationTurnInput): Promise
     });
     if (result.grounding.replaced) input.onUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     input.onTrace?.(`${traceLine(result)} history=${history.exchangesUsed}/${history.exchangesUsed + history.exchangesDropped}`);
-    const answer = storedAnswerOf(result, record);
+    // S2 C1: a saved note the model echoed never reaches the stored transcript.
+    const answer = input.memory ? input.memory.redactStored(storedAnswerOf(result, record)) : storedAnswerOf(result, record);
     if (!isStoredAnswer(answer)) return { outcome: { status: "FAILED", failureCode: "PROVIDER" }, history, transcript, result };
     let memoryProposal: MemoryProposalCard | null = null;
     if (input.memory) {

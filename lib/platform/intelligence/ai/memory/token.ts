@@ -90,6 +90,11 @@ export function noteHitsShingles(note: string, p: Pick<MemoryProposal, "sh" | "k
   return [...wordShingles(note).map((w) => `w:${w}`), ...charWindows(note).map((c) => `c:${c}`)].some((s) => set.has(shingleMac(s, p.k).hex));
 }
 
+/** False when the key the proposal's shingles were computed under is no longer in the keyring (rotation mid-proposal). */
+export function proposalKeyKnown(p: Pick<MemoryProposal, "k">): boolean {
+  try { macWithPurpose("", EncryptionPurpose.PLATFORM_AI_MEMORY_TOKEN, { kid: p.k }); return true; } catch { return false; }
+}
+
 export interface ProposalInput {
   operatorId: string;
   area: PlatformArea;

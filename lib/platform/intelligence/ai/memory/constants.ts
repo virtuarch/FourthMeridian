@@ -78,6 +78,11 @@ export const MEMORY_PAYLOAD_MAX_OCTETS = 512;
 export const MEMORY_REFS_MAX_OCTETS = 1024;
 export const MEMORY_REFS_MAX = 5;
 export const MEMORY_REF_ID_MAX = 64;
+/** The panel shows at most this many facts, newest first; the rest is a "more" count (S2 C5). */
+export const MEMORY_PANEL_MAX = 50;
+/** The per-operator read limiter of the memory GET route (S2 C5). */
+export const MEMORY_READ_LIMIT = { limit: 60, windowSec: 60 } as const;
+export const PLATFORM_AI_MEMORY_READ_ROUTE = "platform-ai-memory-read";
 /** At most this many facts are injected into one turn (D9). */
 export const MEMORY_FACTS_INJECTED_MAX = 10;
 /** The revalidation budget per surface (D9): an unfinished check is UNVERIFIED. */

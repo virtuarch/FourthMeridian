@@ -87,6 +87,31 @@ export function hasVerbatimSpan(note: string, sources: readonly string[]): boole
   return false;
 }
 
+/** What a stored answer shows where it echoed a saved note (S2 C1). */
+export const SAVED_NOTE_REDACTION = "[your saved note]";
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * S2 C1 — replace every span of `note` that `text` repeats verbatim at the guard's
+ * threshold (≥ 6 words or ≥ MEMORY_VERBATIM_CHARS characters, punctuation and case
+ * ignored) with SAVED_NOTE_REDACTION. Whole-word runs of the note, longest first;
+ * if a (mid-word) span still remains, the whole text is replaced — never stored.
+ */
+export function redactNoteSpans(text: string, note: string): string {
+  if (!note || !hasVerbatimSpan(note, [text])) return text;
+  const words = normaliseForShingles(note).split(" ").filter(Boolean);
+  let out = text;
+  for (let len = words.length; len >= 1; len--) {
+    for (let i = 0; i + len <= words.length; i++) {
+      const body = words.slice(i, i + len).map(escapeRe).join("[^\\p{L}\\p{N}]+");
+      const re = new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "giu");
+      out = out.replace(re, (m) => (len >= MEMORY_SHINGLE_WORDS || m.length >= MEMORY_VERBATIM_CHARS ? SAVED_NOTE_REDACTION : m));
+    }
+  }
+  return hasVerbatimSpan(note, [out]) ? SAVED_NOTE_REDACTION : out;
+}
+
 /**
  * The guard. `ctx.verbatimSources` (propose time only) = this turn's question,
  * answer and replayed history. The Remember button passes none: its note is the
