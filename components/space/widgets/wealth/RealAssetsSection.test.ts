@@ -66,10 +66,14 @@ console.log("AddManualAssetModal — asks only for what is kept");
 const MODAL = code("components", "dashboard", "AddManualAssetModal.tsx");
 // RWA-1: fields with no home on the asset are not collected. RWA-2A gave the
 // acquisition facts a home (ManualAssetProfile), so those are sent again — and
-// persisted; kind and notes still have none.
-for (const field of ["assetKind", "purchaseDate", "notes"]) {
+// persisted; notes still have none. Mortgage F9 gave the KIND a home
+// (ManualAssetProfile.assetKind): it is sent only for a property, with the
+// value basis MARKET_VALUE (the home is entered at market value, never equity).
+for (const field of ["purchaseDate", "notes"]) {
   check(`does not send ${field} (no column stores it)`, !MODAL.includes(field));
 }
+check("assetKind sent only for a property, with MARKET_VALUE basis (Mortgage F9)",
+  MODAL.includes(`isProperty ? { assetKind: "real_estate", valueBasis: "MARKET_VALUE" } : {}`));
 check("POST body: name/balance/currency/spaceIds + dated value + optional acquisition facts (RWA-2A)",
   /body: JSON\.stringify\(\{\s*name:\s+name\.trim\(\),\s*balance:\s+parsedValue,\s*currency,\s*spaceIds: shareTo,\s*valuationDate,/.test(MODAL) &&
   MODAL.includes("acquisitionDate ? { acquisitionDate }") && MODAL.includes("{ purchasePrice: parsedPrice }") &&

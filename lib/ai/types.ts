@@ -25,6 +25,7 @@ import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
 import type { DebtType, LiabilityKind } from '@/lib/debt/liability-kind';
+import type { AiPropertyFacts } from '@/lib/assets/property-equity';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
@@ -365,6 +366,22 @@ export interface AccountSummaryItem {
    * Present only when at least two anchors exist.
    */
   valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
+  /**
+   * Mortgage F9 (owner 2026-11-08) — a manual PROPERTY's value basis, the
+   * mortgage / HELOC debts (debtType, PR #485) the user linked as secured by it, and
+   * the DERIVED equity (value − linked secured debt). If ANY linked debt is not
+   * visible to this viewer, only the flag is sent (`derivedEquity` null,
+   * `equityUnavailableReason` LINKED_DEBT_NOT_VISIBLE, no list or total). Net worth ALREADY counts
+   * the property at `value` and each debt as a liability: equity is never
+   * additional wealth and must never be added to netWorth. `derivedEquity` is
+   * null when it cannot be stated honestly (`equityUnavailableReason`).
+   * `possibleDoubleCount` = the value may have been entered as equity while the
+   * mortgage is also counted; the app has NOT restated anything — quote the
+   * disclosure and ask the user to confirm market value vs equity. Only linked
+   * secured kinds appear: an auto, student or personal loan never reduces
+   * equity. Manual FULL rows that state a kind, a link or a basis only.
+   */
+  property?: AiPropertyFacts;
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;
