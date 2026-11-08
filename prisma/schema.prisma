@@ -3178,7 +3178,15 @@ model SpaceSnapshot {
   netWorth    Float @default(0) // stocks + crypto + cash + savings − debt
   totalAssets Float @default(0) // stocks + crypto + cash + savings
   cashOnHand  Float @default(0) // max(cash − expense_buffer, 0) — renamed from cashToPlay (legacy "play cash" language)
-  netLiquid   Float @default(0) // cash + savings − debt
+  netLiquid   Float @default(0) // cash + savings − debt + installmentDebt (Mortgage F1: installment loans excluded)
+
+  // Mortgage F1b (S2 ruling 2026-11-08) — the installment debt (mortgage, auto,
+  // student, …) this row EXCLUDED from netLiquid; it stays in `debt`/`netWorth`.
+  // Written on every NEW row by every snapshot writer (≥ 0; a recorded 0 means
+  // "nothing excluded"). Nullable, NO default, NO backfill: NULL = a legacy row
+  // written before the column — its basis is read per row by
+  // lib/debt/liquid-net-worth.ts (`liquidNetWorthRowBasis`), never from a date.
+  installmentDebt Float?
 
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows (cash
   // walked back from transactions; investments/loans/manual assets held flat).

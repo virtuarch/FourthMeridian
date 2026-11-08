@@ -1544,6 +1544,16 @@ export interface SnapshotDataPoint {
   cashOnHand:   number;
   netLiquid:    number;
   /**
+   * Mortgage F1b (S2) — the liquid-NW definition THIS point's `netLiquid` was
+   * recorded on, read per stored row (never from its date):
+   *   INSTALLMENTS_EXCLUDED   — current: installment loans NOT subtracted.
+   *   INSTALLMENTS_SUBTRACTED — previous: installment loans also subtracted.
+   * A change between points on different bases includes the definition change
+   * (see `SnapshotSectionData.netLiquidNote`) and is not movement. Always
+   * emitted by the assembler; optional only for fixtures predating it.
+   */
+  netLiquidBasis?: 'INSTALLMENTS_EXCLUDED' | 'INSTALLMENTS_SUBTRACTED';
+  /**
    * Machine-readable reason the digital-asset figure (and the two totals built
    * on it) could not be asserted for this date. Present ONLY on such points.
    *   HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE — refused: a holding existed but

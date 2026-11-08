@@ -36,9 +36,11 @@ import { debtTypeLabel, liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, type 
 
 /**
  * THE date liquid net worth stopped subtracting installment loans (owner
- * decision 2026-11-08). Stored rows dated before it may carry the old
- * definition (frozen observed rows are never rewritten): a change measured
- * across it is split into a "definition change" part, never debt movement.
+ * decision 2026-11-08). DOCUMENTATION AND LABEL ONLY (Mortgage F1b, S2 ruling):
+ * no code path decides a row's basis from a date. A stored row's basis is read
+ * from the row itself (`liquidNetWorthRowBasis`: `SpaceSnapshot.installmentDebt`
+ * recorded ⇒ new basis), because a regeneration can put a row dated before this
+ * on the new basis and a frozen observation dated after it never changes.
  */
 export const LIQUID_NW_INSTALLMENT_EXCLUSION_FROM = "2026-11-08";
 
@@ -116,6 +118,16 @@ export function liquidNetWorthDebt(c: { totalLiabilities: number; totalInstallme
   return c.totalLiabilities - excluded;
 }
 
+/**
+ * Mortgage F1b — THE value every snapshot writer stores in
+ * `SpaceSnapshot.installmentDebt`: the installment debt `liquidNetWorthDebt`
+ * excluded (≥ 0, ≤ totalLiabilities). 0 when nothing was excluded — a recorded
+ * zero, which is what puts the row on the new basis.
+ */
+export function excludedInstallmentDebt(c: { totalLiabilities: number; totalInstallmentLiabilities?: number }): number {
+  return Math.max(c.totalLiabilities - liquidNetWorthDebt(c), 0);
+}
+
 export interface LiquidNetWorthBasis {
   /** LIQUID_NET_WORTH_DEFINITION, verbatim. */
   definition: string;
@@ -176,33 +188,81 @@ export function liquidNetWorthBasis(accounts: ReadonlyArray<LiquidNetWorthLiabil
   };
 }
 
-// ── Stored-row identity (SpaceSnapshot) ──────────────────────────────────────
+// ── Stored-row identity + basis (SpaceSnapshot) ──────────────────────────────
 //
-// `SpaceSnapshot` stores `debt` (ALL liabilities) and `netLiquid`, but no
-// installment column. The installment debt a row excluded is therefore
-// RECOVERED by subtraction, exactly like the unstored real-asset component
-// (`derivedRealAssets`), and BOUNDED rather than equated:
+// Mortgage F1b (S2 ruling, required before Production and before any Preview
+// regeneration) — `SpaceSnapshot.installmentDebt` (nullable, no default, no
+// backfill) records the installment debt a row EXCLUDED from netLiquid. It is
+// written on every NEW row by every snapshot writer, so a row's liquid-NW BASIS
+// is a fact stored on the row, never inferred from its date:
 //
-//   excluded = netLiquid − (cash + savings − debt),   0 ≤ excluded ≤ debt
-//
-// Rows written before Mortgage F1 have excluded = 0 (they subtracted all debt)
-// and still satisfy the bound — the old identity is the special case. A row
-// outside the bound (netLiquid below cash + savings − debt, or above
-// cash + savings) is a contradiction, as before.
+//   installmentDebt NOT NULL ⇒ NEW basis: netLiquid = cash + savings − debt + installmentDebt
+//                                (EXACT identity, 0 ≤ installmentDebt ≤ debt)
+//   installmentDebt NULL     ⇒ legacy row: the BOUNDED identity
+//                                cash + savings − debt ≤ netLiquid ≤ cash + savings
+//                              and the OLD basis (installments subtracted) — unless
+//                              the row's own identity PROVES it excluded debt
+//                              (netLiquid above cash + savings − debt): only F1 code
+//                              writes that, so such a row (written between F1 and
+//                              this column) is on the new basis with the recovered
+//                              amount. A NULL row that excluded nothing is OLD.
 
-/** The installment debt a stored row excluded from netLiquid (≥ 0 after rounding noise), recovered by subtraction. */
-export function storedExcludedInstallmentDebt(v: { cash: number; savings: number; debt: number; netLiquid: number }): number {
+/** A stored row's liquid-NW basis. */
+export type LiquidNetWorthRowBasis = "INSTALLMENTS_SUBTRACTED" | "INSTALLMENTS_EXCLUDED";
+
+/** The stored columns the basis and identity are read from. `installmentDebt` absent/null ⇒ legacy row. */
+export interface StoredLiquidRow {
+  cash: number; savings: number; debt: number; netLiquid: number;
+  installmentDebt?: number | null;
+}
+
+/** Tolerance below which a recovered exclusion is rounding noise, not evidence. */
+const RECOVERY_EPSILON = 0.005;
+
+/** True when the row RECORDED its installment debt (the column is non-null and finite). */
+export function hasRecordedInstallmentDebt(v: { installmentDebt?: number | null }): v is { installmentDebt: number } {
+  return typeof v.installmentDebt === "number" && Number.isFinite(v.installmentDebt);
+}
+
+/** The exclusion a row's aggregates imply: netLiquid − (cash + savings − debt), cent-rounded. */
+function recoveredExclusion(v: StoredLiquidRow): number {
   return Math.round((v.netLiquid - (v.cash + v.savings - v.debt)) * 100) / 100;
 }
 
 /**
- * The stored-row netLiquid identity, bounded: `cash + savings − debt ≤ netLiquid
- * ≤ cash + savings` (within `tol`). Null when it holds, else the violation text.
+ * THE per-row basis. Recorded column ⇒ INSTALLMENTS_EXCLUDED. Legacy NULL ⇒
+ * INSTALLMENTS_SUBTRACTED unless the row's identity proves an exclusion (see the
+ * section header). Never a date comparison.
  */
-export function netLiquidIdentityViolation(
-  v: { cash: number; savings: number; debt: number; netLiquid: number },
-  tol: number,
-): string | null {
+export function liquidNetWorthRowBasis(v: StoredLiquidRow): LiquidNetWorthRowBasis {
+  if (hasRecordedInstallmentDebt(v)) return "INSTALLMENTS_EXCLUDED";
+  return recoveredExclusion(v) > RECOVERY_EPSILON ? "INSTALLMENTS_EXCLUDED" : "INSTALLMENTS_SUBTRACTED";
+}
+
+/**
+ * The installment debt a stored row excluded from netLiquid: the recorded
+ * column when present, else recovered by subtraction (0 on an old-basis row).
+ */
+export function storedExcludedInstallmentDebt(v: StoredLiquidRow): number {
+  return hasRecordedInstallmentDebt(v) ? v.installmentDebt : recoveredExclusion(v);
+}
+
+/**
+ * The stored-row netLiquid identity. EXACT when the row recorded
+ * `installmentDebt` (netLiquid = cash + savings − debt + installmentDebt, and
+ * 0 ≤ installmentDebt ≤ debt); the legacy RANGE `cash + savings − debt ≤
+ * netLiquid ≤ cash + savings` when it did not. Null when it holds (within
+ * `tol`), else the violation text.
+ */
+export function netLiquidIdentityViolation(v: StoredLiquidRow, tol: number): string | null {
+  if (hasRecordedInstallmentDebt(v)) {
+    if (v.installmentDebt < -tol) return "installmentDebt < 0";
+    if (v.installmentDebt > Math.max(v.debt, 0) + tol) return "installmentDebt > debt";
+    if (Math.abs(v.netLiquid - (v.cash + v.savings - v.debt + v.installmentDebt)) > tol) {
+      return "netLiquid != cash + savings − debt + installmentDebt";
+    }
+    return null;
+  }
   const excluded = v.netLiquid - (v.cash + v.savings - v.debt);
   if (excluded < -tol) return "netLiquid < cash + savings − debt";
   if (excluded > Math.max(v.debt, 0) + tol) return "netLiquid > cash + savings (excludes more debt than exists)";
@@ -211,16 +271,18 @@ export function netLiquidIdentityViolation(
 
 /**
  * The note the AI snapshot (history) section carries beside every `netLiquid`.
- * Rows recorded before F1 subtracted every debt; a jump between such a row and
- * a later one is a definition change, not movement — the model must not narrate
- * it as one.
+ * Each point carries its own `netLiquidBasis` (read from the stored row, never
+ * from its date): a change between points on different bases includes the
+ * definition change, which is not movement — the model must not narrate it.
  */
 export const NET_LIQUID_HISTORY_AI_NOTE =
   `${LIQUID_NET_WORTH_DEFINITION} \`netLiquid\` does NOT subtract installment loans (mortgage, auto, student, personal installment); ` +
   "credit cards, lines of credit and debts of unknown type ARE subtracted. " +
   `${LIQUID_NET_WORTH_NOT_DEBT_FREE} ` +
-  `Points dated before ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM} may still subtract installment loans; a change in netLiquid measured ` +
-  `across ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM} includes that definition change, which is not money gained or debt repaid — do not describe it as movement.`;
+  "Each point's `netLiquidBasis` says which definition THAT point was recorded on: INSTALLMENTS_EXCLUDED is the current " +
+  "definition above; INSTALLMENTS_SUBTRACTED is the previous definition (recorded before the change, it also subtracted " +
+  "installment loans). A change in netLiquid between points on different bases includes that definition change, which is " +
+  "not money gained or debt repaid — do not describe it as movement; compare like with like.";
 
 /**
  * The one UI sentence beside a liquid-net-worth figure: the definition, then
@@ -261,33 +323,47 @@ export function aiLiquidNetWorth(
   };
 }
 
-// ── The definition change across LIQUID_NW_INSTALLMENT_EXCLUSION_FROM ───────
-
-interface StoredLiquidRow { date: string; cash: number; savings: number; debt: number; netLiquid: number }
+// ── The definition change between two stored rows (per-row basis) ───────────
 
 /**
- * The part of a liquid-NW change between two stored rows that is the F1
- * DEFINITION CHANGE, not movement. Non-zero only when the window CROSSES
- * LIQUID_NW_INSTALLMENT_EXCLUSION_FROM (compare dated before it, as-of on or
- * after) AND the compare row is on the old basis (it excluded nothing — the
- * stored identity's lower bound). The amount is the installment debt the as-of
- * row no longer subtracts (recovered from that row). Without a stored
- * installment column the compare row's own installment balance is unknown, so
- * installment paydown inside the window is folded into this part rather than
- * reported as liquid-debt movement — the conservative direction for
- * attribution (S2 requires the column before Production).
+ * The part of a liquid-NW change (compare → asOf) between two stored rows that
+ * is the F1 DEFINITION CHANGE, not movement. Decided by the two rows' BASES
+ * (`liquidNetWorthRowBasis`), never their dates:
+ *
+ *   same basis              ⇒ 0 (the change is exact movement)
+ *   old compare → new asOf  ⇒ + asOf's installment debt (no longer subtracted)
+ *   new compare → old asOf  ⇒ − compare's installment debt
+ *
+ * The amount is always the NEW-basis row's installment debt: an old-basis row
+ * never recorded its own, so installment paydown inside a cross-basis window
+ * stays inside this part's complement rather than being invented.
  */
 export function liquidNetWorthDefinitionChange(compare: StoredLiquidRow, asOf: StoredLiquidRow): number {
-  if (!(compare.date < LIQUID_NW_INSTALLMENT_EXCLUSION_FROM && asOf.date >= LIQUID_NW_INSTALLMENT_EXCLUSION_FROM)) return 0;
-  if (storedExcludedInstallmentDebt(compare) > 0.005) return 0; // compare row already on the new basis (regenerated)
-  return Math.max(storedExcludedInstallmentDebt(asOf), 0);
+  const from = liquidNetWorthRowBasis(compare);
+  const to = liquidNetWorthRowBasis(asOf);
+  if (from === to) return 0;
+  return to === "INSTALLMENTS_EXCLUDED"
+    ? Math.max(storedExcludedInstallmentDebt(asOf), 0)
+    : -Math.max(storedExcludedInstallmentDebt(compare), 0);
 }
 
-/** The liquid-NW chart annotation at the definition change (Liquid NW series only). */
-export function liquidNetWorthChartMarkers(metric: string): { date: string; label: string }[] {
-  return metric === "liquidNetWorth"
-    ? [{ date: LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, label: LIQUID_NW_DEFINITION_CHANGE_MARKER }]
-    : [];
+/**
+ * The liquid-NW chart annotation(s): one marker at each FIRST new-basis point
+ * that follows an old-basis point in the plotted series (Liquid NW series
+ * only). Per-row basis, never a date constant. `points` are oldest-first.
+ */
+export function liquidNetWorthChartMarkers(
+  metric: string,
+  points: ReadonlyArray<{ date: string; liquidBasisPrevious?: true }>,
+): { date: string; label: string }[] {
+  if (metric !== "liquidNetWorth") return [];
+  const out: { date: string; label: string }[] = [];
+  for (let i = 1; i < points.length; i++) {
+    if (points[i - 1].liquidBasisPrevious && !points[i].liquidBasisPrevious) {
+      out.push({ date: points[i].date, label: LIQUID_NW_DEFINITION_CHANGE_MARKER });
+    }
+  }
+  return out;
 }
 
 /**

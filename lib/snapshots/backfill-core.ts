@@ -16,7 +16,7 @@
  */
 
 import { liabilityKind, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
-import { liquidNetWorthDebt } from "@/lib/debt/liquid-net-worth";
+import { excludedInstallmentDebt, liquidNetWorthDebt } from "@/lib/debt/liquid-net-worth";
 
 // ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
 
@@ -311,6 +311,20 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
  */
 export function snapshotRestrictedCash(c: Pick<ClassifyTotals, "totalRestrictedCash">): number | null {
   return typeof c.totalRestrictedCash === "number" && Number.isFinite(c.totalRestrictedCash) ? c.totalRestrictedCash : null;
+}
+
+/**
+ * Mortgage F1b (S2 ruling) — THE value every snapshot writer stores in
+ * `SpaceSnapshot.installmentDebt`: the installment debt the row's `netLiquid`
+ * EXCLUDED, from the SAME `c` `computeSnapshotFields` reads, so
+ * `netLiquid = cash + savings − debt + installmentDebt` holds exactly. ≥ 0; a
+ * recorded 0 (nothing excluded) still marks the row as written on the new basis.
+ * Kept OUT of `SnapshotFields` (like `restrictedCash`) so the regeneration diff
+ * and every pre-existing stored-row reader are untouched. Used by all three
+ * writers (regenerate, regenerate-history, backfill).
+ */
+export function snapshotInstallmentDebt(c: Pick<ClassifyTotals, "totalLiabilities" | "totalInstallmentLiabilities">): number {
+  return excludedInstallmentDebt(c);
 }
 
 export interface SnapshotFields {

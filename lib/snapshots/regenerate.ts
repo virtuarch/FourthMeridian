@@ -54,7 +54,7 @@ import {
   type SnapshotAccountsClient,
 } from "@/lib/snapshots/space-accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { computeSnapshotFields, snapshotRestrictedCash } from "@/lib/snapshots/backfill-core";
+import { computeSnapshotFields, snapshotInstallmentDebt, snapshotRestrictedCash } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -407,19 +407,21 @@ export async function regenerateSpaceSnapshot(
 
   // FIN-E part 2 — the restricted share of today's cash, from the SAME `c`.
   const restrictedCash = snapshotRestrictedCash(c);
+  // Mortgage F1b — the installment debt today's netLiquid excluded, from the SAME `c`.
+  const installmentDebt = snapshotInstallmentDebt(c);
   await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
       spaceId, date,
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
-      reportingCurrency, restrictedCash,
+      reportingCurrency, restrictedCash, installmentDebt,
       ...written,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
-      reportingCurrency, restrictedCash,
+      reportingCurrency, restrictedCash, installmentDebt,
       ...written,
       ...(supersedesEstimate ? { isEstimated: false } : {}),
     },

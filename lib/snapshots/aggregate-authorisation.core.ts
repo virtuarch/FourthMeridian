@@ -107,7 +107,9 @@ export type AggregateRefusalReason = (typeof AGGREGATE_REFUSAL_REASONS)[number];
 
 export interface AggregateAuthorisationInput {
   /** The row's stored values. `realAssets` is recovered by the caller-free rule below. */
-  values: Readonly<Record<SnapshotAggregate | "stocks" | "crypto" | "cash" | "savings" | "debt", number>>;
+  values: Readonly<Record<SnapshotAggregate | "stocks" | "crypto" | "cash" | "savings" | "debt", number>>
+    /** Mortgage F1b — recorded ⇒ the netLiquid identity is EXACT; null/absent ⇒ legacy range. */
+    & { readonly installmentDebt?: number | null };
   /**
    * Per-component assertability, as the COMPONENT authorities decided it. A
    * component absent from this map is assertable: silence here means "no
@@ -171,12 +173,15 @@ function identityViolations(v: AggregateAuthorisationInput["values"]): string[] 
   if (Math.abs(v.netWorth - (v.totalAssets - v.debt)) > tol) {
     out.push(`netWorth ${round2(v.netWorth)} != totalAssets − debt ${round2(v.totalAssets - v.debt)}`);
   }
-  // Mortgage F1 — installment loans are excluded from netLiquid and have no
-  // stored column, so the identity is BOUNDED: cash + savings − debt ≤ netLiquid
-  // ≤ cash + savings (lib/debt/liquid-net-worth.ts). Pre-F1 rows sit on the
-  // lower bound, exactly the old identity.
-  if (netLiquidIdentityViolation(v, tol)) {
-    out.push(`netLiquid ${round2(v.netLiquid)} outside [cash + savings − debt ${round2(v.cash + v.savings - v.debt)}, cash + savings ${round2(v.cash + v.savings)}]`);
+  // Mortgage F1/F1b — installment loans are excluded from netLiquid. A row that
+  // RECORDED installmentDebt is held to the EXACT identity netLiquid = cash +
+  // savings − debt + installmentDebt; a legacy NULL row to the BOUNDED one
+  // cash + savings − debt ≤ netLiquid ≤ cash + savings (lib/debt/liquid-net-worth.ts).
+  const liq = netLiquidIdentityViolation(v, tol);
+  if (liq) {
+    out.push(typeof v.installmentDebt === "number"
+      ? `netLiquid ${round2(v.netLiquid)}: ${liq} (${round2(v.cash + v.savings - v.debt + v.installmentDebt)})`
+      : `netLiquid ${round2(v.netLiquid)} outside [cash + savings − debt ${round2(v.cash + v.savings - v.debt)}, cash + savings ${round2(v.cash + v.savings)}]`);
   }
   // `totalAssets` carries the UNSTORED realAssets component, so it is bounded
   // rather than equated: the residual IS realAssets and cannot be negative.

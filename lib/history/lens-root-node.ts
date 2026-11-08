@@ -129,14 +129,16 @@ const AGGREGATE_ROOTS: Record<string, {
     // that showed them (greyed out or otherwise) would teach the reader that the
     // total ought to include them. The debt bucket is still ALL debt (it is the
     // same node Net Worth subtracts); the installment part is added back from
-    // the stored row (no installment column exists — the bounded identity in
-    // lib/debt/liquid-net-worth.ts) and named in the note.
+    // the stored row (F1b: the recorded installmentDebt column; a legacy NULL
+    // row recovers it from its aggregates — lib/debt/liquid-net-worth.ts) and
+    // named in the note.
     adds: ["cash", "savings"],
     subtracts: ["debt"],
     total: (s) => s.netLiquid ?? 0,
     formula: LIQUID_NET_WORTH_FORMULA,
     notSubtracted: (s) => (s.netLiquid == null ? 0 : storedExcludedInstallmentDebt({
       cash: s.totalCash, savings: s.totalSavings, debt: s.totalDebt, netLiquid: s.netLiquid,
+      installmentDebt: s.installmentDebt ?? null,
     })),
     notSubtractedNote: (amount, currency) =>
       `${LIQUID_NET_WORTH_FORMULA}. ${formatCurrency(amount, currency)} of the debt shown is installment loans — excluded here, still owed, and subtracted in total net worth.`,
