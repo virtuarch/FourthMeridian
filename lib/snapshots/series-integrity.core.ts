@@ -39,6 +39,7 @@
  */
 
 import { COMPUTED_TOLERANCE } from "@/lib/perspective-engine/reconciliation.core";
+import { netLiquidIdentityViolation } from "@/lib/debt/liquid-net-worth";
 
 /**
  * Tolerance for a SINGLE WALKED STEP against its own ledger movement — and only
@@ -164,7 +165,10 @@ export function aggregateIdentityViolations(row: AggregateRow): string[] {
   const near = (a: number, b: number) => Math.abs(a - b) <= COMPUTED_TOLERANCE;
   if (!near(row.total, row.stocks + row.crypto)) out.push("total !== stocks + crypto");
   if (!near(row.netWorth, row.totalAssets - row.debt)) out.push("netWorth !== totalAssets - debt");
-  if (!near(row.netLiquid, row.cash + row.savings - row.debt)) out.push("netLiquid !== cash + savings - debt");
+  // Mortgage F1 — netLiquid excludes installment loans, which have no stored
+  // column: the identity is BOUNDED (lib/debt/liquid-net-worth.ts).
+  const liq = netLiquidIdentityViolation(row, COMPUTED_TOLERANCE);
+  if (liq) out.push(liq);
   if (row.totalAssets < row.stocks + row.crypto + row.cash + row.savings - COMPUTED_TOLERANCE) {
     out.push("totalAssets < its own components");
   }

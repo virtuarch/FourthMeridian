@@ -91,7 +91,9 @@ import type {
   AccountHealthSummary,
   KnowledgeGap,
   TrackedAccountLite,
+  AiLiquidNetWorth,
 } from '@/lib/ai/types';
+import { aiLiquidNetWorth } from '@/lib/debt/liquid-net-worth';
 import type { SpaceContext } from '@/lib/space';
 import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 import { aiTotalsCoverage, excludedAccountCounts, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
@@ -429,6 +431,10 @@ async function assembleAccounts(
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
     providerSubtype: l.financialAccount.providerSubtype,
+    // Mortgage F1 — liability-kind evidence (liabilityKind) so installment
+    // loans are split out of LIQUID net worth.
+    debtSubtype: l.financialAccount.debtSubtype,
+    creditLimit: l.financialAccount.creditLimit,
     ...(unvaluedIds.has(l.financialAccount.id) ? { valuationUnknown: true } : {}),
   }));
 
@@ -909,6 +915,9 @@ async function assembleAccounts(
       return c ? { totalsCoverage: c } : {};
     })(),
 
+    // Mortgage F1 (owner 2026-11-08) — the definition + what was excluded, so
+    // the model explains liquid vs total net worth and never calls it debt-free.
+    liquidNetWorth: aiLiquidNetWorth(classifiableAll, classification) satisfies AiLiquidNetWorth,
     counts: {
       liquid:        classification.liquid.length,
       investments:   classification.investments.length,

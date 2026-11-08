@@ -95,7 +95,8 @@ const build = (lens: Parameters<typeof buildLensRootNode>[0]["lens"]) =>
 {
   const n = build("liquid-net-worth")!;
   assert.equal(n.displayedValue, 4_000, "totals the STORED netLiquid column");
-  assert.equal(n.provenance.note, "Cash + Savings − Debt");
+  // Mortgage F1 — the formula names the installment exclusion (none in this row).
+  assert.equal(n.provenance.note, "Cash + Savings − Debt (excluding installment loans)");
   const kinds = n.components.map((c) => (c.nodeType === "bucket" ? c.bucketKind : ""));
   assert.deepEqual(kinds, ["cash", "savings", "debt"], "exactly three children");
   // Investments and crypto are ABSENT, not hidden. A root that showed them

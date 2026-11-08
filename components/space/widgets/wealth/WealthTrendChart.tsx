@@ -26,6 +26,7 @@ import { TrendChart } from "@/components/space/widgets/charts/TrendChart";
 import { projectWealthTrendPoints } from "./wealth-trend-points";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
+import { liquidNetWorthChartMarkers } from "@/lib/debt/liquid-net-worth";
 
 export type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 
@@ -74,6 +75,8 @@ export function WealthTrendChart({
       emptyMessage="No snapshot history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}
       headerRight={headerRight}
+      // Mortgage F1 — the liquid-NW definition change is annotated where it happened.
+      markers={liquidNetWorthChartMarkers(metric)}
     />
   );
 }

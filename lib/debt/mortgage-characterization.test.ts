@@ -98,19 +98,19 @@ console.log(`H1. Liquid net worth with a mortgage — ${LABEL}`);
   const c = classifyAccounts([CHECKING, MORTGAGE]);
   const f = computeSnapshotFields(c);
   check("H1 netWorth = 10,000 − 300,000 = −290,000", f.netWorth === -290_000, f.netWorth);
-  // SUSPECTED DEFECT: "Liquid net worth" subtracts the whole mortgage from cash.
-  // A long-dated installment loan is not a liquid claim; expected (to decide with
-  // S2/owner) is liquid NW = cash + savings − revolving/short-term debt only
-  // (≈ +10,000 here), with the mortgage counted in total net worth only.
-  check("H1 netLiquid = cash + savings − ALL debt (mortgage included) = −290,000", f.netLiquid === -290_000, f.netLiquid);
+  // FIXED by F1 (owner 2026-11-08) — a long-dated installment loan is not a
+  // liquid claim: liquid NW = cash + savings − revolving/unknown debt only; the
+  // mortgage stays in total net worth (above) and in debt.
+  check("H1 netLiquid excludes the mortgage (installment) = +10,000 — FIXED by F1", f.netLiquid === 10_000, f.netLiquid);
+  check("H1 ... the mortgage is still in debt (300,000) and the classifier names it installment", f.debt === 300_000 && c.totalInstallmentLiabilities === 300_000, { debt: f.debt, inst: c.totalInstallmentLiabilities });
   const split = computeLiquidSplit(c);
-  check("H1 Hero-basis netLiquidUnrestricted also subtracts the mortgage (−290,000)", split?.netLiquidUnrestricted === -290_000, split);
-  // Contrast: the same household with a $5k card instead — the formula is debt-type blind.
+  check("H1 Hero-basis netLiquidUnrestricted also excludes the mortgage (+10,000) — FIXED by F1", split?.netLiquidUnrestricted === 10_000, split);
+  // Contrast: the same household with a $5k card instead — revolving debt stays in liquid NW.
   const fc = computeSnapshotFields(classifyAccounts([CHECKING, CARD]));
-  check("H1 contrast: card-only household netLiquid = 5,000 (same formula)", fc.netLiquid === 5_000, fc.netLiquid);
+  check("H1 contrast: card-only household netLiquid = 5,000 (revolving debt still subtracted)", fc.netLiquid === 5_000, fc.netLiquid);
   const lens = readFileSync(join(process.cwd(), "lib/history/lens-root-node.ts"), "utf8");
-  check("H1 lens root 'Liquid net worth' formula is 'Cash + Savings − Debt' (no debt-type filter)",
-    lens.includes('formula: "Cash + Savings − Debt"') && lens.includes('subtracts: ["debt"]'));
+  check("H1 lens root 'Liquid net worth' formula names the installment exclusion — FIXED by F1",
+    lens.includes("formula: LIQUID_NET_WORTH_FORMULA") && lens.includes("notSubtracted:"));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -578,12 +578,13 @@ console.log(`H8. Property + mortgage; unobserved mortgage balance — ${LABEL}`)
   const nwCov = unobservedTotalCoverage("NET_WORTH", f8);
   const debtCov = unobservedTotalCoverage("TOTAL_DEBT", f8);
   const liqCov = unobservedTotalCoverage("LIQUID_NET_WORTH", f8);
-  check("H8 unobserved mortgage stays excluded (no invented balance) but net worth / debt / liquid NW are PARTIAL with direction — FIXED by F8",
+  check("H8 unobserved mortgage stays excluded (no invented balance) but net worth / debt are PARTIAL with direction — FIXED by F8; liquid NW COMPLETE (F1 excludes installment loans)",
     cu.totalLiabilities === 0 && cu.netWorth === 510_000
       && nwCov.status === "PARTIAL" && nwCov.directions.join() === "TRUE_TOTAL_LOWER"
       && nwCov.notes[0] === "Excludes a debt of unknown balance — the true total is lower"
       && debtCov.status === "PARTIAL" && debtCov.directions.join() === "TRUE_TOTAL_HIGHER"
-      && liqCov.status === "PARTIAL" && liqCov.directions.join() === "TRUE_TOTAL_LOWER",
+      // F1 — liquid NW never subtracts a mortgage, so its unknown balance leaves liquid NW COMPLETE.
+      && liqCov.status === "COMPLETE",
     { l: cu.totalLiabilities, nw: cu.netWorth, nwCov, debtCov, liqCov });
   check("H8 ... disclosed: unvaluedCount = 1, label 'Balance unavailable'", cu.unvaluedCount === 1 && unvaluedBalanceLabel(unobserved) === "Balance unavailable", cu.unvaluedCount);
 }

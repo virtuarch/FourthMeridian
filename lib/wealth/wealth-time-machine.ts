@@ -27,6 +27,7 @@
 
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — `fmt` below is used ONLY by the story sentence
 import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
+import { LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthDefinitionChange } from "@/lib/debt/liquid-net-worth";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -58,6 +59,21 @@ export interface WealthComposition {
   crypto:      number;
   real:        number;
   liabilities: number;
+  /**
+   * Mortgage F1 — the debt LIQUID net worth subtracts: `cash − liquidNetWorth`,
+   * i.e. every liability except installment loans (mortgage, auto, student, …).
+   * Recovered from the row's stored aggregates (no installment column exists),
+   * so Liquid NW's drivers reconcile: Δ liquidNetWorth = Δ cash − Δ liquidDebt.
+   * A Liquid-NW-only component: never an asset slice, never a Net Worth driver.
+   */
+  liquidDebt:  number;
+  /**
+   * Mortgage F1 (S2 B1) — DELTA-ONLY: 0 on every state. In a change measured
+   * across LIQUID_NW_INSTALLMENT_EXCLUSION_FROM from an old-basis row, the part
+   * of the liquid-NW change that is the definition change (installment loans no
+   * longer subtracted) — never reported as liquid-debt movement.
+   */
+  liquidDefinitionChange: number;
 }
 
 /** Sub-dollar noise floor — a value at/below this never renders as a category. */
@@ -74,6 +90,8 @@ export const WEALTH_CATEGORY_LABELS: Record<keyof WealthComposition, string> = {
   crypto:      "Crypto",
   real:        "Real World Assets",
   liabilities: "Liabilities",
+  liquidDebt:  "Debt excl. long-term loans",
+  liquidDefinitionChange: LIQUID_NW_DEFINITION_CHANGE_LABEL,
 };
 
 export interface WealthCompositionItem {
@@ -201,6 +219,7 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netLiquid: s.netLiquid ?? 0, cashOnHand: s.cashOnHand,
   });
   const liabilities = s.totalDebt;
+  const liquidNetWorth = s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt);
   return {
     date:           s.date,
     isEstimated:    s.isEstimated ?? false,
@@ -213,10 +232,10 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     // `cash + savings − debt` here produced the same number by luck of both
     // copies agreeing, and would silently disagree the moment one was fixed.
     // The `??` fallback covers a pre-column DTO only.
-    liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    liquidNetWorth,
     cash,
     invested:       investments + crypto,
-    composition:    { cash, investments, crypto, real, liabilities },
+    composition:    { cash, investments, crypto, real, liabilities, liquidDebt: cash - liquidNetWorth, liquidDefinitionChange: 0 },
   };
 }
 
@@ -224,7 +243,7 @@ const EMPTY_STATE: WealthState = {
   found: false, date: null, isEstimated: false,
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
   cash: 0, invested: 0,
-  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
+  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, liquidDebt: 0, liquidDefinitionChange: 0 },
 };
 
 /** A snapshot → chart point (every metric series + the estimated flag). */
@@ -335,6 +354,13 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   let drivers: WealthDriver[] | null = null;
   if (asOfState.found && compareState?.found) {
     const c = compareState;
+    // Mortgage F1 (S2 B1) — a window crossing the definition change from an
+    // old-basis row: that part is its own driver, and liquidDebt's delta is
+    // restated so the mortgage is never reported as liquid debt paid down.
+    const definitionChange = liquidNetWorthDefinitionChange(
+      { date: c.date!, cash: c.composition.cash, savings: 0, debt: c.totalLiabilities, netLiquid: c.liquidNetWorth },
+      { date: asOfState.date!, cash: asOfState.composition.cash, savings: 0, debt: asOfState.totalLiabilities, netLiquid: asOfState.liquidNetWorth },
+    );
     deltas = {
       netWorth:         delta(asOfState.netWorth, c.netWorth),
       totalAssets:      delta(asOfState.totalAssets, c.totalAssets),
@@ -348,6 +374,8 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
         crypto:      asOfState.composition.crypto      - c.composition.crypto,
         real:        asOfState.composition.real        - c.composition.real,
         liabilities: asOfState.composition.liabilities - c.composition.liabilities,
+        liquidDebt:  asOfState.composition.liquidDebt  - c.composition.liquidDebt + definitionChange,
+        liquidDefinitionChange: definitionChange,
       },
     };
     drivers = (Object.keys(WEALTH_CATEGORY_LABELS) as (keyof WealthComposition)[])
