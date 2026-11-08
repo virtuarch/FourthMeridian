@@ -27,6 +27,8 @@ export interface AiShellProps {
  * The shell reserves the same navigation footprint as DashboardChrome.
  * `title` / `contextPrefix` / `headerExtra` / `side` let another conversation
  * surface reuse the shell; their defaults render Personal Space AI unchanged.
+ * With `side`, the reading region and the dock form one column beside it, so
+ * the composer keeps the message column's width and centre.
  */
 export function AiShell({
   mode, controls, children, composer, lead, aside, contextLabel,
@@ -58,6 +60,17 @@ export function AiShell({
     </div>
   );
 
+  const dock = (
+    <div data-ai-dock={mode} className="shrink-0 relative pt-1">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -top-8 h-8"
+        style={{ background: "linear-gradient(to top, var(--bg-base), transparent)" }}
+      />
+      {composer}
+    </div>
+  );
+
   return (
     <div
       ref={shellRef}
@@ -84,18 +97,16 @@ export function AiShell({
       {side ? (
         <div className="flex flex-1 min-h-0 min-w-0">
           {side}
-          {reading}
+          {/* The reading region and the dock share one column, so the composer
+              centres on the message column, not on the full shell width. */}
+          <div data-ai-column className="flex flex-1 min-h-0 min-w-0 flex-col">
+            {reading}
+            {dock}
+          </div>
         </div>
       ) : reading}
-
-      <div data-ai-dock={mode} className="shrink-0 relative pt-1">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 -top-8 h-8"
-          style={{ background: "linear-gradient(to top, var(--bg-base), transparent)" }}
-        />
-        {composer}
-      </div>
+      {/* Kept as the third child without a side: Personal's tree (and its useId ids) is unchanged. */}
+      {side ? null : dock}
     </div>
   );
 }

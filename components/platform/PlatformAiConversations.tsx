@@ -314,6 +314,52 @@ export interface ComposerProps {
   onSubmit: () => void;
   disabled: boolean;
   busy: boolean;
+  /**
+   * How the OD-5 notice shows (parity PR5, S2 ruling). "full": the whole text,
+   * always visible (a new conversation, before the first send). "toggle": an
+   * ongoing conversation — below `sm` a "Privacy & retention" disclosure button
+   * reveals it inline; at `sm` and up it is shown inline. Never a scroll box.
+   */
+  noticeMode?: "full" | "toggle" | "log";
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
+}
+
+/** The OD-5 disclosure region id (aria-controls of the "Privacy & retention" button). */
+export const PLATFORM_AI_NOTICE_REGION_ID = "platform-ai-notice";
+
+/** Viewports narrower than this put the new-conversation OD-5 notice in the reading region (S2, option b). */
+export const PLATFORM_AI_NOTICE_IN_LOG_QUERY = "(max-width: 339.98px)";
+
+/**
+ * The OD-5 notice region: the ONE element holding the full owner-approved text
+ * (#platform-ai-conversations-disclosure, the aria-describedby target). "closed"
+ * hides it below `sm` only (CSS); the text stays in the DOM.
+ */
+export function Od5Notice({ state }: { state: "full" | "open" | "closed" | "log" }) {
+  return (
+    <div id={PLATFORM_AI_NOTICE_REGION_ID} data-platform-ai-notice={state}
+      className={state === "closed" ? "min-w-0 max-sm:hidden" : "min-w-0"}>
+      {/* Secondary-text token: the muted token measured 4.30:1 on the dark base (below WCAG AA 4.5:1). */}
+      <p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" className="min-w-0 break-words text-[var(--text-secondary)]">
+        {PLATFORM_AI_CONVERSATIONS_DISCLOSURE}
+      </p>
+    </div>
+  );
+}
+
+/** True below 340 px (client only; the server render assumes wider). */
+export function useNoticeInLog(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia(PLATFORM_AI_NOTICE_IN_LOG_QUERY) : null;
+    if (!mq) return;
+    const sync = () => setNarrow(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return narrow;
 }
 
 /** While a send is in flight the send button shows, disabled. There is NO Stop (S2: an abort would not cancel the server turn). */
@@ -325,7 +371,12 @@ const BUSY_SEND_CLASS = "w-11 h-11 rounded-full flex items-center justify-center
  * `platform-ai-question` id, 500 characters, the privacy hint and the OD-5
  * line tied by aria-describedby — with a character counter beneath.
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }: ComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, noticeMode = "full", noticeOpen = false, onNotice }: ComposerProps) {
+  const toggle = noticeMode === "toggle";
+  const counter = <span data-platform-ai-counter="" className="ml-auto shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>;
+  // The full OD-5 text is always in the DOM (aria-describedby target): here, or — in
+  // "log" mode — in the reading region above the starters. Never in a scroll box here.
+  const notice = <Od5Notice state={toggle ? (noticeOpen ? "open" : "closed") : "full"} />;
   return (
     <ComposerFrame
       value={value}
@@ -334,7 +385,7 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }
       label="Ask Platform AI"
       inputId="platform-ai-question"
       maxLength={PLATFORM_AI_COMPOSER_MAX}
-      placeholder="Ask about jobs, providers, costs, incidents or customers"
+      placeholder="Ask about the platform…"
       describedBy="platform-ai-privacy-hint platform-ai-conversations-disclosure"
       disabled={disabled}
       trailing={busy && !disabled ? (
@@ -343,16 +394,29 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }
         </button>
       ) : undefined}
       footer={
-        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col gap-0.5 px-1 text-[11px] text-[var(--text-muted)]">
+        <div data-platform-ai-composer-footer="" className="mt-1.5 flex min-w-0 flex-col gap-0.5 px-1 text-[11px] leading-[1.3] text-[var(--text-muted)]">
           <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="min-w-0 break-words text-[var(--text-secondary)]">
             {PLATFORM_AI_PRIVACY_HINT}
           </p>
-          <div className="flex min-w-0 items-start justify-between gap-3">
-            <p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" className="min-w-0 break-words">
-              {PLATFORM_AI_CONVERSATIONS_DISCLOSURE}
-            </p>
-            <span data-platform-ai-counter="" className="shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>
-          </div>
+          {toggle ? (
+            <>
+              <div className="flex min-w-0 items-center gap-3">
+                <button type="button" data-platform-ai-notice-toggle="" aria-expanded={noticeOpen} aria-controls={PLATFORM_AI_NOTICE_REGION_ID}
+                  onClick={() => onNotice?.(!noticeOpen)}
+                  className="-my-1 inline-flex min-h-7 shrink-0 items-center rounded px-0.5 text-[11px] font-medium text-[var(--text-secondary)] underline underline-offset-2 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)] sm:hidden">
+                  Privacy &amp; retention
+                </button>
+                {counter}
+              </div>
+              {notice}
+            </>
+          ) : (
+            <>
+              {/* Full width: the notice wraps onto fewer lines than beside the counter. */}
+              {noticeMode === "log" ? null : notice}
+              <div className="flex min-w-0">{counter}</div>
+            </>
+          )}
         </div>
       }
     />
@@ -391,6 +455,11 @@ export interface PlatformAiConversationsViewProps {
   onCancelDelete: () => void;
   onSheet: (open: boolean) => void;
   onRail: (collapsed: boolean) => void;
+  /** Ongoing conversation: the "Privacy & retention" disclosure (below sm). */
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
+  /** Below 340 px: the new-conversation notice sits in the reading region, above the starters (S2 option b). */
+  noticeInLog?: boolean;
 }
 
 /** Header action: the same quiet "New chat" control Personal Space AI shows. */
@@ -451,8 +520,16 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
       {PLATFORM_AI_STARTER_PROMPTS.map((q) => <SuggestedPrompt key={q} label={q} onSelect={() => p.onStarter(q)} />)}
     </div>
   );
+  // Below 340 px a new conversation shows the full OD-5 notice at the TOP of the reading
+  // region (first thing seen; the empty state never auto-scrolls), not in the footer.
+  const noticeInLog = !conversationMode && p.noticeInLog === true;
   const lead = (
     <div data-platform-ai-empty="" className="flex min-w-0 flex-col items-center gap-2 text-center">
+      {noticeInLog ? (
+        <div data-platform-ai-notice-lead="" className="mb-3 w-full min-w-0 text-left text-[11px] leading-[1.3] text-[var(--text-secondary)]">
+          <Od5Notice state="log" />
+        </div>
+      ) : null}
       <h2 className="text-xl font-semibold text-[var(--text-primary)]">{PLATFORM_AI_STARTER_HEADLINE}</h2>
       {areaNotice}
     </div>
@@ -480,7 +557,8 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {atLimit ? (
             <p data-platform-ai-limit="" role="status" className="mx-auto mb-2 w-full min-w-0 max-w-3xl break-words rounded-xl border border-[var(--border-hairline)] p-3 text-sm text-[var(--text-secondary)]">{CONVERSATION_LIMIT_COPY}</p>
           ) : null}
-          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading} />
+          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
+            noticeMode={conversationMode ? "toggle" : noticeInLog ? "log" : "full"} noticeOpen={p.noticeOpen} onNotice={p.onNotice} />
         </>
       )}
     </>
@@ -589,6 +667,8 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
   const [problem, setProblem] = useState<SendProblem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const noticeInLog = useNoticeInLog();
   const [confirmDelete, setConfirmDelete] = useState<ClientConversation | null>(null);
   const [deleting, setDeleting] = useState(false);
   /** The latest selection request: a slower, older read never overwrites a newer choice. */
@@ -756,6 +836,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
       onCancelDelete={() => { if (!deleting) setConfirmDelete(null); }}
       onSheet={setSheetOpen}
       onRail={(v) => { setRailCollapsed(v); writeRailCollapsed(v); }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen} noticeInLog={noticeInLog}
     />
   );
 }

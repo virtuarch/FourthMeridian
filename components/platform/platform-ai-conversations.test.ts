@@ -42,7 +42,7 @@ import { ComposerFrame } from "@/components/ai/Composer";
 import { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
 import { isSendKey } from "@/components/ai/conversation-surface";
 import {
-  AssistantAnswer, ConversationList, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
+  AssistantAnswer, ConversationList, PLATFORM_AI_NOTICE_IN_LOG_QUERY, PLATFORM_AI_NOTICE_REGION_ID, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
   type PlatformAiConversationsViewProps,
 } from "./PlatformAiConversations";
 import {
@@ -527,6 +527,63 @@ console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answ
   check("busy: one disabled send button, never a Stop button",
     (busyComposer.match(/<button/g) ?? []).length === 1 && /<button type="submit" disabled="" aria-label="Send message" aria-busy="true"/.test(busyComposer) && !/Stop/.test(busyComposer));
   check("the counter stays beneath the box", /data-platform-ai-counter=""[^>]*>0(<!-- -->)?\/(<!-- -->)?500</.test(auto) && auto.indexOf("data-platform-ai-counter") > auto.indexOf("<textarea"), auto.match(/data-platform-ai-counter[^<]*<[^<]*/)?.[0]);
+  // Parity PR5 (S2 ruling): the OD-5 notice is never inside a scroll box. A new
+  // conversation shows it in full; an ongoing one keeps the one-line privacy hint
+  // plus a "Privacy & retention" disclosure button that reveals it inline (below sm).
+  const footerOf = (html: string) => (html.match(/<div data-platform-ai-composer-footer=""[\s\S]*$/) ?? [""])[0];
+  const od5Of = (html: string) => textOf((html.match(/data-platform-ai-conversations-disclosure=""[^>]*>([\s\S]*?)<\/p>/) ?? [])[1] ?? "");
+  const NO_SCROLL = (html: string) => !/overflow-(y-|x-)?(auto|scroll)/.test(footerOf(html));
+  check("full (default / new conversation): the whole OD-5 text, identical to the pinned constant, visible, no toggle",
+    /data-platform-ai-notice="full" class="min-w-0"/.test(auto) && od5Of(auto) === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && !/data-platform-ai-notice-toggle/.test(auto) && NO_SCROLL(auto));
+  const mk = (over: Partial<Parameters<typeof PlatformAiComposer>[0]>) =>
+    renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false, ...over }));
+  const closed = mk({ noticeMode: "toggle", noticeOpen: false });
+  const opened = mk({ noticeMode: "toggle", noticeOpen: true });
+  check("toggle, collapsed: the privacy hint stays; a 'Privacy & retention' button with aria-expanded=false / aria-controls the region",
+    /data-platform-ai-privacy-hint/.test(closed)
+    && new RegExp(`<button type="button" data-platform-ai-notice-toggle="" aria-expanded="false" aria-controls="${PLATFORM_AI_NOTICE_REGION_ID}"[^>]*>Privacy &amp; retention</button>`).test(closed));
+  check("…the full OD-5 text stays in the DOM (describedby target), hidden below sm only, never in a scroll container",
+    new RegExp(`id="${PLATFORM_AI_NOTICE_REGION_ID}" data-platform-ai-notice="closed" class="min-w-0 max-sm:hidden"`).test(closed)
+    && od5Of(closed) === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && /aria-describedby="platform-ai-privacy-hint platform-ai-conversations-disclosure"/.test(closed) && NO_SCROLL(closed) && NO_SCROLL(opened));
+  check("toggle, expanded: aria-expanded=true and the region is shown inline, text identical",
+    /data-platform-ai-notice-toggle="" aria-expanded="true"/.test(opened) && /data-platform-ai-notice="open" class="min-w-0"/.test(opened)
+    && od5Of(opened) === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE));
+  check("the counter is outside the notice region", !/data-platform-ai-notice="[^"]*"[^>]*>(?:(?!<\/div>)[\s\S])*data-platform-ai-counter/.test(closed) && /data-platform-ai-counter/.test(closed));
+  {
+    let toggled: boolean | null = null;
+    const el = PlatformAiComposer({ value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false, noticeMode: "toggle", noticeOpen: false, onNotice: (v) => { toggled = v; } }) as ReactElement;
+    const btn = elements((el.props as { footer?: unknown }).footer).find((e) => (e.props as Record<string, unknown>)["data-platform-ai-notice-toggle"] === "");
+    (btn?.props as { onClick?: () => void } | undefined)?.onClick?.();
+    check("the button toggles through onNotice", toggled === true);
+  }
+  const emptyView = view({ selected: null, conversations: [] });
+  const ongoing = view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeOpen: true });
+  // S2 option (b): below 340 px the new-conversation notice sits at the top of the
+  // reading region, above the headline and starters; the footer then has no copy of it.
+  const narrowEmpty = view({ selected: null, conversations: [], noticeInLog: true });
+  check("below 340 px (noticeInLog): the full notice is in the reading region, above the headline, exactly once",
+    /data-platform-ai-notice-lead=""[^>]*><div id="platform-ai-notice" data-platform-ai-notice="log"/.test(narrowEmpty)
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") > narrowEmpty.indexOf("data-ai-scroll")
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") < narrowEmpty.indexOf(PLATFORM_AI_STARTER_HEADLINE)
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") < narrowEmpty.indexOf("data-ai-dock")
+    && (narrowEmpty.match(/id="platform-ai-conversations-disclosure"/g) ?? []).length === 1
+    && od5Of(narrowEmpty) === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && /aria-describedby="platform-ai-privacy-hint platform-ai-conversations-disclosure"/.test(narrowEmpty)
+    && /data-platform-ai-privacy-hint/.test(narrowEmpty));
+  check("…an ongoing conversation ignores it (the toggle stays in the footer)",
+    /data-platform-ai-notice-toggle/.test(view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeInLog: true }))
+    && !/data-platform-ai-notice-lead/.test(view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeInLog: true })));
+  check("composer 'log' mode: hint + counter, no notice copy", !/data-platform-ai-notice=/.test(mk({ noticeMode: "log" })) && /data-platform-ai-counter/.test(mk({ noticeMode: "log" })));
+  check("contrast: the OD-5 text and the privacy hint use the secondary-text token (muted measured below AA; runner proves 4.5:1)",
+    /data-platform-ai-conversations-disclosure="" class="min-w-0 break-words text-\[var\(--text-secondary\)\]"/.test(auto)
+    && /data-platform-ai-privacy-hint="" class="min-w-0 break-words text-\[var\(--text-secondary\)\]"/.test(auto));
+  check("the switch is a client media query at 340 px, read in the orchestrator (the view stays pure)",
+    PLATFORM_AI_NOTICE_IN_LOG_QUERY === "(max-width: 339.98px)" && /const noticeInLog = useNoticeInLog\(\);/.test(src(COMPONENT)) && /noticeInLog=\{noticeInLog\}/.test(src(COMPONENT)));
+  check("the view: empty state ⇒ full notice; ongoing ⇒ toggle (state from props)",
+    /data-platform-ai-notice="full"/.test(emptyView) && !/data-platform-ai-notice-toggle/.test(emptyView)
+    && /data-platform-ai-notice="open"/.test(ongoing) && /data-platform-ai-notice-toggle="" aria-expanded="true"/.test(ongoing));
 
   // Empty state + starter chips.
   const empty = view({ selected: null, conversations: [] });
