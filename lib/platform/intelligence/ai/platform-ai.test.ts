@@ -50,6 +50,7 @@ import {
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
   MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS,
   labelPlaceholdersFor, renderLabel, NO_RANKED_CATEGORY, periodMismatchCount, periodCorrectionText, periodContract, quotableWindowPhrase, labelRepeatCount, windowRepeatCount, WINDOW_REPEAT_REACH, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
+  BRIEFING_DOMAINS, BRIEFING_NOT_YET_COVERED, executePlatformAiTool, briefingCoverageNote, citationEnvelopes, composePlatformAiBindings, platformAiAreasFor,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 import { neutraliseBraces, replayAnswer } from "./conversations/history";
@@ -77,7 +78,7 @@ const readers = (over: Partial<RetrievalReaders> = {}): RetrievalReaders => ({
   providerHealth: async () => ({
     checkedAt: NOW,
     providers: [
-      { key: "A", label: `Provider ${EMAIL} ${INJECT}`, execution: { verdict: "HEALTHY" }, connections: { verdict: null, tally: { active: 3, error: 0, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [`user #12 ${CUID}`] },
+      { key: "A", label: `Provider ${EMAIL} ${INJECT}`, execution: { verdict: "HEALTHY" }, connections: { verdict: null, tally: { active: 3, error: 0, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [`user #12 ${CUID}`], callsToday: 4, calls30d: 90, syncFailures: 0 },
       { key: "B", label: "B", execution: { verdict: "FAILING" }, connections: { verdict: "FAILING", tally: { active: 4, error: 3, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [INJECT] },
     ],
   }) as never,
@@ -105,6 +106,25 @@ const readers = (over: Partial<RetrievalReaders> = {}): RetrievalReaders => ({
     totals: { invocations: 58, usd: 1.45, unpricedTokens: 0 }, failures: { failed: 2, timeouts: 0, rateLimited: 0, quota: 0, total: 2 },
     pricingConfigured: true, recent: [{ correlationId: CUID, subSurface: INJECT }], checkedAt: NOW.toISOString(),
   }) as never,
+  // Operational briefing readers (2026-11-08) — identity- and injection-laden like the rest.
+  operationsOverview: async () => ({
+    checkedAt: NOW.toISOString(), worst: "DEGRADED",
+    domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key, state: key === "sources" ? "DEGRADED" : "HEALTHY", title: `${key} ${INJECT}`, headline: `user #3 ${EMAIL}`,
+      facts: key === "pipeline" ? [{ label: "Executions", value: "12" }, { label: "Failed", value: "0" }, { label: "Running now", value: "0" }] : [] })),
+    latestFailures: [{ id: CUID }],
+  }) as never,
+  attention: async () => ({
+    checkedAt: NOW.toISOString(), items: [{ id: CUID, label: INJECT }],
+    userImpact: { windowHours: 24, rows: [{ id: CUID, label: `Connection · ${EMAIL}` }], counts: { "refresh-failed": 1, "refresh-partial": 0, "ai-failure": 2, "brief-failed": 0, "needs-reauth": 1 },
+      usersAffected: { count: 2, reason: null }, sourcesAffected: 1, authorities: { checked: ["refresh-executions", "ai-failures", "brief-ops", "connection-health"], failed: [] }, floors: [] },
+  }) as never,
+  alertRuns: async () => [{ evaluatedAtISO: NOW.toISOString(), deliveryStatus: "DELIVERED", destination: EMAIL, counts: {},
+    rules: [{ id: "job-failing", kind: "job", enabled: true, live: true, firing: true, breaches: 1, severity: "warning" }, { id: INJECT, kind: "x", enabled: true, live: true, firing: false, breaches: 0, severity: null }] }] as never,
+  connectionHealth: async () => ({ total: 6, counts: { HEALTHY: 4, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 }, unhealthy: [{ id: CUID, institution: INJECT }],
+    checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy", retired: { revoked: 0, ownerInactive: 0 },
+    bySource: { PLAID: { active: 6, revoked: 0, faults: [{ healthState: "ERROR", errorCode: "NO_ACCOUNTS", count: 1 }, { healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 1 }] } } }) as never,
+  jobHealth: async () => ({ checkedAt: NOW, jobs: [{ job: "sync-banks", status: "healthy" }, { job: "evaluate-alerts", status: "overdue", lastFailureSummary: INJECT }] }) as never,
+  resourceFreshness: async () => ({ checkedAt: NOW, resources: [{ resource: "fx-rates", label: INJECT, healthState: "fresh" }] }) as never,
   ...over,
 });
 
@@ -793,8 +813,9 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
   }
   check("windowLabel: non-empty for every non-POINT_IN_TIME metric (null for point in time), consistent with days / hours, no inferred start date — every retrievable metric, window and surface",
     labelProblems.length === 0 && retrievable.every((k) => labelsSeen.has(k)), { labelProblems, missing: retrievable.filter((k) => !labelsSeen.has(k)) });
-  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days",
-    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0])), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
+  // S2 #483 R1: a qualifier may PRECEDE the day phrase ("last seen in the last 7 days"); the phrase itself is the default read's.
+  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days (optionally qualified, e.g. 'last seen …')",
+    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0]) || m.window.label === `last seen ${daysWindowLabel(m.window.days![0])}`), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
   for (const k of retrievable) {
     const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
     if (!e.unwindowedParts) continue;
@@ -1655,7 +1676,7 @@ console.log("\n5b. drill-page link candidates (S2 rules) and the metadata-only t
   check("the trace never echoes a model argument (no injected text, no unread id, no identity)",
     !/IGNORE|evil|cs-needs-help|CUSTOMER_SUCCESS/.test(traceText) && identityHits(traceText).length === 0, traceText);
   check("each refusal is still the ONE not-found shape for the model", (bad.transcript.filter((m) => (m as { role: string }).role === "tool") as { content: string }[]).every((m) => m.content === JSON.stringify(NOT_FOUND)));
-  check("traceLine: one metadata line (codes + registry ids)", traceLine(inc.result) === "steps=get_metric:MEASURED(incident-broken-now@1)+drill,find_page:OK#3 stop=ANSWERED links=1 removed=0 replaced=false claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED", traceLine(inc.result));
+  check("traceLine: one metadata line (codes + registry ids)", traceLine(inc.result) === "steps=get_metric:MEASURED(incident-broken-now@1)+drill,find_page:OK#4 stop=ANSWERED links=1 removed=0 replaced=false claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED", traceLine(inc.result));
   check("the route logs that line (and only it) per answered turn", /traceTurn: \(line\) => console\.info\(`\[platform-ai\] turn \$\{line\} \(\$\{PLATFORM_AI_ROUTE_KEY\}\)`\)/.test(src("app/api/platform/ai/ask/route.ts")));
 }
 
@@ -1741,7 +1762,8 @@ console.log("\n7. prompt injection — no write tools exist; no image exfil");
       mechanismLeakCount([{ kind: "text", text: "with a placeholder of X; Placeholders are fine?" }, { kind: "link", text: "placeholder", href: "/x" }]) === 3
         && mechanismLeakCount([{ kind: "text", text: "placeholdering placeholderX no leak" }]) === 0);
   }
-  check("the prompt stays within its word budget (≤ 520 words)", PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length <= 520, String(PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length));
+  // 2026-11-08: the operational briefing protocol (order, coverage, "today") raised the budget from 520.
+  check("the prompt stays within its word budget (≤ 780 words)", PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length <= 780, String(PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length));
 }
 
 // ── 8. identity ──────────────────────────────────────────────────────────────
@@ -1848,6 +1870,118 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
     /Measured/.test(cites) && /Unavailable/.test(cites) && /the reader failed/.test(cites) && (cites.match(/<a /g) ?? []).length === 1 && !/evil\.test/.test(cites), cites);
   check("each chip pairs the metric's label with ITS server-rendered figure (only where one was placed)",
     /Alpha<\/span><span data-platform-ai-figure="[^"]*"[^>]*>1,234<\/span>/.test(cites) && (cites.match(/data-platform-ai-figure/g) ?? []).length === 1, cites);
+}
+
+// ── 12. operational briefing (owner 2026-11-08) ──────────────────────────────
+console.log("\n12. operational briefing — multi-area binding, coverage, briefing order, the window fix");
+{
+  // An operator holding Platform Ops AND Customer Success: one binding per area, each from its own guard result.
+  const both = composePlatformAiBindings([{ area: "CUSTOMER_SUCCESS", binding: csBinding(CS) }, { area: "PLATFORM_OPS", binding: opsBinding(OPS) }])!;
+  const opsOnly = composePlatformAiBindings([{ area: "PLATFORM_OPS", binding: opsBinding(OPS) }])!;
+  check("platformAiAreasFor: every held area, registry order; platformAiAreaFor stays the first (the gate / conversation area)",
+    platformAiAreasFor([{ area: "MERCHANT_OPS" }, { area: "CUSTOMER_SUCCESS" }, { area: "PLATFORM_OPS" }, { area: "nope" }]).join() === "PLATFORM_OPS,CUSTOMER_SUCCESS,MERCHANT_OPS"
+    && platformAiAreaFor([{ area: "MERCHANT_OPS" }, { area: "PLATFORM_OPS" }]) === "PLATFORM_OPS" && platformAiAreasFor([]).length === 0);
+  check("compose: no area ⇒ null; registry order whatever the input order; the label names every bound area",
+    composePlatformAiBindings([]) === null && both.surfaceLabel === "Platform Operations · Customer Success");
+  const keys = both.listMetrics({}).map(metricKey);
+  check("multi-area: list_metrics spans both areas (Ops briefing + CS-only metrics), each key once",
+    keys.includes("ops-overall-posture@1") && keys.includes("cs-needs-help@1") && new Set(keys).size === keys.length);
+  const ev = () => ({ envelopes: [] as MetricEnvelope[], hrefs: new Set<string>(), definitions: [], labels: new Set<string>(), trace: [], pages: new Map() });
+  const csRead = await executePlatformAiTool("get_metric", JSON.stringify({ id: "cs-needs-help" }), both, ev(), []) as { status: string; area: string; tier: string; surface: string };
+  check("multi-area: a CS-only metric is read on the CS surface at the CS tier, named by its area", csRead.status === "MEASURED" && csRead.area === "Customer Success" && csRead.surface === "CUSTOMER_SUCCESS", csRead);
+  const incRead = await executePlatformAiTool("get_metric", JSON.stringify({ id: "incident-broken-now" }), both, ev(), []) as { area: string; tier: string };
+  check("multi-area: a metric both areas serve is read through the FIRST area (Platform Ops) at its OPS tier — never raised by the CS grant",
+    incRead.area === "Platform Operations" && incRead.tier === "OPS", incRead);
+  const revoked = await executePlatformAiTool("get_metric", JSON.stringify({ id: "cs-needs-help" }), opsOnly, ev(), []);
+  check("revoked area: an area the route did not bind (revoked / refused) contributes nothing — its metric is NOT_FOUND, its pages absent",
+    JSON.stringify(revoked) === JSON.stringify(NOT_FOUND) && !opsOnly.listPages({}).some((t) => t.area === "CUSTOMER_SUCCESS") && opsOnly.describeMetric("cs-needs-help") === null);
+  check("multi-area: pages resolve through their own area", both.resolvePage("CUSTOMER_SUCCESS:platform-incidents:open")?.href === "/dashboard/platform/CUSTOMER_SUCCESS?workspace=platform-incidents&view=open"
+    && both.resolvePage("PLATFORM_OPS:platform-incidents:open")?.href === "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents");
+
+  // The routes build one binding per held area, each behind ITS OWN fresh guard (static).
+  const route = code(src("app/api/platform/ai/ask/route.ts"));
+  check("ask route: every OTHER held area is fresh-guarded on its own and bound from that guard (revoked ⇒ skipped), then composed",
+    /for \(const other of platformAiAreasFor\(rows\)\)/.test(route) && /await requireFreshPlatformAccess\(other, "READ", \{ probe: true \}\)/.test(route)
+    && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route) && /bindingFor\(otherAuth\.grant\.area,/.test(route) && /composePlatformAiBindings\(/.test(route));
+  const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
+  check("conversations stay single-area (S2 #483 B1(b)): the access helper binds only the conversation's own area — no composition",
+    /if \(err \|\| !auth\.grant \|\| auth\.grant\.area !== area \|\| auth\.user\.id !== operatorId\) return null;/.test(access)
+    && !/composePlatformAiBindings|platformAiAreasFor/.test(access));
+
+  // Prompt: the briefing protocol, in the owner's order.
+  const order = ["(1) overall health", "(2) customer-impacting failures", "(3) incidents", "(4) sync and connection problems", "(5) job and provider reliability", "(6) costs or unusual activity, ONLY if", "(7) at most three recommended next actions"];
+  check("prompt: the briefing order is overall health → customer impact → incidents → sync → jobs/providers → costs (only if anomalous or asked) → ≤ 3 next actions",
+    order.every((o, i) => PLATFORM_AI_SYSTEM_PROMPT.indexOf(o) > -1 && (i === 0 || PLATFORM_AI_SYSTEM_PROMPT.indexOf(o) > PLATFORM_AI_SYSTEM_PROMPT.indexOf(order[i - 1]))));
+  check("prompt: coverage gaps are stated, never implied fine; the read-only, no-digit, no-identity rules stay; 180 words for a briefing",
+    /never imply that something you could not read is fine/.test(PLATFORM_AI_SYSTEM_PROMPT) && /READ-ONLY/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /no customer identities/.test(PLATFORM_AI_SYSTEM_PROMPT) && /180 words for a briefing/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && !/^For cost questions/m.test(PLATFORM_AI_SYSTEM_PROMPT));
+  check("briefing domains cover the owner's list; security / email / MFA are disclosed as not yet covered",
+    BRIEFING_DOMAINS.map((d) => d.key).join() === "health,impact,incidents,sync,reliability,costs" && BRIEFING_DOMAINS.every((d) => d.metrics.every((k) => METRICS.some((m) => metricKey(m) === k)))
+    && /security/.test(BRIEFING_NOT_YET_COVERED.join()) && /email/.test(BRIEFING_NOT_YET_COVERED.join()) && /MFA/.test(BRIEFING_NOT_YET_COVERED.join()));
+
+  // Window fix: the schema lists the windows; a refused window names the ones to use; a corrected read supersedes the refusal.
+  const gm = (platformAiToolSchemas([]) as { function: { name: string; parameters: { properties: Record<string, { enum?: number[] }> } } }[]).find((x) => x.function.name === "get_metric")!;
+  check("get_metric schema: window is an enum of the declared day windows (1 / 7 / 30 / 90)", JSON.stringify(gm.function.parameters.properties.window.enum) === "[1,7,30,90]", gm.function.parameters.properties.window);
+  const today = await run("How are we looking today?", opsBinding(OPS), script([
+    { calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 1 } }] },
+    { calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 7 } }] },
+    { content: "Estimated AI cost is {{m:economics-ai-cost@1|part=spendUsd|window=7}}." },
+  ]));
+  const refusal = JSON.parse((today.transcript.filter((m) => (m as { role: string }).role === "tool")[0] as { content: string }).content);
+  check("window=1 on a 7 / 30 / 90-day metric: still refused (S2 option (a)), and the result names the windows to read with",
+    refusal.unavailableCode === "WINDOW_NOT_OFFERED" && JSON.stringify(refusal.windows) === "[30,7,90]" && typeof refusal.retry === "string", refusal);
+  check("…the corrected read SUPERSEDES the refusal: one ESTIMATED citation, no 'unavailable' note, no 'is unavailable' tail, the figure states its 7-day window",
+    today.result.citations.length === 1 && today.result.citations[0].status === "ESTIMATED" && !today.result.notes.some((n) => /unavailable/.test(n))
+    && !/unavailable/.test(segmentsText(today.result.answer)) && /last 7 days/.test(segmentsText(today.result.answer)), { a: segmentsText(today.result.answer), n: today.result.notes });
+  const uncorrected = await run("x", opsBinding(OPS), script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 1 } }] }, { content: "Nothing to report." }]));
+  check("…an UNCORRECTED refusal is still cited and SAID as unavailable", uncorrected.result.citations[0]?.status === "UNAVAILABLE" && /unavailable/.test(segmentsText(uncorrected.result.answer)));
+  check("citationEnvelopes: only a WINDOW_NOT_OFFERED refusal with a readable read of the same metric is dropped",
+    citationEnvelopes([{ metric: "a@1", status: "UNAVAILABLE", unavailableCode: "WINDOW_NOT_OFFERED" }, { metric: "a@1", status: "ESTIMATED", unavailableCode: null }, { metric: "b@1", status: "UNAVAILABLE", unavailableCode: "WINDOW_NOT_OFFERED" }] as never).map((e) => `${e.metric}:${e.status}`).join() === "a@1:ESTIMATED,b@1:UNAVAILABLE");
+
+  // The scripted briefing: "How are we looking today?" reads posture → impact → incidents → connections → jobs BEFORE any cost metric.
+  const briefing = script([
+    { calls: [
+      { name: "get_metric", args: { id: "ops-overall-posture" } }, { name: "get_metric", args: { id: "alerts-firing-now" } },
+      { name: "get_metric", args: { id: "customer-impact-24h" } }, { name: "get_metric", args: { id: "incident-broken-now" } },
+      { name: "get_metric", args: { id: "incident-needs-verification" } }, { name: "get_metric", args: { id: "connection-health-summary" } },
+      { name: "get_metric", args: { id: "scheduled-job-health" } },
+    ] },
+    { calls: [{ name: "find_page", args: { query: "connections pipeline" } }] },
+    { content: "Mostly healthy: {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections). {{m:customer-impact-24h@1|part=customersAffected}} customers saw a failure {{m:customer-impact-24h@1|part=refreshFailed}} refresh failures. "
+      + "Incidents: {{m:incident-broken-now@1}} broken now, {{m:incident-needs-verification@1}} need verification. Connections: {{m:connection-health-summary@1|part=reconnectNeeded}} need the customer to reconnect. "
+      + "Jobs: {{m:scheduled-job-health@1|part=overdue}} overdue (evaluate-alerts). Next: review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline)." },
+  ]);
+  const b = await run("How are we looking today?", both, briefing);
+  const reads = b.result.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]);
+  const firstCost = reads.findIndex((k) => /^economics-|^ai-/.test(k));
+  check("briefing turn: posture, customer impact, incidents, connections and jobs are read, none after a cost metric (no cost read at all here)",
+    ["ops-overall-posture@1", "customer-impact-24h@1", "incident-broken-now@1", "connection-health-summary@1", "scheduled-job-health@1"].every((k) => reads.includes(k)) && firstCost === -1, reads);
+  check("briefing turn: the system message carries the server's BRIEFING COVERAGE (this operator's readable briefing metrics + not yet covered)",
+    (() => { const sys = (briefing.seen[0].messages[0] as { content: string }).content; return /BRIEFING COVERAGE/.test(sys) && /ops-overall-posture@1/.test(sys) && /cs-needs-help@1/.test(sys) && /Not yet covered by Platform AI: security/.test(sys); })());
+  check("briefing turn: every figure resolved (server-rendered), the answer kept, one link, areas cited",
+    !b.result.grounding.replaced && b.result.grounding.verdict === "RESOLVED" && b.result.answer.filter((x) => x.kind === "link").length === 1
+    && b.result.citations.every((c) => c.area === "Platform Operations"), { v: b.result.grounding, a: segmentsText(b.result.answer) });
+  const cov = Object.fromEntries((b.result.coverage ?? []).map((d) => [d.key, d.status]));
+  check("briefing coverage (server): read domains, and costs / reliability-providers 'not read' — never claimed",
+    cov.health === "read" && cov.impact === "read" && cov.incidents === "read" && cov.sync === "read" && cov.reliability === "read" && cov.costs === "not_read", cov);
+  check("briefing coverage note: code-written, names the gaps and the not-yet-covered domains",
+    b.result.notes.some((n) => /^Coverage: no data in this answer for Costs and unusual activity \(not checked in this answer\); not yet covered by Platform AI: security/.test(n)), b.result.notes);
+  const opsCov = await run("How are we looking today?", opsOnly, script([{ calls: [{ name: "get_metric", args: { id: "ops-overall-posture" } }, { name: "get_metric", args: { id: "customer-impact-24h" } }] }, { content: "Fine." }]));
+  check("an Ops-only operator: the CS-only metric is listed as not available, and the domain read through Ops stays read",
+    (opsCov.result.coverage ?? []).find((d) => d.key === "impact")?.status === "read" && !/cs-needs-help@1/.test((opsCov.transcript[0] as { content: string }).content));
+  // S2 #483 R2: refresh-pipeline's window is the server's "since yesterday (UTC)", verbatim — never "the last 24 h".
+  const rp = await executePlatformAiTool("get_metric", JSON.stringify({ id: "refresh-pipeline" }), opsBinding(OPS), ev(), []) as { window_phrase: string; window: { label: string } };
+  const rpTurn = await run("x", opsBinding(OPS), script([{ calls: [{ name: "get_metric", args: { id: "refresh-pipeline" } }] }, { content: "Refresh failures: {{m:refresh-pipeline@1|part=failed}}." }]));
+  check("R2: refresh-pipeline's window_phrase / label is the server's 'since yesterday (UTC)' and the rendered figure carries it verbatim",
+    rp.window_phrase === "since yesterday (UTC)" && rp.window.label === "since yesterday (UTC)" && segmentsText(rpTurn.result.answer).includes("since yesterday (UTC)") && !/24/.test(segmentsText(rpTurn.result.answer)),
+    { p: rp.window_phrase, a: segmentsText(rpTurn.result.answer) });
+  const rpDef = METRICS.find((m) => m.id === "refresh-pipeline")!;
+  const texts = [PLATFORM_AI_SYSTEM_PROMPT, JSON.stringify(platformAiToolSchemas([])), rpDef.label, rpDef.summary, rpDef.window.description, rpDef.window.label ?? ""];
+  check("R2: neither the prompt, the tool descriptions nor refresh-pipeline's definition describes the pipeline window as the last 24 h",
+    texts.every((t) => !/pipeline[^.\n]*\b24\s*(?:h\b|hours?)|\b24\s*(?:h\b|hours?)[^.\n]*pipeline/i.test(t)) && ![rpDef.label, rpDef.summary, rpDef.window.label ?? ""].some((t) => /24/.test(t)));
+  check("a narrow question (one domain) gets no coverage note", briefingCoverageNote([{ label: "A", status: "read" }, { label: "B", status: "not_read" }]) === null);
+  check("trace + answer carry no identity from the briefing readers' payloads", identityHits(JSON.stringify([b.result.answer, b.result.citations, b.result.trace, b.result.notes])).length === 0);
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

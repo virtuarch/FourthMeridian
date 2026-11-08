@@ -91,6 +91,15 @@ import type { EconomicsFigure, EconomicsSnapshot, TrendWindow } from "@/lib/plat
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import { aiCallStats, aiCostPerCall } from "@/lib/platform/ai/call-stats";
 import { NO_EVALUABLE_PROVIDER } from "@/lib/platform/verdicts/provider-outcome";
+import type { OperationsOverview } from "@/lib/platform/ops/overview";
+import type { DomainState, DomainStatus } from "@/lib/platform/ops/overview-core";
+import type { AttentionResponse } from "@/lib/platform/ops/attention";
+import type { AlertRunSummary } from "@/lib/alerts/evaluate";
+import { firingNow, latestAlertEvaluation, notEvaluableNow, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
+import type { ConnectionHealthResult } from "@/lib/connections/health";
+import { isUpdateModeFixable } from "@/lib/plaid/reauth-codes";
+import type { ScheduledJobsHealth } from "@/lib/jobs/health";
+import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -246,11 +255,35 @@ export interface MetricEnvelope {
    * still "estimated" (a lower bound of an estimate).
    */
   basis: { kind: "estimated" | "measured"; definition: `${string}@${number}`; compute: string; reader: string; answerClass: MetricDefinition["answerClass"] };
+  /**
+   * NAMED SUBJECTS (2026-11-08, Platform AI briefing): which subjects of an aggregate are
+   * not healthy — a closed state word beside a REGISTRY / MODULE name (an overview domain's
+   * server title, a scheduled job's registry name, an alert rule id, a freshness resource id).
+   * Never a customer, connection, institution, execution or incident: every label passes
+   * isSubjectLabel (a server label or a kebab-case registry slug — no digit, no identifier
+   * shape), at most MAX_SUBJECTS. Absent / null = the metric names no subjects.
+   */
+  subjects?: readonly MetricSubject[] | null;
   /** null when the drill route's own gate is not this surface (the caller could not open it here) — see drillReason. */
   drill: MetricDrillDescriptor | null;
   /** Why `drill` is null; null when a drill is given. */
   drillReason: string | null;
 }
+
+/** The closed state vocabulary a named subject may carry. */
+export const SUBJECT_STATES = [
+  "failed", "degraded", "stale", "unknown",
+  "firing", "firing-critical", "not-evaluable", "source-unavailable",
+  "overdue", "failing", "dead", "never-ran", "skipped", "running",
+  "empty",
+] as const;
+export type SubjectState = (typeof SUBJECT_STATES)[number];
+export interface MetricSubject { label: string; state: SubjectState }
+export const MAX_SUBJECTS = 12;
+/** A kebab-case registry slug ("sync-banks", "resource-stale"): letters and hyphens, at least one hyphen, no digit. */
+const SUBJECT_SLUG = /^[a-z]{2,20}(?:-[a-z]{2,20}){1,4}$/;
+/** True for a subject label the envelope may carry: a server label (SERVER_LABEL) or a registry slug. */
+export const isSubjectLabel = (s: unknown): s is string => typeof s === "string" && (SERVER_LABEL.test(s) || SUBJECT_SLUG.test(s));
 
 // ── Readers (bound to the real functions in ./retrieve.ts) ──────────────────
 
@@ -271,6 +304,12 @@ export interface RetrievalReaders {
   accountsWithLiveSession(now: Date): Promise<number>;
   economicsSnapshot(nowMs: number): Promise<EconomicsSnapshot>;
   aiOperations(window: "7d" | "30d"): Promise<AiOperations>;
+  operationsOverview(): Promise<Pick<OperationsOverview, "checkedAt" | "domains" | "worst">>;
+  attention(token: OpsToken): Promise<Pick<AttentionResponse, "checkedAt" | "userImpact">>;
+  alertRuns(): Promise<readonly AlertRunSummary[]>;
+  connectionHealth(): Promise<ConnectionHealthResult>;
+  jobHealth(): Promise<Pick<ScheduledJobsHealth, "checkedAt" | "jobs">>;
+  resourceFreshness(): Promise<Pick<ResourceFreshnessResult, "checkedAt" | "resources">>;
 }
 export type ReaderKey = keyof RetrievalReaders;
 
@@ -287,6 +326,12 @@ export const READER_SYMBOL: Readonly<Record<ReaderKey, string>> = {
   accountsWithLiveSession: "countAccountsWithLiveSession",
   economicsSnapshot: "getEconomicsSnapshot",
   aiOperations: "getAiOperations",
+  operationsOverview: "getOperationsOverview",
+  attention: "getAttention",
+  alertRuns: "loadRecentAlertRuns",
+  connectionHealth: "getConnectionHealth",
+  jobHealth: "checkScheduledJobHealth",
+  resourceFreshness: "checkResourceFreshness",
 };
 
 // ── The per-metric table ─────────────────────────────────────────────────────
@@ -303,6 +348,13 @@ interface Projected {
   hours?: number | null;
   /** An EXPLICIT window start the reader itself holds (ISO date, YYYY-MM-DD) — never inferred. */
   start?: string | null;
+  /**
+   * A server phrase that REPLACES the generic day / hour label (S2 #483 R1: "last seen in the last
+   * N days"); built only from module text and the read's own days — never payload text.
+   */
+  windowLabel?: string;
+  /** Named subjects (MetricSubject) — registry / module names only; envelope() drops any label that is not one. */
+  subjects?: readonly MetricSubject[];
 }
 
 interface ReadInput {
@@ -349,6 +401,24 @@ function fromFigure(f: EconomicsFigure, asOf: string, days: number | null = null
 }
 
 const TREND_OF: Readonly<Record<number, TrendWindow>> = { 7: "7d", 30: "30d", 90: "90d" };
+
+/** The overview domains' SERVER labels (keyed by the closed DomainStatus key — never the payload's title). */
+const DOMAIN_LABEL: Readonly<Record<DomainStatus["key"], string>> = {
+  pipeline: "Refresh pipeline", sources: "Connections", jobs: "Scheduled jobs", ai: "AI", brief: "Daily Brief", plaid: "Plaid",
+};
+const DOMAIN_PART: Readonly<Record<DomainState, "failed" | "degraded" | "stale" | "unknown" | "healthy">> = {
+  FAILED: "failed", DEGRADED: "degraded", STALE: "stale", UNKNOWN: "unknown", HEALTHY: "healthy",
+};
+const DOMAIN_SUBJECT: Readonly<Record<DomainState, SubjectState>> = { FAILED: "failed", DEGRADED: "degraded", STALE: "stale", UNKNOWN: "unknown", HEALTHY: "unknown" };
+const JOB_PART: Readonly<Record<string, "healthy" | "running" | "overdue" | "failing" | "dead" | "neverRan" | "skipped" | "notScheduled">> = {
+  healthy: "healthy", running: "running", overdue: "overdue", failing: "failing", dead: "dead", "never-ran": "neverRan", skipped: "skipped", "not-scheduled": "notScheduled",
+};
+const JOB_SUBJECT: Readonly<Record<string, SubjectState | null>> = {
+  healthy: null, running: null, "not-scheduled": null, overdue: "overdue", failing: "failing", dead: "dead", "never-ran": "never-ran", skipped: "skipped",
+};
+const FRESHNESS_PART: Readonly<Record<string, "fresh" | "stale" | "empty" | "idle" | "notRefreshed">> = {
+  fresh: "fresh", stale: "stale", empty: "empty", idle: "idle", "not-refreshed": "notRefreshed",
+};
 
 /**
  * EVERY registered metric appears here exactly once (pinned): retrievable, or
@@ -620,6 +690,196 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       return { value: await readers.accountsWithLiveSession(now), asOf: now.toISOString() };
     },
   },
+
+  // ── operations (Platform AI operational briefing, 2026-11-08) ──────────────
+  "ops-overall-posture@1": {
+    // The Operations lead's status header: overallWord(o.worst) and each domain's state (operations-model.ts).
+    kind: "RETRIEVABLE", reader: "operationsOverview", unit: "counts", windows: [],
+    valueUnits: { failed: "count", degraded: "count", stale: "count", unknown: "count", healthy: "count" },
+    async read({ readers }) {
+      const o = await readers.operationsOverview();
+      const v = { failed: 0, degraded: 0, stale: 0, unknown: 0, healthy: 0 };
+      for (const d of o.domains) v[DOMAIN_PART[d.state]]++;
+      const subjects = o.domains.filter((d) => d.state !== "HEALTHY").map((d) => ({ label: DOMAIN_LABEL[d.key], state: DOMAIN_SUBJECT[d.state] }));
+      if (o.domains.length === 0) return { value: null, status: "UNAVAILABLE", reason: "the overview returned no domain verdicts", asOf: o.checkedAt };
+      return v.unknown > 0
+        ? { value: v, status: "PARTIAL", reason: `${plural(v.unknown, "domain")} had nothing to judge (unknown, never counted healthy)`, missing: subjects.filter((x) => x.state === "unknown").map((x) => `${x.label}: unknown`), asOf: o.checkedAt, subjects }
+        : { value: v, asOf: o.checkedAt, subjects };
+    },
+  },
+  "customer-impact-24h@1": {
+    // The Attention block's customer-impact panel: counts per kind and usersAffectedReading(u) (attention-view.ts).
+    kind: "RETRIEVABLE", reader: "attention", unit: "counts", windows: [], incidentScoped: "ANY",
+    valueUnits: { refreshFailed: "count", refreshPartial: "count", aiFailures: "count", briefFailed: "count", needsReauth: "count", customersAffected: "count", sourcesAffected: "count" },
+    async read({ readers, incident }) {
+      const a = await readers.attention(incident as OpsToken);
+      const u = a.userImpact;
+      const value = {
+        refreshFailed: u.counts["refresh-failed"], refreshPartial: u.counts["refresh-partial"], aiFailures: u.counts["ai-failure"],
+        briefFailed: u.counts["brief-failed"], needsReauth: u.counts["needs-reauth"],
+        customersAffected: u.usersAffected.count, sourcesAffected: u.sourcesAffected,
+      };
+      const missing = [
+        ...u.authorities.failed.map((f) => `impact reader unavailable: ${f}`),
+        ...(u.usersAffected.count === null ? ["customers affected: no reader exposed a customer reference"] : u.usersAffected.reason ? ["customers affected is a floor (some rows carry no customer reference)"] : []),
+        ...(u.floors.length > 0 ? [`${plural(u.floors.length, "impact reader")} returned a floor`] : []),
+      ];
+      const base = { asOf: a.checkedAt, hours: u.windowHours };
+      if (u.authorities.checked.length === 0) return { ...base, value: null, status: "UNAVAILABLE", reason: "no customer-impact reader could be read", missing };
+      return missing.length > 0
+        ? { ...base, value, status: "PARTIAL", reason: "a floor — not every impact fact could be read or attributed", missing }
+        : { ...base, value };
+    },
+  },
+  "incident-needs-verification@1": {
+    // The Incidents "Needs verification" view's list total (incidentTotalText, the same search preset).
+    kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [], incidentScoped: "ANY",
+    valueUnits: "count",
+    async read({ readers, incident, now }) {
+      const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "needs-verification" }, { now });
+      return r.truncated
+        ? { value: r.total, status: "PARTIAL", reason: "a floor — the read was capped", missing: [`only ${plural(r.scanned, "row")} scanned`], asOf: now.toISOString() }
+        : { value: r.total, asOf: now.toISOString() };
+    },
+  },
+  "incident-resolved-window@1": {
+    // The Incidents "History" view's list total over the window's UTC days (from / to on lastSeenAt).
+    // S2 #483 R1 (fallback): the search contract filters on LAST SEEN, not resolvedAt, so the window
+    // is LABELLED as such ("last seen in the last N days") — never "resolved in the last N days".
+    kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [7, 1, 30], incidentScoped: "ANY",
+    valueUnits: "count",
+    async read({ readers, incident, now, window }) {
+      const days = window ?? 7;
+      const to = now.toISOString().slice(0, 10);
+      const from = new Date(now.getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+      const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "history", from, to }, { now });
+      const base = { asOf: now.toISOString(), days, windowLabel: `last seen ${daysWindowLabel(days)}` };
+      return r.truncated
+        ? { ...base, value: r.total, status: "PARTIAL", reason: "a floor — the read was capped", missing: [`only ${plural(r.scanned, "row")} scanned`] }
+        : { ...base, value: r.total };
+    },
+  },
+  "alerts-firing-now@1": {
+    // The Platform health drawer's Alerts group: firing.length from the latest evaluation (platform-health-view.ts alertsView).
+    kind: "RETRIEVABLE", reader: "alertRuns", unit: "counts", windows: [],
+    valueUnits: { firing: "count", firingCritical: "count", notEvaluable: "count", enabledRules: "count", sourcesUnavailable: "count" },
+    async read({ readers }) {
+      const latest = latestAlertEvaluation(await readers.alertRuns());
+      if (!latest) return { value: null, status: "UNAVAILABLE", reason: "no alert evaluation has run — nothing is known to be firing or quiet", asOf: null };
+      const firing = firingNow(latest);
+      const blind = unavailableAlertSources(latest);
+      const notEval = notEvaluableNow(latest);
+      const value = {
+        firing: firing.length, firingCritical: firing.filter((r) => r.severity === "critical").length,
+        notEvaluable: notEval.length, enabledRules: latest.rules.filter((r) => r.enabled).length, sourcesUnavailable: blind.length,
+      };
+      const subjects: MetricSubject[] = [
+        ...firing.map((r) => ({ label: r.id, state: (r.severity === "critical" ? "firing-critical" : "firing") as SubjectState })),
+        ...notEval.map((r) => ({ label: r.id, state: "not-evaluable" as const })),
+      ];
+      return blind.length > 0
+        ? { value, status: "PARTIAL", reason: "some alert sources could not be read in the latest evaluation — a rule over them cannot fire", missing: [`${plural(blind.length, "alert source")} unavailable`], asOf: latest.evaluatedAtISO, subjects }
+        : { value, asOf: latest.evaluatedAtISO, subjects };
+    },
+  },
+  "connection-health-summary@1": {
+    // The Connection health card's composition (compositionSegments / listCoverage over r.counts).
+    kind: "RETRIEVABLE", reader: "connectionHealth", unit: "counts", windows: [],
+    valueUnits: { live: "count", healthy: "count", stale: "count", degraded: "count", needsReauth: "count", error: "count", reconnectNeeded: "count", customerImpacting: "count" },
+    async read({ readers }) {
+      const r = await readers.connectionHealth();
+      const c = r.counts;
+      // Reconnect needed: NEEDS_REAUTH, plus ERROR rows whose code Plaid fixes through update mode (NO_ACCOUNTS, ITEM_LOGIN_REQUIRED, …).
+      let fixableErrors = 0;
+      for (const t of Object.values(r.bySource ?? {})) for (const f of t.faults) if (f.healthState === "ERROR" && isUpdateModeFixable(f.errorCode)) fixableErrors += f.count;
+      const healthy = c.HEALTHY ?? 0;
+      const value = {
+        live: r.total, healthy, stale: c.STALE ?? 0, degraded: c.DEGRADED ?? 0, needsReauth: c.NEEDS_REAUTH ?? 0, error: c.ERROR ?? 0,
+        reconnectNeeded: (c.NEEDS_REAUTH ?? 0) + fixableErrors, customerImpacting: Math.max(0, r.total - healthy),
+      };
+      return r.bySource
+        ? { value, asOf: r.checkedAt }
+        : { value, status: "PARTIAL", reason: "reconnect needed is a floor — the per-source fault tally was not available", missing: ["ERROR connections fixable by reconnect could not be counted"], asOf: r.checkedAt };
+    },
+  },
+  "refresh-pipeline@1": {
+    // The Operations lead's Refresh pipeline KPI: o.domains.find((x) => x.key === "pipeline") (operations-model.ts).
+    kind: "RETRIEVABLE", reader: "operationsOverview", unit: "counts", windows: [],
+    valueUnits: { executions: "count", failed: "count", runningNow: "count" },
+    async read({ readers }) {
+      const o = await readers.operationsOverview();
+      const d = o.domains.find((x) => x.key === "pipeline");
+      if (!d) return { value: null, status: "UNAVAILABLE", reason: "the overview carries no pipeline verdict", asOf: o.checkedAt };
+      const fact = (label: string): number | null => {
+        const f = d.facts.find((x) => x.label === label);
+        return f && /^\d+$/.test(f.value) ? Number(f.value) : null;
+      };
+      const value = { executions: fact("Executions"), failed: fact("Failed"), runningNow: fact("Running now") };
+      const subjects = d.state === "HEALTHY" ? [] : [{ label: DOMAIN_LABEL.pipeline, state: DOMAIN_SUBJECT[d.state] }];
+      if (value.executions === null || value.failed === null) return { value: null, status: "UNAVAILABLE", reason: "the pipeline verdict carries no execution counts", asOf: o.checkedAt };
+      return d.state === "UNKNOWN"
+        ? { value, status: "PARTIAL", reason: "no attempted refresh execution in the window — nothing to judge", missing: [], asOf: o.checkedAt, subjects }
+        : { value, asOf: o.checkedAt, subjects };
+    },
+  },
+  "scheduled-job-health@1": {
+    // The Operations lead's job KPIs (jobKpis: c.failing + c.dead …) — the job-health route's own counts.
+    kind: "RETRIEVABLE", reader: "jobHealth", unit: "counts", windows: [],
+    valueUnits: { healthy: "count", running: "count", overdue: "count", failing: "count", dead: "count", neverRan: "count", skipped: "count", notScheduled: "count" },
+    async read({ readers }) {
+      const h = await readers.jobHealth();
+      const v = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 0, notScheduled: 0 };
+      const subjects: MetricSubject[] = [];
+      for (const j of h.jobs) {
+        const k = JOB_PART[j.status];
+        if (!k) throw new Error("unknown job status"); // never guessed into a bucket ⇒ UNAVAILABLE
+        v[k]++;
+        const st = JOB_SUBJECT[j.status];
+        if (st) subjects.push({ label: j.job, state: st });
+      }
+      if (h.jobs.length === 0) return { value: null, status: "UNAVAILABLE", reason: "no scheduled job is registered", asOf: iso(h.checkedAt) };
+      return { value: v, asOf: iso(h.checkedAt), subjects };
+    },
+  },
+  "data-freshness@1": {
+    // The Platform health drawer's Freshness group: d.counts.stale + d.counts.empty (platform-health-view.ts freshnessView).
+    kind: "RETRIEVABLE", reader: "resourceFreshness", unit: "counts", windows: [],
+    valueUnits: { fresh: "count", stale: "count", empty: "count", idle: "count", notRefreshed: "count" },
+    async read({ readers }) {
+      const f = await readers.resourceFreshness();
+      const v = { fresh: 0, stale: 0, empty: 0, idle: 0, notRefreshed: 0 };
+      const subjects: MetricSubject[] = [];
+      for (const r of f.resources) {
+        const k = FRESHNESS_PART[r.healthState];
+        if (!k) throw new Error("unknown freshness state");
+        v[k]++;
+        if (r.healthState === "stale" || r.healthState === "empty") subjects.push({ label: r.resource, state: r.healthState });
+      }
+      if (f.resources.length === 0) return { value: null, status: "UNAVAILABLE", reason: "no freshness resource is registered", asOf: iso(f.checkedAt) };
+      return { value: v, asOf: iso(f.checkedAt), subjects };
+    },
+  },
+  "provider-call-volume@1": {
+    // The Provider health widget's "Calls" field (p.callsToday / p.calls30d), summed over metered providers.
+    kind: "RETRIEVABLE", reader: "providerHealth", unit: "counts", windows: [],
+    valueUnits: { callsToday: "count", callsMonth: "count", syncFailures: "count", meteredProviders: "count", unmeteredProviders: "count" },
+    async read({ readers }) {
+      const r = await readers.providerHealth();
+      const v = { callsToday: 0, callsMonth: 0, syncFailures: 0, meteredProviders: 0, unmeteredProviders: 0 };
+      for (const p of r.providers) {
+        const today = (p as { callsToday?: number | null }).callsToday ?? null;
+        const month = (p as { calls30d?: number | null }).calls30d ?? null;
+        if (today === null && month === null) v.unmeteredProviders++;
+        else { v.meteredProviders++; v.callsToday += today ?? 0; v.callsMonth += month ?? 0; }
+        v.syncFailures += (p as { syncFailures?: number }).syncFailures ?? 0;
+      }
+      const asOf = iso(r.checkedAt);
+      if (v.meteredProviders === 0) return { value: null, status: "UNAVAILABLE", reason: "no provider's calls are metered — call volume is unknown, never 0", asOf };
+      return v.unmeteredProviders > 0
+        ? { value: v, status: "PARTIAL", reason: "a floor — some providers are not metered", missing: [`${plural(v.unmeteredProviders, "provider")} not metered (calls unknown, never 0)`], asOf }
+        : { value: v, asOf };
+    },
+  },
 };
 
 // ── Tiering ──────────────────────────────────────────────────────────────────
@@ -806,6 +1066,11 @@ function unitsMatch(value: AggregateValue, units: ValueUnits | null): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i]);
 }
 
+/** Named subjects, kept only when the label is a server label / registry slug and the state is in the closed vocabulary; at most MAX_SUBJECTS. */
+function subjectsOnly(xs: readonly MetricSubject[]): MetricSubject[] {
+  return xs.filter((x) => isSubjectLabel(x?.label) && (SUBJECT_STATES as readonly string[]).includes(x?.state)).slice(0, MAX_SUBJECTS).map((x) => ({ label: x.label, state: x.state }));
+}
+
 /** The reader's window start, kept only when it is exactly an ISO date (YYYY-MM-DD); anything else ⇒ null. */
 const isoDateOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
@@ -817,7 +1082,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
   let reason = p.reason ?? null;
   const days = p.days ?? null;
   const hours = p.hours ?? null;
-  const windowLabel = days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null;
+  const windowLabel = p.windowLabel ?? (days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null);
   const entry = RETRIEVAL[metricKey(m)];
   const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
   const parts = entry?.kind === "RETRIEVABLE" ? entry.parts : undefined;
@@ -857,6 +1122,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     window: { kind: m.window.kind, description: m.window.description, days, hours, label: windowLabel, start: isoDateOrNull(p.start) },
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
+    ...(p.subjects !== undefined ? { subjects: status === "UNAVAILABLE" ? null : subjectsOnly(p.subjects) } : {}),
     basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
     ...drillOf(scope, days),
   };

@@ -522,6 +522,29 @@ export interface KnowledgeGap {
   debtType?:    DebtType;
 }
 
+
+/**
+ * Mortgage F1 (owner 2026-11-08) — liquid net worth on the Hero's basis:
+ * UNRESTRICTED cash (`totalLiquid`) minus every liability EXCEPT installment
+ * loans (mortgage, auto, student, personal installment). Revolving debt (cards,
+ * HELOCs, lines of credit) and liabilities of UNKNOWN kind are subtracted
+ * (unknown conservatively, so the figure is never overstated). Net worth still
+ * subtracts every liability.
+ */
+export interface AiLiquidNetWorth {
+  amount:            number;
+  /** "Liquid net worth excludes mortgages and other long-term loans; total net worth includes all debts." */
+  definition:        string;
+  /** The rule the model must keep: excluded loans are still owed. */
+  notDebtFree:       string;
+  /** Owed on the excluded installment loans (still in totalLiabilities and netWorth). */
+  excludedInstallmentDebt: number;
+  /** Names of the excluded loans ("mortgage", "auto loan"); empty when none. */
+  excludedKinds:     string[];
+  /** Liabilities of unknown kind, INCLUDED in the subtraction; 0 when none. */
+  unknownKindLiabilityCount: number;
+}
+
 /**
  * Data payload for the 'accounts' context domain.
  *
@@ -596,6 +619,13 @@ export interface AccountsSectionData {
    * when every total is COMPLETE.
    */
   totalsCoverage?: AiTotalsCoverage;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — LIQUID net worth and how it differs from
+   * net worth, so the model can explain the difference and never present it as
+   * debt-free wealth. Optional so fixtures predating F1 still compile; the
+   * assembler always emits it.
+   */
+  liquidNetWorth?: AiLiquidNetWorth;
   counts: {
     liquid:       number;
     investments:  number;
@@ -1617,6 +1647,12 @@ export interface SnapshotSectionData {
    */
   liquidBasis?:     'ALL_CASH' | 'UNRESTRICTED';
   liquidBasisNote?: string;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — what every point's `netLiquid` means:
+   * installment loans (mortgage, auto, student) are NOT subtracted; total net
+   * worth still subtracts them. Always emitted by the assembler.
+   */
+  netLiquidNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

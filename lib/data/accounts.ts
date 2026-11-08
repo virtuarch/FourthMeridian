@@ -337,6 +337,11 @@ export async function getAccountsWithVisibility(
           // unverified). A liquidity total over this tier needs it, and it
           // describes the balance the tier already discloses.
           providerSubtype: r.providerSubtype ?? null,
+          // Mortgage F1 — the debt KIND (installment vs revolving) for liquid net
+          // worth. Already disclosed by this tier's generic name ("… mortgage"),
+          // so it reveals nothing further. creditLimit stays WITHHELD: a "home
+          // equity" row without it is counted (unknown), never excluded.
+          ...(r.type === "debt" && r.debtSubtype ? { debtSubtype: r.debtSubtype } : {}),
           // v2.6-L3 — same reasoning: a quantity about the balance this tier
           // already discloses. Withholding it would make a liquidity total mix
           // reachable figures with ledger balances, which is worse.

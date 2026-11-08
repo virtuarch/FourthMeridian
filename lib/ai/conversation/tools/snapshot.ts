@@ -71,6 +71,10 @@ export const getFinancialSnapshot: ToolDefinition = {
       // above, beside them: an account of unknown balance is excluded (never
       // counted as 0). Present only when some total is PARTIAL.
       ...(acc.totalsCoverage ? { totalsCoverage: acc.totalsCoverage } : {}),
+      // Mortgage F1 (owner 2026-11-08) — liquid net worth WITH its definition and
+      // the loans it excludes, so the answer explains liquid vs total net worth
+      // and never presents liquid net worth as debt-free wealth.
+      ...(acc.liquidNetWorth ? { liquidNetWorth: acc.liquidNetWorth } : {}),
       // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
       // ⚠️ THE RELATION IS STATED, NOT LEFT TO INFERENCE. Shown beside `liquid` with no
       // relation, the model read restricted as a PART of liquid and subtracted it again

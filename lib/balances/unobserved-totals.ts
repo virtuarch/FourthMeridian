@@ -29,6 +29,8 @@
  */
 
 import type { TermCoverageStatus } from "@/lib/debt/aggregates";
+import { isExcludedFromLiquidNetWorth } from "@/lib/debt/liquid-net-worth";
+import type { LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 /** Which total a coverage statement describes. */
 export type ExclusionTotal =
@@ -55,6 +57,13 @@ export interface ExcludedAccountCounts {
   asset:  number;
   /** the subset of `asset` that is checking / savings (feeds the liquid figures). */
   liquid: number;
+  /**
+   * Mortgage F1 — the subset of `debt` that is an INSTALLMENT loan
+   * (isExcludedFromLiquidNetWorth): it moves net worth and total debt, never
+   * liquid net worth. Optional — absent ⇒ 0 (every excluded debt counts, the
+   * conservative reading).
+   */
+  installmentDebt?: number;
 }
 
 export interface UnobservedTotalCoverage {
@@ -83,19 +92,25 @@ function excludedOf(a: { valuationUnknown?: boolean; unvaluedMemberCount?: numbe
  * from (rows carrying `valuationUnknown` / `unvaluedMemberCount`).
  */
 export function excludedAccountCounts(
-  accounts: ReadonlyArray<{ type: string; valuationUnknown?: boolean; unvaluedMemberCount?: number }>,
+  accounts: ReadonlyArray<{ type: string; valuationUnknown?: boolean; unvaluedMemberCount?: number } & LiabilityKindInput>,
 ): ExcludedAccountCounts {
-  const c = { ...NONE };
+  const c = { debt: 0, asset: 0, liquid: 0 };
+  let installmentDebt = 0;
   for (const a of accounts) {
     const n = excludedOf(a);
     if (n === 0) continue;
-    if (a.type === "debt") c.debt += n;
+    if (a.type === "debt") {
+      c.debt += n;
+      // Mortgage F1 — an unobserved mortgage leaves liquid NW complete.
+      if (isExcludedFromLiquidNetWorth(a)) installmentDebt += n;
+    }
     else {
       c.asset += n;
       if (a.type === "checking" || a.type === "savings") c.liquid += n;
     }
   }
-  return c;
+  // OMITTED when 0, so a count with no installment exclusion is unchanged.
+  return installmentDebt > 0 ? { ...c, installmentDebt } : c;
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -124,7 +139,9 @@ export function unobservedTotalCoverage(
   total: ExclusionTotal,
   counts: ExcludedAccountCounts = NONE,
 ): UnobservedTotalCoverage {
-  const debt = total === "TOTAL_ASSETS" || total === "LIQUID_CASH" ? 0 : counts.debt;
+  const debt = total === "TOTAL_ASSETS" || total === "LIQUID_CASH" ? 0
+    : total === "LIQUID_NET_WORTH" ? Math.max(counts.debt - (counts.installmentDebt ?? 0), 0)
+    : counts.debt;
   const asset =
     total === "TOTAL_DEBT" ? 0
     : total === "LIQUID_NET_WORTH" || total === "LIQUID_CASH" ? counts.liquid
