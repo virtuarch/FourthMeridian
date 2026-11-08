@@ -46,7 +46,7 @@ import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpport
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
-import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
+import { computeDebtAggregate, aiRateCoverage, type DebtAggregateRow } from '@/lib/debt/aggregates';
 import { resolveExpenseBaseline } from '@/lib/liquidity/expense-baseline';
 
 export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
@@ -378,7 +378,17 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       // the rate rungs cannot fire and the classification falls to IMPROVING /
       // HEALTHY on the liabilities trend, the honest read when no interest is
       // accruing. The reason echoes the null, never a 0% nobody measured.
-      const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr;
+      // F3 / S2 — the coverage is computed over EVERY owing debt (unrated and
+      // BALANCE_ONLY rows as null) so it says what the blend covers; this rung
+      // only runs when every rate is known, so it is COMPLETE here — and is
+      // carried into reasonMetrics beside the rate either way. Not COMPLETE ⇒
+      // null (unknown), never a blend presented as the rate of all debt.
+      const covRows: DebtAggregateRow[] = debtAccounts
+        .filter((a) => a.reportingBalance != null && hasOutstandingDebt(a.reportingBalance))
+        .map((a) => ({ balance: amountOwed(a.reportingBalance as number),
+          apr: a.visibilityLevel === 'FULL' && a.apr != null ? a.apr : null, minimumPayment: null }));
+      const covAgg = computeDebtAggregate(covRows);
+      const weightedAvgAPR = covAgg.rateCoverage.status === 'COMPLETE' ? computeDebtAggregate(aprRows).weightedApr : null;
       // W3 — IMPROVING now derives from the CANONICAL window authority
       // (`liabilitiesChange`, computed by canonicalWindowChange over the same
       // product-defined preset as `canonicalChange`), replacing the accidental
@@ -398,6 +408,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
         ratedOwed,
         liabilitiesChangeAbs: snap?.liabilitiesChange?.abs ?? null,
         ...population,
+        rateCoverage:         aiRateCoverage(covAgg.rateCoverage),
       });
       debtRateClassification = graded.classification;
       debtReason             = graded.reason;

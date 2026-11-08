@@ -20,7 +20,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { rateLabel, rateLabelInline, blendedRateLabel, isMortgage } from "./rate-label";
-import { computeDebtAggregate } from "./aggregates";
+import { computeDebtAggregate, MIN_KNOWN_OWED_SHARE, formatOwedShare } from "./aggregates";
+import { computeDebt } from "@/lib/perspective-engine/lenses/debt.core";
+import { computeAssessment } from "@/lib/ai/intelligence/annotations";
+import { FinanceDomains, type AccountSummaryItem, type AccountsSectionData, type SpaceContext_AI } from "@/lib/ai/types";
 import { planPayoff } from "./payoff";
 import { payoffEstimateNotice, payoffUnknownRateNote } from "@/components/space/widgets/debt/payoff-copy";
 
@@ -80,10 +83,11 @@ console.log("2. Weighted rate and minimum-payment sums are typed PARTIAL when an
   check("mixed: rateCoverage PARTIAL, 1 known / 1 unknown / 2 owing, unknown owed 300,000",
     mixed.rateCoverage.status === "PARTIAL" && mixed.rateCoverage.knownCount === 1 && mixed.rateCoverage.unknownCount === 1
       && mixed.rateCoverage.owingCount === 2 && mixed.rateCoverage.unknownOwed === 300_000, mixed.rateCoverage);
-  check("mixed: rate note '1 of 2 debts has no rate on file'", mixed.rateCoverage.note === "1 of 2 debts has no rate on file", mixed.rateCoverage.note);
+  check("mixed: rate note states count AND share: 'rate known for 1 of 2 debts (2% of what you owe)'",
+    mixed.rateCoverage.note === "rate known for 1 of 2 debts (2% of what you owe)", mixed.rateCoverage.note);
   check("mixed: minimum sum is the KNOWN 150, typed PARTIAL (not a silent 0 for the mortgage)",
     mixed.minimumPayment === 150 && mixed.minimumCoverage.status === "PARTIAL"
-      && mixed.minimumCoverage.note === "1 of 2 debts has no minimum payment on file", mixed.minimumCoverage);
+      && mixed.minimumCoverage.note === "minimum payment known for 1 of 2 debts (2% of what you owe)", mixed.minimumCoverage);
   check("mixed: unknown share of owed ≈ 98.4%", Math.abs(mixed.minimumCoverage.unknownOwedShare - 300_000 / 305_000) < 1e-12);
 
   const two = computeDebtAggregate([
@@ -91,8 +95,8 @@ console.log("2. Weighted rate and minimum-payment sums are typed PARTIAL when an
     { balance: 2_000, apr: null, minimumPayment: null },
     { balance: 3_000, apr: 10,   minimumPayment: 60 },
   ]);
-  check("plural: '2 of 3 debts have no rate on file'", two.rateCoverage.note === "2 of 3 debts have no rate on file", two.rateCoverage.note);
-  check("…and '1 of 3 debts has no minimum payment on file'", two.minimumCoverage.note === "1 of 3 debts has no minimum payment on file", two.minimumCoverage.note);
+  check("three debts: 'rate known for 1 of 3 debts (50% of what you owe)'", two.rateCoverage.note === "rate known for 1 of 3 debts (50% of what you owe)", two.rateCoverage.note);
+  check("…and 'minimum payment known for 2 of 3 debts (67% of what you owe)'", two.minimumCoverage.note === "minimum payment known for 2 of 3 debts (67% of what you owe)", two.minimumCoverage.note);
 
   const known = computeDebtAggregate([
     { balance: 1_000, apr: 20, minimumPayment: 35 },
@@ -109,12 +113,47 @@ console.log("2. Weighted rate and minimum-payment sums are typed PARTIAL when an
   check("all unknown: NONE, weightedApr null (no figure), minimum sum 0 with NONE coverage",
     none.rateCoverage.status === "NONE" && none.weightedApr === null
       && none.minimumCoverage.status === "NONE" && none.minimumPayment === 0
-      && none.rateCoverage.note === "2 of 2 debts have no rate on file" && none.rateCoverage.unknownOwedShare === 1, none);
+      && none.rateCoverage.note === "rate known for 0 of 2 debts (0% of what you owe)" && none.rateCoverage.unknownOwedShare === 1
+      && none.rateCoverage.sufficient === false, none);
 
   const settled = computeDebtAggregate([{ balance: 0, apr: null, minimumPayment: null }, { balance: -50, apr: null, minimumPayment: null }]);
   check("nothing owed: NOT_APPLICABLE (a settled card's missing terms are not a gap)",
     settled.rateCoverage.status === "NOT_APPLICABLE" && settled.minimumCoverage.status === "NOT_APPLICABLE"
       && settled.rateCoverage.note === null && settled.rateCoverage.unknownOwedShare === 0, settled);
+}
+
+// ── 2b. Sufficiency threshold (S2: < 50% of the balance rated ⇒ not shown as the figure) ─
+console.log("2b. Known-share threshold for showing a PARTIAL aggregate");
+{
+  const at = computeDebtAggregate([{ balance: 500, apr: 20, minimumPayment: 10 }, { balance: 500, apr: null, minimumPayment: null }]);
+  check("exactly 50% rated ⇒ sufficient (shown, labelled partial)", at.rateCoverage.status === "PARTIAL" && at.rateCoverage.knownOwedShare === 0.5 && at.rateCoverage.sufficient === true, at.rateCoverage);
+  check("…its minimum sum is sufficient too, '(50% of what you owe)'", at.minimumCoverage.sufficient === true && at.minimumCoverage.note === "minimum payment known for 1 of 2 debts (50% of what you owe)");
+  const below = computeDebtAggregate([{ balance: 490, apr: 20, minimumPayment: null }, { balance: 510, apr: null, minimumPayment: null }]);
+  check("49% rated ⇒ NOT sufficient ('not enough rate information')", below.rateCoverage.sufficient === false && below.rateCoverage.note === "rate known for 1 of 2 debts (49% of what you owe)", below.rateCoverage);
+  check("COMPLETE is sufficient; NONE and NOT_APPLICABLE are not",
+    computeDebtAggregate([{ balance: 10, apr: 1, minimumPayment: 1 }]).rateCoverage.sufficient
+      && !computeDebtAggregate([{ balance: 10, apr: null, minimumPayment: null }]).rateCoverage.sufficient
+      && !computeDebtAggregate([]).rateCoverage.sufficient);
+  check("MIN_KNOWN_OWED_SHARE is 0.5", MIN_KNOWN_OWED_SHARE === 0.5);
+  check("share formatting never claims 0% or 100% for a real partial", formatOwedShare(0.001) === "<1%" && formatOwedShare(0.999) === ">99%" && formatOwedShare(0.0164) === "2%");
+
+  // The debt lens: ≥ 50% shows the number (labelled partial); < 50% shows the words.
+  const SCOPE = { spaceId: "s", userId: "u" };
+  const OPTS = { now: () => new Date("2026-07-03T12:00:00.000Z") };
+  const lrow = (id: string, balance: number, interestRate?: number, minimumPayment?: number) =>
+    ({ id, type: "debt", balance, lastUpdated: "2026-07-01T00:00:00.000Z", visibilityLevel: "FULL", interestRate, minimumPayment });
+  const lensAt = computeDebt(SCOPE, OPTS, [lrow("a", 500, 20, 10), lrow("b", 500)]);
+  const mAt = lensAt.metrics.find((m) => m.id === "blendedApr");
+  check("lens at 50%: blended rate 20 shown, labelled 'partial: rate known for 1 of 2 debts (50% of what you owe)'",
+    mAt?.value === 20 && mAt.label === "Blended rate (balance-weighted) — partial: rate known for 1 of 2 debts (50% of what you owe)", JSON.stringify(mAt));
+  const lensLow = computeDebt(SCOPE, OPTS, [lrow("card", 5_000, 25, 150), lrow("mtg", 300_000)]);
+  const mLow = lensLow.metrics.find((m) => m.id === "blendedApr");
+  check("lens at 2%: 'Not enough rate information' in place of the number", mLow?.value === "Not enough rate information" && mLow.format === "text", JSON.stringify(mLow));
+  check("…the number + coverage stay in the drill-down assumption",
+    lensLow.assumptions.some((x) => x.id === "partial-rate" && x.text.includes("25.00%") && x.text.includes("rate known for 1 of 2 debts (2% of what you owe)")));
+  const mMin = lensLow.metrics.find((m) => m.id === "minPayments");
+  check("lens minimums: 'partial: minimum payment known for 1 of 2 debts (2% of what you owe)'",
+    mMin?.value === 150 && mMin.label === "Minimum payments per month — partial: minimum payment known for 1 of 2 debts (2% of what you owe)", JSON.stringify(mMin));
 }
 
 // ── 3. Payoff: unknown rate is labelled, kept out of the interest total ─────
@@ -132,7 +171,7 @@ console.log("3. Payoff never assumes 0% silently");
       mixed.interestTotalScope === "KNOWN_RATE_ONLY" && mixed.totalInterest === card.interestPaid, mixed.totalInterest);
     check("mixed: principal + totalInterest = totalPaid still holds", Math.abs(mixed.principal + mixed.totalInterest - mixed.totalPaid) < 0.005);
     check("mixed: basis counts 1 unknown of 2 owing", mixed.basis.unknownAprCount === 1 && mixed.basis.owingCount === 2);
-    check("mixed: note names the count", payoffUnknownRateNote(mixed) === "Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.");
+    check("mixed: note names the count AND the owed share", payoffUnknownRateNote(mixed) === "Rate known for 1 of 2 debts (2% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(mixed));
     check("mixed, non-revolving blend: estimate notice says 'a rate', never 'an APR'",
       payoffEstimateNotice(mixed, "rate")?.detail === "Interest is counted only on the debts with a rate on file.");
     check("mixed, card-only blend (default): estimate notice keeps 'an APR'",
@@ -148,12 +187,12 @@ console.log("3. Payoff never assumes 0% silently");
   check("all unknown: PRINCIPAL_ONLY, RATE_UNKNOWN, KNOWN_RATE_ONLY scope with 0 known interest",
     none.status === "paid_off" && none.basis.interest === "PRINCIPAL_ONLY" && none.liabilities[0].rateStatus === "RATE_UNKNOWN"
       && none.interestTotalScope === "KNOWN_RATE_ONLY" && none.totalInterest === 0);
-  check("all unknown: note 'Rate unknown for 1 of 1 debt'",
-    payoffUnknownRateNote(none) === "Rate unknown for 1 of 1 debt — projected without interest and left out of the interest total.", payoffUnknownRateNote(none));
+  check("all unknown: note 'Rate known for 0 of 1 debt (0% of what you owe)'",
+    payoffUnknownRateNote(none) === "Rate known for 0 of 1 debt (0% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(none));
   check("all unknown, mortgage: 'No rate is on file'",
     payoffEstimateNotice(none, "rate")?.detail === "No rate is on file, so this counts payments against the balance only.");
   const nonAm = planPayoff({ payment: 10, startISO: "2026-01-01", liabilities: [{ id: "card", balance: 10_000, aprPct: 24 }, { id: "mtg", balance: 1_000, aprPct: null }] });
-  check("non-amortizing plans still carry the counts for the note", nonAm.status === "non_amortizing" && payoffUnknownRateNote(nonAm)?.startsWith("Rate unknown for 1 of 2 debts") === true, nonAm.status);
+  check("non-amortizing plans still carry the counts for the note", nonAm.status === "non_amortizing" && payoffUnknownRateNote(nonAm)?.startsWith("Rate known for 1 of 2 debts (91% of what you owe)") === true, nonAm.status);
 }
 
 // ── 4. AI tool contract carries the same label ──────────────────────────────
@@ -174,6 +213,72 @@ console.log("4. AI assembler + snapshot tool use the same label as the UI");
   check("assembler-shaped Plaid mortgage row ⇒ 'Mortgage rate'; card ⇒ 'APR'",
     rateLabel({ type: "debt", debtSubtype: null, providerSubtype: "mortgage", creditLimit: null }) === "Mortgage rate"
       && rateLabel({ type: "debt", debtSubtype: null, providerSubtype: "credit card", creditLimit: 5_000 }) === "APR");
+}
+
+// ── 5. AI annotation payload: mortgage $300k unrated + card $5k @ 25% ───────
+console.log("5. AI annotation payload carries coverage beside every weighted rate (S2)");
+{
+  const debtAcct = (id: string, name: string, bal: number, apr: number | null): AccountSummaryItem => ({
+    id, name, type: "debt", balance: bal, currency: "USD", reportingBalance: bal,
+    lastUpdated: "2026-07-15T00:00:00.000Z", needsReauth: false, visibilityLevel: "FULL",
+    apr, minimumPayment: null, rateSource: apr != null ? "user" : null,
+  } as AccountSummaryItem);
+  const accounts = [debtAcct("mtg", "Home Loan", 300_000, null), debtAcct("card", "Card A", 5_000, 25)];
+  // The minimal context shape of lib/ai/intelligence/debt-strategy-fx.test.ts.
+  const makeCtx = (accts: AccountSummaryItem[], gaps: AccountsSectionData["knowledgeGaps"]): SpaceContext_AI => {
+    const totalLiabilities = accts.reduce((t, x) => t + Math.max(0, x.reportingBalance ?? 0), 0);
+    const data: AccountsSectionData = {
+      totalCount: accts.length, totalAssets: 0, totalLiabilities, netWorth: -totalLiabilities, totalLiquid: 0,
+      totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false, totalsUnconverted: false,
+      counts: { liquid: 0, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: accts.length },
+      health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
+      knowledgeGaps: gaps, accounts: accts,
+    } as AccountsSectionData;
+    return {
+      requestedAt: "2026-07-15T00:00:00.000Z", spaceId: "s1", userId: "u1", role: "OWNER" as SpaceContext_AI["role"], agentId: "agent1",
+      resolvedDomains: ["accounts"], space: { id: "s1", name: "Test", type: "personal", category: "personal", reportingCurrency: "USD" },
+      domains: { [FinanceDomains.ACCOUNTS]: { domain: "accounts", assembledAt: "2026-07-15T00:00:00.000Z", data } },
+      signals: [], auditLogId: "log1",
+    } as unknown as SpaceContext_AI;
+  };
+  const a = computeAssessment(makeCtx(accounts, [{ accountId: "mtg", accountName: "Home Loan", field: "apr", label: "Mortgage rate" }]));
+  const cov = a.debtStrategy.weightedAvgAprCoverage;
+  check("debtStrategy coverage: PARTIAL, 1 rated / 1 unrated, unknownOwedShare ≈ 0.984",
+    cov.status === "PARTIAL" && cov.ratedCount === 1 && cov.unratedCount === 1 && Math.abs(cov.unknownOwedShare - 0.984) < 0.0005, cov);
+  check("weightedAvgApr is null (never the blend of all debt, never 0)", a.debtStrategy.weightedAvgApr === null, a.debtStrategy.weightedAvgApr);
+  check("the 25% travels ONLY as ratedDebtsAvgRate, labelled 'rate across the debts with a known rate only, 2% of what you owe'",
+    a.debtStrategy.ratedDebtsAvgRate?.ratePct === 25
+      && a.debtStrategy.ratedDebtsAvgRate.meaning.startsWith("rate across the debts with a known rate only, 2% of what you owe"), a.debtStrategy.ratedDebtsAvgRate);
+  check("capitalAllocation evidence: weightedDebtApr null + the same coverage beside it",
+    a.capitalAllocation.evidence.weightedDebtApr === null && a.capitalAllocation.evidence.weightedDebtRateCoverage.status === "PARTIAL");
+  check("debt classification refuses (INSUFFICIENT_DATA) with no weightedAprPct",
+    a.debt.classification === "INSUFFICIENT_DATA" && !("weightedAprPct" in a.debt.reason.reasonMetrics));
+  // No unqualified weighted rate anywhere: every key naming a weighted/avg rate
+  // with a non-null number must sit beside a coverage object.
+  const offenders: string[] = [];
+  const walk = (v: unknown, path: string, parent: Record<string, unknown> | null): void => {
+    if (v && typeof v === "object") {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) walk(x, `${path}.${k}`, v as Record<string, unknown>);
+      return;
+    }
+    const key = path.split(".").pop() ?? "";
+    if (typeof v === "number" && /weighted.*(apr|rate)|avg.*(apr|rate)/i.test(key) && !/coverage|share|count/i.test(key)) {
+      const hasCov = parent && Object.keys(parent).some((k) => /coverage|meaning/i.test(k));
+      if (!hasCov) offenders.push(`${path}=${v}`);
+    }
+  };
+  walk(a, "assessment", null);
+  check("no unqualified weighted rate anywhere in the assessment payload", offenders.length === 0, offenders);
+
+  // All rated ⇒ COMPLETE; the blend is the rate of all owed debt.
+  const ok = computeAssessment(makeCtx([debtAcct("mtg", "Home Loan", 300_000, 6), debtAcct("card", "Card A", 5_000, 25)], []));
+  check("all rated: COMPLETE coverage, weightedAvgApr present, no ratedDebtsAvgRate, reasonMetrics carries rateCoverageStatus",
+    ok.debtStrategy.weightedAvgAprCoverage.status === "COMPLETE" && typeof ok.debtStrategy.weightedAvgApr === "number"
+      && ok.debtStrategy.ratedDebtsAvgRate === undefined && ok.debt.reason.reasonMetrics.rateCoverageStatus === "COMPLETE");
+  // All unrated ⇒ NONE ⇒ null, never 0.
+  const none = computeAssessment(makeCtx([debtAcct("mtg", "Home Loan", 300_000, null)], []));
+  check("none rated: NONE coverage, weightedAvgApr null (never 0)",
+    none.debtStrategy.weightedAvgAprCoverage.status === "NONE" && none.debtStrategy.weightedAvgApr === null && none.debtStrategy.ratedDebtsAvgRate === undefined);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

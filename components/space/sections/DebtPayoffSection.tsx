@@ -217,6 +217,11 @@ export function DebtPayoffSection({
   const aprPct            = agg.weightedApr;               // for the reference label only
   const weightedApr       = aprPct;
   const hasRates          = aprPct != null;
+  // Mortgage F3 / S2 — a PARTIAL average whose known rates cover under half of
+  // what is owed is not shown as THE figure: "Not enough rate information" in
+  // its place; the number + its coverage stay in the by-account drill-down.
+  const rateCoverage      = agg.rateCoverage;
+  const avgRateText       = hasRates && rateCoverage.sufficient ? `${aprPct.toFixed(2)}%` : "Not enough rate information";
 
   // Aggregate taint — any unresolvable row marks every derived projection.
   const aggEstimated = filteredConv.some((r) => r.bal.estimated);
@@ -438,6 +443,11 @@ export function DebtPayoffSection({
       <summary className="cursor-pointer select-none px-3 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>
         By account · {paidOff.liabilities.length}
       </summary>
+      {hasRates && rateCoverage.note && (
+        <p data-payoff-rate-coverage className="border-t px-3 py-2 text-[11px] tabular-nums" style={{ borderColor: "var(--border-hairline)", color: "var(--text-muted)" }}>
+          Avg {R} (known): {weightedApr!.toFixed(2)}% · {rateCoverage.note}
+        </p>
+      )}
       <ul className="divide-y divide-[var(--border-hairline)] border-t" style={{ borderColor: "var(--border-hairline)" }}>
         {paidOff.liabilities.map((l) => {
           const known = l.rateStatus === "KNOWN";
@@ -486,7 +496,7 @@ export function DebtPayoffSection({
         open
         onClose={() => onCloseFullscreen?.()}
         title="Payoff Planner"
-        subtitle={`${debtAccounts.length} account${debtAccounts.length !== 1 ? "s" : ""}${hasRates ? ` · ${weightedApr!.toFixed(2)}% avg ${R} (reference)` : ""}`}
+        subtitle={`${debtAccounts.length} account${debtAccounts.length !== 1 ? "s" : ""}${hasRates ? (rateCoverage.sufficient ? ` · ${avgRateText} avg ${R} (reference)` : ` · ${avgRateText.toLowerCase()}`) : ""}`}
         intent="workspace"
         size="lg"
       >
@@ -537,7 +547,7 @@ export function DebtPayoffSection({
                     <span style={{ color: "var(--text-faint)" }}>·</span>
                     <div className="flex items-center gap-1">
                       <span style={{ color: "var(--text-faint)" }}>{R}</span>
-                      <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
+                      <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{avgRateText}</span>
                     </div>
                   </>
                 )}
@@ -658,7 +668,7 @@ export function DebtPayoffSection({
                   {hasRates && (
                     <div className="flex justify-between text-xs">
                       <span style={{ color: "var(--text-muted)" }}>{isEstimate ? `Avg ${R} (known) · reference` : `Avg ${R} · reference`}</span>
-                      <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
+                      <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{avgRateText}</span>
                     </div>
                   )}
                 </div>
@@ -748,7 +758,7 @@ export function DebtPayoffSection({
         {hasRates && (
           <div className="text-right">
             <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{isEstimate ? `Avg ${R} (known) · reference` : `Avg ${R} · reference`}</p>
-            <p className="text-sm font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</p>
+            <p className="text-sm font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{avgRateText}</p>
           </div>
         )}
       </div>

@@ -321,14 +321,23 @@ export function computeDebt(
       // Mortgage F3 — "rate", not "APR": the blend can include a mortgage or a
       // loan (APR is revolving credit only), and this lens carries no kind. A
       // blend over SOME of the debts is labelled PARTIAL with the coverage note.
-      {
-        id: "blendedApr",
-        label: fullAgg.rateCoverage.status === "PARTIAL"
-          ? `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`
-          : "Blended rate (balance-weighted)",
-        value: blendedApr as number,
-        format: "percent",
-      },
+      // S2 — when the known rates cover under half of what is owed, the figure
+      // is "Not enough rate information" (the number stays in the assumption).
+      fullAgg.rateCoverage.sufficient
+        ? {
+            id: "blendedApr",
+            label: fullAgg.rateCoverage.status === "PARTIAL"
+              ? `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`
+              : "Blended rate (balance-weighted)",
+            value: blendedApr as number,
+            format: "percent",
+          }
+        : {
+            id: "blendedApr",
+            label: `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`,
+            value: "Not enough rate information",
+            format: "text",
+          },
     );
   }
   if (minPaymentsKnown) {
@@ -375,6 +384,13 @@ export function computeDebt(
       id: "estimated-minimums",
       text: "Some minimum payments are estimated (the greater of $35 or 1% of balance plus monthly interest); actual issuer minimums may differ.",
       source: "estimate",
+    });
+  }
+  if (interestKnown && fullAgg.rateCoverage.status === "PARTIAL") {
+    assumptions.push({
+      id: "partial-rate",
+      text: `The blended rate is ${(blendedApr as number).toFixed(2)}% across the debts with a known rate only — ${fullAgg.rateCoverage.note}; it is not the rate of all debt.`,
+      source: "default",
     });
   }
   if (minPaymentsKnown && fullAgg.minimumCoverage.status === "PARTIAL") {

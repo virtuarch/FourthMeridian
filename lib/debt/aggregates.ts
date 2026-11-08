@@ -95,21 +95,75 @@ export interface TermCoverage {
   unknownOwed:  number;
   /** unknownOwed / totalOwed (0..1); 0 when nothing is owed. */
   unknownOwedShare: number;
-  /** "1 of 2 debts has no rate on file" — null unless PARTIAL or NONE. */
+  /** 1 − unknownOwedShare when something is owed; 0 when nothing is. The share
+   *  of what is owed that the figure actually describes. */
+  knownOwedShare: number;
+  /**
+   * True when the figure may be SHOWN as the aggregate: COMPLETE, or PARTIAL with
+   * the known debts covering at least MIN_KNOWN_OWED_SHARE of what is owed.
+   * Below that a surface shows "not enough rate information" in place of the
+   * number (the number + its coverage stay in the drill-down). F3 / S2.
+   */
+  sufficient:   boolean;
+  /** "rate known for 1 of 2 debts (2% of what you owe)" — null unless PARTIAL or NONE. */
   note:         string | null;
+}
+
+/** F3 / S2 — below this share of the owed balance, a PARTIAL aggregate is not shown as the figure. */
+export const MIN_KNOWN_OWED_SHARE = 0.5;
+
+/** "2%", never "0%" for a real non-zero share nor "100%" for a partial one. */
+export function formatOwedShare(share: number): string {
+  if (share <= 0) return "0%";
+  if (share >= 1) return "100%";
+  if (share < 0.005) return "<1%";
+  if (share > 0.995) return ">99%";
+  return `${Math.round(share * 100)}%`;
 }
 
 function coverageOf(known: number, unknown: number, unknownOwed: number, totalOwed: number, noun: string): TermCoverage {
   const owing = known + unknown;
   const status: TermCoverageStatus =
     owing === 0 ? "NOT_APPLICABLE" : unknown === 0 ? "COMPLETE" : known === 0 ? "NONE" : "PARTIAL";
+  const unknownOwedShare = totalOwed > 0 ? unknownOwed / totalOwed : 0;
+  const knownOwedShare = totalOwed > 0 ? 1 - unknownOwedShare : 0;
   const note = status === "PARTIAL" || status === "NONE"
-    ? `${unknown} of ${owing} debt${owing === 1 ? "" : "s"} ${unknown === 1 ? "has" : "have"} no ${noun} on file`
+    ? `${noun} known for ${known} of ${owing} debt${owing === 1 ? "" : "s"} (${formatOwedShare(knownOwedShare)} of what you owe)`
     : null;
   return {
     status, knownCount: known, unknownCount: unknown, owingCount: owing,
-    unknownOwed, unknownOwedShare: totalOwed > 0 ? unknownOwed / totalOwed : 0, note,
+    unknownOwed, unknownOwedShare, knownOwedShare,
+    sufficient: status === "COMPLETE" || (status === "PARTIAL" && knownOwedShare >= MIN_KNOWN_OWED_SHARE),
+    note,
   };
+}
+
+/**
+ * The coverage as the AI tool contract carries it — beside EVERY AI-visible
+ * weighted rate (F3 / S2). Shares rounded to 3dp; `scope` says which debts the
+ * rate describes, so a PARTIAL figure is never read as the blend of all debt.
+ */
+export interface AiRateCoverage {
+  status:           TermCoverageStatus;
+  ratedCount:       number;
+  unratedCount:     number;
+  unknownOwedShare: number;
+  /** "ALL_OWED_DEBT" only when COMPLETE; otherwise the rate (if any) covers the rated debts only. */
+  scope:            "ALL_OWED_DEBT" | "RATED_DEBTS_ONLY" | "NO_RATE";
+  /** How to read the rate, in words the model can quote. */
+  meaning:          string;
+}
+
+export function aiRateCoverage(c: TermCoverage): AiRateCoverage {
+  const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  const scope = c.status === "COMPLETE" ? "ALL_OWED_DEBT" : c.status === "PARTIAL" ? "RATED_DEBTS_ONLY" : "NO_RATE";
+  const meaning =
+    c.status === "COMPLETE" ? "weighted rate across all debt that is owed"
+    : c.status === "PARTIAL"
+      ? `rate across the debts with a known rate only, ${formatOwedShare(c.knownOwedShare)} of what you owe — NOT the rate of all debt; ${c.unknownCount} debt(s) have no rate on file`
+    : c.status === "NONE" ? "unknown — no owing debt has a rate on file"
+    : "not applicable — nothing is owed";
+  return { status: c.status, ratedCount: c.knownCount, unratedCount: c.unknownCount, unknownOwedShare: r3(c.unknownOwedShare), scope, meaning };
 }
 
 /**

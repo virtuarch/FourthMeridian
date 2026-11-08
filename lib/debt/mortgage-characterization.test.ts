@@ -164,16 +164,17 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
   // FIXED by F3 — desired behaviour: the Σ minimums still covers only the card
   // (150 — the mortgage's unknown minimum is never invented), but it is a TYPED
   // PARTIAL that says how many debts and what share of the balance lack it.
-  check("H3 Σ minimumPayment = 150 (known only) — FIXED by F3: minimumCoverage PARTIAL, '1 of 2 debts has no minimum payment on file'",
+  check("H3 Σ minimumPayment = 150 (known only) — FIXED by F3: minimumCoverage PARTIAL, 'minimum payment known for 1 of 2 debts (2% of what you owe)'",
     agg.minimumPayment === 150 && agg.missingMinimumCount === 1
       && agg.minimumCoverage.status === "PARTIAL" && agg.minimumCoverage.unknownCount === 1 && agg.minimumCoverage.owingCount === 2
       && agg.minimumCoverage.unknownOwed === 300_000 && near(agg.minimumCoverage.unknownOwedShare, 300_000 / 305_000, 1e-9)
-      && agg.minimumCoverage.note === "1 of 2 debts has no minimum payment on file", agg.minimumCoverage);
+      && agg.minimumCoverage.note === "minimum payment known for 1 of 2 debts (2% of what you owe)", agg.minimumCoverage);
   // FIXED by F3 — desired behaviour: the 25% is over the card only and is never
   // averaged over the unknown mortgage; rateCoverage PARTIAL travels with it.
-  check("H3 weightedApr = 25 over known rates only — FIXED by F3: rateCoverage PARTIAL, '1 of 2 debts has no rate on file'",
+  check("H3 weightedApr = 25 over known rates only — FIXED by F3: rateCoverage PARTIAL, 'rate known for 1 of 2 debts (2% of what you owe)', not sufficient (< 50%)",
     agg.weightedApr === 25 && agg.unratedCount === 1
-      && agg.rateCoverage.status === "PARTIAL" && agg.rateCoverage.note === "1 of 2 debts has no rate on file", agg.rateCoverage);
+      && agg.rateCoverage.status === "PARTIAL" && agg.rateCoverage.note === "rate known for 1 of 2 debts (2% of what you owe)"
+      && agg.rateCoverage.sufficient === false, agg.rateCoverage);
 
   const ic = computeInterestCost([{ id: "mtg", balance: 300_000, aprPct: null }, { id: "card", balance: 5_000, aprPct: 25 }]);
   check("H3 monthly interest = 104.17 (card only); mortgage unknown, sorted last", near(ic.totalMonthly, 104.1667, 0.01) && ic.unknownCount === 1 && ic.rows[1]?.id === "mtg", ic);
@@ -187,15 +188,15 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
   check("H3 payoff basis = PARTIAL_INTEREST", basis?.interest === "PARTIAL_INTEREST", basis);
   // FIXED by F3 — desired behaviour: the mortgage is never SILENTLY at 0%. Its
   // projection is labelled RATE_UNKNOWN, the plan's interest total is scoped to
-  // known-rate debts, and the surfaced note says "Rate unknown for 1 of 2 debts".
+  // known-rate debts, and the surfaced note gives the count AND the owed share.
   // (The pro-rata date itself is H4's subject and is unchanged.)
   check("H3 mortgage projection — FIXED by F3: rateStatus RATE_UNKNOWN, interest total KNOWN_RATE_ONLY, '1 of 2 debts' counts",
     mtg?.rateStatus === "RATE_UNKNOWN" && mtg?.aprPct === null
       && plan.status === "paid_off" && plan.interestTotalScope === "KNOWN_RATE_ONLY"
       && plan.totalInterest === plan.liabilities.find((l) => l.id === "card")?.interestPaid
       && basis?.unknownAprCount === 1 && basis?.owingCount === 2, { mtg, scope: plan.status === "paid_off" ? plan.interestTotalScope : null });
-  check("H3 payoff note — FIXED by F3: 'Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.'",
-    payoffUnknownRateNote(plan) === "Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.", payoffUnknownRateNote(plan));
+  check("H3 payoff note — FIXED by F3: 'Rate known for 1 of 2 debts (2% of what you owe) — …left out of the interest total.'",
+    payoffUnknownRateNote(plan) === "Rate known for 1 of 2 debts (2% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(plan));
 
   // FIXED by F3 — desired behaviour: the label follows the liability KIND
   // (providerSubtype), in the UI and in the AI tool contract alike.

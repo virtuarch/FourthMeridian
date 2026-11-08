@@ -6,7 +6,8 @@
  *   • a Plaid mortgage (debtSubtype null, providerSubtype "mortgage") reads
  *     "Mortgage rate", an auto loan "Loan rate", a card "APR";
  *   • the payoff planner labels the mortgage's projection "Mortgage rate unknown",
- *     shows the "Rate unknown for 1 of 2 debts" note, and never calls a blend of
+ *     shows the "Rate known for 1 of 2 debts (x% of what you owe)" note, shows
+ *     "Not enough rate information" when < 50% of the balance is rated, and never calls a blend of
  *     a mortgage and a card an "APR";
  *   • the signals rail says "no rate", not "no APR", for a mortgage.
  *
@@ -74,14 +75,23 @@ console.log("3. Payoff planner — rate unknown labelled, blend is a 'rate'");
   const t = text(renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [SMALL_MTG, SMALL_CARD], today: TODAY, onAddApr: () => {} })));
   check("by-account row: 'Home Loan Mortgage rate unknown' + 'Interest not included — mortgage rate unknown'",
     t.includes("Home Loan Mortgage rate unknown") && t.includes("Interest not included — mortgage rate unknown"), t);
-  check("note: 'Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.'",
-    t.includes("Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total."), t);
+  check("note states the count AND the owed share: 'Rate known for 1 of 2 debts (14% of what you owe) — …'",
+    t.includes("Rate known for 1 of 2 debts (14% of what you owe) — debts without a rate are projected without interest and left out of the interest total."), t);
   check("estimate notice: 'a rate on file' and 'No rate on file: Home Loan.'",
     t.includes("Interest is counted only on the debts with a rate on file.") && t.includes("No rate on file: Home Loan."), t);
-  check("the card + mortgage blend is 'Avg rate (known)', never 'Avg APR'", t.includes("Avg rate (known) · reference 25.00%") && !t.includes("Avg APR"), t);
+  check("the card + mortgage blend is 'Avg rate (known)', never 'Avg APR'", t.includes("Avg rate (known) · reference") && !t.includes("Avg APR"), t);
+  check("14% rated (< 50%) ⇒ 'Not enough rate information' in place of the average",
+    t.includes("Avg rate (known) · reference Not enough rate information") && !t.includes("reference 25.00%"), t);
+  check("…the number + its coverage stay in the by-account drill-down",
+    t.includes("Avg rate (known): 25.00% · rate known for 1 of 2 debts (14% of what you owe)"), t);
+  const half = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
+    accounts: [acct("mtg", "Home Loan", 500, { providerSubtype: "mortgage" }), acct("card", "Card A", 500, { debtSubtype: "credit_card", interestRate: 25 })],
+    today: TODAY, onAddApr: () => {},
+  })));
+  check("50% rated ⇒ the average IS shown (partial): 'Avg rate (known) · reference 25.00%'", half.includes("Avg rate (known) · reference 25.00%"), half);
   check("interest line is scoped: 'Estimated interest (known rates only)'", t.includes("Estimated interest (known rates only)"), t);
   const cards = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
-    accounts: [SMALL_CARD, acct("c2", "Card B", 600, { debtSubtype: "credit_card" })], today: TODAY, onAddApr: () => {},
+    accounts: [SMALL_CARD, acct("c2", "Card B", 400, { debtSubtype: "credit_card" })], today: TODAY, onAddApr: () => {},
   })));
   check("card-only plan keeps APR wording ('Avg APR (known)', 'No APR on file: Card B.')",
     cards.includes("Avg APR (known) · reference 25.00%") && cards.includes("No APR on file: Card B.") && cards.includes("Card B APR unknown"), cards);
@@ -94,7 +104,7 @@ console.log("4. Signals + KPIs");
   check("mortgage without a rate ⇒ '1 debt with no rate — interest cost unknown'", gaps.startsWith("1 debt with no rate — interest cost unknown"), gaps);
   const k = computeDebtKpis([MORTGAGE, CARD]);
   check("KPIs carry the typed coverage: rate PARTIAL, minimum NONE (no minimums on file)",
-    k.rateCoverage?.status === "PARTIAL" && k.rateCoverage.note === "1 of 2 debts has no rate on file" && k.minimumCoverage?.status === "NONE",
+    k.rateCoverage?.status === "PARTIAL" && k.rateCoverage.note === "rate known for 1 of 2 debts (2% of what you owe)" && k.rateCoverage.sufficient === false && k.minimumCoverage?.status === "NONE",
     JSON.stringify({ r: k.rateCoverage, m: k.minimumCoverage }));
 }
 

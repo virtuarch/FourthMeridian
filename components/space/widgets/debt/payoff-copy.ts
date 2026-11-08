@@ -9,6 +9,7 @@
  */
 
 import { MAX_PAYOFF_PAYMENTS, type PayoffBasis, type PayoffPlan } from "@/lib/debt/payoff";
+import { formatOwedShare } from "@/lib/debt/aggregates";
 
 /** The basis of a plan that ran a schedule, or null for one that never did. */
 export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
@@ -34,15 +35,17 @@ export function payoffEstimateNotice(
 
 /**
  * Mortgage F3 (S2 ruling, item 3) — the payoff never assumes 0% SILENTLY: the
- * "rate unknown" note, with how many debts it covers, from the engine's own
- * counts (`basis.unknownAprCount` / `basis.owingCount`). Null when every owing
- * debt has a rate on file.
+ * rate-unknown note, stating how many debts AND what SHARE of the balance the
+ * known rates cover (S2), from the engine's own counts and balances. Null when
+ * every owing debt has a rate on file.
  */
 export function payoffUnknownRateNote(plan: PayoffPlan): string | null {
   const basis = payoffBasisOf(plan);
   if (!basis || basis.unknownAprCount === 0) return null;
-  const { unknownAprCount: u, owingCount: n } = basis;
-  return `Rate unknown for ${u} of ${n} debt${n === 1 ? "" : "s"} — projected without interest and left out of the interest total.`;
+  const { unknownAprCount: u, owingCount: n, knownAprBalance: k, unknownAprBalance: x } = basis;
+  const share = k + x > 0 ? k / (k + x) : 0;
+  return `Rate known for ${n - u} of ${n} debt${n === 1 ? "" : "s"} (${formatOwedShare(share)} of what you owe) — `
+    + `debts without a rate are projected without interest and left out of the interest total.`;
 }
 
 /** The one call to action — it points at the Interest cost widget, never at a second APR input. */

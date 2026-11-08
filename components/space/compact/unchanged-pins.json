@@ -26,7 +26,7 @@
  "lib/accounts/space-account-link.ts": "9468567bdcd4c8f58aa022faee4353dfa75b7a8eda32c7816117962407d2ead0",
  "lib/accounts/wallet-connection-format.ts": "ab265f47799d47d6bd99236a5c50e7d71c87ac43ac025421cf6ee741974bf27d",
  "lib/accounts/wallet-connection.ts": "a32dafc141cdc6d49db5eea8fe7e9b9584075e1faf68dc865b588e5fb83a28f2",
- "lib/debt/aggregates.ts": "d62adff63730a95e397c52a5376b92432840cf8735b027b0925cebbd0a6696fa",
+ "lib/debt/aggregates.ts": "d9977450c979ec345120f4450a0936ea8e84e54f2298305661d046183a6055f4",
  "lib/debt/balance-semantics.ts": "62518023cefb3d8c3513dea5f187d1f4f976e76578ff4a4382e070a70bfd0002",
  "lib/debt/display-conversion.ts": "24dde3d88f7d640a96ee1194b8937e1175f317aa1fe3eba837445ee73e2f5c70",
  "lib/debt/effective-terms.ts": "e4ac4a1bd92cc233f077ec769fe342c0e7e0b3635211df5891035136ded960a5",

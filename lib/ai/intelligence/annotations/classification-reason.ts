@@ -27,6 +27,7 @@ import {
   LIQUIDITY_CRITICAL_MONTHS, LIQUIDITY_WARNING_MONTHS, LIQUIDITY_EXCELLENT_MONTHS,
 } from './constants';
 import { MONEY_EPSILON } from '@/lib/data/snapshot-window';
+import type { AiRateCoverage } from '@/lib/debt/aggregates';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const finite = (v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -48,21 +49,27 @@ export interface DebtRateInputs {
   liabilitiesChangeAbs:   number | null;
   debtAccounts:           number;
   debtAccountsWithApr:    number;
+  /** Mortgage F3 / S2 — what `weightedAprPct` covers; echoed into reasonMetrics when supplied. */
+  rateCoverage?:          AiRateCoverage;
 }
 
 /**
  * The graded rungs of the debt RATE ladder (every APR known, liabilities > 0).
  * Behaviour is the ladder `computeAssessment` has always run: a null blended
- * rate weighs as 0, so only the trend tie-break can speak.
+ * rate clears no rate rung (it is unknown, never 0), so only the trend
+ * tie-break can speak.
  */
 export function gradeDebtRate(i: DebtRateInputs): {
   classification: DebtRateClassification; reason: ClassificationReason<DebtReasonCode>;
 } {
-  const apr = i.weightedAprPct ?? 0;
+  // Mortgage F3 / S2 — no `?? 0`: an unknown blend is null and flows through as
+  // unknown. A null rate cannot clear a rate rung, so only the trend tie-break
+  // can speak (the same rungs as before — nothing was ever above 0 there).
+  const apr = i.weightedAprPct;
   const declining = (i.liabilitiesChangeAbs ?? 0) < 0;
   const [classification, reasonCode]: [DebtRateClassification, DebtReasonCode] =
-    apr > APR_CRITICAL_THRESHOLD ? ['CRITICAL', 'WEIGHTED_APR_ABOVE_CRITICAL']
-    : apr > APR_WARNING_THRESHOLD ? ['WARNING', 'WEIGHTED_APR_ABOVE_WARNING']
+    apr !== null && apr > APR_CRITICAL_THRESHOLD ? ['CRITICAL', 'WEIGHTED_APR_ABOVE_CRITICAL']
+    : apr !== null && apr > APR_WARNING_THRESHOLD ? ['WARNING', 'WEIGHTED_APR_ABOVE_WARNING']
     : declining ? ['IMPROVING', 'RATE_BELOW_WARNING_LIABILITIES_DECLINING']
     : ['HEALTHY', 'RATE_BELOW_WARNING'];
   return {
@@ -75,6 +82,13 @@ export function gradeDebtRate(i: DebtRateInputs): {
         criticalAbovePct: APR_CRITICAL_THRESHOLD,
         warningAbovePct:  APR_WARNING_THRESHOLD,
         ratedOwed: round2(i.ratedOwed),
+        // F3 / S2 — the coverage travels beside the weighted rate.
+        ...(i.rateCoverage ? {
+          rateCoverageStatus:   i.rateCoverage.status,
+          ratedDebtCount:       i.rateCoverage.ratedCount,
+          unratedDebtCount:     i.rateCoverage.unratedCount,
+          unknownOwedShare:     i.rateCoverage.unknownOwedShare,
+        } : {}),
         // The tie-break's operand is echoed only on the rungs that read it.
         ...(classification === 'IMPROVING' || classification === 'HEALTHY'
           ? { liabilitiesChangeOverWindow: i.liabilitiesChangeAbs === null ? null : round2(i.liabilitiesChangeAbs) } : {}),
