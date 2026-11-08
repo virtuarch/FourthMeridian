@@ -33,6 +33,7 @@ import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { incidentAuditDetail, incidentIdFromSearch } from "@/lib/platform/incidents/action-context";
 import { checkManualRefreshCooldown, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects";
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
@@ -46,7 +47,7 @@ export const maxDuration = 300;
 
 export const runtime = "nodejs";
 
-export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
   const limited = await limitPlatformMutation(auth.user.id, "ops-connection-resync");
@@ -84,6 +85,8 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   // the acting operator; the institution stays a label in detail, never an
   // email, never a balance.
   let refreshExecutionId: string | null = null;
+  // Incident detail v1 — the incident this resync was taken from (context only).
+  const incidentRef = incidentAuditDetail(incidentIdFromSearch(req.nextUrl.searchParams));
   const auditResync = (outcome: string, result: "SUCCESS" | "FAILURE" | "REFUSED", extra: Record<string, unknown> = {}) =>
     recordOperatorAction(db, {
       actor:     operatorActorFrom(auth, "PLATFORM_OPS"),
@@ -91,7 +94,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       target:    { kind: "PLAID_ITEM", id: item.id },
       execution: { refreshExecutionId },
       result,
-      detail:    { connectionId: item.id, provider: "PLAID", institution: item.institutionName, outcome, ...extra },
+      detail:    { connectionId: item.id, provider: "PLAID", institution: item.institutionName, outcome, ...incidentRef, ...extra },
     });
 
   // ── OPS-2D-3 — ADMISSION ────────────────────────────────────────────────────
