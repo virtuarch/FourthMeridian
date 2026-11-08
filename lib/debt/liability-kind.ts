@@ -211,6 +211,71 @@ export function debtTypeLabel(a: LiabilityKindInput): string {
   return DEBT_TYPE_LABEL[debtType(a)];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// S2 PRIVACY ruling P1 (2026-11-08) — a debt TYPE label never discloses more
+// than the viewer's visibility allows.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A balance-only co-member must never learn "Mortgage" / "HELOC" (home
+// ownership + secured debt). For any account the viewer neither owns nor holds
+// at FULL visibility, every type label in UI and AI payloads is the COARSE kind
+// only: installment → "Loan", revolving → "Credit line", unknown → "Debt".
+// Classification and arithmetic are unchanged — `debtType` / `liabilityKind`
+// still read the full evidence; only the NAME is coarsened.
+//
+// THE rule: `viewerDebtLabel(account, access)`. `debtTypeLabel` /
+// DEBT_TYPE_LABEL[...] are called nowhere else (source-scan pinned,
+// lib/debt/viewer-debt-label.test.ts).
+
+/** What the viewer may see of a debt's TYPE: the fine type, or its coarse kind only. */
+export type DebtLabelAccess = "FINE" | "COARSE";
+
+/** The visibility facts a row carries about its viewer. */
+export interface DebtLabelViewer {
+  /** SpaceAccountLink.visibilityLevel of the row (FULL / BALANCE_ONLY / …). */
+  visibilityLevel?: string | null;
+  /** True when the viewer owns the account. */
+  viewerIsOwner?: boolean | null;
+}
+
+/**
+ * FINE only for the owner or a FULL-visibility viewer. Everything else — a
+ * BALANCE_ONLY row, an unknown tier, a row that does not say — FAILS CLOSED to
+ * COARSE.
+ */
+export function debtLabelAccess(v: DebtLabelViewer | null | undefined): DebtLabelAccess {
+  return v?.viewerIsOwner === true || v?.visibilityLevel === "FULL" ? "FINE" : "COARSE";
+}
+
+/** The coarse names, by kind (S2 vocabulary). */
+export const COARSE_DEBT_LABEL: Readonly<Record<LiabilityKind, string>> = {
+  installment: "Loan",
+  revolving:   "Credit line",
+  unknown:     "Debt",
+};
+
+/** The kind-preserving generic DebtType a COARSE viewer may be told. */
+const COARSE_DEBT_TYPE: Readonly<Record<LiabilityKind, DebtType>> = {
+  installment: "other_installment",
+  revolving:   "other_revolving",
+  unknown:     "unknown",
+};
+
+/**
+ * The debt TYPE a viewer may be told: the fine type at FINE access; at COARSE,
+ * the generic type of the same kind (other_installment / other_revolving /
+ * unknown) — so `kindOfDebtType` of the answer is unchanged.
+ */
+export function viewerDebtType(a: LiabilityKindInput, access: DebtLabelAccess): DebtType {
+  const t = debtType(a);
+  return access === "FINE" ? t : COARSE_DEBT_TYPE[kindOfDebtType(t)];
+}
+
+/** THE debt-type label a viewer sees ("Mortgage" at FINE; "Loan" at COARSE). */
+export function viewerDebtLabel(a: LiabilityKindInput, access: DebtLabelAccess): string {
+  return access === "FINE" ? debtTypeLabel(a) : COARSE_DEBT_LABEL[liabilityKind(a)];
+}
+
 /** True ONLY for a mortgage — the gate for every mortgage-specific behaviour
  *  (mortgage rate label, equity, amortization schedule, escrow). */
 export function isMortgageDebt(a: LiabilityKindInput): boolean {

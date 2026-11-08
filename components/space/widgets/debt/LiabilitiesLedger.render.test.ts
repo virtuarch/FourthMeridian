@@ -39,7 +39,7 @@ const acct = (
   over: Partial<DebtPerspectiveAccount> = {},
 ): DebtPerspectiveAccount => ({
   id: name.toLowerCase().replace(/\W/g, ""),
-  name, type: "debt", institution: "Bank", balance, currency: "USD",
+  name, type: "debt", institution: "Bank", balance, currency: "USD", visibilityLevel: "FULL",
   ...over,
 } as DebtPerspectiveAccount);
 

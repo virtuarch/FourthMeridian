@@ -40,7 +40,7 @@ const BASELINE = path.join(process.cwd(), "components/space/compact/desktop-base
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 const RAIL = ["Overview", "Activity", "Accounts", "Transactions", "Members"].map((label) => ({ id: label.toUpperCase(), label }));
 const debt = (id: string, name: string, balance: number, over: Partial<DebtPerspectiveAccount> = {}): DebtPerspectiveAccount =>
-  ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
+  ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", visibilityLevel: "FULL", ...over });
 const DEBTS: DebtPerspectiveAccount[] = [
   debt("c1", "Card Product A", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),
   debt("c2", "Card Product B", -300, { debtSubtype: "credit_card", creditLimit: 5000 }),

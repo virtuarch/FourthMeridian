@@ -31,8 +31,8 @@
 import type { TermCoverageStatus } from "@/lib/debt/aggregates";
 import { inSentence, isExcludedFromLiquidNetWorth } from "@/lib/debt/liquid-net-worth";
 import {
-  debtType, debtTypeLabel, liabilityKind,
-  type DebtType, type LiabilityKind, type LiabilityKindInput,
+  debtLabelAccess, liabilityKind, viewerDebtLabel, viewerDebtType,
+  type DebtLabelViewer, type DebtType, type LiabilityKind, type LiabilityKindInput,
 } from "@/lib/debt/liability-kind";
 
 /** Which total a coverage statement describes. */
@@ -110,7 +110,7 @@ export type ExclusionReason = "UNOBSERVED" | "UNVALUED" | "UNCONVERTED" | "REDAC
 export type ExcludedAccountClass = "DEBT" | "CASH" | "INVESTMENT" | "DIGITAL_ASSET" | "OTHER_ASSET" | "UNKNOWN";
 
 /** One input row: any account shape carrying the exclusion evidence + its type. */
-export interface ExclusionDetectorRow extends LiabilityKindInput {
+export interface ExclusionDetectorRow extends LiabilityKindInput, DebtLabelViewer {
   id?:   string;
   type:  string;
   /** FinancialAccount.balanceObserved (FIN-A2). Only `false` means unobserved. */
@@ -167,9 +167,14 @@ const NON_DEBT_LABEL: Readonly<Record<string, string>> = {
   other:      "asset",
 };
 
-/** The in-sentence name of an account's type ("mortgage", "crypto wallet", …). */
-export function excludedAccountLabel(a: { type: string } & LiabilityKindInput): string {
-  if (a.type === "debt") return inSentence(debtTypeLabel(a));
+/**
+ * The in-sentence name of an account's type ("mortgage", "crypto wallet", …).
+ * S2 PRIVACY P1 — a debt is named finely only for its owner / a FULL viewer;
+ * any other row (BALANCE_ONLY, or a row that does not say) reads "loan" /
+ * "credit line" / "debt".
+ */
+export function excludedAccountLabel(a: { type: string } & LiabilityKindInput & DebtLabelViewer): string {
+  if (a.type === "debt") return inSentence(viewerDebtLabel(a, debtLabelAccess(a)));
   return NON_DEBT_LABEL[a.type] ?? "account";
 }
 
@@ -197,7 +202,9 @@ export function detectExcludedAccounts(rows: ReadonlyArray<ExclusionDetectorRow>
     const accountClass = classOfType(a.type);
     const debt = accountClass === "DEBT"
       ? {
-          debtType: debtType(a),
+          // S2 PRIVACY P1 — the TYPE the viewer may be told (kind-preserving
+          // generic at COARSE); the liquid-NW decision below reads full evidence.
+          debtType: viewerDebtType(a, debtLabelAccess(a)),
           liabilityKind: liabilityKind(a),
           ...(isExcludedFromLiquidNetWorth(a) ? { excludedFromLiquidNetWorth: true as const } : {}),
         }
