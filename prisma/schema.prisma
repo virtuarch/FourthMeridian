@@ -1418,10 +1418,35 @@ model ManualAssetProfile {
   /// value on the acquisition date. False = purchase price is informational only.
   purchasePriceIsStartingValue Boolean   @default(false)
 
+  // Mortgage F9 (owner 2026-11-08 — HOME VALUATION). All three are additive;
+  // existing rows read null / UNKNOWN / [] and are never rewritten.
+  /// The kind the user chose at entry ("real_estate" | "vehicle" | "equipment" |
+  /// "other"). Null = not recorded (every asset created before F9).
+  assetKind             String?
+  /// What the recorded value IS for a property: the home's MARKET_VALUE, or an
+  /// EQUITY figure the user entered (value already net of the mortgage).
+  /// UNKNOWN = never stated (DB default for every pre-F9 row). Read by
+  /// lib/assets/property-equity.ts; never used to restate a value.
+  valueBasis            PropertyValueBasis @default(UNKNOWN)
+  /// The debt FinancialAccount ids (mortgage / HELOC / home-equity loan) the
+  /// USER linked as secured by this property. No FK by design (see migration
+  /// 20261108140000_mortgage_f9_property_value_basis README): every read
+  /// re-checks each id against the caller's visible, same-Space, secured-kind
+  /// debts, so a deleted, unshared or re-typed debt simply stops counting.
+  /// Derived equity only — net worth never reads this.
+  securedDebtAccountIds String[]           @default([])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([financialAccountId])
+}
+
+/// Mortgage F9 — what a manual property's recorded value represents.
+enum PropertyValueBasis {
+  MARKET_VALUE
+  EQUITY_ENTERED
+  UNKNOWN
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

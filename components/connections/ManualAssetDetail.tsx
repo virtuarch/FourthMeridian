@@ -7,7 +7,9 @@
  * tab primitive (DetailTabs) as a provider connection's detail:
  *
  *   Overview  kind, the user's current estimate, currency, valued-as-of date,
- *             acquisition facts when given, and the Spaces it is shown in
+ *             acquisition facts when given, and the Spaces it is shown in;
+ *             for a property, its linked mortgage/HELOC and derived equity
+ *             (PropertyEquityPanel — Mortgage F9)
  *   Health    "You value this asset yourself", the last valuation date and the
  *             freshness rule (over 12 months ⇒ consider updating) — never sync
  *             or provider language
@@ -27,6 +29,7 @@ import {
   formatAssetDate, manualAssetHealth, summarizeManualAsset, MANUAL_ASSET_KIND_LABEL, type ManualAssetLite,
 } from "@/lib/connections/real-assets.core";
 import { ESTIMATE_DISCLOSURE } from "@/lib/assets/manual-asset";
+import { PropertyEquityPanel } from "@/components/connections/PropertyEquityPanel";
 import { AssetValuationHistory } from "@/components/space/widgets/wealth/AssetValuationHistory";
 import { Badge, DetailTabs, Facts, SectionLabel } from "@/components/connections/ConnectionDetailTabs";
 import { DOT, WORD } from "@/components/connections/ConnectionRow";
@@ -72,6 +75,8 @@ export function ManualAssetDetail({ asset }: { asset: ManualAssetLite }) {
                 asset.spaces.length > 0 && ["Shown in", asset.spaces.map((s) => s.name).join(", ")],
               ]} />
               <p className="mt-3 text-xs leading-relaxed text-[var(--text-muted)]">{ESTIMATE_DISCLOSURE}</p>
+              {/* Mortgage F9 — renders only for a property (or an asset of unrecorded kind). */}
+              <PropertyEquityPanel key={`${asset.id}-${asset.value}`} accountId={asset.id} />
             </>
           )}
 

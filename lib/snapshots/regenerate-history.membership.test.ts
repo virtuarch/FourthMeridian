@@ -419,6 +419,12 @@ async function testLoader(): Promise<void> {
 // no code mutates it: moving an acquisition date LATER would unblock days a
 // past regen valued from the purchase price, and they would be rewritten
 // without the asset. If you add an edit path, the guard must stop trusting it.
+//
+// Mortgage F9 — the ONE sanctioned mutation: lib/assets/property-links.ts
+// upserts the property columns (valueBasis, securedDebtAccountIds) and nothing
+// else. It is admitted only while that file never names an acquisition or
+// purchase column, so the floor's inputs stay create-only.
+const F9_PROFILE_WRITER = path.join("lib", "assets", "property-links.ts");
 function testProfileImmutability(): void {
   const root = path.resolve(__dirname, "..", "..");
   const offenders: string[] = [];
@@ -429,6 +435,11 @@ function testProfileImmutability(): void {
       if (statSync(full).isDirectory()) { walk(full); continue; }
       if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name)) continue;
       const src = readFileSync(full, "utf8");
+      if (path.relative(root, full) === F9_PROFILE_WRITER) {
+        if (/acquisitionDate|purchasePrice|purchaseCurrency|purchasePriceIsStartingValue/.test(src)
+          || /manualAssetProfile\s*\.\s*(updateMany|delete|deleteMany)\b/.test(src)) offenders.push(F9_PROFILE_WRITER);
+        continue;
+      }
       if (/manualAssetProfile\s*\.\s*(update|updateMany|upsert|delete|deleteMany)\b/.test(src)
         || /(UPDATE|DELETE\s+FROM)\s+"?ManualAssetProfile"?/i.test(src)) {
         offenders.push(path.relative(root, full));

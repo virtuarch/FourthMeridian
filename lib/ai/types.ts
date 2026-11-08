@@ -364,6 +364,34 @@ export interface AccountSummaryItem {
    * Present only when at least two anchors exist.
    */
   valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
+  /**
+   * Mortgage F9 (owner 2026-11-08) — a manual PROPERTY's value basis, the
+   * mortgage / HELOC / home-equity debts the user linked as secured by it, and
+   * the DERIVED equity (value − linked secured debt). Net worth ALREADY counts
+   * the property at `value` and each debt as a liability: equity is never
+   * additional wealth and must never be added to netWorth. `derivedEquity` is
+   * null when it cannot be stated honestly (`equityUnavailableReason`).
+   * `possibleDoubleCount` = the value may have been entered as equity while the
+   * mortgage is also counted; the app has NOT restated anything — quote the
+   * disclosure and ask the user to confirm market value vs equity. Only linked
+   * secured kinds appear: an auto, student or personal loan never reduces
+   * equity. Manual FULL rows that state a kind, a link or a basis only.
+   */
+  property?: {
+    value:            number;
+    valueBasis:       'MARKET_VALUE' | 'EQUITY_ENTERED' | 'UNKNOWN';
+    securedDebts:     { id: string; name: string; kind: 'mortgage' | 'heloc' | 'home_equity_loan'; amountOwed: number }[];
+    securedDebtTotal: number;
+    derivedEquity:    number | null;
+    equityUnavailableReason?: 'EQUITY_ENTERED_WITH_LINKED_DEBT' | 'CURRENCY_MISMATCH' | 'LINKED_DEBT_NOT_VISIBLE';
+    possibleDoubleCount?: {
+      reason: 'EQUITY_ENTERED_WITH_LINKED_DEBT' | 'VALUE_BELOW_LINKED_DEBT';
+      possibleUnderstatement: number;
+      disclosure: string;
+    };
+    netWorthTreatment: 'PROPERTY_AT_VALUE_DEBT_AS_LIABILITY';
+    meaning:           string;
+  };
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;

@@ -49,6 +49,10 @@
 
 import type { ReadClient } from '@/lib/db/tenant-context';
 import { loadHistoriesFor, type ValuationHistory } from '@/lib/assets/valuations';
+import { loadPropertyProfilesFor } from '@/lib/assets/property-links';
+import {
+  computePropertyEquity, doubleCountDisclosure, PROPERTY_EQUITY_AI_MEANING, type PropertyValueBasis,
+} from '@/lib/assets/property-equity';
 import {
   accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
 } from '@/lib/accounts/display-identity';
@@ -596,6 +600,51 @@ async function assembleAccounts(
     now.toISOString().slice(0, 10),
   );
 
+  // Mortgage F9 (owner 2026-11-08) — a property's value basis, its linked secured
+  // debts and the DERIVED equity. Linked debts are resolved ONLY against this
+  // Space's FULL debt rows (same-Space scoping); a linked debt the viewer cannot
+  // see in full is counted as unavailable, never subtracted. Emitted only for a
+  // manual asset whose profile states something (kind real_estate, a link, or a
+  // basis) — every pre-F9 asset's context is byte-identical.
+  const propertyProfiles = await loadPropertyProfilesFor(
+    client,
+    disclosingLinks
+      .filter((l) => grantsAccountDetail(l.visibilityLevel) && l.financialAccount.syncStatus === 'manual')
+      .map((l) => l.financialAccount.id),
+  );
+  const fullDebtById = new Map(disclosingLinks
+    .filter((l) => grantsAccountDetail(l.visibilityLevel) && l.financialAccount.type === 'debt')
+    .map((l) => [l.financialAccount.id, l.financialAccount]));
+  const propertyFacts = (fa: { id: string; balance: number; currency: string }): Pick<AccountSummaryItem, 'property'> => {
+    const p = propertyProfiles.get(fa.id);
+    if (!p) return {};
+    if (p.assetKind !== 'real_estate' && p.securedDebtAccountIds.length === 0 && p.valueBasis === 'UNKNOWN') return {};
+    const visible = p.securedDebtAccountIds.map((id) => fullDebtById.get(id)).filter((d) => d !== undefined);
+    const eq = computePropertyEquity({
+      value: fa.balance, currency: fa.currency, valueBasis: p.valueBasis as PropertyValueBasis,
+      linkedDebts: visible.map((d) => ({
+        id: d.id, name: resolveDisplayName(d), balance: d.balance, currency: d.currency,
+        type: d.type, debtSubtype: d.debtSubtype, providerSubtype: d.providerSubtype, creditLimit: d.creditLimit,
+      })),
+      unavailableLinkedCount: p.securedDebtAccountIds.length - visible.length,
+    });
+    return {
+      property: {
+        value:            eq.value,
+        valueBasis:       eq.valueBasis,
+        securedDebts:     eq.securedDebts.map((d) => ({ id: d.id, name: d.name, kind: d.kind, amountOwed: d.amountOwed })),
+        securedDebtTotal: eq.securedDebtTotal,
+        derivedEquity:    eq.equity,
+        ...(eq.equityUnavailableReason ? { equityUnavailableReason: eq.equityUnavailableReason } : {}),
+        ...(eq.doubleCount ? {
+          possibleDoubleCount: { ...eq.doubleCount, disclosure: doubleCountDisclosure(eq.doubleCount) },
+        } : {}),
+        netWorthTreatment: eq.netWorthTreatment,
+        meaning:           PROPERTY_EQUITY_AI_MEANING,
+      },
+    };
+  };
+
   const allItems: AccountSummaryItem[] = (() => {
     // FULL rows pass through individually, exactly as before.
     const fullItems = disclosingLinks
@@ -639,6 +688,7 @@ async function assembleAccounts(
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           ...(fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}),
           ...(fa.syncStatus === 'manual' ? valuationFacts(historyByAccount.get(fa.id)) : {}),
+          ...(fa.syncStatus === 'manual' ? propertyFacts(fa) : {}),
           balanceFreshness:     freshnessFact(fa, now),
           ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,

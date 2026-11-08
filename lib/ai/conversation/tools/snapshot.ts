@@ -102,6 +102,10 @@ export const getFinancialSnapshot: ToolDefinition = {
         ...(a2.valuations ? { valuations: a2.valuations } : {}),
         ...(a2.modeledHistory ? { modeledHistory: a2.modeledHistory } : {}),
         ...(a2.valueChangeSinceFirstRecorded ? { valueChangeSinceFirstRecorded: a2.valueChangeSinceFirstRecorded } : {}),
+        // Mortgage F9 — a property's value basis, linked secured debt and DERIVED
+        // equity (already inside netWorth: never added on top), plus the
+        // double-count prompt when its value may have been entered as equity.
+        ...(a2.property ? { property: a2.property } : {}),
         available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
           ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
         ...accessOf(a2),
