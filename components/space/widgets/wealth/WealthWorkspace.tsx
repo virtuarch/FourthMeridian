@@ -81,8 +81,9 @@ import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/Liquidi
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { RealAssetsSection } from "./RealAssetsSection";
-import { WealthHero, wealthSecondaryRows, SecondaryChange, gatedDelta, PartialMark, wealthTotalsCoverage, wealthHeadlineCoverage } from "./WealthHero";
+import { WealthHero, wealthSecondaryRows, SecondaryChange, gatedDelta, PartialMark, wealthTotalsCoverage, wealthHeadlineCoverage, heroShowsLiquidNetWorth } from "./WealthHero";
 import { excludedAccountCounts } from "@/lib/balances/unobserved-totals";
+import { liquidNetWorthBasis, liquidNetWorthNoteText } from "@/lib/debt/liquid-net-worth";
 import { wealthChangeGate } from "./wealth-change-gate";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
@@ -331,6 +332,8 @@ export function WealthWorkspace({
   // PARTIAL with its DIRECTION (excluded debt ⇒ true net worth is lower;
   // excluded asset ⇒ may be higher) instead of reading clean.
   const exclusionCounts = useMemo(() => excludedAccountCounts(accounts ?? []), [accounts]);
+  // Mortgage F1 — today's installment loans, named beside every Liquid NW figure.
+  const liquidBasis = useMemo(() => liquidNetWorthBasis(accounts ?? []), [accounts]);
   const totalsCoverage = useMemo(() => wealthTotalsCoverage(exclusionCounts), [exclusionCounts]);
   const headlineCoverage = useMemo(
     () => wealthHeadlineCoverage(totalsCoverage, metric, exclusionCounts),
@@ -639,7 +642,7 @@ export function WealthWorkspace({
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
           <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
-            cryptoPriceNote={cryptoPriceNote} changeGate={changeGate} totalsCoverage={totalsCoverage} />
+            cryptoPriceNote={cryptoPriceNote} changeGate={changeGate} totalsCoverage={totalsCoverage} liquidNetWorthBasis={liquidBasis} />
         </div>
 
         {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
@@ -677,7 +680,7 @@ export function WealthWorkspace({
               floor says the history there is partial (never $0 owed). */}
           <BalanceCoverageNote from={result.chart.points[0]?.date ?? null} metric={metric} />
           {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
-          <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
+          <HeroNotes notes={[cryptoPriceNote, result.asOfState.found && heroShowsLiquidNetWorth(result, metric) ? liquidNetWorthNoteText(liquidBasis) : null]} className="lg:hidden" />
         </div>
 
         <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />

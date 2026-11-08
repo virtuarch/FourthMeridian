@@ -195,7 +195,7 @@ console.log("Story is deterministic, template-driven, supported facts only");
 console.log("Composition — crypto included, zero categories filtered, Real World Assets label");
 {
   const comp = (o: Partial<WealthComposition>): WealthComposition =>
-    ({ cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, ...o });
+    ({ cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, liquidDebt: 0, ...o });
 
   const withCrypto = wealthCompositionItems(comp({ cash: 1000, investments: 500, crypto: 250 }));
   check("crypto is included as its own category (not Investments)",

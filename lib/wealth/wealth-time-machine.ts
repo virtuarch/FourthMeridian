@@ -58,6 +58,14 @@ export interface WealthComposition {
   crypto:      number;
   real:        number;
   liabilities: number;
+  /**
+   * Mortgage F1 — the debt LIQUID net worth subtracts: `cash − liquidNetWorth`,
+   * i.e. every liability except installment loans (mortgage, auto, student, …).
+   * Recovered from the row's stored aggregates (no installment column exists),
+   * so Liquid NW's drivers reconcile: Δ liquidNetWorth = Δ cash − Δ liquidDebt.
+   * A Liquid-NW-only component: never an asset slice, never a Net Worth driver.
+   */
+  liquidDebt:  number;
 }
 
 /** Sub-dollar noise floor — a value at/below this never renders as a category. */
@@ -74,6 +82,7 @@ export const WEALTH_CATEGORY_LABELS: Record<keyof WealthComposition, string> = {
   crypto:      "Crypto",
   real:        "Real World Assets",
   liabilities: "Liabilities",
+  liquidDebt:  "Debt excl. long-term loans",
 };
 
 export interface WealthCompositionItem {
@@ -201,6 +210,7 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netLiquid: s.netLiquid ?? 0, cashOnHand: s.cashOnHand,
   });
   const liabilities = s.totalDebt;
+  const liquidNetWorth = s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt);
   return {
     date:           s.date,
     isEstimated:    s.isEstimated ?? false,
@@ -213,10 +223,10 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     // `cash + savings − debt` here produced the same number by luck of both
     // copies agreeing, and would silently disagree the moment one was fixed.
     // The `??` fallback covers a pre-column DTO only.
-    liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    liquidNetWorth,
     cash,
     invested:       investments + crypto,
-    composition:    { cash, investments, crypto, real, liabilities },
+    composition:    { cash, investments, crypto, real, liabilities, liquidDebt: cash - liquidNetWorth },
   };
 }
 
@@ -224,7 +234,7 @@ const EMPTY_STATE: WealthState = {
   found: false, date: null, isEstimated: false,
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
   cash: 0, invested: 0,
-  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
+  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, liquidDebt: 0 },
 };
 
 /** A snapshot → chart point (every metric series + the estimated flag). */
@@ -348,6 +358,7 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
         crypto:      asOfState.composition.crypto      - c.composition.crypto,
         real:        asOfState.composition.real        - c.composition.real,
         liabilities: asOfState.composition.liabilities - c.composition.liabilities,
+        liquidDebt:  asOfState.composition.liquidDebt  - c.composition.liquidDebt,
       },
     };
     drivers = (Object.keys(WEALTH_CATEGORY_LABELS) as (keyof WealthComposition)[])

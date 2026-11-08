@@ -16,6 +16,7 @@
  */
 
 import { isInstallmentLoan, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
+import { liquidNetWorthDebt } from "@/lib/debt/liquid-net-worth";
 
 // ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
 
@@ -247,6 +248,12 @@ export interface ClassifyTotals {
   totalLiabilities:   number;
   totalRealAssets:    number;
   /**
+   * Mortgage F1 — `classifyAccounts.totalInstallmentLiabilities`: the part of
+   * totalLiabilities EXCLUDED from netLiquid. Optional: absent (a hand-built
+   * total) ⇒ nothing excluded, the conservative all-debt figure.
+   */
+  totalInstallmentLiabilities?: number;
+  /**
    * FIN-005 — the classifier's unrestricted/restricted split of the SAME cash
    * (`classifyAccounts.totalLiquid` / `totalRestrictedCash`). Optional, because
    * the stored snapshot carries no such column; read by `computeLiquidSplit`.
@@ -289,7 +296,7 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
   return {
     liquid:         c.totalLiquid,
     restrictedCash: c.totalRestrictedCash,
-    netLiquidUnrestricted: c.totalLiquid - c.totalLiabilities,
+    netLiquidUnrestricted: c.totalLiquid - liquidNetWorthDebt(c), // Mortgage F1
   };
 }
 
@@ -416,9 +423,12 @@ export function computeAccountFloors(
  *                 (FIN-015 — real assets ARE in net worth; the schema comment on
  *                 `SpaceSnapshot.netWorth` omits them and no `realAssets` column
  *                 is stored, so the component is a read-time residual)
- *   netLiquid   = cash + savings − debt   — ALL checking + savings, restricted
- *                 cash included (FIN-005; see `computeLiquidSplit`); real
- *                 assets, investments and crypto excluded
+ *   netLiquid   = cash + savings − (debt − installment debt)
+ *                 — ALL checking + savings, restricted cash included (FIN-005;
+ *                 see `computeLiquidSplit`); real assets, investments and
+ *                 crypto excluded; Mortgage F1 (owner 2026-11-08): installment
+ *                 loans (mortgage, auto, student, …) are excluded too — they
+ *                 stay in `debt` and `netWorth` (lib/debt/liquid-net-worth.ts)
  *   cashOnHand  = max(cash, 0)
  */
 export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
@@ -432,7 +442,7 @@ export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
 
   const totalAssets = total + cash + savings + realAssets;
   const netWorth    = totalAssets - debt;
-  const netLiquid   = cash + savings - debt;
+  const netLiquid   = cash + savings - liquidNetWorthDebt(c);
   const cashOnHand  = Math.max(cash, 0);
 
   return { stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };

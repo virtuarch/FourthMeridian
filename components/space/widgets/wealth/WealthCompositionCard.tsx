@@ -21,6 +21,7 @@
  * A date before coverage shows an honest unavailable state in class mode.
  */
 
+import { liquidNetWorthBasis, liquidNetWorthNoteText } from "@/lib/debt/liquid-net-worth";
 import { useMemo, useState, type ReactNode } from "react";
 import { formatCurrency } from "@/lib/currency";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
@@ -183,6 +184,10 @@ export function WealthCompositionCard({
     content = (
       <Surface className="px-4 py-4">
         {renderLiquidityLadder(accounts, ctx)}
+        {/* Mortgage F1 (owner 2026-11-08) — what Liquid NW leaves out, by name. */}
+        <p className="mt-3 text-[11px] leading-snug text-[var(--text-muted)]" data-liquid-nw-note>
+          {liquidNetWorthNoteText(liquidNetWorthBasis(accounts ?? []))}
+        </p>
       </Surface>
     );
   } else if (mode !== "class") {

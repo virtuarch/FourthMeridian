@@ -99,6 +99,18 @@ import {
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
+/**
+ * Mortgage F1 — the liability-kind evidence a DEBT day-row carries into
+ * classifyAccounts, so a reconstructed day's netLiquid excludes installment
+ * loans exactly as today's row does. Debt rows only: a cash row's subtype is
+ * deliberately not forwarded here (its restricted split is out of F1's scope).
+ */
+function liabilityKindEvidence(a: { type: string; debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null }) {
+  return a.type === "debt"
+    ? { debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }
+    : {};
+}
+
 /** Kill switch — absent/false ⇒ no SpaceSnapshot writes from regeneration at all. */
 export function wealthRegenerationEnabled(): boolean {
   return process.env.WEALTH_REGENERATION_ENABLED === "true";
@@ -1020,8 +1032,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // PB-8 — a non-walkable LIABILITY with transactions (a loan with
         // payments) takes the flat fallback below too: an ESTIMATE, said so.
         if (heldFlatIds.has(a.id) || (a.type === "debt" && !walkedCardIds.has(a.id))) dayHasHeldFlat = true;
-        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency }];
-        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency }];
+        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency, ...liabilityKindEvidence(a) }];
+        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency, ...liabilityKindEvidence(a) }];
         // RWA-2B — a manual asset answers from its ledger: the resolver's value
         // for THIS day, or nothing at all (not yet held / not yet valued — never
         // today's balance painted backward, never a zero).
@@ -1032,7 +1044,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           dayRealAssetBases.push(v.basis);
           return [{ type: a.type, balance: v.value, currency: a.currency }];
         }
-        return [{ type: a.type, balance: a.balance, currency: a.currency }];
+        return [{ type: a.type, balance: a.balance, currency: a.currency, ...liabilityKindEvidence(a) }];
       });
     // Skip a day only when there is nothing at all to value — but a holdings-only
     // Space (investment/crypto floored to today, so dayAccounts is empty) or a
@@ -1226,6 +1238,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         totalSavings:       c.totalSavings,
         totalLiabilities:   c.totalLiabilities,
         totalRealAssets:    c.totalRealAssets,
+        // Mortgage F1 — the installment share, excluded from netLiquid.
+        totalInstallmentLiabilities: c.totalInstallmentLiabilities,
         // FIN-E part 2 — the restricted share of the SAME walked cash.
         totalRestrictedCash: c.totalRestrictedCash,
       },

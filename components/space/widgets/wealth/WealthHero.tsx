@@ -37,6 +37,15 @@ import { ESTIMATED_CHANGE_SUFFIX } from "@/lib/connections/balance-coverage.core
 import { investedClassLabel } from "@/lib/wealth/invested-label";
 import type { TalkSection } from "@/components/ai/talk-about-this";
 import { unobservedTotalCoverage, type ExcludedAccountCounts, type ExclusionTotal, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
+import { liquidNetWorthNoteText, type LiquidNetWorthBasis } from "@/lib/debt/liquid-net-worth";
+
+/**
+ * Mortgage F1 (owner 2026-11-08) — true when the hero states a liquid-net-worth
+ * figure (as the headline or as a secondary stat), so its definition is shown.
+ */
+export function heroShowsLiquidNetWorth(result: WealthResult, metric: WealthMetricKey): boolean {
+  return metric === "liquidNetWorth" || wealthSecondaryRows(result, metric).some((r) => r.key === "liquidNetWorth");
+}
 
 /**
  * Mortgage F8 (S2) — which total each wealth metric IS, for the PARTIAL /
@@ -128,6 +137,7 @@ export function WealthHero({
   timePreset,
   changeGate = null,
   totalsCoverage,
+  liquidNetWorthBasis = null,
 }: {
   result:   WealthResult;
   currency: string;
@@ -165,6 +175,12 @@ export function WealthHero({
    * secondary stat that is partial is marked "partial" with its direction.
    */
   totalsCoverage?: WealthTotalsCoverage;
+  /**
+   * Mortgage F1 — how today's accounts are treated for liquid net worth (the
+   * excluded installment loans, by name). Drives the definition line shown
+   * wherever Liquid NW is stated. Absent ⇒ the definition alone.
+   */
+  liquidNetWorthBasis?: LiquidNetWorthBasis | null;
 }) {
   const { asOfState, compareState } = result;
   const gate = gateFor(changeGate, metric);
@@ -261,6 +277,14 @@ export function WealthHero({
               </Stat>
             ))}
           </div>
+        )}
+
+        {/* Mortgage F1 — wherever Liquid NW is stated, say what it leaves out
+            (and that total net worth does not). Compact: under the chart. */}
+        {heroShowsLiquidNetWorth(result, metric) && (
+          <p className="mt-2 text-[11px] text-[var(--text-muted)]" data-liquid-nw-note>
+            {liquidNetWorthNoteText(liquidNetWorthBasis)}
+          </p>
         )}
 
         {/* v2.7 mobile/desktop parity — the same AI entry as the compact card's row 5. */}
