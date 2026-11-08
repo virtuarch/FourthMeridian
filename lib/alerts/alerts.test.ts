@@ -28,6 +28,9 @@ import {
   type AlertRunSummary,
 } from "@/lib/alerts/evaluate";
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
+import { authorityGatherStatus } from "@/lib/alerts/evaluate";
+import { latestAlertEvaluation, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { AlertSyncIncident, SyncIncidentHealth } from "@/lib/alerts/authorities";
 import { foldSyncIncidents, type AlertFoldVerdict } from "@/lib/alerts/sync-incidents";
@@ -476,6 +479,25 @@ async function orchestratorTests() {
   });
   check("a healthy platform sends zero mail", quiet.counts.firing === 0 && quiet.deliveryStatus === "none" && sent.length === 1);
   check("nothing lost ⇒ undelivered is null", quiet.undelivered === null && s1.undelivered === null);
+
+  // ── B10 monitoring (S2 ruling) — per-authority gather status in the summary.
+  console.log("orchestrator · B10 per-authority gather status");
+  const fullOutputs = (o: Partial<AuthorityOutputs> = {}): AuthorityOutputs => outputs({
+    jobHealth: jobHealth([job("a", "healthy")]), connectionHealth: connHealth({ HEALTHY: 3 }), resourceFreshness: freshness([resource("fx", "fresh")]),
+    aiFailures: {} as never, aiSpend: {} as never, syncIncidents: { checkedAt: NOW.toISOString(), active: [], scanTruncated: false },
+    policyAssignments: {} as never, aiSpendAnomaly: {} as never, plaidCallAnomaly: {} as never, platformAiPurge: {} as never, ...o,
+  });
+  // Shape-only stand-ins: disable every rule so the engine never reads them; gather status depends on presence alone.
+  const allOff = async () => new Map(ALERT_RULES.map((r) => [`alert_rule_enabled:${r.id}`, "false"] as const));
+  const allGathered = await evaluatePlatformAlerts({ ...baseDeps, loadSettings: allOff, gatherAuthorities: async () => fullOutputs() });
+  check("every gathered source ⇒ `ok` for all ten keys", ALERT_AUTHORITY_SOURCES.length === 10 && ALERT_AUTHORITY_SOURCES.every((k) => allGathered.authorities?.[k] === "ok"), JSON.stringify(allGathered.authorities));
+  const syncDown = await evaluatePlatformAlerts({ ...baseDeps, loadSettings: allOff, gatherAuthorities: async () => fullOutputs({ syncIncidents: null }) });
+  check("sync-incidents gather failed (null) ⇒ authorities.syncIncidents === 'failed'", syncDown.authorities?.syncIncidents === "failed");
+  check("…the others stay ok", ALERT_AUTHORITY_SOURCES.filter((k) => k !== "syncIncidents").every((k) => syncDown.authorities?.[k] === "ok"));
+  check("…fixed words only — no error text in the summary", Object.values(syncDown.authorities ?? {}).every((v) => v === "ok" || v === "failed"));
+  check("…and the failed source surfaces through the latest-evaluation reader", unavailableAlertSources(latestAlertEvaluation([syncDown])).join() === "syncIncidents");
+  check("an absent optional source is failed, never ok", quiet.authorities?.policyAssignments === "failed" && quiet.authorities?.jobHealth === "ok");
+  check("authorityGatherStatus is pure over presence", authorityGatherStatus(fullOutputs({ aiSpend: null })).aiSpend === "failed");
 
   // ── OBS-003 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.2): no
   // RESEND_API_KEY ⇒ the chokepoint returns `captured`. Before the fix that was

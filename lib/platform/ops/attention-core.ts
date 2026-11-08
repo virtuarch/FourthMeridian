@@ -41,7 +41,8 @@ import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@
 import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
-import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { alertSourceUnavailableSentence, unavailableAlertSources, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { ALERT_AUTHORITY_SOURCE_LABEL } from "@/lib/alerts/authority-sources";
 import type { AlertSeverity } from "@/lib/alerts/rules";
 import type { PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import type { SyncIssueSeverity } from "@/lib/platform/sync-issue-semantics";
@@ -67,7 +68,7 @@ export type AttentionSeverity = "critical" | "error" | "warning" | "info";
 
 export const ATTENTION_SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, error: 1, warning: 2, info: 3 };
 
-export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "incident" | "customer";
+export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "alert-source" | "incident" | "customer";
 
 export interface AttentionEntity {
   kind: AttentionEntityKind;
@@ -177,6 +178,8 @@ export const SEVERITY_OF = {
     critical: "critical",
     warning: "warning",
   } as Record<AlertSeverity, AttentionSeverity>,
+  /** B10 monitoring — an alert source that failed to gather (its rules were blind that cycle). */
+  alertSource: "warning" as AttentionSeverity,
   incident: {
     critical: "critical",
     error: "error",
@@ -333,6 +336,21 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
       evidence: { kind: "alert", id: rule.id, workspace: ALERTS_VIEW },
       actions: [{ kind: "open-workspace", workspace: ALERTS_VIEW }],
       basis: "latest evaluate-alerts run (per-rule outcomes) — the only notion of an active alert; since = that evaluation's time, not the breach's onset",
+    });
+  }
+  // B10 monitoring (S2 ruling) — a source that failed to gather contributed NO
+  // signals, so its rules' silence is "not asked", never "no breach". Always a
+  // WARNING; a row predating the field (`unknown`) raises nothing and claims nothing.
+  for (const source of unavailableAlertSources(a.latest)) {
+    out.push({
+      id: `alert-source:${source}`,
+      severity: SEVERITY_OF.alertSource,
+      entity: { kind: "alert-source", label: ALERT_AUTHORITY_SOURCE_LABEL[source] },
+      problem: `${alertSourceUnavailableSentence(source)} — it failed to gather in the latest evaluation, so its alert rules could not fire (not the same as no breach).`,
+      since: a.latest.evaluatedAtISO,
+      evidence: { kind: "alert", id: source, workspace: ALERTS_VIEW },
+      actions: [{ kind: "open-workspace", workspace: ALERTS_VIEW }],
+      basis: "latest evaluate-alerts run (per-authority gather status) — since = that evaluation's time",
     });
   }
   return out;

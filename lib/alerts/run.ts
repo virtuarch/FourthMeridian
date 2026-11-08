@@ -46,6 +46,7 @@ import {
   type AlertRuleOutcome,
   type AlertRunSummary,
   type AlertUndelivered,
+  authorityGatherStatus,
 } from "@/lib/alerts/evaluate";
 import { captureAlertDeliveryFailure } from "@/lib/alerts/delivery-capture";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
@@ -473,6 +474,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
     recoveryUndelivered,
     flap,
     flapNotices,
+    // B10 monitoring (S2 ruling) — which sources were actually asked this cycle.
+    authorities: authorityGatherStatus(authorities),
   };
 }
 
