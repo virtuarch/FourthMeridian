@@ -8,8 +8,8 @@
  * Locks: the providerSubtype truth table (case/whitespace variants, null, unknown),
  * stored debtSubtype precedence (incl. line_of_credit → cards, heloc → loans), a
  * limit-only account → other (owner D-5), label outputs, the 14-row Preview-like
- * split Credit 4 / Loans 8 / Other 2, and that totals / utilization do not depend
- * on classification.
+ * split Credit 4 / Loans 8 / Other 2, and that totals do not depend on
+ * classification (utilization follows Mortgage F2's installment rule instead).
  */
 
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
@@ -18,6 +18,7 @@ import {
   type DebtClass,
 } from "./debt-ledger-util";
 import { computeDebtKpis } from "./debt-kpis";
+import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import { debtClassCounts } from "@/components/space/compact/compact-sections";
 
 let failures = 0;
@@ -131,27 +132,37 @@ const PREVIEW: DebtPerspectiveAccount[] = [
   check("(sanity) 8 rows carry a limit — the old rule would have called them all cards", legacy === 8);
 }
 
-console.log("\n6. totals and utilization do not depend on classification");
+console.log("\n6. totals do not depend on classification; utilization follows the F2 installment rule, not the display class");
 {
+  // Mortgage F2 (S2 ruling) — a Plaid `loan` providerSubtype (mortgage, student,
+  // auto, home equity, …) is never revolving, so providerSubtype now feeds
+  // utilization THROUGH lib/debt/liability-kind.ts isInstallmentLoan. It still
+  // never feeds totals, and the DISPLAY class (presentationDebtClass) is not
+  // what decides utilization.
   const stripped = PREVIEW.map(({ providerSubtype: _p, ...rest }) => rest as DebtPerspectiveAccount);
-  // Re-class every row by REVERSING providerSubtype across rows (the split changes;
-  // no stored field moves). NB computeDebtKpis' revolving filter reads the STORED
-  // debtSubtype (lib/accounts/credit-utilization isRevolvingLine) — untouched by R2,
-  // so changing stored debtSubtype would be a data change, not a presentation one.
   const subs = PREVIEW.map((a) => a.providerSubtype).reverse();
   const asStored = PREVIEW.map((a, i) => ({ ...a, providerSubtype: subs[i] }));
-  const k0 = JSON.stringify(computeDebtKpis(PREVIEW));
-  check("computeDebtKpis identical with providerSubtype stripped", k0 === JSON.stringify(computeDebtKpis(stripped)));
-  check("computeDebtKpis identical when every row is re-classed (providerSubtype permuted)", k0 === JSON.stringify(computeDebtKpis(asStored)));
+  const totals = (xs: DebtPerspectiveAccount[]) => {
+    const { utilizationPct: _u, utilizationLevel: _l, ...rest } = computeDebtKpis(xs);
+    return JSON.stringify(rest);
+  };
+  const k0 = totals(PREVIEW);
+  check("debt totals identical with providerSubtype stripped", k0 === totals(stripped));
+  check("debt totals identical when every row is re-classed (providerSubtype permuted)", k0 === totals(asStored));
   const u0 = PREVIEW.map(accountUtilization);
-  check("accountUtilization identical with providerSubtype stripped",
-    JSON.stringify(u0) === JSON.stringify(stripped.map(accountUtilization)));
-  check("accountUtilization identical when re-classed", JSON.stringify(u0) === JSON.stringify(asStored.map(accountUtilization)));
+  check("utilization: cards + legacy limit rows only; Plaid loans (incl. home equity) have none",
+    JSON.stringify(u0) === JSON.stringify([12, 6, 0, 0, null, null, null, null, null, null, null, null, 20, 2.5]), JSON.stringify(u0));
+  check("utilization with providerSubtype stripped: limit-bearing rows read their limit again (no loan evidence)",
+    JSON.stringify(stripped.map(accountUtilization)) === JSON.stringify([12, 6, 0, 0, null, null, null, null, null, null, 24, 0, 20, 2.5]),
+    JSON.stringify(stripped.map(accountUtilization)));
   check("(sanity) the permutation really re-classed rows",
     JSON.stringify(debtClassCounts(asStored)) === JSON.stringify(debtClassCounts(PREVIEW))
       && asStored.some((a, i) => presentationDebtClass(a) !== presentationDebtClass(PREVIEW[i])));
-  check("accountUtilization still reads the limit on rows now classed loans/other",
-    u0[10] === 24 && u0[12] === 20, JSON.stringify(u0));
+  check("re-classed rows: utilization is null exactly for Plaid loan subtypes",
+    asStored.every((a) => (accountUtilization(a) === null) === (isInstallmentLoan(a) || !(a.creditLimit! > 0))));
+  const k = computeDebtKpis(PREVIEW);
+  check("aggregate utilization excludes the home-equity loans: (1,200+300+800+150) / (10k+5k+8k+2k+4k+6k) = 7%",
+    k.utilizationPct !== null && Math.abs(k.utilizationPct - (2450 / 35000) * 100) < 1e-9, String(k.utilizationPct));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

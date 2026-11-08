@@ -74,6 +74,7 @@ async function liquidityLens(
     // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified);
     // a category, not an identity, so the lens privacy contract holds.
     providerSubtype: account.providerSubtype ?? null,
+    debtSubtype:     account.debtSubtype ?? null,
     balance:         account.balance,
     // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
     // privacy contract of this boundary is about names/institutions).

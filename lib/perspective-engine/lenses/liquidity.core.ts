@@ -54,6 +54,7 @@
 import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import { countedBalance, liquidityAccess } from "@/lib/account-classifier";
 import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
 import { convertMoney } from "@/lib/money/convert";
@@ -99,6 +100,9 @@ export interface LiquidityAccountRow {
    * holds. Read only through liquidityAccess.
    */
   providerSubtype?: string | null;
+  /** FinancialAccount.debtSubtype (a category, not an identity). With
+   *  providerSubtype, decides Mortgage F2's installment-loan rule. */
+  debtSubtype?: string | null;
   balance: number;
   /**
    * MC1 Phase 3 Slice 5 — native currency of `balance`/`creditLimit` (Phase 0
@@ -247,7 +251,8 @@ export function computeLiquidity(
     else if (access === "restricted") restricted += inTarget(countedBalance(r), r.currency);
     else if (access === "unverified") unverified += inTarget(r.balance, r.currency);
     else if (access === "illiquid")   illiquid   += inTarget(r.balance, r.currency);
-    else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
+    // Mortgage F2 — an installment loan's provider limit is not credit headroom.
+    else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number" && !isInstallmentLoan(r)) {
       // creditLimit and balance share the row's native currency, so the
       // clamped headroom converts as one native amount (convert-then-clamp
       // would be equivalent under positive rates; clamp-then-convert keeps

@@ -34,8 +34,9 @@
  *       the Amex Platinum — so keying this on debtSubtype alone would have
  *       silently mis-typed exactly the two accounts that matter. creditLimit is
  *       the evidence that actually exists.
- *       An INSTALLMENT loan (mortgage / auto / student / personal) has no
- *       available quantity: NOT_APPLICABLE.
+ *       An INSTALLMENT loan (mortgage / auto / student / personal, or any Plaid
+ *       `loan` providerSubtype — Mortgage F2, lib/debt/liability-kind.ts) has no
+ *       available quantity: NOT_APPLICABLE, even when Plaid sent a limit.
  *
  *   investment
  *       observed = account value.
@@ -73,10 +74,7 @@ import {
 } from "./quantities";
 import { NO_PENDING, type PendingContribution } from "./pending-evidence";
 
-/** Debt subtypes whose `available` figure is an unused credit line. */
-const REVOLVING_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
-/** Debt subtypes that amortise — no "available" quantity exists. */
-const INSTALLMENT_SUBTYPES = new Set(["mortgage", "auto_loan", "student_loan", "personal_loan"]);
+import { isInstallmentLoan, REVOLVING_DEBT_SUBTYPES } from "@/lib/debt/liability-kind";
 
 /** Everything the authority needs, in provider-neutral terms. */
 export interface AccountBalanceInput {
@@ -94,8 +92,12 @@ export interface AccountBalanceInput {
    * whole job. Undefined is treated exactly as null.
    */
   availableBalance?: number | null;
-  /** FinancialAccount.creditLimit — evidence that a debt row is revolving. */
+  /** FinancialAccount.creditLimit — evidence that a debt row is revolving
+   *  (ignored for an installment loan — Mortgage F2, lib/debt/liability-kind.ts). */
   creditLimit?: number | null;
+  /** FinancialAccount.providerSubtype (Plaid `subtype`). A Plaid `loan` subtype
+   *  marks an installment loan whose creditLimit is not credit headroom. */
+  providerSubtype?: string | null;
   /**
    * True when this is a self-custodied wallet (FinancialAccount.walletAddress
    * set). An on-chain balance has no provider "available" concept.
@@ -190,12 +192,14 @@ function resolveAvailable(input: AccountBalanceInput): AvailableClaim {
     // ── Debt — available CREDIT, and only with evidence of a revolving line ──
     case "debt": {
       const subtype = input.debtSubtype ?? null;
-      if (subtype !== null && INSTALLMENT_SUBTYPES.has(subtype)) {
-        // An amortising loan has no available quantity, whatever arrived.
+      // Mortgage F2 — an amortising loan (explicit installment debtSubtype, or a
+      // Plaid `loan` providerSubtype such as "mortgage") has no available
+      // quantity, whatever arrived — including a Plaid `balances.limit`.
+      if (isInstallmentLoan({ debtSubtype: subtype, providerSubtype: input.providerSubtype })) {
         return unavailable("NOT_APPLICABLE");
       }
       const revolving =
-        (subtype !== null && REVOLVING_SUBTYPES.has(subtype)) ||
+        (subtype !== null && REVOLVING_DEBT_SUBTYPES.has(subtype)) ||
         input.creditLimit != null;
       if (raw === null) return unavailable("PROVIDER_DID_NOT_REPORT");
       // A figure with no evidence of what kind of liability this is: refuse
@@ -220,6 +224,7 @@ export interface AccountBalanceRow {
   availableBalance?: number | null;
   creditLimit?: number | null;
   debtSubtype?: string | null;
+  providerSubtype?: string | null;
   walletAddress?: string | null;
   /** Fourth Meridian's write clock. */
   lastUpdated: Date | string | null;
@@ -251,6 +256,7 @@ export function resolveRowBalances(row: AccountBalanceRow, now: Date): AccountBa
     balance:             row.balance,
     availableBalance:    row.availableBalance ?? null,
     creditLimit:         row.creditLimit ?? null,
+    providerSubtype:     row.providerSubtype ?? null,
     isSelfCustodyWallet: !!row.walletAddress,
     freshness:           resolveAccountFreshness(freshnessInput, now),
   });

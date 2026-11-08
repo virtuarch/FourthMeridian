@@ -123,6 +123,7 @@ async function evaluateHistorical(
     // 2026-10-07 — liquidity-access evidence; without it a historical tier
     // would classify every investment as unverified and every HSA as cash.
     providerSubtype: r.account.providerSubtype ?? null,
+    debtSubtype: r.account.debtSubtype ?? null,
     balance: r.account.balance,
     currency: r.account.currency ?? null,
     creditLimit: r.account.creditLimit ?? undefined,

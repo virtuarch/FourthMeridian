@@ -19,6 +19,7 @@
 
 import { type LiabilityState } from "@/lib/debt/balance-semantics";
 import { utilizationPercent } from "@/lib/accounts/credit-utilization";
+import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
@@ -147,5 +148,7 @@ export function classifyDebt(a: DebtPerspectiveAccount): DebtClass {
  *  is the owner (it also owns the LEVEL bands the KPI strip and signals read),
  *  so this is now a thin adapter from the ledger's row shape onto it. */
 export function accountUtilization(a: DebtPerspectiveAccount): number | null {
+  // Mortgage F2 — an installment loan is never "utilized", whatever limit it carries.
+  if (isInstallmentLoan(a)) return null;
   return utilizationPercent({ balance: a.balance, creditLimit: a.creditLimit });
 }
