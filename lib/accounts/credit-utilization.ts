@@ -18,6 +18,9 @@
  */
 
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { isInstallmentLoan, REVOLVING_DEBT_SUBTYPES } from "@/lib/debt/liability-kind";
+
+export { REVOLVING_DEBT_SUBTYPES };
 
 export interface UtilizationInputAccount {
   id:           string;
@@ -25,6 +28,10 @@ export interface UtilizationInputAccount {
   type:         string;
   balance:      number;
   creditLimit?: number | null;
+  /** FM debtSubtype / Plaid providerSubtype — Mortgage F2: an installment loan
+   *  (lib/debt/liability-kind.ts) is never a utilization row, whatever limit it carries. */
+  debtSubtype?:     string | null;
+  providerSubtype?: string | null;
 }
 
 export type UtilizationLevel = "low" | "moderate" | "high" | "over";
@@ -50,7 +57,8 @@ export function utilizationLevel(pct: number): UtilizationLevel {
 export interface CreditUtilizationResult {
   /** Revolving debts (have a positive credit limit), highest utilization first. */
   rows:         UtilizationRow[];
-  /** Debt accounts WITHOUT a usable credit limit — surfaced for an "add limit" affordance. */
+  /** Non-installment debt accounts WITHOUT a usable credit limit — surfaced for an
+   *  "add limit" affordance. Mortgage F2: installment loans are never prompted. */
   missingLimit: { id: string; name: string }[];
 }
 
@@ -76,12 +84,15 @@ export interface CreditUtilizationResult {
  * consume this predicate — the two previously asked different populations
  * under the same word.
  */
-export const REVOLVING_DEBT_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
-export function isRevolvingLine(a: { debtSubtype?: string | null; creditLimit?: number | null }): boolean {
-  return (
-    (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype)) &&
-    a.creditLimit != null && a.creditLimit > 0
-  );
+/**
+ * Mortgage F2 — the subtype rule is lib/debt/liability-kind.ts `isInstallmentLoan`:
+ * an explicit non-revolving debtSubtype, or a Plaid `loan` providerSubtype
+ * (mortgage/student/auto/…), is never revolving even when it carries a limit.
+ */
+export function isRevolvingLine(a: {
+  type?: string | null; debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null;
+}): boolean {
+  return !isInstallmentLoan(a) && a.creditLimit != null && a.creditLimit > 0;
 }
 
 export function utilizationPercent(
@@ -92,10 +103,12 @@ export function utilizationPercent(
 }
 
 export function creditUtilization(accounts: UtilizationInputAccount[]): CreditUtilizationResult {
-  const debts = accounts.filter((a) => a.type === "debt");
+  // Mortgage F2 — installment loans take no part in utilization: no row, and
+  // no "add a credit limit" prompt.
+  const debts = accounts.filter((a) => a.type === "debt" && !isInstallmentLoan(a));
 
   const rows: UtilizationRow[] = debts
-    .filter((a) => a.creditLimit != null && a.creditLimit > 0)
+    .filter((a) => isRevolvingLine(a))
     .map((a) => {
       const limit = a.creditLimit as number;
       const pct = utilizationPercent(a) as number;

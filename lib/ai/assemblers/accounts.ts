@@ -316,6 +316,7 @@ async function assembleAccounts(
       availableBalance: number | null; creditLimit: number | null;
       debtSubtype: string | null; walletAddress: string | null;
       lastUpdated: Date; balanceLastUpdatedAt: Date | null;
+      providerSubtype?: string | null;
     },
     at: Date,
   ) => {
@@ -327,6 +328,7 @@ async function assembleAccounts(
       balance:             fa.balance,
       availableBalance:    fa.availableBalance,
       creditLimit:         fa.creditLimit,
+      providerSubtype:     fa.providerSubtype ?? null, // Mortgage F2 — a Plaid loan has no available credit
       isSelfCustodyWallet: !!fa.walletAddress,
       freshness:           resolveAccountFreshness({
         accountId:         fa.id,

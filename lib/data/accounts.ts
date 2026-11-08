@@ -80,7 +80,7 @@ async function loadCurrentCashState(
     where: { id: { in: accountIds }, deletedAt: null },
     select: {
       id: true, type: true, currency: true, balance: true,
-      availableBalance: true, creditLimit: true, debtSubtype: true,
+      availableBalance: true, creditLimit: true, debtSubtype: true, providerSubtype: true,
       walletAddress: true, lastUpdated: true, balanceLastUpdatedAt: true,
     },
   });

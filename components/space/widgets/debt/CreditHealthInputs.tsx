@@ -30,7 +30,8 @@
 import { useState } from "react";
 import { Check, Loader2, Pencil, Plus, X } from "lucide-react";
 import { FicoCard } from "@/components/dashboard/FicoCard";
-import { creditUtilization, REVOLVING_DEBT_SUBTYPES } from "@/lib/accounts/credit-utilization";
+import { creditUtilization } from "@/lib/accounts/credit-utilization";
+import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import {
   parseCreditLimitInput,
   parseCreditScoreInput,
@@ -148,10 +149,11 @@ export function CreditScoreInput({
 
 // ─── Credit limits ────────────────────────────────────────────────────────────
 
-/** A debt account that CAN carry a limit: a revolving subtype, or an untyped legacy row. */
-function canCarryLimit(a: DebtPerspectiveAccount): boolean {
-  return a.type === "debt" && a.aggregate == null
-    && (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype));
+/** A debt account that CAN carry a limit: a revolving subtype, or an untyped
+ *  legacy row. Mortgage F2 — never an installment loan (explicit loan subtype or
+ *  a Plaid `loan` providerSubtype), so a mortgage is never asked for a limit. */
+export function canCarryLimit(a: DebtPerspectiveAccount): boolean {
+  return a.type === "debt" && a.aggregate == null && !isInstallmentLoan(a);
 }
 
 /**

@@ -61,7 +61,9 @@ export interface DebtPerspectiveAccount {
   /** v2.7 R2 — FinancialAccount.providerSubtype (provider evidence, e.g. "credit card",
    *  "mortgage", "home equity"), already on the mount payload (SpaceAccount). Read
    *  ONLY by the display classifier `presentationDebtClass` when `debtSubtype` is
-   *  empty; never by totals, utilization, interest, or payoff. null/absent = unknown. */
+   *  empty, and by the installment-loan rule (lib/debt/liability-kind.ts, Mortgage F2)
+   *  that keeps a Plaid loan out of utilization and the "add limit" prompt; never by
+   *  totals, interest, or payoff. null/absent = unknown. */
   providerSubtype?: string | null;
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
    *  behind it) — such a row has no single liability to attach a rate or limit to. */

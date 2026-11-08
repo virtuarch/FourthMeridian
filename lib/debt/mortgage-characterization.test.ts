@@ -229,34 +229,36 @@ console.log(`H4. Payoff allocation: $300k mortgage + $5k card, $3k/month — ${L
 console.log(`H5. Mortgage carrying a creditLimit (balances.limit from Plaid) — ${LABEL}`);
 {
   const withLimit = { type: "debt", debtSubtype: null, creditLimit: 400_000, providerSubtype: "mortgage" };
-  // SUSPECTED DEFECT: providerSubtype "mortgage" is ignored once a limit is
-  // present; the mortgage is treated as a revolving card. Expected: a Plaid
-  // `loan` subtype (mortgage/auto/student/…) is never reconstructable/revolving.
-  check("H5 isReconstructableCard = TRUE for a limit-bearing mortgage (debtSubtype null)", isReconstructableCard(withLimit) === true);
+  // FIXED by F2 — desired behaviour: a Plaid `loan` subtype (mortgage/auto/
+  // student/…) is never reconstructable/revolving; its creditLimit is ignored
+  // (lib/debt/liability-kind.ts isInstallmentLoan).
+  check("H5 isReconstructableCard = FALSE for a limit-bearing mortgage (debtSubtype null)", isReconstructableCard(withLimit) === false);
   check("H5 contrast: same mortgage with creditLimit null ⇒ not walked", isReconstructableCard({ ...withLimit, creditLimit: null }) === false);
   check("H5 contrast: debtSubtype 'mortgage' ⇒ not walked even with a limit", isReconstructableCard({ ...withLimit, debtSubtype: "mortgage" }) === false);
-  check("H5 isRevolvingLine = TRUE (utilization population)", isRevolvingLine(withLimit) === true);
-  const util = creditUtilization([{ id: "mtg", name: "Mortgage", type: "debt", balance: 300_000, creditLimit: 400_000 }]);
-  check("H5 credit utilization row: 75% 'high'", util.rows.length === 1 && util.rows[0].pct === 75 && util.rows[0].level === "high", util);
-  const utilNo = creditUtilization([{ id: "mtg", name: "Mortgage", type: "debt", balance: 300_000, creditLimit: null }]);
-  check("H5 contrast: limit-less mortgage lands in missingLimit ('add limit' affordance)", utilNo.missingLimit.length === 1, utilNo);
+  check("H5 isRevolvingLine = FALSE (not in the utilization population)", isRevolvingLine(withLimit) === false);
+  const util = creditUtilization([{ id: "mtg", name: "Mortgage", type: "debt", balance: 300_000, creditLimit: 400_000, providerSubtype: "mortgage" }]);
+  check("H5 credit utilization: no row for a limit-bearing mortgage", util.rows.length === 0 && util.missingLimit.length === 0, util);
+  const utilNo = creditUtilization([{ id: "mtg", name: "Mortgage", type: "debt", balance: 300_000, creditLimit: null, providerSubtype: "mortgage" }]);
+  check("H5 contrast: limit-less mortgage is NOT in missingLimit (no 'add limit' affordance)", utilNo.missingLimit.length === 0, utilNo);
 
   const NOW = new Date("2026-06-30T12:00:00.000Z");
   const fresh = resolveAccountFreshness({ accountId: "mtg", ingestedAt: new Date(NOW.getTime() - 86_400_000).toISOString(), providerBalanceAt: null }, NOW);
-  const bal = resolveAccountBalances({ accountId: "mtg", accountType: "debt", debtSubtype: null, currency: "USD",
+  const bal = resolveAccountBalances({ accountId: "mtg", accountType: "debt", debtSubtype: null, providerSubtype: "mortgage", currency: "USD",
     balance: 300_000, availableBalance: 100_000, creditLimit: 400_000, freshness: fresh });
-  check("H5 availableBalance 100,000 is read as AVAILABLE_CREDIT", JSON.stringify(bal.available).includes("AVAILABLE_CREDIT"), bal.available);
+  check("H5 availableBalance 100,000 is NOT read as AVAILABLE_CREDIT (NOT_APPLICABLE)",
+    !JSON.stringify(bal.available).includes("AVAILABLE_CREDIT") && JSON.stringify(bal.available).includes("NOT_APPLICABLE"), bal.available);
 
   // Walk: three +2,500 payments (FM sign: into the liability) 10/40/70 days ago.
+  // The walk population is chosen by isReconstructableCard, so the mortgage is
+  // held flat — its past owed is never rebuilt from whole payments.
   const today = new Date("2026-06-30T00:00:00.000Z");
   const deltas = new Map([["mtg", new Map([
     [isoDate(addDaysUTC(today, -10)), 2_500], [isoDate(addDaysUTC(today, -40)), 2_500], [isoDate(addDaysUTC(today, -70)), 2_500],
   ])]]);
-  const walk = reconstructDailyLiabilityBalances([{ id: "mtg", balance: 300_000 }], deltas, today, addDaysUTC(today, -90));
+  const walked = [{ id: "mtg", balance: 300_000, ...withLimit }].filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
+  const walk = reconstructDailyLiabilityBalances(walked, deltas, today, addDaysUTC(today, -90));
   const d80 = walk.get(isoDate(addDaysUTC(today, -80)))?.get("mtg");
-  check("H5 walked as a card: owed 80 days ago = 307,500 (every payment added back as principal)", d80 === 307_500, d80);
-  // SUSPECTED DEFECT: whole payments (incl. interest/escrow) are walked back as
-  // principal, overstating past owed; the walk only applies because of the limit.
+  check("H5 not walked as a card: no reconstructed owed for the mortgage (held flat)", walked.length === 0 && d80 === undefined, d80);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

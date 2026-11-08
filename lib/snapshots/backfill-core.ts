@@ -15,6 +15,8 @@
  * loans) are held flat by the caller (they aren't passed here). No FlowType.
  */
 
+import { isInstallmentLoan, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
+
 // ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
 
 export function isoDate(d: Date): string {
@@ -189,11 +191,10 @@ export function isBoundaryContinuous(
  * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
  * is excluded and stays flat.
  *
- * Known caveat: a Plaid line_of_credit / HELOC also has a null subtype + a
- * limit, so it would be included here — those are revolving and transaction-
- * driven, so the walk is still directionally correct, but to strictly exclude
- * one, set its FinancialAccount.debtSubtype to a non-"credit_card" value.
- * Installment loans (no limit) are naturally excluded. Never touches non-debt.
+ * Mortgage F2 (S2 ruling) — a null-subtype row whose Plaid providerSubtype is a
+ * `loan` subtype (mortgage, student, auto, home equity, line of credit, …; see
+ * lib/debt/liability-kind.ts) is an installment liability and is NOT walked,
+ * even when Plaid sent a limit. Never touches non-debt.
  *
  * SINGLE AUTHORITY (HIST-1A). Formerly duplicated as four logic-identical copies
  * — backfill.ts, regenerate-history.ts, accounts-asof.core.ts (named), and
@@ -217,6 +218,10 @@ export function isReconstructableCard(a: {
   if (a.type !== "debt") return false;
   if (a.debtSubtype === "credit_card") return true;
   if (a.debtSubtype !== null) return false; // an explicit non-card subtype stays flat
+  // Mortgage F2 — a Plaid `loan` subtype (mortgage/student/auto/…) is an
+  // installment liability: its creditLimit is NOT card evidence, so it is never
+  // walked (held flat, the existing non-revolving path).
+  if (isInstallmentLoan(a)) return false;
   if (a.creditLimit != null) return true;
   // PB-8 — Plaid sends many cards (Capital One among them) with
   // `balances.limit: null`, so the limit cannot be the only revolving signal.
@@ -230,7 +235,7 @@ export function isReconstructableCard(a: {
  * whose posted ledger walks back from the current balance. (Plaid `loan`
  * subtypes — mortgage, auto, student, … — are installment and never walk.)
  */
-export const PLAID_CREDIT_SUBTYPES: ReadonlySet<string> = new Set(["credit card", "paypal"]);
+export { PLAID_CREDIT_SUBTYPES };
 
 // ── Derived snapshot fields (parity with lib/snapshots/regenerate.ts) ─────────
 
