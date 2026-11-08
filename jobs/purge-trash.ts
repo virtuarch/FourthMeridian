@@ -24,6 +24,7 @@
 
 import { runDataRetention, type DataRetentionResult } from "@/jobs/data-retention";
 import { platformAiPurgeJobFailure } from "@/lib/platform/intelligence/ai/conversations/purge";
+import { platformAiMemoryPurgeJobFailure } from "@/lib/platform/intelligence/ai/memory/purge";
 import { JobFailedWithSummaryError } from "@/lib/jobs/run";
 
 export interface PurgeTrashResult {
@@ -45,7 +46,7 @@ export async function purgeTrash(opts: { dryRun?: boolean } = {}): Promise<Purge
   // it never blocks one; the message is a fixed code (no error text, id or content).
   // The failed JobRun keeps the run's counts-only summary (S2 N1, 2026-11-04).
   const result: PurgeTrashResult = { purgedGoals: 0, retention };
-  const purgeFailure = platformAiPurgeJobFailure(retention.platformAiConversations);
+  const purgeFailure = platformAiPurgeJobFailure(retention.platformAiConversations) ?? platformAiMemoryPurgeJobFailure(retention.platformAiMemory);
   if (purgeFailure) throw new JobFailedWithSummaryError(purgeFailure, result);
   return result;
 }

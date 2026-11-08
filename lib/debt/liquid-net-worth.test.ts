@@ -37,10 +37,10 @@ const checks: string[] = [];
 const ok = (l: string) => checks.push(l);
 
 const CHECKING = { id: "chk", type: "checking", balance: 10_000, currency: "USD" };
-const MORTGAGE = { id: "mtg", type: "debt", balance: 300_000, currency: "USD", providerSubtype: "mortgage" };
-const CARD     = { id: "card", type: "debt", balance: 5_000, currency: "USD", providerSubtype: "credit card" };
-const AUTO     = { id: "auto", type: "debt", balance: 20_000, currency: "USD", debtSubtype: "auto_loan" };
-const MANUAL   = { id: "man", type: "debt", balance: 2_000, currency: "USD" }; // no kind evidence
+const MORTGAGE = { id: "mtg", type: "debt", visibilityLevel: "FULL", balance: 300_000, currency: "USD", providerSubtype: "mortgage" };
+const CARD     = { id: "card", type: "debt", visibilityLevel: "FULL", balance: 5_000, currency: "USD", providerSubtype: "credit card" };
+const AUTO     = { id: "auto", type: "debt", visibilityLevel: "FULL", balance: 20_000, currency: "USD", debtSubtype: "auto_loan" };
+const MANUAL   = { id: "man", type: "debt", visibilityLevel: "FULL", balance: 2_000, currency: "USD" }; // no kind evidence
 
 // ── 1. The owner's fixture: checking 10k + mortgage 300k ─────────────────────
 {
@@ -83,17 +83,17 @@ const MANUAL   = { id: "man", type: "debt", balance: 2_000, currency: "USD" }; /
 
 // ── 3. Several installment kinds are all named ───────────────────────────────
 {
-  const rows = [CHECKING, MORTGAGE, AUTO, { id: "stu", type: "debt", balance: 1, providerSubtype: "student" }];
+  const rows = [CHECKING, MORTGAGE, AUTO, { id: "stu", type: "debt", visibilityLevel: "FULL", balance: 1, providerSubtype: "student" }];
   const basis = liquidNetWorthBasis(rows);
   assert.deepEqual(basis.excludedKinds, ["mortgage", "auto loan", "student loan"]);
   assert.equal(basis.excludedNote, "Excludes: mortgage, auto loan, student loan");
   assert.equal(computeSnapshotFields(classifyAccounts(rows)).netLiquid, 10_000);
-  // Labels come from debtTypeLabel (#485), lower-cased mid-sentence; a closed-end
+  // Labels come from viewerDebtLabel (#485 + S2 P1, FULL rows), lower-cased mid-sentence; a closed-end
   // home-equity loan and other Plaid loan subtypes are "installment loan".
   const more = liquidNetWorthBasis([
-    { type: "debt", balance: 1, providerSubtype: "home equity", creditLimit: null },
-    { type: "debt", balance: 1, providerSubtype: "construction" },
-    { type: "debt", balance: 1, debtSubtype: "personal_loan" },
+    { type: "debt", visibilityLevel: "FULL", balance: 1, providerSubtype: "home equity", creditLimit: null },
+    { type: "debt", visibilityLevel: "FULL", balance: 1, providerSubtype: "construction" },
+    { type: "debt", visibilityLevel: "FULL", balance: 1, debtSubtype: "personal_loan" },
   ]);
   assert.deepEqual(more.excludedKinds, ["installment loan", "personal loan"]);
   assert.equal(inSentence("HELOC"), "HELOC");

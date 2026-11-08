@@ -91,7 +91,7 @@ const both = (html: string, needle: string | RegExp) => {
 console.log("1. Debt — All · Credit · Loans at every width");
 {
   const debt = (id: string, name: string, balance: number, over: Partial<DebtPerspectiveAccount> = {}): DebtPerspectiveAccount =>
-    ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
+    ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", visibilityLevel: "FULL", ...over });
   // Positive balance = owed (lib/debt/balance-semantics amountOwed).
   const ACCTS: DebtPerspectiveAccount[] = [
     debt("c1", "Card Product A", 1200, { debtSubtype: "credit_card", creditLimit: 10000 }),

@@ -52,8 +52,8 @@ import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { planPayoff, DEFAULT_PAYOFF_PAYMENT, DEFAULT_PAYOFF_STRATEGY, PAYOFF_STRATEGIES, type PayoffLiabilityInput, type PayoffStrategy } from "@/lib/debt/payoff";
-import { isInstallmentLoan } from "@/lib/debt/liability-kind";
-import { rateLabel, rateLabelInline, blendedRateLabel } from "@/lib/debt/rate-label";
+import { debtLabelAccess, isInstallmentLoan } from "@/lib/debt/liability-kind";
+import { viewerRateLabel, viewerRateLabelInline, blendedRateLabel } from "@/lib/debt/rate-label";
 import { todayUTCISO } from "@/lib/time/clock";
 import {
   payoffHeadline,
@@ -86,6 +86,8 @@ export type DebtPayoffAccount = {
   debtSubtype?:     string | null;
   providerSubtype?: string | null;
   creditLimit?:     number | null;
+  /** S2 PRIVACY P1 — the row's tier; non-FULL ⇒ the rate label never says "Mortgage". */
+  visibilityLevel?: string;
   /** Mortgage F4 — the required monthly payment (minimum / scheduled installment);
    *  undefined/null = UNKNOWN — never invented. A mortgage's may include escrow. */
   minimumPayment?:  number | null;
@@ -482,7 +484,7 @@ export function DebtPayoffSection({
               <div className="flex items-baseline justify-between gap-2">
                 <p className="truncate text-xs font-medium" style={{ color: "var(--text-primary)" }}>{l.label}</p>
                 <p className="shrink-0 text-[10px] tabular-nums" style={{ color: "var(--text-faint)" }}>
-                  {known ? `${(l.aprPct as number).toFixed(2)}% ${rateLabel(src)}` : `${rateLabel(src)} unknown`}
+                  {known ? `${(l.aprPct as number).toFixed(2)}% ${viewerRateLabel(src, debtLabelAccess(src))}` : `${viewerRateLabel(src, debtLabelAccess(src))} unknown`}
                 </p>
               </div>
               <p className="mt-0.5 text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
@@ -492,7 +494,7 @@ export function DebtPayoffSection({
               <p className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
                 {known
                   ? `Estimated interest: ${est}${formatCurrencyExact(l.interestPaid, disp)}`
-                  : `Interest not included — ${rateLabelInline(src)} unknown`}
+                  : `Interest not included — ${viewerRateLabelInline(src, debtLabelAccess(src))} unknown`}
               </p>
               <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>
                 {l.payoffISO === null
@@ -716,10 +718,10 @@ export function DebtPayoffSection({
                               );
                             })()}
                             {a.interestRate != null && (
-                              <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% {rateLabel(a)}</span>
+                              <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% {viewerRateLabel(a, debtLabelAccess(a))}</span>
                             )}
                             {a.interestRate == null && a.balance > 0 && (
-                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{rateLabel(a)} unknown · counted without interest</span>
+                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{viewerRateLabel(a, debtLabelAccess(a))} unknown · counted without interest</span>
                             )}
                           </div>
                         </div>

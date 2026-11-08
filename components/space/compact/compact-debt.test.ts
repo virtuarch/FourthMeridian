@@ -40,7 +40,7 @@ const dw = code("components/space/widgets/debt/DebtWorkspace.tsx");
 const nav = code("lib/space/use-space-navigation.ts");
 
 const debt = (id: string, name: string, balance: number, over: Partial<DebtPerspectiveAccount> = {}): DebtPerspectiveAccount =>
-  ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
+  ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", visibilityLevel: "FULL", ...over });
 // The P0 baseline fixture (cards, loans, other) …
 const BASE: DebtPerspectiveAccount[] = [
   debt("c1", "Card Product A", -1200, { debtSubtype: "credit_card", creditLimit: 10000, interestRate: 24.99 }),

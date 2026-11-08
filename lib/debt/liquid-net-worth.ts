@@ -32,7 +32,7 @@
  * Pure: no DB, no server-only imports (client components import it).
  */
 
-import { debtTypeLabel, liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { debtLabelAccess, liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, viewerDebtLabel, type DebtLabelViewer, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 /**
  * THE date liquid net worth stopped subtracting installment loans (owner
@@ -63,7 +63,7 @@ export const LIQUID_NET_WORTH_FORMULA = "Cash + Savings − Debt (excluding inst
 export type LiquidNetWorthTreatment = "COUNTED" | "EXCLUDED_INSTALLMENT";
 
 /** A liability row as every liquid-NW caller holds it. */
-export interface LiquidNetWorthLiability extends LiabilityKindInput {
+export interface LiquidNetWorthLiability extends LiabilityKindInput, DebtLabelViewer {
   type: string;
   balance: number;
   valuationUnknown?: boolean;
@@ -90,12 +90,15 @@ export function isExcludedFromLiquidNetWorth(a: LiabilityKindInput): boolean {
 
 /**
  * The in-sentence name of an EXCLUDED installment loan ("mortgage", "auto
- * loan", …). THE label source is `debtTypeLabel` (lib/debt/liability-kind.ts);
+ * loan", …). THE label source is `viewerDebtLabel` (lib/debt/liability-kind.ts);
  * this only lower-cases its first letter for use mid-sentence ("Excludes:
  * mortgage, auto loan") — an all-caps acronym ("HELOC") is left alone.
+ *
+ * S2 PRIVACY P1 — a row the viewer neither owns nor holds at FULL (or one that
+ * does not say) is named by its KIND only: "Excludes: loan".
  */
-export function installmentLoanLabel(a: LiabilityKindInput): string {
-  return inSentence(debtTypeLabel(a));
+export function installmentLoanLabel(a: LiabilityKindInput & DebtLabelViewer): string {
+  return inSentence(viewerDebtLabel(a, debtLabelAccess(a)));
 }
 
 /** "Auto loan" → "auto loan"; "HELOC" stays "HELOC". */

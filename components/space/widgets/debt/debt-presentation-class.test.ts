@@ -29,7 +29,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 let uid = 0;
 function debt(over: Partial<DebtPerspectiveAccount>): DebtPerspectiveAccount {
-  return { id: `d${uid++}`, name: "Liability", type: "debt", institution: "Bank", balance: 100, currency: "USD", ...over };
+  return { id: `d${uid++}`, name: "Liability", type: "debt", institution: "Bank", balance: 100, currency: "USD", visibilityLevel: "FULL", ...over };
 }
 
 console.log("\n1. providerSubtype fallback truth table (no stored debtSubtype)");

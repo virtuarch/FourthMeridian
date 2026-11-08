@@ -90,6 +90,9 @@ export interface Account {
   // back to the legacy flat columns otherwise.
   creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** S2 PRIVACY P1 — SpaceAccountLink tier this row was disclosed at. Read only
+   *  by the viewer debt-label helpers (lib/debt/liability-kind.ts debtLabelAccess). */
+  visibilityLevel?: string;
   /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
    *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
   providerSubtype?: string | null;

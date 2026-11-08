@@ -101,6 +101,9 @@ export interface ClassifiableAccount {
   debtSubtype?: string | null;
   /** Mortgage F1 — FinancialAccount.creditLimit; discriminates Plaid "home equity" only (liabilityKind). */
   creditLimit?: number | null;
+  /** S2 PRIVACY P1 — the row's SpaceAccountLink tier. Read ONLY by the viewer
+   *  debt-label helpers (never by any total): a non-FULL debt is named coarsely. */
+  visibilityLevel?: string | null;
 }
 
 /**

@@ -24,6 +24,9 @@ import type { PriceProvenance } from "@/lib/prices/current-quote.core";
 
 export type SpaceAccount = {
   id:             string;
+  /** S2 PRIVACY P1 — FULL / BALANCE_ONLY (normalizeSharedAccounts). Read only by
+   *  the viewer debt-label helpers: a non-FULL row's type is named coarsely. */
+  visibilityLevel?: string;
   name:           string;
   type:           string;
   institution:    string;
