@@ -24,7 +24,7 @@ import type { AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
-import type { DebtType } from '@/lib/debt/liability-kind';
+import type { DebtType, LiabilityKind } from '@/lib/debt/liability-kind';
 import type { AiPropertyFacts } from '@/lib/assets/property-equity';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
@@ -482,6 +482,11 @@ export interface AccountSummaryItem {
    *  'Mortgage rate' (mortgage only) | 'APR' (revolving credit only) | 'Interest rate'
    *  (no kind evidence). The same label the debt UI renders. */
   rateLabel?:             RateLabel;
+  /** Mortgage F4 — lib/debt/liability-kind.ts (derived from debtType): 'installment'
+   *  loans (mortgage, auto, student, personal) amortise on schedule and are never
+   *  extra-payment targets by default; 'revolving' (cards, lines, HELOCs) and
+   *  'unknown' are. */
+  liabilityKind?:         LiabilityKind;
   /** Owner 2026-11-08 — the ONE fine-grained debt type (lib/debt/liability-kind.ts
    *  `debtType`): credit_card | personal_installment | auto_loan | student_loan |
    *  mortgage | heloc | personal_line_of_credit | overdraft | other_revolving |

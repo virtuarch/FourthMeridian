@@ -27,7 +27,9 @@
 import "server-only";
 import { SyncIssueKind, type Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
-import { latestStageAttemptsBySubject } from "@/lib/platform/refresh/projections";
+import { latestStageAttemptsBySubject, recentItemAttempts } from "@/lib/platform/refresh/projections";
+import { allowlistedProviderCode, isUnrecognisedProviderCode, providerErrorCodeOfDetail } from "../explanations";
+import { ATTEMPTS_READ_CAP, summariseAttempts, unreadableAttempts } from "../attempts-summary";
 import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
@@ -88,6 +90,12 @@ export type IncidentFactsReader = {
   plaidItem: Pick<Db["plaidItem"], "findMany">;
   /** Latest stage attempt / skip per subject — the refresh ledger's PROJECTION SEAM (never the ledger directly). */
   latestAttempts: typeof latestStageAttemptsBySubject;
+  /**
+   * Incident detail v1 — one connection's refresh attempts in a window, through
+   * the same projection seam. Optional: a reader without it reports no attempts
+   * summary (null), never "no attempts".
+   */
+  recentAttempts?: typeof recentItemAttempts;
 };
 
 const ROW_SELECT = {
@@ -444,7 +452,7 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
           where: { OR: [{ fromIncidentId: id }, { toIncidentId: id }] },
           select: { fromIncidentId: true, toIncidentId: true, kind: true },
         }),
-        itemId ? client.plaidItem.findMany({ where: { id: { in: [itemId] } }, select: { id: true, institutionName: true, status: true } }) : Promise.resolve([]),
+        itemId ? client.plaidItem.findMany({ where: { id: { in: [itemId] } }, select: { id: true, institutionName: true, status: true, errorCode: true } }) : Promise.resolve([]),
         row && itemId && !accountId ? loadOccurrenceAccounts([id], client) : Promise.resolve(new Map<string, string[]>()),
       ]);
 
@@ -480,7 +488,32 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
         ? neighbours.filter((v) => v.episodeKey === incidentKey).sort((a, b) => (a.firstSeenAt < b.firstSeenAt ? 1 : a.firstSeenAt > b.firstSeenAt ? -1 : 0))
         : [];
 
-      const item = items[0] as { institutionName: string | null; status: unknown } | undefined;
+      const item = items[0] as { institutionName: string | null; status: unknown; errorCode?: unknown } | undefined;
+
+      // Incident detail v1 — the provider error code, ALLOWLISTED. An open
+      // incident reads the connection's CURRENT code first; a closed one reads
+      // the code it recorded (detail.errorCode — the one key read, never passed on).
+      const fromDetail = providerErrorCodeOfDetail(row?.detail ?? null);
+      const itemCode = item ? allowlistedProviderCode(item.errorCode) : null;
+      const open = verdict.state !== "resolved" && verdict.state !== "archived";
+      const providerError = open && itemCode
+        ? { code: itemCode, source: "connection" as const, unrecognised: false }
+        : fromDetail.code
+          ? { code: fromDetail.code, source: "incident" as const, unrecognised: false }
+          : { code: null, source: null, unrecognised: fromDetail.unrecognised || (open && !!item && isUnrecognisedProviderCode(item.errorCode)) };
+
+      // Incident detail v1 — the connection's refresh attempts inside the episode's window.
+      let attempts: IncidentInvestigation["attempts"] = null;
+      if (itemId && client.recentAttempts) {
+        const fromD = new Date(verdict.firstSeenAt);
+        const toD = verdict.resolvedAt ? new Date(verdict.resolvedAt) : now;
+        const window = { from: fromD.toISOString(), to: toD.toISOString() };
+        try {
+          attempts = summariseAttempts(await client.recentAttempts({ plaidItemId: itemId, from: fromD, to: toD, take: ATTEMPTS_READ_CAP }), window);
+        } catch {
+          attempts = unreadableAttempts(window);
+        }
+      }
       const accountCount = accountId ? 1 : (occAccounts.get(id)?.length ?? facts.subjects.occurrenceAccounts?.get(id)?.length ?? 0);
       const archivedAt = arch?.archivedAt.toISOString() ?? null;
       const evidence = row ? row.evidence : (archiveExtra[0] ? evidenceDigestOf(archiveExtra[0] as Parameters<typeof evidenceDigestOf>[0]) : null);
@@ -502,10 +535,33 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
         recurrences: recurrencesAll.slice(0, RECURRENCE_CAP),
         recurrencesTruncated: recurrencesAll.length > RECURRENCE_CAP || nFacts.scanTruncated,
         archive: { archived: verdict.state === "archived", archivedAt, ...archiveDates({ resolvedAt: verdict.resolvedAt, archivedAt }) },
+        providerError,
+        attempts,
       };
       return out;
     },
   };
+}
+
+/**
+ * Incident detail v1 (S2 R2) — does incident `incidentId` exist AND name
+ * `plaidItemId` as its subject? One primary-key read, `plaidItemId` only:
+ * the recovery routes record an incident id in their audit ONLY when this is
+ * true (lib/platform/incidents/action-context.ts verifiedIncidentId). It
+ * decides nothing about open/closed and returns no row. Never throws.
+ */
+export async function incidentBelongsToItem(
+  incidentId: string,
+  plaidItemId: string,
+  client: { syncIssue: Pick<Db["syncIssue"], "findUnique"> } = systemDb,
+): Promise<boolean> {
+  if (!INCIDENT_ID.test(incidentId) || !plaidItemId) return false;
+  try {
+    const row = await client.syncIssue.findUnique({ where: { id: incidentId }, select: { plaidItemId: true } });
+    return row !== null && row.plaidItemId === plaidItemId;
+  } catch {
+    return false;
+  }
 }
 
 /** The loader's reader over an fm_system-typed client (the caller's own; stage attempts always ride the row seam). */
@@ -519,6 +575,7 @@ export function incidentReaderFor(client: Db): IncidentFactsReader {
     financialAccount: client.financialAccount,
     plaidItem: client.plaidItem,
     latestAttempts: latestStageAttemptsBySubject,
+    recentAttempts: recentItemAttempts,
   };
 }
 

@@ -11,7 +11,7 @@
 import { ACTION_CODES, CAUSE_CODES, OPERATOR_RESOLUTION_REASON_CODES, OUTCOME_CODES, RESOLUTION_REASON_CODES, type OperatorResolutionReasonCode } from "@/lib/platform/incidents/codes";
 import { OPERATOR_NOTE_MAX, OPERATOR_REASON_CODES, type OperatorReasonCode } from "@/lib/audit";
 import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, LifecycleActionDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
-import type { IncidentLinkKind, IncidentStatusFilter, IncidentTimelineEvent } from "@/lib/platform/incidents/intelligence/types";
+import type { IncidentAttempt, IncidentLinkKind, IncidentStatusFilter, IncidentTimelineEvent } from "@/lib/platform/incidents/intelligence/types";
 import type { StatusTone } from "../platform-surface";
 
 const n = (v: number) => v.toLocaleString("en-US");
@@ -224,4 +224,119 @@ export function lifecycleBody(action: LifecycleActionDTO, f: LifecycleForm): Rec
 /** The route each lifecycle action posts to. */
 export function lifecyclePath(action: LifecycleActionDTO, incidentId: string): string {
   return `/api/platform/platform-ops/incidents/${encodeURIComponent(incidentId)}/${action}`;
+}
+
+// ── Incident detail v1 — summary, guidance, diagnosis words ─────────────────
+
+export { DISPLAY_STATUS_WORD } from "@/lib/platform/incidents/display-status";
+export const DISPLAY_STATUS_TONE: Readonly<Record<IncidentDetailDTO["summary"]["displayStatus"], StatusTone>> = {
+  "action-needed": "bad", active: "bad", recurring: "warn", investigating: "warn", recovering: "info", resolved: "ok",
+};
+
+/** "Ongoing" vs "Historical" — whether it is broken now. */
+export function ongoingWord(s: IncidentDetailDTO["summary"], state: IncidentRowDTO["state"]): string {
+  if (s.ongoing) return "Ongoing";
+  if (state === "stale-unverified") return "Not confirmed broken now · needs verification";
+  return "Historical";
+}
+
+/**
+ * The impact line under the title: what is affected and what that means for
+ * the customer now. Identity-free (institution + counts only).
+ */
+export function impactLine(d: Pick<IncidentDetailDTO, "summary" | "affected" | "incident">): string {
+  const a = d.affected;
+  const where = a.institution ?? (a.provider === "PLAID" ? "this bank connection" : `this ${a.provider.toLowerCase()} connection`);
+  const accounts = a.accountCount > 0 ? ` (${n(a.accountCount)} account${a.accountCount === 1 ? "" : "s"})` : "";
+  const s = d.summary;
+  if (s.displayStatus === "resolved") return `No current impact — ${where}${accounts} recovered or was closed.`;
+  if (s.remedy === "customer-re-add") return `Data from ${where}${accounts} has stopped updating until the customer adds the connection again.`;
+  if (s.customerActionRequired) return `Data from ${where}${accounts} isn't updating until the customer reconnects.`;
+  if (!s.ongoing) return `${where}${accounts}: not confirmed broken now.`;
+  return `${d.incident.operationLabel ?? d.incident.label} is failing for ${where}${accounts}; its data may be out of date.`;
+}
+
+export interface PrimaryGuidance {
+  headline: string;
+  body: string;
+  /** Shown beside the guidance: why the obvious retry is not offered. */
+  caveat: string | null;
+}
+
+/**
+ * The drawer's first action block. Guidance TEXT for what only the customer
+ * can do (no placeholder button); the real, audited recovery actions render
+ * beneath it from `d.recovery` (already filtered by the remediation rule).
+ */
+export function primaryGuidance(d: Pick<IncidentDetailDTO, "summary" | "recovery">, customerAction: string | null): PrimaryGuidance | null {
+  const s = d.summary;
+  if (s.displayStatus === "resolved") return null;
+  switch (s.remedy) {
+    case "customer-reconnect":
+      return {
+        headline: "Customer must reconnect",
+        body: customerAction ?? "The customer must reconnect this bank from the Connections page.",
+        caveat: "A server resync can't fix this, so it isn't offered.",
+      };
+    case "customer-re-add":
+      return {
+        headline: "Customer must add the connection again",
+        body: customerAction ?? "The connection is gone at the provider. Only the customer can add it again.",
+        caveat: "Resync and reauthorization can't fix a revoked connection.",
+      };
+    case "server-retry":
+      return {
+        headline: d.recovery.some((a) => a.kind === "resync") ? "A resync may help" : "Wait for the next sync",
+        body: "This is transient or provider-side. A later sync usually recovers it; nothing is required of the customer.",
+        caveat: null,
+      };
+    case "investigate":
+      return { headline: "Investigate", body: "There is no verified explanation for this failure yet. Check the diagnosis and recent attempts before acting.", caveat: null };
+    default:
+      return null;
+  }
+}
+
+const TRIGGER_WORD: Readonly<Record<string, string>> = {
+  MANUAL: "manual refresh", CRON: "scheduled sync", RECONNECT: "reconnect", WEBHOOK: "provider webhook", ADMIN: "admin", OPERATOR: "operator", RESUME: "resume", OTHER: "other",
+};
+const ATTEMPT_STATUS_WORD: Readonly<Record<string, string>> = {
+  SUCCEEDED: "Succeeded", FAILED: "Failed", PARTIAL: "Partial", SKIPPED: "Skipped", RUNNING: "Running", OTHER: "Other",
+};
+
+/** "12 sync attempts since first detected · 0 succeeded · 12 failed · last success —" */
+export function attemptsLine(a: IncidentDetailDTO["diagnosis"]["attempts"]): string {
+  if (!a) return "Sync attempts aren't tracked for this incident.";
+  if (!a.readable) return "Sync attempts could not be read.";
+  const c = a.counts;
+  if (c.total === 0) return "No sync attempts recorded for this connection in the incident's window.";
+  const bits = [`${n(c.total)}${a.truncated ? "+" : ""} sync attempt${c.total === 1 ? "" : "s"} in the incident's window`, `${n(c.succeeded)} succeeded`, `${n(c.failed)} failed`];
+  if (c.partial) bits.push(`${n(c.partial)} partial`);
+  if (c.skipped) bits.push(`${n(c.skipped)} skipped`);
+  bits.push(`last success ${whenText(a.lastSucceededAt)}`);
+  return bits.join(" · ");
+}
+
+export function attemptText(x: IncidentAttempt): { title: string; parts: string[] } {
+  const parts = [whenText(x.at), TRIGGER_WORD[x.trigger] ?? x.trigger];
+  if (x.errorCode) parts.push(x.errorCode);
+  if (x.httpStatus !== null) parts.push(`HTTP ${x.httpStatus}`);
+  if (x.callStatus === "RATE_LIMITED") parts.push("rate limited");
+  if (x.operation) parts.push(x.operation);
+  return { title: ATTEMPT_STATUS_WORD[x.status] ?? x.status, parts };
+}
+
+/** "First occurrence" / "Episode 3 · 2 earlier episodes · last recovered 1 Nov" */
+export function recurrenceLine(r: IncidentDetailDTO["diagnosis"]["recurrence"]): string {
+  if (r.generation <= 1 && !r.previousIncidentId && r.earlierEpisodes === 0) return "First occurrence — no earlier episode of this incident is recorded.";
+  const bits = [`Episode ${n(r.generation)}`, `${n(r.earlierEpisodes)}${r.truncated ? "+" : ""} earlier episode${r.earlierEpisodes === 1 ? "" : "s"}`];
+  if (r.lastRecoveredAt) bits.push(`last closed ${whenText(r.lastRecoveredAt)}`);
+  return bits.join(" · ");
+}
+
+/** "NO_ACCOUNTS · reported by the connection now" */
+export function providerCodeLine(dx: IncidentDetailDTO["diagnosis"]): string | null {
+  if (dx.providerErrorCode) return `${dx.providerErrorCode} · ${dx.providerErrorSource === "connection" ? "the connection's current error" : "recorded when the incident opened"}`;
+  if (dx.providerErrorUnrecognised) return "A provider code was recorded but is not a recognised code (not shown).";
+  return null;
 }

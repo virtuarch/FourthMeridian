@@ -478,6 +478,13 @@ export function computeSpendingTrends(
  * Pure function. No DB queries. Must be called after Step 3 (DebtSection).
  */
 
+/** Mortgage F4 — the targeting rule, stated for the model to repeat. */
+export const DEBT_TARGET_POLICY =
+  'Required payments first on every debt; extra goes to ONE revolving debt at a time — avalanche = highest known '
+  + 'rate first (unknown rates last), snowball = smallest balance first. Installment loans (mortgage, auto, student, '
+  + 'personal) get only their scheduled payment and are not avalanche/snowball candidates. Never assume a missing '
+  + 'rate or payment; name it.';
+
 export function computeDebtStrategy(
   accts: AccountsSectionData | null,
   debt:  DebtSection,
@@ -493,6 +500,8 @@ export function computeDebtStrategy(
       knownMonthlyInterestBurden: null,
       missingAprAccountNames:     [],
       hasBalanceOnlyDebt:         false,
+      scheduledOnlyAccountNames:  [],
+      targetPolicy:               DEBT_TARGET_POLICY,
     };
   }
 
@@ -518,8 +527,15 @@ export function computeDebtStrategy(
       a.reportingBalance !== null && hasOutstandingDebt(a.reportingBalance),
   );
 
+  // Mortgage F4 (owner 2026-11-08) — only REVOLVING debt (and debt with no kind
+  // evidence) is an extra-payment target. Installment loans (lib/debt/
+  // liability-kind.ts) amortise on schedule: a mortgage is never the avalanche
+  // or snowball candidate, however high its rate or small its balance.
+  const scheduledOnly = valuedDebt.filter((a) => a.liabilityKind === 'installment');
+  const targetable    = valuedDebt.filter((a) => a.liabilityKind !== 'installment');
+
   // Avalanche target: highest APR — FULL visibility, APR known and positive.
-  const fullWithApr = [...valuedDebt]
+  const fullWithApr = [...targetable]
     .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null && a.apr > 0)
     .sort((a, b) => (b.apr ?? 0) - (a.apr ?? 0));
 
@@ -530,7 +546,7 @@ export function computeDebtStrategy(
   // Snowball target: lowest REPORTING amount owed — any indebted debt account.
   // Ranking native magnitudes here would compare unlike currencies (e.g. AED
   // 20,000 vs USD 10,000) and pick the wrong "smallest" account.
-  const byBalance = [...valuedDebt].sort(
+  const byBalance = [...targetable].sort(
     (a, b) => amountOwed(a.reportingBalance) - amountOwed(b.reportingBalance),
   );
   const snowballCandidate: DebtCandidate | null = byBalance.length > 0
@@ -598,6 +614,8 @@ export function computeDebtStrategy(
     knownMonthlyInterestBurden: debt.monthlyInterestBurden,
     missingAprAccountNames:     debt.aprGapAccountNames,
     hasBalanceOnlyDebt:         debt.hasBalanceOnlyDebt,
+    scheduledOnlyAccountNames:  scheduledOnly.map((a) => a.name),
+    targetPolicy:               DEBT_TARGET_POLICY,
     ...(balancesEstimated ? { balancesEstimated: true } : {}),
   };
 }

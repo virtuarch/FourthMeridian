@@ -13,8 +13,14 @@
  * them, and removal is irreversible.
  *
  * AUTHORIZATION: requireFreshPlatformAccess("PLATFORM_OPS", "WRITE"). READ → 403.
- * AUDIT: CONNECTION_REAUTH_REQUESTED { connectionId, provider, institution } with
- * performedByAdminId. Operational metadata only.
+ * AUDIT: CONNECTION_REAUTH_REQUESTED { connectionId, provider, institution,
+ * outcome, statusChanged, notice, incidentId? } with performedByAdminId.
+ * Operational metadata only.
+ *
+ * RESPONSE (Incident detail v1 — honest, never a bare ok): `{ outcome,
+ * statusChanged, notice }` where outcome is created | suppressed_duplicate |
+ * marked_not_notified | no_change (lib/platform/incidents/action-context.ts).
+ * A deduped notice is reported as suppressed_duplicate, not as "sent".
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -25,7 +31,9 @@ import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { notifyItemSyncFailedWithOutcome } from "@/lib/plaid/sync-notifications";
+import { incidentBelongsToItem } from "@/lib/platform/incidents/intelligence";
+import { incidentAuditDetail, incidentIdFromSearch, verifiedIncidentId, reauthRequestOutcome } from "@/lib/platform/incidents/action-context";
 import { limitByKey, limitByUser } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -34,7 +42,7 @@ export const runtime = "nodejs";
 const REAUTH_PER_OPERATOR_PER_HOUR = 20;
 const REAUTH_PER_ITEM_PER_DAY = 3;
 
-export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
 
@@ -65,10 +73,15 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   const limitedItem = await limitByKey(item.id, "platform-reauth-item", { limit: REAUTH_PER_ITEM_PER_DAY, windowSec: 86_400 });
   if (limitedItem) return limitedItem;
 
+  // S2 R2 — the incident id rides the audit ONLY when verified: it exists and names THIS connection.
+  const incidentId = await verifiedIncidentId(incidentIdFromSearch(req.nextUrl.searchParams), item.id, incidentBelongsToItem);
+
   // Mark NEEDS_REAUTH (the single chokepoint; records the transition on change) —
   // this lights the existing owner reconnect prompt. NEVER itemRemove.
+  const statusChanged = item.status !== PlaidItemStatus.NEEDS_REAUTH;
   await setPlaidItemHealth(item.id, { status: PlaidItemStatus.NEEDS_REAUTH });
-  await notifyItemSyncFailed(item.id);
+  const notice = await notifyItemSyncFailedWithOutcome(item.id);
+  const outcome = reauthRequestOutcome(statusChanged, notice);
 
   // P1 — the operator-action chokepoint: target = the PLAID_ITEM (no USER
   // subject); performedByAdminId is the acting operator; institution is a label.
@@ -77,8 +90,11 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     action: AuditAction.CONNECTION_REAUTH_REQUESTED,
     target: { kind: "PLAID_ITEM", id: item.id },
     result: "SUCCESS",
-    detail: { connectionId: item.id, provider: "PLAID", institution: item.institutionName },
+    detail: {
+      connectionId: item.id, provider: "PLAID", institution: item.institutionName,
+      outcome, statusChanged, notice, ...incidentAuditDetail(incidentId),
+    },
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ outcome, statusChanged, notice });
 }

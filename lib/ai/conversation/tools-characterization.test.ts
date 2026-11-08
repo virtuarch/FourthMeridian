@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     clampToCeiling('2026-01-31', '2026-06-30') === '2026-01-31'
       && clampToCeiling('2026-06-30', '2026-06-30') === '2026-06-30');
 
-  const line = (id: string, apr: number | null) => ({ id, label: id, balance: 1_000, apr, minimumPayment: null });
+  const line = (id: string, apr: number | null) => ({ kind: 'revolving' as const, id, label: id, balance: 1_000, apr, minimumPayment: null });
   check('interestModelledLiabilityIds: every line with a known rate (0% included), in order, none without',
     JSON.stringify(interestModelledLiabilityIds([line('a', 24.99), line('b', null), line('c', 0), line('d', 5)]))
       === '["a","c","d"]');

@@ -201,7 +201,8 @@ console.log("G · request-reauth is bounded (it notifies a customer)");
 {
   const s = handler("app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts", "POST");
   check("per-operator limit before any read", s.indexOf("limitByUser(") > -1 && s.indexOf("limitByUser(") < s.indexOf("plaidItem.findUnique"));
-  check("per-connection limit before the customer is notified", s.indexOf("limitByKey(item.id") > -1 && s.indexOf("limitByKey(item.id") < s.indexOf("notifyItemSyncFailed("));
+  const notifyAt = s.search(/notifyItemSyncFailed\w*\(/);
+  check("per-connection limit before the customer is notified", s.indexOf("limitByKey(item.id") > -1 && notifyAt > -1 && s.indexOf("limitByKey(item.id") < notifyAt);
 }
 
 // ── H ───────────────────────────────────────────────────────────────────────

@@ -142,12 +142,36 @@ export async function notifyItemSyncFailed(
     refreshFn?: typeof refreshOpenNotification;
   },
 ): Promise<void> {
+  await notifyItemSyncFailedWithOutcome(plaidItemId, ctx);
+}
+
+/**
+ * What one notifyItemSyncFailed call actually did (Incident detail v1 — the
+ * operator's request-reauth reports this instead of a bare ok):
+ *   created       a new notice was created (and its email leg queued)
+ *   suppressed    an open notice for this connection already exists (suppress-while-open dedupe)
+ *   skipped       the notification pipeline skipped it (e.g. preferences)
+ *   removed       the customer removed this connection — nothing is sent
+ *   not_found     the connection no longer exists
+ *   error         the notification failed (logged; never thrown)
+ */
+export type ItemSyncFailedNoticeOutcome = "created" | "suppressed" | "skipped" | "removed" | "not_found" | "error";
+
+/** notifyItemSyncFailed, returning what happened. Same behaviour; never throws. */
+export async function notifyItemSyncFailedWithOutcome(
+  plaidItemId: string,
+  ctx?: {
+    itemClient?: PlaidItemReadClient;
+    createFn?: typeof createNotification;
+    refreshFn?: typeof refreshOpenNotification;
+  },
+): Promise<ItemSyncFailedNoticeOutcome> {
   try {
     const item = await itemClient(ctx).plaidItem.findUnique({
       where: { id: plaidItemId },
       select: { userId: true, institutionName: true, status: true },
     });
-    if (!item) return;
+    if (!item) return "not_found";
 
     const connectionState = connectionStateFromItemStatus(item.status);
     // Any state: lib/plaid/disconnect.ts soft-deletes the connections BEFORE
@@ -157,7 +181,7 @@ export async function notifyItemSyncFailed(
       // Suppression record — the item id and state only (no PII). Dedupe/retire
       // unaffected: nothing is created, so there is no :open key to hold or release.
       console.log(`[notifyItemSyncFailed] suppressed for item ${plaidItemId} (${item.status ?? "unknown"}): removed by the user (every connection removed)`);
-      return;
+      return "removed";
     }
 
     const data = {
@@ -185,8 +209,10 @@ export async function notifyItemSyncFailed(
     if (res?.status === "suppressed" && connectionState === "disconnected") {
       await (ctx?.refreshFn ?? refreshOpenNotification)(item.userId, "SYNC_FAILED", data);
     }
+    return res?.status ?? "error";
   } catch (err) {
     console.warn(`[notifyItemSyncFailed] non-fatal failure for item ${plaidItemId}:`, redactedErrorForLog(err));
+    return "error";
   }
 }
 
