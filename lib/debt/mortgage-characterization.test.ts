@@ -39,6 +39,7 @@ import { computeDebtAggregate } from "@/lib/debt/aggregates";
 import { computeInterestCost } from "@/lib/debt/interest-cost";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import { planPayoff } from "@/lib/debt/payoff";
+import { computeDebtStrategy } from "@/lib/ai/intelligence/annotations/metrics";
 import { rateLabel } from "@/lib/debt/rate-label";
 import { payoffUnknownRateNote } from "@/components/space/widgets/debt/payoff-copy";
 import { isRevolvingLine, creditUtilization } from "@/lib/accounts/credit-utilization";
@@ -228,14 +229,14 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
   // FIXED by F3 — desired behaviour: the mortgage is never SILENTLY at 0%. Its
   // projection is labelled RATE_UNKNOWN, the plan's interest total is scoped to
   // known-rate debts, and the surfaced note gives the count AND the owed share.
-  // (The pro-rata date itself is H4's subject and is unchanged.)
+  // (The allocation itself is H4's subject — FIXED by F4.)
   check("H3 mortgage projection — FIXED by F3: rateStatus RATE_UNKNOWN, interest total KNOWN_RATE_ONLY, '1 of 2 debts' counts",
     mtg?.rateStatus === "RATE_UNKNOWN" && mtg?.aprPct === null
       && plan.status === "paid_off" && plan.interestTotalScope === "KNOWN_RATE_ONLY"
       && plan.totalInterest === plan.liabilities.find((l) => l.id === "card")?.interestPaid
       && basis?.unknownAprCount === 1 && basis?.owingCount === 2, { mtg, scope: plan.status === "paid_off" ? plan.interestTotalScope : null });
   check("H3 payoff note — FIXED by F3: 'Rate known for 1 of 2 debts (2% of what you owe) — …left out of the interest total.'",
-    payoffUnknownRateNote(plan) === "Rate known for 1 of 2 debts (2% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(plan));
+    payoffUnknownRateNote(plan) === "Rate known for 1 of 2 debts (2% of what you owe) — no rate is assumed for the others, and they are left out of the interest total.", payoffUnknownRateNote(plan));
 
   // FIXED by F3 — desired behaviour: the label follows the liability KIND
   // (providerSubtype), in the UI and in the AI tool contract alike.
@@ -249,28 +250,49 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
 // ═════════════════════════════════════════════════════════════════════════════
 console.log(`H4. Payoff allocation: $300k mortgage + $5k card, $3k/month — ${LABEL}`);
 {
-  const run = (mtgApr: number | null) => planPayoff({ payment: 3_000, startISO: "2026-01-01", liabilities: [
-    { id: "mtg", balance: 300_000, aprPct: mtgApr }, { id: "card", balance: 5_000, aprPct: 25 },
+  // FIXED by F4 (owner decision 2026-11-08) — desired behaviour: no pro-rata.
+  // Every debt gets its required payment, the surplus goes to ONE revolving
+  // target at a time (avalanche by default), the mortgage (an installment loan,
+  // lib/debt/liability-kind.ts) gets only its scheduled payment and is never
+  // projected from a gross payment that may carry escrow or at an assumed rate.
+  const run = (mtgApr: number | null, mtgRequired: number | null) => planPayoff({ payment: 3_000, startISO: "2026-01-01", liabilities: [
+    { id: "mtg", balance: 300_000, aprPct: mtgApr, requiredPayment: mtgRequired, kind: MORTGAGE },
+    { id: "card", balance: 5_000, aprPct: 25, requiredPayment: 100, kind: CARD },
   ] });
-  const pinned = { "6.5": { payoff: "2039-02-18", count: 158 }, "null": { payoff: "2034-10-31", count: 106 } } as const;
   for (const apr of [6.5, null] as const) {
-    const p = run(apr);
-    const cardFirst = p.status === "paid_off" ? p.payments[0]?.allocations.find((a) => a.id === "card") : undefined;
-    const card = p.status === "paid_off" ? p.liabilities.find((l) => l.id === "card") : undefined;
-    const mtg  = p.status === "paid_off" ? p.liabilities.find((l) => l.id === "mtg") : undefined;
-    console.log(`    observed (mortgage APR ${apr}): status=${p.status} card payoff=${card?.payoffISO} (${card?.paymentCount} pmts) cardFirstAlloc=${cardFirst?.paid} mortgage payoff=${mtg?.payoffISO}`);
-    check(`H4 [mtg APR ${apr}] plan is paid_off under PRO_RATA_BY_BALANCE`, p.status === "paid_off" && p.allocation === "PRO_RATA_BY_BALANCE", p.status);
-    check(`H4 [mtg APR ${apr}] card's first allocation is ~1.6% of 3,000 (< 60)`, !!cardFirst && cardFirst.paid < 60, cardFirst);
-    // SUSPECTED DEFECT: pro-rata by balance lets the mortgage absorb ~98% of the
-    // budget, so a 25% card is carried for years (its card interest outruns its
-    // share at first). Expected (owner/S2 decision): avalanche/snowball or
-    // "minimums first, surplus to highest APR", or exclude installment loans.
-    check(`H4 [mtg APR ${apr}] card is NOT paid off within 24 months (it would be in 2 alone)`,
-      !!card && card.paymentCount > 24, card?.paymentCount);
-    const pin = pinned[String(apr) as keyof typeof pinned];
-    check(`H4 [mtg APR ${apr}] card payoff ${pin.payoff} after ${pin.count} payments — same day as the mortgage`,
-      card?.payoffISO === pin.payoff && card?.paymentCount === pin.count && mtg?.payoffISO === pin.payoff, { card: card?.payoffISO, n: card?.paymentCount, mtg: mtg?.payoffISO });
+    for (const req of [null, 2_000] as const) {
+      const p = run(apr, req);
+      const cardFirst = p.status === "paid_off" ? p.payments[0]?.allocations.find((a) => a.id === "card") : undefined;
+      const card = p.status === "paid_off" ? p.liabilities.find((l) => l.id === "card") : undefined;
+      const mtg  = p.status === "paid_off" ? p.liabilities.find((l) => l.id === "mtg") : undefined;
+      const tag = `[mtg rate ${apr}, payment ${req}]`;
+      console.log(`    observed ${tag}: status=${p.status} card payoff=${card?.payoffISO} (${card?.paymentCount} pmts) cardFirstAlloc=${cardFirst?.paid} mortgage payoff=${mtg?.payoffISO} reasons=${mtg?.unknownReasons}`);
+      check(`H4 ${tag} FIXED by F4: REQUIRED_THEN_TARGETED, avalanche, card is the only surplus target`,
+        p.status === "paid_off" && p.allocation === "REQUIRED_THEN_TARGETED" && p.strategy === "avalanche" && p.targetOrder.join() === "card", p.status);
+      check(`H4 ${tag} FIXED by F4: card's first allocation is the whole budget less the mortgage's reserved payment`,
+        !!cardFirst && cardFirst.paid === 3_000 - (req ?? 0), cardFirst);
+      check(`H4 ${tag} FIXED by F4: card paid off within 6 months (was 106–158 payments)`, !!card && card.paymentCount <= 6, card?.paymentCount);
+      check(`H4 ${tag} FIXED by F4: mortgage payoff UNKNOWN — no 0% rate, no gross-as-P&I; never extra`,
+        !!mtg && mtg.payoffISO === null && mtg.projection === "UNKNOWN" && !mtg.surplusTarget
+          && (apr === null) === mtg.unknownReasons.includes("RATE_UNKNOWN")
+          && (req === null ? mtg.unknownReasons.includes("REQUIRED_PAYMENT_UNKNOWN") : mtg.unknownReasons.includes("MORTGAGE_PAYMENT_SPLIT_UNKNOWN"))
+          && p.status === "paid_off" && p.debtFreeISO === null && p.coverage.status === "PARTIAL", mtg);
+    }
   }
+}
+
+// FIXED by F4 — the AI's avalanche / snowball candidates follow the same rule:
+// an installment loan (here a 31% "mortgage" and the smallest balance) is never one.
+{
+  const row = (id: string, name: string, bal: number, apr: number | null, kind: "installment" | "revolving") =>
+    ({ id, name, type: "debt", balance: bal, reportingBalance: bal, currency: "USD", visibilityLevel: "FULL", apr, liabilityKind: kind });
+  const strat = computeDebtStrategy(
+    { accounts: [row("mtg", "Mortgage", 900, 31, "installment"), row("card", "Card", 5_000, 25, "revolving")] } as never,
+    { totalLiabilities: 5_900, classification: "WARNING", confidence: "HIGH", monthlyInterestBurden: null, aprGapAccountNames: [], hasBalanceOnlyDebt: false } as never,
+  );
+  check("H4 AI strategy — FIXED by F4: avalanche AND snowball candidate are the card, never the installment loan; it is listed as scheduled-only",
+    strat.avalancheCandidate?.accountName === "Card" && strat.snowballCandidate?.accountName === "Card"
+      && strat.scheduledOnlyAccountNames.join() === "Mortgage" && strat.targetPolicy.includes("Installment loans"), strat);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

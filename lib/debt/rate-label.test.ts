@@ -171,7 +171,7 @@ console.log("3. Payoff never assumes 0% silently");
       mixed.interestTotalScope === "KNOWN_RATE_ONLY" && mixed.totalInterest === card.interestPaid, mixed.totalInterest);
     check("mixed: principal + totalInterest = totalPaid still holds", Math.abs(mixed.principal + mixed.totalInterest - mixed.totalPaid) < 0.005);
     check("mixed: basis counts 1 unknown of 2 owing", mixed.basis.unknownAprCount === 1 && mixed.basis.owingCount === 2);
-    check("mixed: note names the count AND the owed share", payoffUnknownRateNote(mixed) === "Rate known for 1 of 2 debts (2% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(mixed));
+    check("mixed: note names the count AND the owed share", payoffUnknownRateNote(mixed) === "Rate known for 1 of 2 debts (2% of what you owe) — no rate is assumed for the others, and they are left out of the interest total.", payoffUnknownRateNote(mixed));
     check("mixed, non-revolving blend: estimate notice says 'a rate', never 'an APR'",
       payoffEstimateNotice(mixed, "rate")?.detail === "Interest is counted only on the debts with a rate on file.");
     check("mixed, card-only blend (default): estimate notice keeps 'an APR'",
@@ -188,7 +188,7 @@ console.log("3. Payoff never assumes 0% silently");
     none.status === "paid_off" && none.basis.interest === "PRINCIPAL_ONLY" && none.liabilities[0].rateStatus === "RATE_UNKNOWN"
       && none.interestTotalScope === "KNOWN_RATE_ONLY" && none.totalInterest === 0);
   check("all unknown: note 'Rate known for 0 of 1 debt (0% of what you owe)'",
-    payoffUnknownRateNote(none) === "Rate known for 0 of 1 debt (0% of what you owe) — debts without a rate are projected without interest and left out of the interest total.", payoffUnknownRateNote(none));
+    payoffUnknownRateNote(none) === "Rate known for 0 of 1 debt (0% of what you owe) — no rate is assumed for the others, and they are left out of the interest total.", payoffUnknownRateNote(none));
   check("all unknown, mortgage: 'No rate is on file'",
     payoffEstimateNotice(none, "rate")?.detail === "No rate is on file, so this counts payments against the balance only.");
   const nonAm = planPayoff({ payment: 10, startISO: "2026-01-01", liabilities: [{ id: "card", balance: 10_000, aprPct: 24 }, { id: "mtg", balance: 1_000, aprPct: null }] });

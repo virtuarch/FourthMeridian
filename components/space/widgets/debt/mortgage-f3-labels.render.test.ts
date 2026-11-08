@@ -76,7 +76,7 @@ console.log("3. Payoff planner — rate unknown labelled, blend is a 'rate'");
   check("by-account row: 'Home Loan Mortgage rate unknown' + 'Interest not included — mortgage rate unknown'",
     t.includes("Home Loan Mortgage rate unknown") && t.includes("Interest not included — mortgage rate unknown"), t);
   check("note states the count AND the owed share: 'Rate known for 1 of 2 debts (14% of what you owe) — …'",
-    t.includes("Rate known for 1 of 2 debts (14% of what you owe) — debts without a rate are projected without interest and left out of the interest total."), t);
+    t.includes("Rate known for 1 of 2 debts (14% of what you owe) — no rate is assumed for the others, and they are left out of the interest total."), t);
   check("estimate notice: 'a rate on file' and 'No rate on file: Home Loan.'",
     t.includes("Interest is counted only on the debts with a rate on file.") && t.includes("No rate on file: Home Loan."), t);
   check("the card + mortgage blend is 'Avg rate (known)', never 'Avg APR'", t.includes("Avg rate (known) · reference") && !t.includes("Avg APR"), t);

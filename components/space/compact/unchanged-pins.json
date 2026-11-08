@@ -33,7 +33,7 @@
  "lib/debt/interest-cost.ts": "6401bdc97e2d7d0492f5ee092bc9e5577c7d6d8f1775f8306bbc4128286af366",
  "lib/debt/liability-kind.ts": "67a23976e8f20b2459e3608464236a03c54994d79ea70cbe78d30e1df5517770",
  "lib/debt/liquid-net-worth.ts": "9d5a0aaf3bdf0309a48c0d9117eee373f10d4051ace146da8b77a98640f34a83",
- "lib/debt/payoff.ts": "566a29ae7fb8c8f690fa833332c7b2d5c894f7674a7bcad67221d97bde5e28ba",
+ "lib/debt/payoff.ts": "c308a2dc13f80c82445698491bfe0b48f0bb40a81ad5e4f00c28e8d8b2088227",
  "lib/debt/rate-label.ts": "becb4322d43383800866d8a78a2f6e628b0d8fb4bad41d76e4663f548113e654",
  "lib/debt/user-terms.ts": "abd6410ba0b49041a5d46d4b57f67c725c96802e30d15d20ee3fef24344fceae",
  "lib/fx/archive.ts": "c1d6074aa312afea8e9ec9669bf6f46a958221842f2540e9d1c1b7c238d7aa8e",
