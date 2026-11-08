@@ -191,7 +191,8 @@ console.log("9. S2 R2 — viewer correctness (equity all-or-nothing)");
   const co = viewerPropertyEquity({ ...base, viewerUserId: CO, debts: [m1, h1] });
   check("co-member with every linked debt balance-visible sees equity", co.equity === 300_000);
   check("…a BALANCE_ONLY debt is named by its kind, never its name",
-    co.securedDebts.find((d) => d.id === "h1")?.name === "HELOC" && co.securedDebts.find((d) => d.id === "m1")?.name === "Secret m1");
+    co.securedDebts.find((d) => d.id === "h1")?.name === "Credit line" && co.securedDebts.find((d) => d.id === "h1")?.kind === "other_revolving"
+    && co.securedDebts.find((d) => d.id === "m1")?.name === "Secret m1");
 
   // The HELOC is not visible to the co-member at all (unshared / RLS-hidden ⇒ not loaded).
   const missing = viewerPropertyEquity({ ...base, viewerUserId: CO, debts: [m1] });
@@ -216,7 +217,7 @@ console.log("9. S2 R2 — viewer correctness (equity all-or-nothing)");
   const profile = { assetKind: "real_estate", valueBasis: "MARKET_VALUE" as const, securedDebtAccountIds: ["m1", "h1"] };
   const aiAll = aiPropertyFacts({ value: 500_000, currency: "USD", profile, spaceDebts });
   check("AI: all visible ⇒ derivedEquity matches the viewer rule", aiAll?.derivedEquity === co.equity && aiAll?.securedDebtTotal === 200_000);
-  check("AI: BALANCE_ONLY loan named by kind", aiAll?.securedDebts.find((d) => d.id === "h1")?.name === "HELOC");
+  check("AI: BALANCE_ONLY loan named by kind", aiAll?.securedDebts.find((d) => d.id === "h1")?.name === "Credit line" && aiAll?.securedDebts.find((d) => d.id === "h1")?.kind === "other_revolving");
   const aiMissing = aiPropertyFacts({ value: 500_000, currency: "USD", profile, spaceDebts: new Map([["m1", spaceDebts.get("m1")!]]) });
   const aiPayload = JSON.stringify(aiMissing);
   check("AI: missing one ⇒ flag only (no equity figure, total, list or prompt)",

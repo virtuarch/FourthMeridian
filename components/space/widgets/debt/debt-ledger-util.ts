@@ -19,7 +19,7 @@
 
 import { type LiabilityState } from "@/lib/debt/balance-semantics";
 import { utilizationPercent } from "@/lib/accounts/credit-utilization";
-import { debtLabelAccess, isInstallmentLoan, viewerDebtLabel } from "@/lib/debt/liability-kind";
+import { debtLabelAccess, isInstallmentLoan, liabilityKind, viewerDebtLabel } from "@/lib/debt/liability-kind";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
@@ -100,10 +100,18 @@ const PROVIDER_SUBTYPE: Record<string, { cls: DebtClass; label: string }> = {
 };
 
 /** The fields presentation classification reads — nothing else. */
-type DebtClassInput = Pick<DebtPerspectiveAccount, "debtSubtype" | "providerSubtype" | "aggregate" | "visibilityLevel">;
+type DebtClassInput = Pick<DebtPerspectiveAccount, "debtSubtype" | "providerSubtype" | "aggregate" | "visibilityLevel" | "debtType">;
+
+/** S2 P1-R1 — a server-classified coarse row (no raw subtype) presents by KIND. */
+const COARSE_KIND_CLASS: Record<string, DebtClass> = { revolving: "cards", installment: "loans" };
 
 function presentationEntry(a: DebtClassInput): { cls: DebtClass; label: string } | null {
   if (a.debtSubtype) return STORED_SUBTYPE[a.debtSubtype] ?? null;
+  if (a.debtType && !a.providerSubtype) {
+    const kind = liabilityKind({ type: "debt", debtType: a.debtType });
+    const cls = COARSE_KIND_CLASS[kind];
+    return cls ? { cls, label: viewerDebtLabel({ type: "debt", debtType: a.debtType }, "COARSE") } : null;
+  }
   // A privacy-aggregated row merges members WITHOUT keying on providerSubtype
   // (lib/account-privacy.ts), so the subtype it carries is one member's — it
   // cannot speak for the group. Such a row presents as "Other".

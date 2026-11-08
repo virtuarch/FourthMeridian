@@ -79,7 +79,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { rateLabel } from '@/lib/debt/rate-label';
-import { debtLabelAccess, debtType, liabilityKind, viewerDebtLabel, viewerDebtType, type LiabilityKind } from '@/lib/debt/liability-kind';
+import { debtLabelAccess, debtType, liabilityKind, viewerDebtLabel, viewerDebtType } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -158,18 +158,6 @@ type AccountLinkRow = {
 // ---------------------------------------------------------------------------
 // Assembler implementation
 // ---------------------------------------------------------------------------
-
-/**
- * S2 PRIVACY P1 — the provider-subtype evidence a BALANCE_ONLY debt row may
- * carry into the AI payload: a generic Plaid token of the SAME kind ("loan" is
- * installment, "line of credit" revolving), never the fine subtype.
- */
-function coarseDebtEvidence(kind: LiabilityKind): { providerSubtype: string | null; liabilityKind: LiabilityKind } {
-  return {
-    providerSubtype: kind === 'installment' ? 'loan' : kind === 'revolving' ? 'line of credit' : null,
-    liabilityKind:   kind,
-  };
-}
 
 async function assembleAccounts(
   /**
@@ -820,13 +808,15 @@ async function assembleAccounts(
         id:       row.id, // authority synthetic id: balance-only:{owner}:{label}:{currency}
         name:     row.name,
         type:     row.type,
-        // S2 PRIVACY P1 — a BALANCE_ONLY debt row tells the model its KIND only:
-        // the raw provider subtype ("mortgage", "home equity") is replaced by a
-        // kind-preserving generic token, and liabilityKind is pinned from the
-        // ORIGINAL evidence so scenario targeting is unchanged.
-        ...(row.type === 'debt'
-          ? coarseDebtEvidence(liabilityKind({ type: row.type, providerSubtype: row.providerSubtype ?? null }))
-          : { providerSubtype: row.providerSubtype ?? null }),
+        // S2 PRIVACY P1-R1 — a BALANCE_ONLY debt row tells the model its KIND
+        // only: the normalizer classified it SERVER-side from full evidence and
+        // withheld every raw subtype; debtType is the coarse type of that kind,
+        // and liabilityKind (scenario targeting) is read from it.
+        providerSubtype: row.providerSubtype ?? null,
+        ...(row.type === 'debt' && row.debtType
+          ? { debtType: row.debtType, debtTypeLabel: viewerDebtLabel({ type: 'debt', debtType: row.debtType }, 'COARSE'),
+              liabilityKind: liabilityKind({ type: 'debt', debtType: row.debtType }) }
+          : {}),
         balance:  row.balance, // debt: Σ per-member amountOwed (≥ 0); assets: signed member sum
         currency: row.currency,
         reportingBalance: rep.reportingBalance,
@@ -934,6 +924,8 @@ async function assembleAccounts(
       name:       genericAccountName({
                     type:           fa.type,
                     debtSubtype:    fa.debtSubtype,
+                    providerSubtype: fa.providerSubtype,
+                    creditLimit:    fa.creditLimit,
                     ownerFirstName: ownerName,
                   }),
       type:       fa.type,
