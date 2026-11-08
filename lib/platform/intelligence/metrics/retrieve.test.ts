@@ -150,7 +150,7 @@ const aiOpsFx = (over: { invocations?: number; usd?: number | null; unpricedToke
 
 
 // ── operations fixtures (Platform AI briefing, 2026-11-08) — identity-laden on purpose ──
-const INSTITUTION = "Capital One";
+const INSTITUTION = "Example Bank";
 const overviewFx = (states: Record<string, string> = { pipeline: "FAILED", sources: "DEGRADED", jobs: "HEALTHY", ai: "HEALTHY", brief: "UNKNOWN", plaid: "HEALTHY" }) => ({
   checkedAt: NOW.toISOString(), worst: "FAILED",
   domains: Object.entries(states).map(([key, state]) => ({
