@@ -38,7 +38,7 @@ console.log("v2.6-TRUTH-3 (1). A payment-family inflow IS a debt payment");
     const v = liabilityInflowIsCustomerPayment({ providerFamily: family });
     check(`${family} ⇒ YES`, v.verdict === "YES");
     check(`...and matures to DEBT_PAYMENT`,
-      maturityForEvidence(NONE, { accountType: "debt", amount: 120, providerFamily: family, railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
+      maturityForEvidence(NONE, { accountType: "debt", amount: 120, providerFamily: family, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "DEBT_PAYMENT");
   }
   check("the payment set is exactly the two observed families",
     PAYMENT_FAMILIES.size === 2 && PAYMENT_FAMILIES.has("LOAN_PAYMENTS") && PAYMENT_FAMILIES.has("LOAN_DISBURSEMENTS"));
@@ -48,10 +48,10 @@ console.log("v2.6-TRUTH-3 (2). A mutually matched owned funding leg IS a debt pa
 {
   // No family at all, but the transfer authority proved where the money came from.
   check("a mutually matched owned leg ⇒ DEBT_PAYMENT even with NO family",
-    maturityForEvidence(OWNED, { accountType: "debt", amount: 500, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
+    maturityForEvidence(OWNED, { accountType: "debt", amount: 500, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "DEBT_PAYMENT");
   check("...and a PERSISTED counterparty does the same",
     maturityForEvidence(NONE, { accountType: "debt", amount: 500, providerFamily: null,
-      persistedCounterpartyAccountId: "chk", railType: null, venueClass: null, counterpartyClass: null }) === "DEBT_PAYMENT");
+      persistedCounterpartyAccountId: "chk", railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "DEBT_PAYMENT");
   check("an owned leg OUTRANKS a non-payment family",
     liabilityInflowIsCustomerPayment({ providerFamily: "OTHER", hasMutuallyMatchedOwnedCounterparty: true }).verdict === "YES");
   // ...but a NON-mutual match must not count: that is the v2.6-TRUTH-1 veto.
@@ -59,7 +59,7 @@ console.log("v2.6-TRUTH-3 (2). A mutually matched owned funding leg IS a debt pa
     { legId: "l", accountId: "chk", accountType: "checking", competingSourceCount: 2, superseded: false },
   ]);
   check("a NON-mutual match does NOT prove a payment",
-    maturityForEvidence(contested, { accountType: "debt", amount: 500, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null }) !== "DEBT_PAYMENT");
+    maturityForEvidence(contested, { accountType: "debt", amount: 500, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) !== "DEBT_PAYMENT");
 }
 
 console.log("v2.6-TRUTH-3 (3). An issuer / non-payment family is NOT a debt payment");
@@ -68,7 +68,7 @@ console.log("v2.6-TRUTH-3 (3). An issuer / non-payment family is NOT a debt paym
   for (const family of ["OTHER", "GOVERNMENT_AND_NON_PROFIT", "GENERAL_MERCHANDISE", "TRAVEL"]) {
     check(`${family} ⇒ NO`, liabilityInflowIsCustomerPayment({ providerFamily: family }).verdict === "NO");
     check(`...matures to ISSUER_CREDIT, not DEBT_PAYMENT`,
-      maturityForEvidence(NONE, { accountType: "debt", amount: 363.8, providerFamily: family, railType: null, venueClass: null, counterpartyClass: null }) === "ISSUER_CREDIT");
+      maturityForEvidence(NONE, { accountType: "debt", amount: 363.8, providerFamily: family, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "ISSUER_CREDIT");
   }
   const r = liabilityInflowIsCustomerPayment({ providerFamily: "OTHER" });
   check("...and the refusal names the reason", /issuer-originated credit/.test(r.reason));
@@ -80,7 +80,7 @@ console.log("v2.6-TRUTH-3 (4). No family and no match ⇒ UNDETERMINED, never fo
     check(`family ${JSON.stringify(family)} ⇒ UNDETERMINED`,
       liabilityInflowIsCustomerPayment({ providerFamily: family }).verdict === "UNDETERMINED");
   }
-  const m = maturityForEvidence(NONE, { accountType: "debt", amount: 800, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null });
+  const m = maturityForEvidence(NONE, { accountType: "debt", amount: 800, providerFamily: null, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null });
   check("...matures to UNRESOLVED_LIABILITY_INFLOW", m === "UNRESOLVED_LIABILITY_INFLOW");
   check("...which is NOT a debt payment", m !== "DEBT_PAYMENT");
   check("...and is rank 0, so later evidence may still raise it", maturityRank(m) === 0);
@@ -166,7 +166,7 @@ console.log("v2.6-TRUTH-3 (7b). The two entry points agree for the same row");
   let agree = true;
   for (const c of cases) {
     const readPath = maturityForEvidence(c.dest, {
-      accountType: "debt", amount: c.amount, providerFamily: c.family, railType: null, venueClass: null, counterpartyClass: null });
+      accountType: "debt", amount: c.amount, providerFamily: c.family, railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null });
     const storedPath = matureClassification({
       flowType: "UNKNOWN", amount: c.amount, ownAccountType: "debt",
       ownProviderFamily: c.family, destination: c.dest,
@@ -185,9 +185,9 @@ console.log("v2.6-TRUTH-3 (7b). The two entry points agree for the same row");
 console.log("v2.6-TRUTH-3 (8). A liability OUTFLOW is unaffected");
 {
   check("money OUT of a liability is still never a debt payment",
-    maturityForEvidence(OWNED, { accountType: "debt", amount: -50, providerFamily: "LOAN_PAYMENTS", railType: null, venueClass: null, counterpartyClass: null }) === "UNRESOLVED_TRANSFER");
+    maturityForEvidence(OWNED, { accountType: "debt", amount: -50, providerFamily: "LOAN_PAYMENTS", railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "UNRESOLVED_TRANSFER");
   check("a NON-liability account is entirely unaffected by the new rule",
-    maturityForEvidence(OWNED, { accountType: "checking", amount: 500, providerFamily: "OTHER", railType: null, venueClass: null, counterpartyClass: null }) === "CASH_TRANSFER");
+    maturityForEvidence(OWNED, { accountType: "checking", amount: 500, providerFamily: "OTHER", railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: null }) === "CASH_TRANSFER");
 }
 
 console.log(failures === 0 ? "\nliability-inflow: all passed." : `\nliability-inflow: ${failures} failure(s).`);

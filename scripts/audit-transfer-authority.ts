@@ -205,6 +205,7 @@ async function main() {
         providerFamily: r.pfcPrimary, persistedCounterpartyAccountId: r.counterpartyAccountId,
         railType: ev.railType ?? null, venueClass: ev.venueClass ?? null,
         counterpartyClass: r.counterpartyType,
+        pfcDetailed: r.pfcDetailed ?? null,
       });
       return {
         row: r, level: e.level, maturity: m, accountId: e.accountId, legId: e.legId,
