@@ -680,7 +680,9 @@ export function WealthWorkspace({
               floor says the history there is partial (never $0 owed). */}
           <BalanceCoverageNote from={result.chart.points[0]?.date ?? null} metric={metric} />
           {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
-          <HeroNotes notes={[cryptoPriceNote, result.asOfState.found && heroShowsLiquidNetWorth(result, metric) ? liquidNetWorthNoteText(liquidBasis) : null]} className="lg:hidden" />
+          <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
+          {/* Mortgage F1 — wherever Liquid NW is stated, its definition + excluded loans (compact). */}
+          <HeroNotes notes={[result.asOfState.found && heroShowsLiquidNetWorth(result, metric) ? liquidNetWorthNoteText(liquidBasis) : null]} className="lg:hidden" />
         </div>
 
         <CompactKpiStrip ariaLabel={`${mode === "assets" ? "Assets" : "Net worth"} breakdown`} items={kpiItems} />
