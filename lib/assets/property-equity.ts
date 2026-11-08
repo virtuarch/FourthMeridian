@@ -21,11 +21,9 @@
  * home twice), and nothing here ever excludes or restates a balance.
  *
  * ── Which debts can reduce equity ────────────────────────────────────────────
- * Only a debt the USER linked to this property AND whose kind is secured by a
- * property (securedDebtKind: mortgage / HELOC / home-equity loan). An auto,
- * student, personal or card balance never reduces equity, linked or not.
- * (When PR #485's debtType() lands, securedDebtKind should defer to
- * debtType === "mortgage" | "heloc".)
+ * Only a debt the USER linked to this property AND whose debtType (PR #485) is
+ * mortgage or HELOC. An auto, student, personal or card balance never reduces
+ * equity, linked or not.
  *
  * ── Double-count guard: a PROMPT, never a rewrite ────────────────────────────
  *   · EQUITY_ENTERED + a linked secured debt ⇒ the value is already net of the
@@ -41,7 +39,7 @@
  * the app excludes nothing automatically.
  */
 
-import { liabilityKind } from "@/lib/debt/liability-kind";
+import { debtType, DEBT_TYPE_LABEL, type DebtType, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 export const PROPERTY_VALUE_BASES = ["MARKET_VALUE", "EQUITY_ENTERED", "UNKNOWN"] as const;
 export type PropertyValueBasis = (typeof PROPERTY_VALUE_BASES)[number];
@@ -66,44 +64,25 @@ export const UNKNOWN_BASIS_PROMPT_RATIO = 1.1;
 // Secured-by-property debt kinds
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SecuredDebtKind = "mortgage" | "heloc" | "home_equity_loan";
+export type SecuredDebtKind = Extract<DebtType, "mortgage" | "heloc">;
 
-export interface SecuredDebtEvidence {
-  type?:            string | null;
-  debtSubtype?:     string | null;
-  providerSubtype?: string | null;
-  creditLimit?:     number | null;
-}
+/** The debt types secured by a property (PR #485's classifier output). */
+export const PROPERTY_SECURED_DEBT_TYPES: ReadonlySet<DebtType> = new Set<DebtType>(["mortgage", "heloc"]);
 
-const norm = (s: string | null | undefined) => {
-  const t = s?.trim().toLowerCase();
-  return t ? t : null;
-};
+export type SecuredDebtEvidence = LiabilityKindInput;
 
 /**
  * The property-secured kind of a liability, or null when it is not secured by a
- * property. An explicit FM debtSubtype decides first (mortgage / heloc only — an
- * explicit auto_loan, student_loan, personal_loan, credit_card or line_of_credit
- * is NEVER secured, whatever the provider said). Otherwise the Plaid subtype:
- * "mortgage" ⇒ mortgage; "home equity" ⇒ HELOC when revolving (positive limit,
- * the S2 HELOC ruling in liability-kind.ts) else a closed-end home-equity loan.
- * Every other subtype (auto, student, consumer, line of credit, …) ⇒ null.
+ * property. Decided ONLY by the one debt classifier (lib/debt/liability-kind.ts
+ * `debtType`, PR #485): mortgage or HELOC. Everything else — auto, student,
+ * personal, card, line of credit, overdraft, a closed-end home-equity loan
+ * (`other_installment` per #485: no mortgage behaviour), unknown — is null, so
+ * it can neither be linked nor reduce equity. An explicit FM debtSubtype wins
+ * over the provider's subtype (debtType's evidence order).
  */
 export function securedDebtKind(a: SecuredDebtEvidence): SecuredDebtKind | null {
-  if (a.type != null && a.type !== "debt") return null;
-  const ds = norm(a.debtSubtype);
-  if (ds !== null) {
-    if (ds === "mortgage") return "mortgage";
-    if (ds === "heloc") return "heloc";
-    return null;
-  }
-  const sub = norm(a.providerSubtype);
-  if (sub === "mortgage") return "mortgage";
-  if (sub === "home equity") {
-    return liabilityKind({ type: "debt", providerSubtype: sub, creditLimit: a.creditLimit }) === "revolving"
-      ? "heloc" : "home_equity_loan";
-  }
-  return null;
+  const t = debtType(a);
+  return PROPERTY_SECURED_DEBT_TYPES.has(t) ? (t as SecuredDebtKind) : null;
 }
 
 export function isPropertySecuredDebt(a: SecuredDebtEvidence): boolean {
@@ -111,9 +90,8 @@ export function isPropertySecuredDebt(a: SecuredDebtEvidence): boolean {
 }
 
 export const SECURED_DEBT_KIND_LABEL: Record<SecuredDebtKind, string> = {
-  mortgage:         "Mortgage",
-  heloc:            "HELOC",
-  home_equity_loan: "Home-equity loan",
+  mortgage: DEBT_TYPE_LABEL.mortgage,
+  heloc:    DEBT_TYPE_LABEL.heloc,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,7 +132,7 @@ export function checkSecuredDebtLink(args: {
   if (d.ownerUserId !== args.viewerUserId && !shared.some((l) => l.visibilityLevel === "FULL")) return NOT_FOUND;
   const kind = securedDebtKind(d);
   if (kind === null) {
-    return { ok: false, status: 400, error: "Only a mortgage, HELOC or home-equity loan can be linked to a property." };
+    return { ok: false, status: 400, error: "Only a mortgage or HELOC can be linked to a property." };
   }
   return { ok: true, kind };
 }

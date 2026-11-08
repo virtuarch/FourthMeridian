@@ -12,7 +12,7 @@
 --                                            UNKNOWN. Every existing row reads
 --                                            UNKNOWN: nothing is inferred and no
 --                                            recorded value is restated.
---   securedDebtAccountIds  TEXT[], ARRAY[] — the mortgage / HELOC / home-equity
+--   securedDebtAccountIds  TEXT[], ARRAY[] — the mortgage / HELOC
 --                                            debt accounts the USER linked. Empty
 --                                            for every existing row (no auto-link).
 --

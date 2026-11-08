@@ -367,7 +367,7 @@ export interface AccountSummaryItem {
   valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
   /**
    * Mortgage F9 (owner 2026-11-08) — a manual PROPERTY's value basis, the
-   * mortgage / HELOC / home-equity debts the user linked as secured by it, and
+   * mortgage / HELOC debts (debtType, PR #485) the user linked as secured by it, and
    * the DERIVED equity (value − linked secured debt). Net worth ALREADY counts
    * the property at `value` and each debt as a liability: equity is never
    * additional wealth and must never be added to netWorth. `derivedEquity` is
@@ -381,7 +381,7 @@ export interface AccountSummaryItem {
   property?: {
     value:            number;
     valueBasis:       'MARKET_VALUE' | 'EQUITY_ENTERED' | 'UNKNOWN';
-    securedDebts:     { id: string; name: string; kind: 'mortgage' | 'heloc' | 'home_equity_loan'; amountOwed: number }[];
+    securedDebts:     { id: string; name: string; kind: 'mortgage' | 'heloc'; amountOwed: number }[];
     securedDebtTotal: number;
     derivedEquity:    number | null;
     equityUnavailableReason?: 'EQUITY_ENTERED_WITH_LINKED_DEBT' | 'CURRENCY_MISMATCH' | 'LINKED_DEBT_NOT_VISIBLE';

@@ -8,7 +8,7 @@
  *      nothing rewritten (value stays 200k, equity withheld, NW unchanged);
  *   3. an unlinked auto loan never reduces equity — and a LINKED auto / student /
  *      personal loan is ignored as NOT_SECURED_KIND;
- *   4. a linked HELOC (and closed-end home-equity loan) reduces equity;
+ *   4. a linked HELOC reduces equity; a closed-end home-equity loan (#485 other_installment) does not;
  *   5. UNKNOWN basis heuristic is a prompt only; MARKET_VALUE never prompts;
  *   6. API authz: a debt from another Space / another user's private account /
  *      deleted / non-debt is 404; a non-secured kind is 400; owner or FULL same-Space ok;
@@ -75,6 +75,8 @@ console.log("3. non-secured loans never reduce equity");
     ["personal_loan (FM)", { debtSubtype: "personal_loan" }],
     ["line of credit",    { providerSubtype: "line of credit" }],
     ["credit card",       { debtSubtype: "credit_card" }],
+    ["consumer (Plaid)",  { providerSubtype: "consumer" }],
+    ["generic loan (Plaid)", { providerSubtype: "loan" }],
     ["FM auto_loan overrides Plaid mortgage", { debtSubtype: "auto_loan", providerSubtype: "mortgage" }],
   ] as const) {
     const eq = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE",
@@ -85,14 +87,15 @@ console.log("3. non-secured loans never reduce equity");
   check("an asset row is never a secured debt", securedDebtKind({ type: "other", providerSubtype: "mortgage" }) === null);
 }
 
-console.log("4. HELOC / home-equity reduce equity");
+console.log("4. HELOC reduces equity");
 {
   const heloc = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE",
     linkedDebts: [mortgage(300_000), { id: "h1", name: "HELOC", balance: 40_000, currency: "USD", type: "debt", providerSubtype: "home equity", creditLimit: 100_000 }] });
   check("mortgage + HELOC ⇒ equity 160k", heloc.equity === 160_000, String(heloc.equity));
-  check("HELOC kind", heloc.securedDebts.find((d) => d.id === "h1")?.kind === "heloc");
+  check("HELOC kind (debtType)", heloc.securedDebts.find((d) => d.id === "h1")?.kind === "heloc");
   check("FM heloc subtype", securedDebtKind({ type: "debt", debtSubtype: "heloc" }) === "heloc");
-  check("limitless Plaid home equity ⇒ home_equity_loan", securedDebtKind({ type: "debt", providerSubtype: "home equity" }) === "home_equity_loan");
+  check("limitless Plaid home equity = other_installment (#485) ⇒ not linkable, no mortgage behaviour",
+    securedDebtKind({ type: "debt", providerSubtype: "home equity" }) === null);
   const credit = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE", linkedDebts: [mortgage(-50)] });
   check("a credit balance on the mortgage is 0 owed, never added", credit.equity === 500_000);
   const fx = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE", linkedDebts: [mortgage(300_000, { currency: "EUR" })] });

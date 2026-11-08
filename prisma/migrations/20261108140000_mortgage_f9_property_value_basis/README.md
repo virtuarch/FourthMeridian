@@ -27,7 +27,7 @@ exact RLS of the asset (visible-OR-owned account-subtree predicate, 202610151200
 no new table, policy or grant for review; a join table would need its own RLS, two FKs
 registered with the account-reparenting audit, and an owner arm. The cost is no FK: every
 read and write re-checks each id (owner or FULL same-Space link, `type = debt`, not
-deleted, secured kind — mortgage / HELOC / home-equity), so a stale id is ignored, never
+deleted, secured kind — mortgage / HELOC), so a stale id is ignored, never
 subtracted. N is 1–2 per property.
 
 **Old-client compatibility.** Full — the running application never selects these

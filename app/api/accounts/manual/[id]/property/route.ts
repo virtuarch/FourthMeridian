@@ -2,7 +2,7 @@
  * GET   /api/accounts/manual/[id]/property   (Mortgage F9 — owner 2026-11-08)
  * PATCH /api/accounts/manual/[id]/property
  *
- * A manual property's market value, the mortgage / HELOC / home-equity debts the
+ * A manual property's market value, the mortgage / HELOC debts the
  * user linked as secured by it, the DERIVED equity (value − linked secured debt),
  * its value basis, and the double-count prompt — plus the owner's three actions:
  *

@@ -1428,7 +1428,7 @@ model ManualAssetProfile {
   /// UNKNOWN = never stated (DB default for every pre-F9 row). Read by
   /// lib/assets/property-equity.ts; never used to restate a value.
   valueBasis            PropertyValueBasis @default(UNKNOWN)
-  /// The debt FinancialAccount ids (mortgage / HELOC / home-equity loan) the
+  /// The debt FinancialAccount ids (mortgage / HELOC) the
   /// USER linked as secured by this property. No FK by design (see migration
   /// 20261108140000_mortgage_f9_property_value_basis README): every read
   /// re-checks each id against the caller's visible, same-Space, secured-kind

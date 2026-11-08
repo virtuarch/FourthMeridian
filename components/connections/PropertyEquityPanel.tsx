@@ -4,7 +4,7 @@
  * components/connections/PropertyEquityPanel.tsx  (Mortgage F9 — owner 2026-11-08)
  *
  * Inside a manual asset's Overview: the property's market value, the mortgage /
- * HELOC / home-equity debts linked as secured by it (with balances), the DERIVED
+ * HELOC debts linked as secured by it (with balances), the DERIVED
  * equity (value − linked secured debt), the value-basis control, and link /
  * unlink. Reads and writes GET/PATCH /api/accounts/manual/[id]/property.
  *
