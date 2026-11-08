@@ -66,6 +66,8 @@ export interface DebtPerspectiveAccount {
    *  the rate LABEL (lib/debt/rate-label.ts, Mortgage F3: "Mortgage rate" / "Interest
    *  rate" / "APR"); never by totals, interest, or payoff figures. null/absent = unknown. */
   providerSubtype?: string | null;
+  /** S2 PRIVACY P1 — the row's tier; non-FULL ⇒ every type LABEL is the coarse kind. */
+  visibilityLevel?: string;
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
    *  behind it) — such a row has no single liability to attach a rate or limit to. */
   aggregate?: { memberAccountIds: string[]; memberCount: number };

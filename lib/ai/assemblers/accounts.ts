@@ -79,7 +79,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { rateLabel } from '@/lib/debt/rate-label';
-import { debtType, DEBT_TYPE_LABEL, liabilityKind } from '@/lib/debt/liability-kind';
+import { debtLabelAccess, debtType, liabilityKind, viewerDebtLabel, viewerDebtType, type LiabilityKind } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -98,7 +98,7 @@ import type {
 import { aiLiquidNetWorth } from '@/lib/debt/liquid-net-worth';
 import type { SpaceContext } from '@/lib/space';
 import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
-import { aiTotalsCoverage, excludedAccountCounts, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
+import { aiExcludedAccountGroups, aiTotalsCoverage, excludedAccountCounts, isBalanceUnobserved, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -158,6 +158,18 @@ type AccountLinkRow = {
 // ---------------------------------------------------------------------------
 // Assembler implementation
 // ---------------------------------------------------------------------------
+
+/**
+ * S2 PRIVACY P1 — the provider-subtype evidence a BALANCE_ONLY debt row may
+ * carry into the AI payload: a generic Plaid token of the SAME kind ("loan" is
+ * installment, "line of credit" revolving), never the fine subtype.
+ */
+function coarseDebtEvidence(kind: LiabilityKind): { providerSubtype: string | null; liabilityKind: LiabilityKind } {
+  return {
+    providerSubtype: kind === 'installment' ? 'loan' : kind === 'revolving' ? 'line of credit' : null,
+    liabilityKind:   kind,
+  };
+}
 
 async function assembleAccounts(
   /**
@@ -294,7 +306,7 @@ async function assembleAccounts(
   // surfaces use (resolveWalletBalance's balanceObserved branch): a structural 0
   // flagged unvalued, so the totals exclude it AND say so with a direction.
   for (const l of links) {
-    if (l.financialAccount.balanceObserved !== false) continue;
+    if (!isBalanceUnobserved(l.financialAccount)) continue;
     const wb = resolveWalletBalance(l.financialAccount.balance, undefined, l.financialAccount.balanceObserved);
     canonical.set(l.financialAccount.id, wb.balance);
     if (wb.valuationUnknown) unvaluedIds.add(l.financialAccount.id);
@@ -437,6 +449,9 @@ async function assembleAccounts(
     // loans are split out of LIQUID net worth.
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
+    // S2 PRIVACY P1 — the tier, so the excluded-account groups and the liquid-NW
+    // excluded kinds name a BALANCE_ONLY debt as "loan", never "mortgage".
+    visibilityLevel: l.visibilityLevel,
     ...(unvaluedIds.has(l.financialAccount.id) ? { valuationUnknown: true } : {}),
   }));
 
@@ -717,9 +732,10 @@ async function assembleAccounts(
           // Owner 2026-11-08 — the ONE fine-grained debt type + its name, so the
           // model calls an auto loan an "Auto loan", never a mortgage, and keeps
           // mortgage-only reasoning (equity, escrow) to debtType "mortgage".
-          const dt                  = debtType(fa);
-          base.debtType             = dt;
-          base.debtTypeLabel        = DEBT_TYPE_LABEL[dt];
+          // S2 PRIVACY P1 — through the viewer helper (FINE on this FULL row).
+          const access              = debtLabelAccess({ visibilityLevel: link.visibilityLevel });
+          base.debtType             = viewerDebtType(fa, access);
+          base.debtTypeLabel        = viewerDebtLabel(fa, access);
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;
@@ -804,7 +820,13 @@ async function assembleAccounts(
         id:       row.id, // authority synthetic id: balance-only:{owner}:{label}:{currency}
         name:     row.name,
         type:     row.type,
-        providerSubtype: row.providerSubtype ?? null,
+        // S2 PRIVACY P1 — a BALANCE_ONLY debt row tells the model its KIND only:
+        // the raw provider subtype ("mortgage", "home equity") is replaced by a
+        // kind-preserving generic token, and liabilityKind is pinned from the
+        // ORIGINAL evidence so scenario targeting is unchanged.
+        ...(row.type === 'debt'
+          ? coarseDebtEvidence(liabilityKind({ type: row.type, providerSubtype: row.providerSubtype ?? null }))
+          : { providerSubtype: row.providerSubtype ?? null }),
         balance:  row.balance, // debt: Σ per-member amountOwed (≥ 0); assets: signed member sum
         currency: row.currency,
         reportingBalance: rep.reportingBalance,
@@ -946,6 +968,12 @@ async function assembleAccounts(
     ...((): { totalsCoverage?: AiTotalsCoverage } => {
       const c = aiTotalsCoverage(excludedAccountCounts(classifiableAll));
       return c ? { totalsCoverage: c } : {};
+    })(),
+    // Mortgage F8c — WHICH accounts were excluded, typed (class, reason, "mortgage"),
+    // so no reader attributes the exclusion to the wrong class. OMITTED when none.
+    ...((): { totalsExcluded?: ReturnType<typeof aiExcludedAccountGroups> } => {
+      const g = aiExcludedAccountGroups(classifiableAll);
+      return g.length > 0 ? { totalsExcluded: g } : {};
     })(),
 
     // Mortgage F1 (owner 2026-11-08) — the definition + what was excluded, so

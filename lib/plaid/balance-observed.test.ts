@@ -286,7 +286,7 @@ async function main(): Promise<void> {
     const A = code(read("lib", "data", "accounts.ts"));
     check("lib/data/accounts.ts reads the full row (include), so balanceObserved is present", /financialAccount: \{\s*include: \{/.test(A));
     const W = code(read("lib", "crypto", "wallet-current-value.ts"));
-    check("the classification checks balanceObserved FIRST", /if \(balanceObserved === false\) return \{ balance: 0, valuationUnknown: true \};\s*if \(v === undefined\)/.test(W));
+    check("the classification checks balanceObserved FIRST", /if \(isBalanceUnobserved\(\{ balanceObserved \}\)\) return \{ balance: 0, valuationUnknown: true \};\s*if \(v === undefined\)/.test(W));
     for (const f of ["components/space/widgets/accounts/AccountsLedger.tsx", "components/space/manage/FinancesPanel.tsx", "components/space/manage/ShareExistingAccountsPanel.tsx"]) {
       const s = code(read(f));
       check(`${f}: an excluded row prints unvaluedBalanceLabel, never a hard-coded label`,

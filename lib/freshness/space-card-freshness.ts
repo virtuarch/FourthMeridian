@@ -23,7 +23,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { resolveSpaceFreshness, type SpaceFreshness } from "./space-freshness";
-import { excludedAccountCounts, unobservedTotalCoverage, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
+import { excludedAccountCounts, isBalanceUnobserved, unobservedTotalCoverage, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 
 /** The card-facing projection — the claim plus what it hides. */
 export interface SpaceCardFreshness {
@@ -103,7 +103,7 @@ export async function getSpaceCardFreshness(
       ...((): { netWorthCoverage?: UnobservedTotalCoverage } => {
         const c = unobservedTotalCoverage("NET_WORTH", excludedAccountCounts(rows.map((r) => ({
           type: r.financialAccount.type,
-          ...(r.financialAccount.balanceObserved === false ? { valuationUnknown: true } : {}),
+          ...(isBalanceUnobserved(r.financialAccount) ? { valuationUnknown: true } : {}),
         }))));
         return c.status === "PARTIAL" ? { netWorthCoverage: c } : {};
       })(),

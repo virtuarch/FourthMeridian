@@ -127,6 +127,8 @@ const totals = (c: ReturnType<typeof classifyAccounts>) => JSON.stringify({
   // Disclosure to the AI: digital assets is not assertable while a wallet is excluded.
   const acc = {
     redactedCount: 0, totalsUnconverted: false, totalsUnvaluedCount: 1,
+    // Mortgage F8c — the typed exclusion the assembler emits beside the count.
+    totalsExcluded: [{ accountClass: "DIGITAL_ASSET", reason: "UNVALUED", label: "crypto wallet", count: 1 }],
     totalInvestments: BROK.balance, totalDigitalAssets: 0,
     counts: { liquid: 1, investments: 1, digitalAssets: 1, realAssets: 0, liabilities: 1 },
   } as unknown as AccountsSectionData;

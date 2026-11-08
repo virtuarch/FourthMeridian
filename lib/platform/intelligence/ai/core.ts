@@ -199,9 +199,10 @@ export const PLATFORM_AI_SYSTEM_PROMPT = [
   "You are Fourth Meridian's Platform AI: platform-wide operational intelligence for operators. You are READ-ONLY: no tool you have can change anything, so never claim or offer to take an action.",
   "Answer ONLY from the results of the tools you call in this turn.",
   "NEVER write a number or a digit yourself. Where a figure goes, COPY a placeholder string from your get_metric result VERBATIM and the server fills in the figure, its unit, its window and its status wording. Use \"placeholder\", or the part's entry in \"placeholders\"; copy its string exactly as given — never type, shorten or edit one.",
+  "Counts are figures: never write one as a word (\"two\", \"a dozen\", \"twice\"); copy the count part's placeholder (briefing counts are parts).",
   "Do not write units ($, %, k, M) or \"at least\" next to a placeholder; the server writes them. Do not add, subtract, divide or estimate figures, and do not write dates, counts or metric ids in your own words: any digit outside a placeholder, or a placeholder for a metric you did not read in this turn, makes the whole answer refused. The one exception: you may repeat a time window the operator wrote in the question.",
   "If a metric's status is UNAVAILABLE, say it is unavailable. Never present an unavailable figure as 0, $0, none or an estimate. PARTIAL means a lower bound.",
-  "BRIEFING. For a general status question (\"how are we looking\", \"anything wrong\", \"status today\"), read the briefing metrics named in BRIEFING COVERAGE (the server's list for this operator; call several get_metric in one round) and answer in this order, most important first: (1) overall health; (2) customer-impacting failures; (3) incidents — active, needing verification, recently resolved; (4) sync and connection problems, including customers who must reconnect; (5) job and provider reliability; (6) costs or unusual activity, ONLY if a cost or alert figure is anomalous or the operator asked; (7) at most three recommended next actions, each a link from find_page / open_page or a drill.page. Lead with what is wrong; say briefly what is healthy. Name the area a figure comes from when you use more than one area (the get_metric result's \"area\"). Name an unhealthy job, domain, rule or resource only from a result's \"subjects\".",
+  "BRIEFING. For a general status question (\"how are we looking\", \"anything wrong\", \"status today\"), read the briefing metrics named in BRIEFING COVERAGE (the server's list for this operator; call several get_metric in one round) and answer in this order, most important first: (1) overall health; (2) customer-impacting failures; (3) incidents — active, needing verification, recently resolved; (4) sync and connection problems, including customers who must reconnect; (5) job and provider reliability; (6) costs or unusual activity, ONLY if the operator asked or a figure is anomalous — otherwise read no economics metric; (7) at most three recommended next actions, each a link from find_page / open_page or a drill.page. Lead with what is wrong; say briefly what is healthy. Name the area a figure comes from when you use more than one area (the get_metric result's \"area\"). Name an unhealthy job, domain, rule or resource only from a result's \"subjects\".",
   "COVERAGE. Never claim to have checked anything you did not read. Say plainly which briefing domains are unavailable, not permitted for this operator, or not yet covered (BRIEFING COVERAGE lists them); never imply that something you could not read is fine.",
   "\"Today\" or \"right now\" is not a window: read point-in-time metrics, and for a windowed metric use the smallest window it lists, letting the figure state its own window. Pass a window only from that metric's \"windows\".",
   "When the question is about cost (spend, what is costing the most), read the economics metrics. A dollar figure whose basis.kind is \"estimated\" is an estimate: call it estimated, never billed or invoiced. If you compare categories and any figure is PARTIAL or a part is null, say it is the largest of the measured categories and that a full ranking can't be verified. The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns.",
@@ -257,9 +258,10 @@ export function briefingCoverageText(binding: Pick<PlatformAiBinding, "describeM
     ? `- ${d.label}: ${d.readable.join(", ")}`
     : `- ${d.label}: not available to this operator (no Platform grant covers it)`);
   return [
-    `BRIEFING COVERAGE (server-computed; you may read these areas: ${binding.surfaceLabel}):`,
+    `BRIEFING COVERAGE (server-computed; you may read these areas: ${binding.surfaceLabel}; read Costs only when the operator asks about cost or a step-1–5 figure is anomalous):`,
     ...lines,
     `- Not yet covered by Platform AI: ${BRIEFING_NOT_YET_COVERED.join(", ")}.`,
+    "- Next actions (step 7): each one is a Markdown link to an href find_page / open_page returned, or a drill.page; call find_page for it, and give no next action without its link.",
   ].join("\n");
 }
 
@@ -544,7 +546,9 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       // turn supersedes the refusal (citationEnvelopes).
       const retry = e.unavailableCode === "WINDOW_NOT_OFFERED" && def?.window.days?.length
         ? { windows: def.window.days, retry: "Read this metric again with one of `windows` (or no window); that figure states its own window." } : {};
-      return { ...e, area, ...period, ...placeholdersFor(e), ...labelPlaceholdersFor(e), ...retry };
+      // Question C (2026-11-08): a window sent to a FIXED-window metric was ignored — say so, so the placeholders are copied as given (no |window).
+      const ignored = windowIgnored ? { window_ignored: "This metric has one fixed window (window_phrase); the window you sent was not used. Copy its placeholders exactly as given — they take no |window." } : {};
+      return { ...e, area, ...period, ...placeholdersFor(e), ...labelPlaceholdersFor(e), ...retry, ...ignored };
     }
     case "find_page": {
       const a = plainArgs(rawArgs, ["query"]);
@@ -917,7 +921,7 @@ export type MalformedReason = (typeof MALFORMED_REASONS)[number];
  * percent sign / "percent", or anything else. A diagnosis, never an allowance: the
  * verdict is unchanged whatever the kind.
  */
-export const DIGIT_KINDS = ["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER"] as const;
+export const DIGIT_KINDS = ["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER", "NUMBER_WORD"] as const;
 export type DigitKind = (typeof DIGIT_KINDS)[number];
 
 /** PURE — classify each leftover digit run in the model's own prose (after every allowance). */
@@ -935,6 +939,39 @@ export function classifyDigitRuns(prose: string): ReasonCounts<DigitKind> {
   return out;
 }
 export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
+
+// ── Number words (S2 N1, 2026-11-08): a count written in words is a figure ──
+//
+// Preview briefing: "one failed domain", "two active incidents", "eight connections
+// requiring reconnection" — counts the model typed in WORDS, which the digit rule never
+// saw. A cardinal number word in the model's own prose (outside every placeholder, after
+// the registry-label allowlist) is treated EXACTLY like a leftover digit: UNGROUNDED_DIGIT
+// ⇒ the fallback, digitBy NUMBER_WORD. INCLUDED: zero … nineteen, twenty … ninety,
+// hundred, thousand, million, billion, dozen, twice, thrice (each states an exact count)
+// and "a single" (states exactly one). EXCLUDED, on purpose: "once" (mostly the
+// conjunction "once it reconnects"), ordinals ("first", "second": order, and the prompt's
+// own "most important first"), "no" / "none" (absence wording the UNAVAILABLE rule
+// already governs), and vague quantifiers ("several", "few", "many", "some": no exact
+// figure is asserted, so none can be wrong). Idioms exempted (a pronoun, not a count):
+// "no one", "one another", "this one", "that one", "which one". "one of …" is NOT
+// exempted (it asserts at least one — conservative: refuse). A number word the operator
+// wrote in the question next to a time unit ("past thirty days") is admitted like
+// admitUserNumerals admits digits.
+const NUMBER_WORD = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|billions?|dozens?|twice|thrice)\b|\ba\s+single\b/gi;
+const NUMBER_WORD_IDIOM = /\b(?:no\s+one|one\s+another|(?:this|that|which)\s+one)\b/gi;
+const NUMBER_WORD_TIME_UNIT = /^[\s-]+(?:hours?|days?|weeks?|months?|years?)\b/i;
+
+/** PURE — how many number words the model's own prose states (idioms and the operator's own time window excepted). */
+export function numberWordCount(prose: string, scrubbedQuestion = ""): number {
+  const text = prose.replace(NUMBER_WORD_IDIOM, " ");
+  let n = 0;
+  for (const m of text.matchAll(NUMBER_WORD)) {
+    const after = text.slice(m.index! + m[0].length);
+    if (NUMBER_WORD_TIME_UNIT.test(after) && new RegExp(`\\b${m[0].replace(/\s+/g, "\\s+")}\\b`, "i").test(scrubbedQuestion)) continue;
+    n++;
+  }
+  return n;
+}
 
 const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
 /** The registry label of each metric key (what {{l:<key>}} renders with no part). */
@@ -1262,6 +1299,24 @@ export function matchPlaceholderEnvelope(envelopes: readonly MetricEnvelope[], k
 }
 
 /**
+ * QUESTION C (2026-11-08, Preview): "What's costing me the most money in the past 30 days?"
+ * — the model read economics-operating-cost@1 (a FIXED window: the billing cycle) with
+ * window=30 (ignored at the read: isFixedWindow), then wrote its placeholder with
+ * |window=30 to match the operator's period. matchPlaceholderEnvelope (rightly) finds no
+ * 30-day envelope ⇒ WINDOW_MISMATCH ⇒ the whole answer became the fallback. The read
+ * already ignores a window on a fixed metric (S2 option (a)); the placeholder now does
+ * the same, but ONLY when every envelope of the key this turn is fixed-window (days null)
+ * AND N is a day-window the operator asked for. The figure still renders the envelope's
+ * OWN window, and the asked period then drives the RESOLVED_WITH_WINDOW_NOTE note / the
+ * period_mismatch correction. Any other |window=N keeps its strict match.
+ */
+export function fixedWindowOption(envelopes: readonly MetricEnvelope[], key: string, window: number | null, askedDays: readonly number[]): number | null {
+  if (window === null || !askedDays.includes(window)) return window;
+  const same = envelopes.filter((e) => e.metric === key);
+  return same.length > 0 && same.every((e) => e.window.days === null) ? null : window;
+}
+
+/**
  * B11 — the answer with every server-rendered FIGURE kept as its own span
  * (metric key + the window it was read with), so a conversation can store it
  * typed (conversations/answer.ts StoredSegment) and mask it in history. Text and
@@ -1324,7 +1379,9 @@ export function resolvePlaceholders(
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
   // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
   const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
-  const labelList = [...labels].filter((l) => /\d/.test(l)).sort((a, b) => b.length - a.length);
+  const labelList = [...labels].filter((l) => /\d/.test(l) || numberWordCount(l) > 0).sort((a, b) => b.length - a.length);
+  // The day-windows the operator asked about (the Question C rule, fixedWindowOption).
+  const askedDays = requestedWindows(scrubbedQuestion).filter((a) => a.hours % 24 === 0).map((a) => a.hours / 24);
   const modelProse: string[] = [];
   // The rendered answer as one stream (segments in order) with every server span marked —
   // for the counts-only labelRepeat / windowRepeat diagnoses. Never traced, stored or returned.
@@ -1342,7 +1399,7 @@ export function resolvePlaceholders(
       const k = placeholderKeyOf(envelopes, written);
       if (k.kind === "UNRESOLVED") return why(k.reason);
       const key = k.key;
-      const match = matchPlaceholderEnvelope(envelopes, key, opts.window);
+      const match = matchPlaceholderEnvelope(envelopes, key, fixedWindowOption(envelopes, key, opts.window, askedDays));
       if (match.kind === "MISMATCH") { windowMismatch = true; unresolved++; return " "; }
       if (match.kind === "UNREAD") return why("NOT_READ");
       const e = match.envelope;
@@ -1381,6 +1438,8 @@ export function resolvePlaceholders(
       digit = true;
       for (const [k, n] of Object.entries(classifyDigitRuns(prose)) as [DigitKind, number][]) digitBy[k] = (digitBy[k] ?? 0) + n;
     }
+    const words = numberWordCount(prose, scrubbedQuestion);
+    if (words > 0) { digit = true; digitBy.NUMBER_WORD = (digitBy.NUMBER_WORD ?? 0) + words; }
     // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
     const pieces = out
       .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
