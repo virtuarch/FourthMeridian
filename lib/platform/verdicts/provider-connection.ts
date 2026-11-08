@@ -90,6 +90,7 @@
  */
 
 import { PROVIDER_FAILING_SHARE } from "./provider-outcome";
+import { NEEDS_REAUTH_CODES } from "@/lib/plaid/reauth-codes";
 
 export const PROVIDER_CONNECTION_DEFINITION = {
   id: "provider-connection",
@@ -123,21 +124,28 @@ export const PROVIDER_SIDE_ERROR_CODES: ReadonlySet<string> = new Set([
   "PRODUCT_NOT_READY",
 ]);
 
-/** Customer-actionable codes: the customer must sign in again, consent again, or fix their account. */
+/**
+ * Customer-actionable codes: the customer must sign in again, consent again, or fix their account.
+ *
+ * The NEEDS_REAUTH subset (the update-mode-fixable codes + INVALID_ACCESS_TOKEN)
+ * comes from lib/plaid/reauth-codes.ts — the same set errors.ts, the webhook and
+ * the member Connections UI use — so the verdict can never call a code
+ * customer-actionable while the member is shown no way to act on it, or vice
+ * versa. The rest are classified for provider TRUST only: they say the fault is
+ * the customer's side, not the provider's, without claiming Reconnect fixes them.
+ */
 export const CUSTOMER_REAUTH_CODES: ReadonlySet<string> = new Set([
-  "ITEM_LOGIN_REQUIRED",
-  "INVALID_ACCESS_TOKEN",
+  ...NEEDS_REAUTH_CODES,
+  // Trust-only (not offered Reconnect on an ERROR item):
   "PENDING_EXPIRATION",
   "PENDING_DISCONNECT",
   "USER_PERMISSION_REVOKED",
   "USER_SETUP_REQUIRED",
-  "ACCESS_NOT_GRANTED",
   "ITEM_LOCKED",
   "INVALID_CREDENTIALS",
   "INVALID_MFA",
   "INSUFFICIENT_CREDENTIALS",
   "MFA_NOT_SUPPORTED",
-  "NO_ACCOUNTS",
 ]);
 
 export type ConnectionTrustState = "ERROR" | "NEEDS_REAUTH" | "UNCLASSIFIED" | "REVOKED" | "NONE";

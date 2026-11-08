@@ -141,6 +141,9 @@ const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // collided on a unique provider identity. Account linking, not transaction
   // persistence; same non-actionable posture as reparenting-refused.
   "exchange-account-persist":     "transactions",
+  // lib/connections/health-transitions.ts — a Plaid ITEM entered NEEDS_REAUTH /
+  // ERROR with a provider code (classified explicitly below).
+  "plaid-item-error":             "transactions",
   // FIN-A2 — a new account created with no observed balance (BALANCE_UNOBSERVED).
   "exchange-balance-unobserved":  "balances",
   // lib/investments/*
@@ -251,6 +254,17 @@ export function classifySyncIssue(row: ClassifiableSyncIssue): SyncIssueClassifi
 
     case "UPSERT_ERROR":
     case "MISSING_ACCOUNT": {
+      // A Plaid ITEM-level error (lib/connections/health-transitions.ts). Its
+      // own arm because the generic one below would rank it `critical` (no
+      // transaction is unpersisted — the sync never ran) and it must not page
+      // operators as lost data. CONDITION, cursor-blocking: the item's sync is
+      // halted at its cursor, so the first COMPLETED sync is proof it recovered
+      // (resolveCursorBlockingIssues). Never customer-actionable here: the
+      // member's action (Reconnect) lives on the Connections card.
+      if (stage === "plaid-item-error" && provider === "PLAID") {
+        return { domain: "transactions", severity: "error", nature: "condition",
+                 customerActionable: false, cursorBlocking: true };
+      }
       // A row naming a specific bank transaction IS bank-transaction sync,
       // whatever else it carries — the structural signal wins.
       const domain: SyncIssueDomain =
@@ -503,6 +517,7 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   "reparenting-refused":          "Confirming which account a transaction belongs to",
   "fingerprint-adoption-ambiguous": "Matching a synced transaction to an existing one",
   "exchange-account-persist":     "Linking a newly connected bank account",
+  "plaid-item-error":             "Syncing a bank connection",
   // FIN-A2 — balances.
   "exchange-balance-unobserved":  "Reading the balance of a newly connected account",
 

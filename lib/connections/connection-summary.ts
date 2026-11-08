@@ -20,6 +20,21 @@ import { providerName, type SyncConnection } from "@/lib/sync/status";
 import { isPlanRestrictedDeferral } from "@/lib/sync/deferred-ingestion";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { DataSourceState } from "@/lib/connections/space-data-health.core";
+import { canReconnectViaUpdateMode } from "@/lib/plaid/reauth-codes";
+
+/**
+ * Whether the member is offered Reconnect (Plaid Link update mode) for this
+ * connection: NEEDS_REAUTH, or ERROR with an update-mode-fixable code
+ * (lib/plaid/reauth-codes.ts — the same set the provider verdict and the sync
+ * classifier use). The second arm is what un-strands an item persisted ERROR
+ * before its code moved to NEEDS_REAUTH: it had a "Sync issue" card, no action,
+ * and every sync path selects ACTIVE only. Wallets never reconnect via Plaid.
+ */
+export function offersReconnect(connection: Pick<SyncConnection, "provider" | "state" | "errorCode">): boolean {
+  if (connection.provider !== "PLAID") return false;
+  const status = connection.state === "needs_reauth" ? "NEEDS_REAUTH" : connection.state === "error" ? "ERROR" : null;
+  return status !== null && canReconnectViaUpdateMode(status, connection.errorCode);
+}
 
 /** ok = nothing to do · progress = work genuinely running · attention = the user can act · neutral = waiting on us. */
 export type ConnectionTone = "ok" | "progress" | "attention" | "neutral";
@@ -64,7 +79,7 @@ export function summarizeConnection(
     case "import_paused": return word("Import paused", "neutral");
     case "sync_deferred": return isPlanRestrictedDeferral(connection.deferredReason) ? word("Sync paused", "attention") : word("Sync pending", "neutral");
     case "needs_reauth":  return word("Reconnect needed", "attention");
-    case "error":         return word("Sync issue", "attention");
+    case "error":         return offersReconnect(connection) ? word("Reconnect needed", "attention") : word("Sync issue", "attention");
     case "ready": {
       if (intelligence?.phase === "BUILDING_INTELLIGENCE") return word("Building history", "progress");
       if (intelligence?.phase === "INTELLIGENCE_NOT_BUILT") return word("History not built", "attention");

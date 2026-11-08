@@ -85,6 +85,14 @@ export const OPERATION_KEYS = {
   // lib/plaid/exchange-collision.ts, never by exchangeToken.ts itself.
   "exchange-account-persist": "exchange-account-persist",
 
+  // ── Plaid item-level error (NEEDS_REAUTH / ERROR with a provider code) ────
+  // The item's whole sync is halted by a provider error on the ITEM, not on a
+  // transaction. Recorded by lib/connections/health-transitions.ts when an item
+  // enters a coded broken state; resolved by the first completed sync. Distinct
+  // from transaction-persist on purpose: the operator response is "the member
+  // must reconnect / the institution must recover", never "replay a page".
+  "plaid-item-error": "plaid-item-error",
+
   // ── New account with no observed balance (FIN-A2) ─────────────────────────
   // The exchange created a FinancialAccount whose provider `current` was null.
   // The row is excluded from every total until a balance is observed, which
