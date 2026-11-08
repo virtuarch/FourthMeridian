@@ -39,7 +39,8 @@ import { useMemo, useState } from "react";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
 import { estimatedMonthlyInterest } from "@/lib/debt/interest-cost";
-import { rateLabel } from "@/lib/debt/rate-label";
+import { viewerRateLabel } from "@/lib/debt/rate-label";
+import { debtLabelAccess } from "@/lib/debt/liability-kind";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
@@ -282,7 +283,7 @@ function LedgerRow({ row, currency, onOpen }: { row: LiabilityRow; currency: str
           <span>{debtSubtypeLabel(a)}</span>
           {a.institution && <span className="text-[var(--text-faint)]"> · {a.institution}</span>}
           {a.interestRate != null && row.state === "owed" && (
-            <span className="text-[var(--text-faint)]"> · {a.interestRate.toFixed(2)}% {rateLabel(a)}</span>
+            <span className="text-[var(--text-faint)]"> · {a.interestRate.toFixed(2)}% {viewerRateLabel(a, debtLabelAccess(a))}</span>
           )}
         </p>
       </div>

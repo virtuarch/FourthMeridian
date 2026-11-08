@@ -295,6 +295,8 @@ export async function getAccountsWithVisibility(
             institution: "",              // redacted — institution is identifying
             balance:     0,
             balanceRedacted: true,
+            // S2 PRIVACY P1 — the tier, for the viewer debt-label helpers.
+            visibilityLevel: link.visibilityLevel,
             currency:    r.currency,
             lastUpdated: r.lastUpdated.toISOString(),
             balanceLastUpdatedAt: null,
@@ -324,6 +326,10 @@ export async function getAccountsWithVisibility(
           type:        safe.type as Account["type"],
           institution: "",              // redacted — institution is identifying
           balance:     safe.balance,
+          // S2 PRIVACY P1 — the tier, so every debt-type LABEL on this row is
+          // the coarse kind ("Loan"), never "Mortgage" / "HELOC". The raw
+          // debtSubtype below stays for MATH (liquid-NW classification) only.
+          visibilityLevel: link.visibilityLevel,
           // FM-AUDIT-022 — a fact about the balance this tier discloses.
           ...(walletBalance(r.balance, r.id, r.balanceObserved).valuationUnknown ? { valuationUnknown: true as const } : {}),
           currency:    safe.currency,
@@ -398,6 +404,7 @@ export async function getAccountsWithVisibility(
       name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
+      visibilityLevel: "FULL",
       // FM-AUDIT-022 — `valuationUnknown` present only for an unvalued wallet.
       ...walletBalance(r.balance, r.id, r.balanceObserved),
       currency:      r.currency,

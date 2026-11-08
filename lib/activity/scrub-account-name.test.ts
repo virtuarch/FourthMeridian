@@ -41,7 +41,7 @@ console.log("2. non-FULL redacts to a generic typed label");
 
   const s = decideScrub({ visibilityLevel: "SUMMARY_ONLY", storedName: REAL, hint: cardHint });
   check("SUMMARY_ONLY real name → candidate", s.isCandidate);
-  check("SUMMARY_ONLY safe value = typed generic", s.safeName === "Credit Card");
+  check("SUMMARY_ONLY safe value = typed generic", s.safeName === "Credit Line");
 }
 
 // ── 3. Legacy rows with NO visibility marker → fail closed (redact) ───────────
@@ -63,7 +63,7 @@ console.log("4. idempotency — already-generic rows are skipped");
   check("stored == safe → not a candidate", !already.isCandidate);
 
   // A row scrubbed by the write-time helper (new BALANCE_ONLY shares) is safe.
-  const newRow = decideScrub({ visibilityLevel: "BALANCE_ONLY", storedName: "Credit Card", hint: cardHint });
+  const newRow = decideScrub({ visibilityLevel: "BALANCE_ONLY", storedName: "Credit Line", hint: cardHint });
   check("write-time-safe BALANCE_ONLY row → not a candidate", !newRow.isCandidate);
 
   const constAlready = decideScrub({ visibilityLevel: null, storedName: GENERIC_ACCOUNT_LABEL, hint: null });

@@ -43,16 +43,16 @@ function check(name: string, cond: boolean, detail?: unknown) {
     want: null | { reason: ExclusionReason; cls: ExcludedAccountClass; label: string; count?: number; installment?: boolean } };
   const T: Row[] = [
     { name: "observed checking", row: { type: "checking" }, want: null },
-    { name: "balanceObserved true", row: { type: "debt", debtSubtype: "mortgage", balanceObserved: true }, want: null },
-    { name: "unobserved Plaid mortgage", row: { type: "debt", providerSubtype: "mortgage", balanceObserved: false },
+    { name: "balanceObserved true", row: { type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", balanceObserved: true }, want: null },
+    { name: "unobserved Plaid mortgage", row: { type: "debt", visibilityLevel: "FULL", providerSubtype: "mortgage", balanceObserved: false },
       want: { reason: "UNOBSERVED", cls: "DEBT", label: "mortgage", installment: true } },
-    { name: "flagged mortgage (valuationUnknown only)", row: { type: "debt", debtSubtype: "mortgage", valuationUnknown: true },
+    { name: "flagged mortgage (valuationUnknown only)", row: { type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", valuationUnknown: true },
       want: { reason: "UNOBSERVED", cls: "DEBT", label: "mortgage", installment: true } },
-    { name: "unobserved credit card", row: { type: "debt", providerSubtype: "credit card", balanceObserved: false },
+    { name: "unobserved credit card", row: { type: "debt", visibilityLevel: "FULL", providerSubtype: "credit card", balanceObserved: false },
       want: { reason: "UNOBSERVED", cls: "DEBT", label: "credit card" } },
-    { name: "unobserved HELOC keeps its acronym", row: { type: "debt", debtSubtype: "heloc", valuationUnknown: true },
+    { name: "unobserved HELOC keeps its acronym", row: { type: "debt", visibilityLevel: "FULL", debtSubtype: "heloc", valuationUnknown: true },
       want: { reason: "UNOBSERVED", cls: "DEBT", label: "HELOC" } },
-    { name: "untyped debt", row: { type: "debt", valuationUnknown: true },
+    { name: "untyped debt", row: { type: "debt", visibilityLevel: "FULL", valuationUnknown: true },
       want: { reason: "UNOBSERVED", cls: "DEBT", label: "debt" } },
     { name: "unvalued crypto wallet", row: { type: "crypto", valuationUnknown: true },
       want: { reason: "UNVALUED", cls: "DIGITAL_ASSET", label: "crypto wallet" } },
@@ -66,7 +66,7 @@ function check(name: string, cond: boolean, detail?: unknown) {
       want: { reason: "UNVALUED", cls: "DIGITAL_ASSET", label: "crypto wallet", count: 2 } },
     { name: "unconverted", row: { type: "savings", unconverted: true },
       want: { reason: "UNCONVERTED", cls: "CASH", label: "savings account" } },
-    { name: "redacted wins", row: { type: "debt", redacted: true, balanceObserved: false },
+    { name: "redacted wins", row: { type: "debt", visibilityLevel: "FULL", redacted: true, balanceObserved: false },
       want: { reason: "REDACTED", cls: "DEBT", label: "debt" } },
   ];
   for (const t of T) {
@@ -81,18 +81,18 @@ function check(name: string, cond: boolean, detail?: unknown) {
     && !isBalanceUnobserved({ balanceObserved: null }) && !isBalanceUnobserved({}));
   // Counts unchanged in meaning: UNCONVERTED / REDACTED never feed the F8 totals.
   const c = excludedAccountCounts([
-    { type: "debt", debtSubtype: "mortgage", valuationUnknown: true },
-    { type: "debt", debtSubtype: "credit_card", valuationUnknown: true },
+    { type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", valuationUnknown: true },
+    { type: "debt", visibilityLevel: "FULL", debtSubtype: "credit_card", valuationUnknown: true },
     { type: "checking", valuationUnknown: true },
     { type: "savings", unconverted: true },
     { type: "investment", redacted: true },
   ]);
   check("counts: debt 2 (1 installment), asset 1, liquid 1", c.debt === 2 && c.installmentDebt === 1 && c.asset === 1 && c.liquid === 1, c);
-  const s = partialTotalStatement("TOTAL_DEBT", detectExcludedAccounts([{ type: "debt", debtSubtype: "mortgage", valuationUnknown: true }]));
+  const s = partialTotalStatement("TOTAL_DEBT", detectExcludedAccounts([{ type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", valuationUnknown: true }]));
   check("statement: total debt names the mortgage, may be understated",
     s?.text === "Total debt — partial: 1 balance unavailable (mortgage); may be understated", s?.text);
   check("statement: installment-only ⇒ liquid NW COMPLETE",
-    partialTotalStatement("LIQUID_NET_WORTH", detectExcludedAccounts([{ type: "debt", debtSubtype: "mortgage", valuationUnknown: true }])) === null);
+    partialTotalStatement("LIQUID_NET_WORTH", detectExcludedAccounts([{ type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", valuationUnknown: true }])) === null);
 }
 
 // ══ 2. F8a — economic concepts attribute by type ═════════════════════════════
@@ -108,7 +108,7 @@ const accFor = (rows: ExclusionDetectorRow[], over: Partial<AccountsSectionData>
   } as unknown as AccountsSectionData;
 };
 {
-  const mortgage = accFor([{ type: "debt", providerSubtype: "mortgage", balanceObserved: false }]);
+  const mortgage = accFor([{ type: "debt", visibilityLevel: "FULL", providerSubtype: "mortgage", balanceObserved: false }]);
   const inv = composeInvestments(mortgage);
   check("F8a: unobserved mortgage leaves digital assets ASSERTABLE",
     inv?.components.find((c) => c.key === "DIGITAL_ASSETS")?.state === ComponentState.ASSERTABLE, inv);
@@ -147,7 +147,7 @@ const brief = (acc: AccountsSectionData, asOf = "2026-09-13"): ReturnType<typeof
   transactions: null, snapshot: null, holdings: null, assessment: null, memories: [], recentActivity: null,
 } as BriefInputs);
 {
-  const card = brief(accFor([{ type: "debt", debtSubtype: "credit_card", valuationUnknown: true }]));
+  const card = brief(accFor([{ type: "debt", visibilityLevel: "FULL", debtSubtype: "credit_card", valuationUnknown: true }]));
   const lnw = card.dataQuality.partialTotals?.find((t) => t.total === "LIQUID_NET_WORTH");
   check("F8b Brief: unobserved card ⇒ liquid NW PARTIAL, may be overstated, names the card",
     lnw?.note === "Liquid net worth — partial: 1 balance unavailable (credit card); may be overstated"
@@ -156,7 +156,7 @@ const brief = (acc: AccountsSectionData, asOf = "2026-09-13"): ReturnType<typeof
   const liquid = cash.dataQuality.partialTotals?.find((t) => t.total === "LIQUID_CASH");
   check("F8b Brief: unobserved checking ⇒ cash PARTIAL, may be understated",
     /may be understated/.test(liquid?.note ?? "") && liquid!.directions.includes("TRUE_TOTAL_MAY_BE_HIGHER"), cash.dataQuality.partialTotals);
-  const mort = brief(accFor([{ type: "debt", debtSubtype: "mortgage", valuationUnknown: true }]));
+  const mort = brief(accFor([{ type: "debt", visibilityLevel: "FULL", debtSubtype: "mortgage", valuationUnknown: true }]));
   check("F8b Brief: unobserved mortgage ⇒ liquid NW NOT partial; debt partial",
     !mort.dataQuality.partialTotals?.some((t) => t.total === "LIQUID_NET_WORTH")
     && mort.dataQuality.partialTotals?.some((t) => t.total === "TOTAL_DEBT" && /mortgage/.test(t.note)) === true, mort.dataQuality.partialTotals);

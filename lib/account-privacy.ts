@@ -64,6 +64,7 @@ import { possessive } from "@/lib/format";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import { liquidityAccess } from "@/lib/account-classifier";
 import { liquidNetWorthTreatment } from "@/lib/debt/liquid-net-worth";
+import { liabilityKind } from "@/lib/debt/liability-kind";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -150,6 +151,12 @@ export interface NormalizedAccount {
    * aggregate's subtype is a member's and always yields the same access.
    */
   providerSubtype?: string | null;
+  /**
+   * S2 PRIVACY P1 — the tier this row was disclosed at. Read ONLY by the viewer
+   * label helpers (lib/debt/liability-kind.ts `debtLabelAccess`): a debt type is
+   * named finely on FULL rows, coarsely ("Loan") on BALANCE_ONLY rows.
+   */
+  visibilityLevel?: "FULL" | "BALANCE_ONLY";
   // Present only on FULL rows:
   institution?:    string;
   creditLimit?:    number | null;
@@ -207,9 +214,7 @@ const PLURAL_BASE: Record<string, string> = {
   "Savings Account":    "Savings Accounts",
   "Investment Account": "Investment Accounts",
   "Crypto Wallet":      "Crypto Wallets",
-  "Credit Card":        "Credit Cards",
-  "Mortgage Account":   "Mortgage Accounts",
-  "Auto Loan":          "Auto Loans",
+  "Credit Line":        "Credit Lines",
   "Loan Account":       "Loan Accounts",
   "Debt Account":       "Debt Accounts",
   "Other Account":      "Other Accounts",
@@ -224,9 +229,9 @@ function pluralizeBase(base: string): string {
 /**
  * Returns a generic, non-identifying display name for an account.
  *
- * `debtSubtype` is consumed internally to pick a more specific label for debt
- * accounts (e.g. "Credit Card" vs "Loan Account") but the raw value is never
- * present in the output.
+ * `debtSubtype` is consumed internally to pick the coarse KIND label for debt
+ * accounts ("Credit Line" / "Loan Account" / "Debt Account" — S2 PRIVACY P1:
+ * never "Mortgage" / "HELOC") and the raw value is never present in the output.
  */
 export function genericAccountName({ type, debtSubtype, ownerFirstName }: AccountTypeHint): string {
   let base: string;
@@ -241,20 +246,13 @@ export function genericAccountName({ type, debtSubtype, ownerFirstName }: Accoun
     case "crypto":
       base = "Crypto Wallet"; break;
     case "debt": {
-      switch (debtSubtype) {
-        case "credit_card":
-        case "line_of_credit":
-        case "heloc":
-          base = "Credit Card"; break;
-        case "mortgage":
-          base = "Mortgage Account"; break;
-        case "auto_loan":
-          base = "Auto Loan"; break;
-        case "personal_loan":
-        case "student_loan":
-          base = "Loan Account"; break;
-        default:
-          base = "Debt Account";
+      // S2 PRIVACY P1 — this name is shown ONLY at non-FULL tiers, so it names
+      // the coarse KIND, never the fine type: a balance-only co-member must not
+      // learn "Mortgage" / "HELOC" (home ownership + secured debt).
+      switch (liabilityKind({ type: "debt", debtSubtype })) {
+        case "revolving":   base = "Credit Line"; break;
+        case "installment": base = "Loan Account"; break;
+        default:            base = "Debt Account";
       }
       break;
     }
@@ -506,6 +504,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         interestRate:   a.interestRate,
         minimumPayment: a.minimumPayment,
         providerSubtype: a.providerSubtype ?? null,
+        visibilityLevel: "FULL",
       });
       continue;
     }
@@ -612,6 +611,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       currency:    g.currency,
       lastUpdated: g.lastUpdated.toISOString(),
       balanceLastUpdatedAt: g.allAttested ? (g.balanceLastUpdatedAt?.toISOString() ?? null) : null,
+      visibilityLevel: "BALANCE_ONLY",
       aggregate: {
         memberAccountIds: g.memberAccountIds,
         memberCount:      g.count,
