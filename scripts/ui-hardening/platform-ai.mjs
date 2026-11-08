@@ -9,7 +9,7 @@ const { chromium } = createRequire(path.resolve(process.env.FM_UI_BROWSER_TOOLS 
 const base = 'http://127.0.0.1:4179';
 const evidence = path.resolve(process.cwd(), process.env.FM_UI_EVIDENCE_DIR || 'tmp/ui-hardening-evidence');
 fs.mkdirSync(evidence, { recursive: true });
-const sizes = [[320,568],[360,640],[375,812],[390,844],[430,932],[600,900],[639,700],[640,700],[768,1024],[820,1180],[844,390],[1023,768],[1024,768],[1025,768],[1280,800],[1366,768],[1440,900],[1728,1117],[1920,1080],[2560,1440]];
+const sizes = [[320,568],[360,640],[375,688],[375,812],[390,844],[430,932],[600,900],[639,700],[640,700],[768,1024],[820,1180],[844,390],[1023,768],[1024,768],[1025,768],[1280,800],[1366,768],[1440,900],[1728,1117],[1920,1080],[2560,1440]];
 const shots = [375, 390, 768, 1024, 1280, 1920];
 const LG = 1024, SM = 640;
 // The owner-approved OD-5 wording, read from the model constant (pinned by the unit tests).
@@ -70,6 +70,39 @@ async function noticeFullyVisible(page, width, height, at) {
   assert(n.y >= shell.y - 1 && n.y + n.height <= shell.y + shell.height + 1 && n.y + n.height <= height - 40, 'notice fully on screen at ' + at + ' ' + JSON.stringify({ n, shell }));
   const form = await page.locator('[data-ai-dock] form').boundingBox();
   assert(form.y >= 0 && form.y + form.height <= height - 40, 'composer on screen at ' + at);
+}
+/**
+ * Scrolled to its end, the reading region shows every starter chip clear of the dock: no
+ * chip's rect intersects the dock's painted rect (the dock box plus anything it paints
+ * above itself — its fade), and the last chip can sit fully between the top of the reading
+ * region and that painted top. Returns 'pass', or 'n/a' (with the room) where the reading
+ * region left above the fade is shorter than one chip (a landscape phone), which no
+ * padding can fix; the no-intersection rule still holds there.
+ */
+async function startersClearDock(page, at) {
+  await page.locator('[data-ai-scroll]').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(50);
+  const g = await page.evaluate(() => {
+    const rect = (r) => ({ top: r.top, bottom: r.bottom, left: r.left, right: r.right });
+    const dockEl = document.querySelector('[data-ai-dock]');
+    const dock = rect(dockEl.getBoundingClientRect());
+    for (const d of dockEl.querySelectorAll('*')) {
+      const r = d.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) { dock.top = Math.min(dock.top, r.top); dock.bottom = Math.max(dock.bottom, r.bottom); dock.left = Math.min(dock.left, r.left); dock.right = Math.max(dock.right, r.right); }
+    }
+    const log = rect(document.querySelector('[data-ai-scroll]').getBoundingClientRect());
+    const chips = [...document.querySelectorAll('[data-platform-ai-starters] button')].map((b) => rect(b.getBoundingClientRect()));
+    return { dock, log, chips };
+  });
+  const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  assert.equal(g.chips.length, 4, 'four starter chips at ' + at);
+  g.chips.forEach((c, i) => assert(!hits(c, g.dock), `starter ${i + 1} intersects the dock at ${at} ` + JSON.stringify({ chip: c, dock: g.dock })));
+  const last = g.chips.reduce((m, c) => (c.bottom > m.bottom ? c : m));
+  const room = Math.min(g.dock.top, g.log.bottom) - g.log.top;
+  if (room < last.bottom - last.top) return `n/a (${Math.round(room)} px above the fade)`;
+  // At the end it lies on or above the painted top; scrolling back by the gap brings it fully into view.
+  assert(last.bottom <= g.dock.top + 0.5, 'last starter above the dock at the end at ' + at + ' ' + JSON.stringify({ last, dock: g.dock }));
+  return 'pass';
 }
 const browser = await chromium.launch({ headless: true, ...(process.env.FM_UI_CHROME ? { executablePath: process.env.FM_UI_CHROME } : {}) });
 const results = [];
@@ -184,8 +217,10 @@ try {
     if (width < NOTICE_IN_LOG_BELOW) await noticeInLog(page, width, height, 'empty ' + at);
     else if (height >= 440 || width >= SM) await noticeFullyVisible(page, width, height, 'empty ' + at);
     if (shots.includes(width)) await page.screenshot({ path: `${evidence}/platform-ai-empty-${width}.png` });
+    const clearDock = await startersClearDock(page, 'empty ' + at);
+    if (width === 375 && height === 688) await page.screenshot({ path: `${evidence}/platform-ai-empty-375x688-scrolled.png` });
 
-    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'rail+centred', header: 'pass', starters: 'pass' });
+    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'rail+centred', header: 'pass', starters: 'pass', startersClearDock: clearDock });
   }
 
   // Input growth and a simulated shorter viewport keep the dock above the bar.

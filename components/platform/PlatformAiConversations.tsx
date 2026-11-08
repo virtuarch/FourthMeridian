@@ -515,8 +515,10 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
     </aside>
   );
 
+  // pb-8 = the dock's fade (AiShell paints it h-8 above the composer, over the reading
+  // region): scrolled to its end, the last chip clears it instead of sitting under it.
   const starters = atLimit || full ? null : (
-    <div data-platform-ai-starters="" className="mt-5 flex min-w-0 flex-wrap justify-center gap-2">
+    <div data-platform-ai-starters="" className="mt-5 flex min-w-0 flex-wrap justify-center gap-2 pb-8">
       {PLATFORM_AI_STARTER_PROMPTS.map((q) => <SuggestedPrompt key={q} label={q} onSelect={() => p.onStarter(q)} />)}
     </div>
   );

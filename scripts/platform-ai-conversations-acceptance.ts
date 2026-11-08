@@ -31,7 +31,9 @@
  *           the purge dispatch against the RESTORED copy remove them, counted
  *   [expiry] expiry on read (20261105120000): expired rows invisible to every
  *           fm_app path (SQL, read, history, list, append, export, settle,
- *           soft delete) before any purge; the definer purge still deletes them
+ *           soft delete) before any purge; the definer purge still deletes them;
+ *           one pair moved across the 90-day line; the strict read boundary
+ *           (purgeAfter = now() + 1 ms visible, = now() hidden, one DB now())
  *   [pre-disable] PR D — the S2 disable order: the counts-only check FAILS
  *           while rows remain, FAILS CLOSED for a non-bypass reader, PASSES empty
  *
@@ -40,7 +42,8 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, deniedByGrant, deniedByRls } from "./lib/rls-harness";
 
@@ -408,7 +411,7 @@ async function main(): Promise<number> {
       noGrant.platformAiConversations.length === 0 && noGrant.platformAiConversationsOmitted.reduce((n, o) => n + o.count, 0) === allLive
         && !ng.includes(qx) && !ng.includes("EXPORT-ANSWER-TEXT") && !ng.includes("Export pending question") && !ng.includes(cid)
         && noGrant.manifest.counts["platformAiConversationsOmitted:SECURITY_OPS"] === secCount
-        && noGrant.manifest.notes.some((n) => new RegExp(`^Platform AI: ${secCount} conversations in .+ omitted: you no longer have access\\.$`).test(n)), ng.slice(0, 400));
+        && noGrant.manifest.notes.some((n) => new RegExp(`^Platform AI: ${secCount} conversations? in .+ omitted: you no longer have access\\.$`).test(n)), ng.slice(0, 400));
     one(`insert into "Space" (id,name,"platformArea","updatedAt") values ('sp_aiconv_ops','Platform Ops','PLATFORM_OPS',now());
       insert into "PlatformGrant" (id,"userId",area,level,"updatedAt") values ('pg_aiconv_a','${A}','PLATFORM_OPS','READ',now()); select 'ok';`);
     const withGrant = await quietly(() => assembleUserExport(A));
@@ -514,7 +517,7 @@ async function main(): Promise<number> {
       cr.status === 201 && (cr.body as { assistantMessage: { status: string } }).assistantMessage.status === "COMPLETE" && turns.length === 1 && settledRow === "COMPLETE|true|true", `${cr.status} ${settledRow}`);
     const replayBefore = turns.length;
     const cr2 = await handleCreateConversation(V, { clientRequestId: ck, question: "What's costing me the most money?" }, { ...deps, admission: async () => { throw new Error("no gate on replay"); }, turns: async () => { throw new Error("no daily turn on replay"); } });
-    check(66, "a create REPLAY on real PG ⇒ 200, the same conversation, no gate, no turn, nothing written",
+    check(92, "a create REPLAY on real PG ⇒ 200, the same conversation, no gate, no turn, nothing written",
       cr2.status === 200 && (cr2.body as { conversation: { id: string } }).conversation.id === conv && turns.length === replayBefore
         && one(`select count(*) from "PlatformAiMessage" where "conversationId"='${conv}';`) === "2", `${cr2.status}`);
     const mk = randomUUID();
@@ -522,7 +525,7 @@ async function main(): Promise<number> {
     const ap2 = await handleAppendMessage(V, conv, { clientRequestId: mk, question: "How does that compare with last month?" }, { ...deps, admission: async () => { throw new Error("no gate on replay"); } });
     const readBack = await store.readConversation(B, conv, new Date());
     const lastA = readBack?.messages.filter((m) => m.role === "ASSISTANT").at(-1);
-    check(67, "append on real PG: 200 with the settled typed answer (figure typed, link as a page id); its replay ⇒ 200, no gate, no second turn; 4 rows",
+    check(93, "append on real PG: 200 with the settled typed answer (figure typed, link as a page id); its replay ⇒ 200, no gate, no second turn; 4 rows",
       ap.status === 200 && ap2.status === 200 && turns.length === replayBefore + 1 && readBack?.messages.length === 4 && lastA?.status === "COMPLETE"
         && typeof lastA.content === "object" && lastA.content !== null && (lastA.content as typeof answerV1).segments.some((x) => x.kind === "figure" && x.window === 7)
         && (lastA.content as typeof answerV1).segments.some((x) => x.kind === "link" && x.page === "PLATFORM_OPS:platform-economics"), `${ap.status} ${ap2.status} ${turns.length}`);
@@ -545,7 +548,7 @@ async function main(): Promise<number> {
     return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL), await tx.$queryRawUnsafe<PolRows>(PRECHECK_POLICIES_SQL));
   });
   setOwner("fm_aiconv_owner");
-  check(68, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
+  check(94, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
     pre.ok && !preBad.ok && preBad.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)) && preBad.lines.filter((l) => !l.ok).length === 2,
     JSON.stringify(preBad.lines.filter((l) => !l.ok)));
 
@@ -663,6 +666,61 @@ async function main(): Promise<number> {
     const leftLive = one(`select count(*) from "PlatformAiMessage" where "conversationId"='${xs}';`);
     check(91, "NOT a substitute for the purge: the definer purge (fm_system) still physically deletes every expired row; the live exchange stays",
       purged.ok && Number(purged.out.trim()) >= 6 && leftExpired === "0" && leftLive === "2", `${purged.out || purged.err} expiredLeft=${leftExpired} live=${leftLive}`);
+
+    // (a) ONE question/answer pair moved across the 90-day line, read on the fm_app path. Back-dated as the
+    // migration principal relative to the DATABASE clock (purgeAfter = createdAt + 90 days, as the default sets it).
+    const E = "aiconv_op_e";
+    one(`insert into "User" (id,email,name,"updatedAt") values ('${E}','aiconv-e@example.test','Operator E',now()); select 'ok';`);
+    const line = await store.createConversation({ operatorId: E, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "LINE-QUESTION" });
+    if (line.kind !== "CREATED") throw new Error(`expiry line fixture: create ${line.kind}`);
+    await store.settleTurn(E, line.conversation.id, line.pair.assistant.id, answer("LINE-ANSWER"));
+    const ls = line.conversation.id, lu = line.pair.user.id, la = line.pair.assistant.id;
+    const backdate = (age: string) => one(`begin;
+      alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
+      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - ${age}, "purgeAfter" = (now() at time zone 'UTC') - ${age} + interval '90 days' where id in ('${lu}','${la}');
+      alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
+      commit; select 'ok';`);
+    const appIds = () => asApp(E, `select coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId"='${ls}';`);
+    const pairIds = [lu, la].sort().join(",");
+    backdate("(interval '90 days' - interval '1 minute')"); // 89 d 23 h 59 min old: one minute inside the line
+    const inside = appIds();
+    const insideRead = await store.readConversation(E, ls, NOW());
+    backdate("(interval '90 days' + interval '1 second')"); // moved across: one second past the line
+    const across = appIds();
+    const acrossRead = await store.readConversation(E, ls, NOW());
+    check(95, "ONE question/answer pair moved across the 90-day line (fm_app): both visible one minute inside it (SQL + store.readConversation), both hidden one second past it",
+      inside.ok && inside.out === pairIds && insideRead?.messages.length === 2 && JSON.stringify(insideRead.messages).includes("LINE-QUESTION")
+        && across.ok && across.out === "" && acrossRead === null,
+      `inside=${inside.out || inside.err} read=${insideRead?.messages.length} across=${across.out || across.err} read=${acrossRead === null ? "null" : acrossRead.messages.length}`);
+
+    // (b) The read boundary is STRICT: purgeAfter = now() + 1 ms visible, purgeAfter = now() hidden. purgeAfter is
+    // timestamp(3) and now() carries microseconds, so storing now() would round; the fixture waits (one psql session,
+    // a fresh transaction per try) for a transaction whose now() falls exactly on a millisecond, then — in THAT
+    // transaction, so both sides read the one now() — sets both rows, proves the stored values equal now() and
+    // now() + 1 ms, and reads as fm_app (SET LOCAL ROLE) under the real policy. Rolled back: nothing persists.
+    const bnd = await store.createConversation({ operatorId: E, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "BOUNDARY-QUESTION" });
+    if (bnd.kind !== "CREATED") throw new Error(`expiry boundary fixture: create ${bnd.kind}`);
+    const bu = bnd.pair.user.id, ba = bnd.pair.assistant.id; // bu ⇒ now() + 1 ms, ba ⇒ now()
+    const body = `alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
+update "PlatformAiMessage" set "purgeAfter" = (now() at time zone 'UTC') + interval '1 millisecond' where id = '${bu}';
+update "PlatformAiMessage" set "purgeAfter" = (now() at time zone 'UTC') where id = '${ba}';
+alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
+select 'stored|' || bool_and(case id when '${bu}' then "purgeAfter" = (now() at time zone 'UTC') + interval '1 millisecond' else "purgeAfter" = (now() at time zone 'UTC') end)::text from "PlatformAiMessage" where id in ('${bu}','${ba}');
+set local role fm_app;
+set local app.user_id = '${E}';
+select 'visible|' || coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId" = '${bnd.conversation.id}';
+rollback;
+`;
+    const bodyDir = mkdtempSync(path.join(tmpdir(), "aiconv-boundary-"));
+    const bodyFile = path.join(bodyDir, "boundary.sql");
+    writeFileSync(bodyFile, body);
+    // Each try is its own transaction (its own now()); on the first millisecond-aligned now() the body runs and psql quits.
+    const attempt = `begin;\nselect (extract(microseconds from now())::bigint % 1000 = 0) as hit \\gset\n\\if :hit\n\\i ${bodyFile}\n\\q\n\\endif\nrollback;\n`;
+    const boundary = psql(owner, attempt.repeat(20000) + "select 'nohit';\n");
+    rmSync(bodyDir, { recursive: true, force: true });
+    const bOut = boundary.out.split("\n");
+    check(96, "read boundary is STRICT ('>'), one DB now(): purgeAfter = now() + 1 ms ⇒ visible to fm_app; purgeAfter = now() exactly ⇒ hidden",
+      boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`) && !bOut.includes("nohit"), `${boundary.out.slice(0, 200)} ${errLine(boundary)}`);
   }
 
   // ── [pre-disable] PR D — the S2 disable order: never the purge flag while rows remain ──
