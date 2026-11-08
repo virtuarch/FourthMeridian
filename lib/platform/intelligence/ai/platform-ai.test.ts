@@ -182,8 +182,14 @@ function script(steps: Step[] | ((i: number) => Step)): Script {
   return { generate, seen };
 }
 const toolResultsOf = (r: { transcript: unknown[] }) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
+/**
+ * The MODEL path by default (classifyBriefing: false): most sections pin that path's defences, which still
+ * guard every question A1 does not classify. The server-composed answers (§4s, §4t) use runComposed.
+ */
 const run = (question: string, binding: PlatformAiBinding, sc: Script, opts: { classifyBriefing?: boolean } = {}) =>
-  runPlatformAiTurn({ question, binding, generate: sc.generate, model: "gpt-4o-mini", ...opts });
+  runPlatformAiTurn({ question, binding, generate: sc.generate, model: "gpt-4o-mini", classifyBriefing: false, ...opts });
+/** A1 ON — production routing (briefing / cost-ranking questions are server-composed). */
+const runComposed = (question: string, binding: PlatformAiBinding, sc: Script) => run(question, binding, sc, { classifyBriefing: true });
 /** The MODEL path for a briefing-phrased question (A1 off) — pins that path's own defences, which still guard every non-briefing turn. */
 const runModel = (question: string, binding: PlatformAiBinding, sc: Script) => run(question, binding, sc, { classifyBriefing: false });
 
@@ -557,7 +563,7 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
       / mechanismLeak=1$/.test(leak.line) && leak.v === "NONE", leak.line);
     const dig = await why("Costs over the last 30 days were high.");
     check("a turn that writes \"30 days\" ⇒ UNGROUNDED_DIGIT with digitBy=WINDOW_LIKE:1 in the trace (the verdict is unchanged: a diagnosis, never an allowance)",
-      dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1 retry=FAIL(UNGROUNDED_DIGIT)") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
+      dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1 retry=FAIL(UNGROUNDED_DIGIT) retryDigitBy=WINDOW_LIKE:1") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
   }
 }
 
@@ -647,7 +653,7 @@ console.log("\n4f. get_metric hands the model the exact placeholder strings — 
   };
   const ls = { name: "list_metrics", args: { domain: "economics" } };
   const gm = (id: string) => ({ name: "get_metric", args: { id } });
-  const owner = async (q: string, rounds: { name: string; args: unknown }[][], compose: Copy) => runPlatformAiTurn({ question: q, binding: eb, generate: copying(rounds, compose), model: "gpt-4o-mini" });
+  const owner = async (q: string, rounds: { name: string; args: unknown }[][], compose: Copy) => runPlatformAiTurn({ question: q, binding: eb, generate: copying(rounds, compose), model: "gpt-4o-mini", classifyBriefing: false });
   const ok = (r: Awaited<ReturnType<typeof owner>>) => !r.result.grounding.replaced && placeholderPassesV(r.result.grounding.verdict) && r.result.claims.unresolved === 0 && r.result.claims.resolved === r.result.claims.claims && r.result.claims.claims > 0;
   const placeholderPassesV = (v: string) => v === "RESOLVED" || v === "RESOLVED_WITH_WINDOW_NOTE";
 
@@ -1276,7 +1282,7 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
       return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
     };
   };
-  const replayB = (args: (id: string) => Record<string, unknown>) => runPlatformAiTurn({ question: Q_B, binding: good, generate: copyB(args), model: "gpt-4o-mini" });
+  const replayB = (args: (id: string) => Record<string, unknown>) => runPlatformAiTurn({ question: Q_B, binding: good, generate: copyB(args), model: "gpt-4o-mini", classifyBriefing: false });
   const b30 = await replayB((id) => ({ id, window: 30 }));
   const b30T = segmentsText(b30.result.answer);
   check("OWNER-B replay, window=30 on all three ⇒ every figure RESOLVES (operating + provider: window ignored; ai-cost: its 30 d read), answer kept",
@@ -1322,7 +1328,7 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
       return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
     };
   };
-  const turnWith = (ids: string[], compose: Parameters<typeof copying>[1], q = Q_B) => runPlatformAiTurn({ question: q, binding: good, generate: copying(ids, compose), model: "gpt-4o-mini" });
+  const turnWith = (ids: string[], compose: Parameters<typeof copying>[1], q = Q_B) => runPlatformAiTurn({ question: q, binding: good, generate: copying(ids, compose), model: "gpt-4o-mini", classifyBriefing: false });
   const OP = "economics-operating-cost@1", AI = "economics-ai-cost@1", PV = "economics-provider-cost@1";
 
   const B = await turnWith(["economics-operating-cost", "economics-ai-cost"],
@@ -1439,7 +1445,8 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   check("…negatives: other periods, calendar to-date phrases (so far this month, this year), no period phrase",
     periodMismatchCount("in the last 7 days, the past year", A30) === 0 && periodMismatchCount("so far this month, this month, this year, month to date", A30) === 0
     && periodMismatchCount("The largest category is AI.", A30) === 0 && periodMismatchCount("In the past 30 days", []) === 0);
-  const hC = await handlePlatformAiAsk({ question: Q_C }, askDeps({ binding: good, generate: copying(["economics-operating-cost"], (ph, lph) => `In the past 30 days, ${lph(OP, "largestMeasuredCategory")} cost ${ph(OP, "largestMeasuredCategory")}.`) }));
+  // A model-path cost question with the same asked period (Q_C itself is server-composed since the cost-ranking class).
+  const hC = await handlePlatformAiAsk({ question: "What did operating costs look like in the past 30 days?" }, askDeps({ binding: good, generate: copying(["economics-operating-cost"], (ph, lph) => `In the past 30 days, ${lph(OP, "largestMeasuredCategory")} cost ${ph(OP, "largestMeasuredCategory")}.`) }));
   check("…the HTTP body's grounding carries periodMismatch (a count) like digitBy", hC.status === 200 && (hC.body.grounding as { periodMismatch?: number }).periodMismatch === 1, hC.body.grounding);
 
   // ── S2 F-C1 (ii) (2026-11-08): the server CORRECTION segment ─────────────────
@@ -1550,7 +1557,8 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   check("…no rewrite, no verdict change: the label still reads twice, the phrase is still quoted, verdict RESOLVED",
     Bobs.result.grounding.verdict === "RESOLVED" && !Bobs.result.grounding.replaced && (bObsT.match(/Providers \(Plaid\)/g) ?? []).length === 2
     && bObsT.endsWith("so far this month (since 2026-11-01)."), bObsT);
-  const hB = await handlePlatformAiAsk({ question: Q_B }, askDeps({ binding: good, generate: copying(["economics-operating-cost"],
+  // A model-path cost question (Q_B itself is server-composed since the cost-ranking class).
+  const hB = await handlePlatformAiAsk({ question: "What are our operating costs?" }, askDeps({ binding: good, generate: copying(["economics-operating-cost"],
     (ph, lph) => `The largest cost is from ${lph(OP, "largestMeasuredCategory")} for ${lph(OP, "providersUsd")}, amounting to ${ph(OP, "largestMeasuredCategory")} so far this month (since 2026-11-01).`) }));
   check("…the HTTP body's grounding carries labelRepeat / windowRepeat (counts)",
     hB.status === 200 && (hB.body.grounding as { labelRepeat?: number }).labelRepeat === 1 && (hB.body.grounding as { windowRepeat?: number }).windowRepeat === 1, hB.body.grounding);
@@ -2000,7 +2008,7 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   const toolResults = (r: Awaited<ReturnType<typeof run>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
 
   // The Preview failure (2026-11-08 ~10:30Z): window=30 sent to the fixed-cycle metric (ignored at the read), then |window=30 written on its placeholders.
-  const preview = await run(QC, b, script([
+  const preview = await runModel(QC, b, script([
     { calls: [gm("economics-operating-cost", 30), gm("economics-ai-cost", 30)] },
     { content: "In the past 30 days, the largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory|window=30}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory|window=30}}, out of an estimated {{m:economics-operating-cost@1|part=totalUsd|window=30}}. AI spend was {{m:economics-ai-cost@1|part=spendUsd|window=30}}." },
   ]));
@@ -2016,15 +2024,15 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   const opResult = toolResults(preview).find((x) => x.metric === "economics-operating-cost@1");
   check("…the get_metric result says the sent window was ignored and its placeholders take no |window",
     typeof opResult?.window_ignored === "string" && /take no \|window/.test(opResult.window_ignored) && !/\|window=/.test(JSON.stringify(opResult.placeholders)) && toolResults(preview).find((x) => x.metric === "economics-ai-cost@1")?.window_ignored === undefined);
-  const plain = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
+  const plain = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
   check("Question C, placeholders copied verbatim ⇒ answer kept with the window note (unchanged behaviour)",
     !plain.result.grounding.replaced && plain.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /^Note: .*not the 30 days you asked about\./.test(txt(plain)), txt(plain));
   // The relaxation is narrow: only a fixed-window key, only the asked period.
-  const notAsked = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Total {{m:economics-operating-cost@1|part=totalUsd|window=7}}." }]));
+  const notAsked = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Total {{m:economics-operating-cost@1|part=totalUsd|window=7}}." }]));
   check("…|window=N that the operator did NOT ask for, on a fixed-window metric ⇒ still WINDOW_MISMATCH (fallback)", notAsked.result.grounding.verdict === "WINDOW_MISMATCH" && txt(notAsked).startsWith(UNVERIFIED_FALLBACK));
-  const dayMetric = await run(QC, b, script([{ calls: [gm("economics-ai-cost", 7)] }, { content: "AI spend {{m:economics-ai-cost@1|part=spendUsd|window=30}}." }]));
+  const dayMetric = await runModel(QC, b, script([{ calls: [gm("economics-ai-cost", 7)] }, { content: "AI spend {{m:economics-ai-cost@1|part=spendUsd|window=30}}." }]));
   check("…a DAY-window metric read with 7, placeholder |window=30 ⇒ still WINDOW_MISMATCH (never another window's figure)", dayMetric.result.grounding.verdict === "WINDOW_MISMATCH" && txt(dayMetric).startsWith(UNVERIFIED_FALLBACK));
-  const invented = await run(QC, b, script([{ calls: [gm("economics-operating-cost", 30)] }, { content: "In the past 30 days AI cost you $4.10." }]));
+  const invented = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost", 30)] }, { content: "In the past 30 days AI cost you $4.10." }]));
   check("…an invented figure in the Question C answer is still refused (UNGROUNDED_DIGIT)", invented.result.grounding.replaced && invented.result.grounding.verdict === "UNGROUNDED_DIGIT");
 
   // S2 N1: counts written as words are figures.
@@ -2125,7 +2133,7 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
 
   // F-1: the window note is its OWN segment — stored, replayed, exported; never inside model text.
   const QC = "What's costing me the most money in the past 30 days?";
-  const c = await run(QC, b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
+  const c = await runModel(QC, b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
   const kinds = c.result.answer.map((x) => x.kind);
   check("F-1 Question C: the content starts with the note segment; no model text segment contains the note wording",
     kinds[0] === "note" && /^Note: .* covers .*, not the 30 days you asked about\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/you asked about|^Note:/.test(x.text)), c.result.answer);
@@ -2259,11 +2267,11 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
   // ── A2: costs — asked vs not asked; a firing alert includes them ──
   const costAsked = await brief("How are we looking on costs today?", quiet());
   check("A2 cost asked ⇒ costs read and composed (cost=ASKED), estimates worded 'about … (estimated)'",
-    costAsked.result.briefing?.cost === "ASKED" && costAsked.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && /the estimated operating cost is (at least|about) \$/.test(txt(costAsked)), txt(costAsked));
+    costAsked.result.briefing?.cost === "ASKED" && costAsked.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && /the operating cost is (at least|about) \$/.test(txt(costAsked)), txt(costAsked));
   check("A2 cost not asked, nothing firing ⇒ no economics read at all", !ok.result.trace.some((t) => /^(economics-|ai-)/.test(t.refs[0] ?? "")) && ok.result.briefing?.cost === null);
   const firing = await brief("How are we looking today?", readers());
   check("A2 firing alert (alerts-firing-now) ⇒ costs included (cost=ALERT_FIRING) and the alert is an issue",
-    firing.result.briefing?.cost === "ALERT_FIRING" && firing.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && /1 alert rule is firing now — job-failing \(firing\)\./.test(txt(firing)), txt(firing));
+    firing.result.briefing?.cost === "ALERT_FIRING" && firing.result.trace.some((t) => t.refs[0] === "economics-operating-cost@1") && firing.result.briefing?.domains.health === "ATTENTION", txt(firing));
   check("A2 several issues ⇒ a '- ' list; every bullet a full sentence ending in '.'",
     firing.result.briefing?.list === true && txt(firing).split("\n").filter((l) => l.startsWith("- ")).every((l) => /\.$/.test(l)) && txt(firing).split("\n").filter((l) => l.startsWith("- ")).length >= 3, txt(firing));
   check("A2: F-3 wording kept — a capped (PARTIAL) count says 'at least', an exact one does not",
@@ -2317,7 +2325,7 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
     && replayAnswer(stored, NOW).includes("Platform health needs attention"));
   check("A4: never retried — a composed briefing has no retry field", !("retry" in ok.result.grounding) && !("retry" in firing.result.grounding));
   check("trace: the composed briefing is marked in the metadata line (pattern, issues, figures, framing, actions)",
-    /briefing=composed:HOW_LOOKING list=false cost=none issues=1 figures=1 framing=KEPT actions=1 actionsDropped=0 absolute=0/.test(traceLine(kept.result)), traceLine(kept.result));
+    /briefing=composed:HOW_LOOKING list=false shown=1 overflow=0 lines=2 cost=none issues=1 figures=1 framing=KEPT actions=1 actionsDropped=0 absolute=0/.test(traceLine(kept.result)), traceLine(kept.result));
   check("route-shaped composition (no model at all): composeBriefing is pure over envelopes", composeBriefing([], { describeMetric: () => null }, { list: false, cost: null }).domains.every((d) => d.state === "NOT_PERMITTED"));
 
   // ── B1–B2: ONE corrective retry for NON-briefing questions ──
@@ -2353,12 +2361,80 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
   check("B1: trace line carries retry=PASS(<verdict>)", /retry=PASS\(RESOLVED\)/.test(traceLine(r1.result)) && /retry=FAIL\(UNGROUNDED_DIGIT\)/.test(traceLine(r2.result)));
   check("B1: the corrective message never contains a value (placeholders and registry keys only)",
     !/\d|\$/.test(corr.content.replace(/\{\{[^}]*\}\}/g, "")) && /none: answer without figures/.test(correctiveRetryMessage("UNGROUNDED_DIGIT", { OTHER: 1 }, [])));
-  const qc = await run(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Over the past thirty days the largest is about four dollars." },
+  const qc = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Over the past thirty days the largest is about four dollars." },
     { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
   check("B1 Question C: a number-word answer is retried and the placeholder answer kept (with the window note)", qc.result.grounding.retry?.outcome === "PASS" && !qc.result.grounding.replaced && qc.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE", qc.result.grounding);
   // Static: briefing.ts imports only core (functions, used lazily) and retrieve-core types.
   const bImports = [...src("lib/platform/intelligence/ai/briefing.ts").matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
   check("briefing.ts imports: ./core and retrieve-core TYPES only", bImports.join() === ["./core", "type @/lib/platform/intelligence/metrics/retrieve-core"].sort().join(), bImports);
+}
+
+// ── 4t. S1 briefing size cap · (i) word-family trace · (ii) composed cost ranking, S2-approved 2026-11-08 ──
+console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · cost-ranking composed answers (ii)");
+{
+  const { classifyBriefingQuestion, COST_RANKING_PATTERNS, composeCostRanking, composedLineCount, BRIEFING_MAX_ISSUES, BRIEFING_MORE_KEY } = await import("./briefing");
+  const { numberWordFamilies, digitByText } = await import("./core");
+  const txt = (r: { result: { answer: { text: string }[] } }) => r.result.answer.map((x) => x.text).join("");
+  const frame = (content: string) => script([{ content }]);
+  const QC = "What's costing me the most money in the past 30 days?";
+
+  // S1 — many issues (the default fixture: 11 issue items + costs pulled in by the firing alert).
+  const many = await runComposed("How are we looking today?", opsBinding(OPS), frame("{}"));
+  const bullets = txt(many).split("\n").filter((l) => l.startsWith("- "));
+  check(`S1: at most ${BRIEFING_MAX_ISSUES} issue bullets; the rest counted in ONE overflow sentence with a typed count figure + an Operations link`,
+    bullets.length === BRIEFING_MAX_ISSUES && (many.result.briefing?.overflow ?? 0) > 0
+    && many.record.typed.some((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY && x.text === String(many.result.briefing?.overflow))
+    && /…and \d+ more items need attention — see Operations\./.test(txt(many)) && many.record.typed.some((x) => x.kind === "link" && /PLATFORM_OPS/.test(x.href)), { b: many.result.briefing, t: txt(many) });
+  check("S1: severe first — customer impact, broken incidents, reconnect, failing providers are shown; a degraded / overdue item is the one cut",
+    /customers saw/.test(bullets.join()) && /broken now/.test(bullets.join()) && !/overdue job/.test(bullets.join()), bullets);
+  check("S1: the shown items keep protocol order (health → impact → incidents → sync → reliability)",
+    (() => { const order = ["customers saw", "broken now", "reconnect", "provider"].map((k) => bullets.findIndex((b) => b.includes(k))); return order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])); })(), bullets);
+  check("S1: the composed body is ≤ 7 lines (5 bullets + one summary paragraph + the coverage line); figures well under the battery's 17",
+    (many.result.briefing?.lines ?? 99) <= 7 && composedLineCount(many.record.typed) <= 9 && (many.result.briefing?.figures ?? 99) <= 14, { lines: many.result.briefing?.lines, figures: many.result.briefing?.figures, t: txt(many) });
+  check("S1: the coverage line stays; healthy domains in one sentence", /Platform AI doesn't cover /.test(txt(many)) && (txt(many).match(/look(s)? fine\./g) ?? []).length <= 1);
+  check("S1: trace carries shown / overflow / lines", new RegExp(`shown=5 overflow=${many.result.briefing?.overflow} lines=${many.result.briefing?.lines}`).test(traceLine(many.result)), traceLine(many.result));
+
+  // (i) word families — counts only.
+  check("(i) word families: one / two-twenty / tens / single / dozen / scale / twice-thrice",
+    JSON.stringify(numberWordFamilies("one, two, twenty, thirty, a single, a dozen, thousands, twice, nineteen")) === JSON.stringify({ one: 1, "two-twenty": 3, tens: 1, single: 1, dozen: 1, scale: 1, "twice-thrice": 1 }));
+  check("(i) digitByText: NUMBER_WORD carries its families; other kinds unchanged", digitByText({ WINDOW_LIKE: 1, NUMBER_WORD: 2 }, { one: 1, "two-twenty": 1 }) === "WINDOW_LIKE:1,NUMBER_WORD:2[one=1,two-twenty=1]");
+  const nw = await runModel("How many incidents are broken now?", opsBinding(OPS), script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: "There is one broken incident and twenty to verify." }]));
+  check("(i) the turn line: digitBy=NUMBER_WORD:2[one=1,two-twenty=1] and the failed retry's own retryDigitBy (counts, never the words)",
+    traceLine(nw.result).includes("digitBy=NUMBER_WORD:2[one=1,two-twenty=1]") && traceLine(nw.result).includes("retry=FAIL(UNGROUNDED_DIGIT) retryDigitBy=NUMBER_WORD:2[one=1,two-twenty=1]")
+    && !/broken incident|twenty to/.test(traceLine(nw.result)), traceLine(nw.result));
+
+  // (ii) the cost-ranking class.
+  const POS: [string, string][] = [[QC, "COSTING_MOST"], ["What is costing us the most?", "COSTING_MOST"], ["what's costing the most", "COSTING_MOST"], ["What's our largest cost?", "LARGEST_COST"],
+    ["Biggest expense this month?", "LARGEST_COST"], ["Which is the highest cost category?", "LARGEST_COST"], ["What's the top cost driver?", "COST_DRIVER"], ["Where is the money going?", "MONEY_GOING"],
+    ["Where's all our money going?", "MONEY_GOING"], ["What are we spending the most on?", "SPENDING_MOST"]];
+  const out = POS.map(([q, id]) => [q, classifyBriefingQuestion(q).costRanking, classifyBriefingQuestion(q).pattern, id]);
+  check("(ii) every listed cost-ranking phrasing classifies (Question C exact wording included), before the briefing patterns",
+    out.every(([, cr, got, want]) => cr === true && got === want) && COST_RANKING_PATTERNS.length === 5, out.filter(([, cr, g, w]) => !cr || g !== w));
+  const NEG = ["What's our AI spend this week?", "How much did Plaid cost last month?", "What is the AI cost per call?", "How are we looking on costs today?", "What's the operating cost?"];
+  check("(ii) other cost questions stay on the model path (with the retry); a cost-flavoured status question stays a briefing",
+    NEG.every((q) => !classifyBriefingQuestion(q).costRanking) && classifyBriefingQuestion("How are we looking on costs today?").briefing, NEG.map((q) => classifyBriefingQuestion(q)));
+
+  const qc = await runComposed(QC, opsBinding(OPS), frame(JSON.stringify({ framing: "Costs are led by one category this month.", next_actions: [] })));
+  check("(ii) Question C composed: the window NOTE first (cycle, not the asked 30 days), leader + total typed from THIS turn's envelope, PARTIAL ⇒ 'at least', estimated wording",
+    qc.result.briefing?.kind === "COST_RANKING" && qc.result.answer[0].kind === "note" && /^Note: .* covers this UTC calendar month to date, since \d{4}-\d{2}-\d{2}, not the 30 days you asked about\.$/.test(qc.result.answer[0].text)
+    && qc.record.typed.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2
+    && /So far this month \(since \d{4}-\d{2}-\d{2}\), the largest measured cost is AI, at least \$[\d.,]+ \(estimated\); ranking among measured categories; some categories are incomplete\. The operating cost is at least \$[\d.,]+ \(estimated\)\./.test(txt(qc))
+    && !qc.result.grounding.replaced, { b: qc.result.briefing, t: txt(qc) });
+  check("(ii) a framing with a number word ('one') is DROPPED, the facts stay; the trace marks COST:COSTING_MOST + windowNote",
+    qc.result.briefing?.framing === "DROPPED" && /briefing=composed:COST:COSTING_MOST .*windowNote=1/.test(traceLine(qc.result)) && traceLine(qc.result).includes("digitBy=NUMBER_WORD:1[one=1]"), traceLine(qc.result));
+  const qcKept = await runComposed("What's costing me the most?", opsBinding(OPS), frame(JSON.stringify({ framing: "AI leads the measured costs.", next_actions: [{ label: "Economics", href: "https://evil.test/x" }] })));
+  check("(ii) no asked period ⇒ no note; a clean framing is KEPT; an absolute URL next step is removed (no link)",
+    qcKept.result.answer[0].kind === "text" && txt(qcKept).startsWith("AI leads the measured costs. So far this month") && qcKept.result.briefing?.absoluteStripped === 1 && !qcKept.result.answer.some((x) => x.kind === "link"), txt(qcKept));
+  const qcOnly = await runComposed(QC, opsBinding(OPS), frame("{}"));
+  check("(ii) the server reads ONLY the operating-cost envelope (one get_metric), the model reads nothing",
+    qcOnly.result.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]).join() === "economics-operating-cost@1");
+  const qcCs = await runComposed(QC, csBinding(CS), frame("{}"));
+  check("(ii) not permitted (a CS-only operator) ⇒ said, no read", /aren't available with your access/.test(txt(qcCs)) && !qcCs.result.trace.some((t) => t.tool === "get_metric"), txt(qcCs));
+  const down = await runComposed(QC, opsBinding(OPS, readers({ economicsSnapshot: (async () => { throw new Error("x"); }) as never })), frame("{}"));
+  check("(ii) unavailable ⇒ 'couldn't be checked', never a figure, never the fallback", /^Operating cost couldn't be checked right now/.test(txt(down)) && !down.record.typed.some((x) => x.kind === "figure"), txt(down));
+  check("(ii) composeCostRanking is pure over envelopes", composeCostRanking([], { describeMetric: () => null }).domains[0].state === "NOT_PERMITTED");
+  const stored = storedAnswerOf(qc.result, qc.record);
+  check("(ii) A4: stored typed (note + figures), valid", isStoredAnswer(stored) && stored.segments[0].kind === "note" && stored.segments.filter((x) => x.kind === "figure").length === 2);
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

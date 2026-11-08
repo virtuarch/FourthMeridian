@@ -73,8 +73,9 @@ import type { FigureUnit, MetricEnvelope, RankedCategory, RetrievalParams, Unava
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
 import { buildConversationTurnMessages, type AssembledHistory } from "./conversations/history";
 import {
-  BRIEFING_FRAMING_PROMPT, briefingFramingMessage, checkActions, checkFraming, classifyBriefingQuestion, composeBriefing, parseFramingReply, readBriefingEnvelopes,
-  type BriefingClass, type BriefingCostReason, type BriefingDomainState, type FramingOutcome,
+  BRIEFING_FRAMING_PROMPT, COST_RANKING_KEY, briefingFramingMessage, checkActions, checkFraming, classifyBriefingQuestion, composeBriefing, composeCostRanking, composedLineCount,
+  parseFramingReply, readBriefingEnvelopes,
+  type BriefingClass, type BriefingCostReason, type BriefingDomainState, type ComposedBriefing, type FramingOutcome,
 } from "./briefing";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
@@ -1009,14 +1010,36 @@ export function stripListMarkers(prose: string, lineStart = true, seq: { next: n
 
 /** PURE — how many number words the model's own prose states (idioms and the operator's own time window excepted). */
 export function numberWordCount(prose: string, scrubbedQuestion = ""): number {
+  return numberWordMatches(prose, scrubbedQuestion).length;
+}
+
+/** The counted number words (numberWordCount's matches) — one definition for the count and the families. */
+function numberWordMatches(prose: string, scrubbedQuestion: string): string[] {
   const text = prose.replace(NUMBER_WORD_IDIOM, " ");
-  let n = 0;
+  const out: string[] = [];
   for (const m of text.matchAll(NUMBER_WORD)) {
     const after = text.slice(m.index! + m[0].length);
     if (NUMBER_WORD_TIME_UNIT.test(after) && new RegExp(`\\b${m[0].replace(/\s+/g, "\\s+")}\\b`, "i").test(scrubbedQuestion)) continue;
-    n++;
+    out.push(m[0].toLowerCase().replace(/\s+/g, " "));
   }
-  return n;
+  return out;
+}
+
+/**
+ * (i) S2 2026-11-08 — COUNTS-ONLY word-family diagnosis of the NUMBER_WORD verdict (never the
+ * words themselves): one (incl. zero) · two-twenty · tens (thirty…ninety) · single ("a single") ·
+ * dozen · scale (hundred / thousand / million / billion) · twice-thrice.
+ */
+export const NUMBER_WORD_FAMILIES = ["one", "two-twenty", "tens", "single", "dozen", "scale", "twice-thrice"] as const;
+export type NumberWordFamily = (typeof NUMBER_WORD_FAMILIES)[number];
+export function numberWordFamilies(prose: string, scrubbedQuestion = ""): ReasonCounts<NumberWordFamily> {
+  const out: ReasonCounts<NumberWordFamily> = {};
+  for (const w of numberWordMatches(prose, scrubbedQuestion)) {
+    const f: NumberWordFamily = w === "one" || w === "zero" ? "one" : w === "a single" ? "single" : /^dozens?$/.test(w) ? "dozen" : /^(?:twice|thrice)$/.test(w) ? "twice-thrice"
+      : /^(?:hundred|thousand|million|billion)s?$/.test(w) ? "scale" : /^(?:thirty|forty|fifty|sixty|seventy|eighty|ninety)$/.test(w) ? "tens" : "two-twenty";
+    out[f] = (out[f] ?? 0) + 1;
+  }
+  return out;
 }
 
 const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
@@ -1395,6 +1418,8 @@ export interface PlaceholderOutcome {
   malformedBy: ReasonCounts<MalformedReason>;
   /** Diagnosis (counts only): the kinds of leftover digit runs behind UNGROUNDED_DIGIT. */
   digitBy: ReasonCounts<DigitKind>;
+  /** (i) Counts by NumberWordFamily of the NUMBER_WORD runs (UNGROUNDED_DIGIT only). */
+  wordFamilyBy: ReasonCounts<NumberWordFamily>;
   /**
    * The MODEL'S OWN prose (every rendered figure / label taken out), for counts-only
    * diagnoses (periodMismatchCount). Never traced, stored or returned to a client.
@@ -1425,6 +1450,7 @@ export function resolvePlaceholders(
   const unresolvedBy: ReasonCounts<UnresolvedReason> = {};
   const malformedBy: ReasonCounts<MalformedReason> = {};
   const digitBy: ReasonCounts<DigitKind> = {};
+  const wordFamilyBy: ReasonCounts<NumberWordFamily> = {};
   const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
   // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
@@ -1494,7 +1520,10 @@ export function resolvePlaceholders(
       for (const [k, n] of Object.entries(classifyDigitRuns(prose)) as [DigitKind, number][]) digitBy[k] = (digitBy[k] ?? 0) + n;
     }
     const words = numberWordCount(prose, scrubbedQuestion);
-    if (words > 0) { digit = true; digitBy.NUMBER_WORD = (digitBy.NUMBER_WORD ?? 0) + words; }
+    if (words > 0) {
+      digit = true; digitBy.NUMBER_WORD = (digitBy.NUMBER_WORD ?? 0) + words;
+      for (const [f, n] of Object.entries(numberWordFamilies(prose, scrubbedQuestion)) as [NumberWordFamily, number][]) wordFamilyBy[f] = (wordFamilyBy[f] ?? 0) + n;
+    }
     // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
     const pieces = out
       .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
@@ -1539,7 +1568,7 @@ export function resolvePlaceholders(
     : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
   return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy,
     // The digit diagnosis describes UNGROUNDED_DIGIT only (another verdict decided the answer first).
-    digitBy: verdict === "UNGROUNDED_DIGIT" ? digitBy : {}, modelProse: modelProse.join(" "),
+    digitBy: verdict === "UNGROUNDED_DIGIT" ? digitBy : {}, wordFamilyBy: verdict === "UNGROUNDED_DIGIT" ? wordFamilyBy : {}, modelProse: modelProse.join(" "),
     labelRepeat: labelRepeatCount(stream.text, stream.spans),
     windowRepeat: windowRepeatCount(stream.text, stream.spans, envelopes.map(quotableWindowPhrase)) };
 }
@@ -1687,6 +1716,8 @@ export interface PlatformAiAnswer {
     unresolvedBy: ReasonCounts<UnresolvedReason>; malformedBy: ReasonCounts<MalformedReason>;
     /** Counts by DigitKind of the leftover digit runs (UNGROUNDED_DIGIT diagnosis). */
     digitBy: ReasonCounts<DigitKind>;
+    /** (i) NUMBER_WORD runs by word family (counts only; never the words). */
+    wordFamilyBy?: ReasonCounts<NumberWordFamily>;
     /**
      * S2 F-C1 (c): with the window note (RESOLVED_WITH_WINDOW_NOTE), how many asked-period
      * phrases the model's prose contains (periodMismatchCount); absent otherwise.
@@ -1706,7 +1737,7 @@ export interface PlatformAiAnswer {
     labelRepeat?: number;
     windowRepeat?: number;
     /** B1 (S2): the one corrective retry ran — PASS (the retried answer is shown) or FAIL (the fallback, B2) — and the retry's own verdict. */
-    retry?: { outcome: "PASS" | "FAIL"; verdict: PlaceholderVerdict };
+    retry?: { outcome: "PASS" | "FAIL"; verdict: PlaceholderVerdict; /** (i) the retry's own digit kinds / word families (counts). */ digitBy?: ReasonCounts<DigitKind>; wordFamilyBy?: ReasonCounts<NumberWordFamily> };
   };
   /** Placeholder counts (C5): how many the model wrote, resolved and unresolved. Never values or keys. */
   claims: Omit<ClaimsSummary, "verdict">;
@@ -1720,7 +1751,9 @@ export interface PlatformAiAnswer {
   coverage?: { key: string; label: string; status: BriefingDomainStatus }[];
   /** A1–A4: present only on a SERVER-COMPOSED briefing — codes and counts, never text. */
   briefing?: {
-    composed: true; pattern: string; list: boolean; cost: BriefingCostReason | null;
+    composed: true; kind: "BRIEFING" | "COST_RANKING"; pattern: string; list: boolean; cost: BriefingCostReason | null;
+    /** S1: issue items shown / counted in the overflow sentence; the composed body's line count. */
+    shown: number; overflow: number; lines: number; windowNote?: true;
     framing: FramingOutcome; framingVerdict: PlaceholderVerdict | "LINK" | "TOO_LONG" | null;
     actions: number; actionsDropped: number; absoluteStripped: number; issues: number; figures: number;
     domains: Record<string, BriefingDomainState>; modelError?: true;
@@ -1746,6 +1779,12 @@ export function mechanismLeakCount(answer: readonly AnswerSegment[]): number {
   return answer.reduce((n, s) => n + (s.text.match(/\bplaceholders?\b/gi)?.length ?? 0), 0);
 }
 
+/** (i) "WINDOW_LIKE:1,NUMBER_WORD:2[one=1,two-twenty=1]" — digit kinds, NUMBER_WORD by word family (codes and counts only). */
+export function digitByText(d: ReasonCounts<DigitKind>, w?: ReasonCounts<NumberWordFamily>): string {
+  const fam = NUMBER_WORD_FAMILIES.filter((f) => (w?.[f] ?? 0) > 0).map((f) => `${f}=${w![f]}`).join(",");
+  return DIGIT_KINDS.filter((k) => (d[k] ?? 0) > 0).map((k) => `${k}:${d[k]}${k === "NUMBER_WORD" && fam ? `[${fam}]` : ""}`).join(",");
+}
+
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims" | "briefing">): string {
   const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.unavailable ? `[${t.unavailable}]` : ""}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}${t.windowIgnored ? "+windowIgnored" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
@@ -1753,14 +1792,14 @@ export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" 
   return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)}${linkTo ? ` linkTo=${linkTo}` : ""} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
     + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "")
-    + (reasonCounts(DIGIT_KINDS, r.grounding.digitBy) ? ` digitBy=${reasonCounts(DIGIT_KINDS, r.grounding.digitBy)}` : "")
+    + (reasonCounts(DIGIT_KINDS, r.grounding.digitBy) ? ` digitBy=${digitByText(r.grounding.digitBy, r.grounding.wordFamilyBy)}` : "")
     + (mechanismLeakCount(r.answer) > 0 ? ` mechanismLeak=${mechanismLeakCount(r.answer)}` : "")
     + (typeof r.grounding.periodMismatch === "number" ? ` period_mismatch=${r.grounding.periodMismatch}` : "")
     + (r.grounding.correction === 1 ? " correction=1" : "")
     + (typeof r.grounding.labelRepeat === "number" ? ` label_repeat=${r.grounding.labelRepeat}` : "")
     + (typeof r.grounding.windowRepeat === "number" ? ` window_repeat=${r.grounding.windowRepeat}` : "")
-    + (r.grounding.retry ? ` retry=${r.grounding.retry.outcome}(${r.grounding.retry.verdict})` : "")
-    + (r.briefing ? ` briefing=composed:${r.briefing.pattern} list=${r.briefing.list} cost=${r.briefing.cost ?? "none"} issues=${r.briefing.issues} figures=${r.briefing.figures} framing=${r.briefing.framing}${r.briefing.framingVerdict && r.briefing.framing === "DROPPED" ? `(${r.briefing.framingVerdict})` : ""} actions=${r.briefing.actions} actionsDropped=${r.briefing.actionsDropped} absolute=${r.briefing.absoluteStripped}${r.briefing.modelError ? " modelError=1" : ""}` : "");
+    + (r.grounding.retry ? ` retry=${r.grounding.retry.outcome}(${r.grounding.retry.verdict})${r.grounding.retry.digitBy && reasonCounts(DIGIT_KINDS, r.grounding.retry.digitBy) ? ` retryDigitBy=${digitByText(r.grounding.retry.digitBy, r.grounding.retry.wordFamilyBy)}` : ""}` : "")
+    + (r.briefing ? ` briefing=composed:${r.briefing.kind === "COST_RANKING" ? "COST:" : ""}${r.briefing.pattern} list=${r.briefing.list} shown=${r.briefing.shown} overflow=${r.briefing.overflow} lines=${r.briefing.lines}${r.briefing.windowNote ? " windowNote=1" : ""} cost=${r.briefing.cost ?? "none"} issues=${r.briefing.issues} figures=${r.briefing.figures} framing=${r.briefing.framing}${r.briefing.framingVerdict && r.briefing.framing === "DROPPED" ? `(${r.briefing.framingVerdict})` : ""} actions=${r.briefing.actions} actionsDropped=${r.briefing.actionsDropped} absolute=${r.briefing.absoluteStripped}${r.briefing.modelError ? " modelError=1" : ""}` : "");
 }
 
 export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
@@ -1885,7 +1924,7 @@ export async function runPlatformAiTurn(input: {
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
   // A1: deterministic, server-side — the model's tool choices never decide this.
   const cls = input.classifyBriefing === false ? null : classifyBriefingQuestion(question);
-  if (cls?.briefing) return runComposedBriefing({ ...input, question, cls });
+  if (cls?.briefing || cls?.costRanking) return runComposedBriefing({ ...input, question, cls });
   const paramKeys = modelParamKeys(binding);
   const memory = input.memory;
   const tools = platformAiToolSchemas(paramKeys, { memory: !!memory });
@@ -1966,7 +2005,8 @@ export async function runPlatformAiTurn(input: {
     messages.push(out.raw ?? { role: "assistant", content: out.content });
     const second = evaluate(out.content ?? "");
     const pass = placeholderPasses(second.placed.summary.verdict) && (out.content ?? "").trim().length > 0;
-    retry = { outcome: pass ? "PASS" : "FAIL", verdict: second.placed.summary.verdict };
+    retry = { outcome: pass ? "PASS" : "FAIL", verdict: second.placed.summary.verdict,
+      ...(pass ? {} : { digitBy: second.placed.digitBy, wordFamilyBy: second.placed.wordFamilyBy }) };
     if (pass) { first = second; raw = out.content ?? ""; }
   }
   const { memText, memIds, removed, kinds, placed } = first;
@@ -2057,7 +2097,8 @@ export async function runPlatformAiTurn(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy, digitBy: placed.digitBy, ...(periodMismatch !== undefined ? { periodMismatch } : {}),
+      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy, digitBy: placed.digitBy,
+        ...(Object.keys(placed.wordFamilyBy).length ? { wordFamilyBy: placed.wordFamilyBy } : {}), ...(periodMismatch !== undefined ? { periodMismatch } : {}),
         ...(retry ? { retry } : {}),
         ...(correction ? { correction } : {}),
         ...(!replaced && placed.labelRepeat > 0 ? { labelRepeat: placed.labelRepeat } : {}),
@@ -2096,10 +2137,34 @@ async function runComposedBriefing(input: {
   const paramKeys = modelParamKeys(binding);
   const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [], pages: new Map() };
   // A2: the server's reads, in protocol order (costs only when asked or an alert is firing).
-  const cost = await readBriefingEnvelopes(binding, ev, cls, (key) => executePlatformAiTool("get_metric", JSON.stringify({ id: key }), binding, ev, paramKeys));
+  const read = (key: string) => executePlatformAiTool("get_metric", JSON.stringify({ id: key }), binding, ev, paramKeys);
+  let cost: BriefingCostReason | null = null;
+  let composed: ComposedBriefing;
+  const lead: TypedAnswerSegment[] = [];
+  if (cls.costRanking) {
+    // (ii) COST RANKING (S2-approved): the server reads the operating-cost envelope itself and states the
+    // leader + total from it; the asked period, when it differs, is the code-written window NOTE (F-1).
+    if (binding.describeMetric(COST_RANKING_KEY) !== null) await read(COST_RANKING_KEY);
+    composed = composeCostRanking(ev.envelopes, binding);
+    const e = [...ev.envelopes].reverse().find((x) => x.metric === COST_RANKING_KEY && x.status !== "UNAVAILABLE");
+    const asked = requestedWindows(question);
+    const h = e ? envelopeHours(e) : null;
+    if (e && asked.length > 0 && (h === null || !asked.some((a) => a.hours === h))) {
+      const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
+      lead.push({ kind: "note", text: `Note: ${binding.describeMetric(e.metric)?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.` });
+    }
+  } else {
+    cost = await readBriefingEnvelopes(binding, ev, cls, read);
+    // S1: the overflow sentence links the Operations page (where the posture tile renders), resolved for THIS token.
+    let moreLink: { text: string; href: string } | null = null;
+    for (const t of binding.listPages({ metric: "ops-overall-posture@1" })) {
+      const r = binding.resolvePage(t.id);
+      if (r) { moreLink = { text: "Operations", href: r.href }; ev.hrefs.add(r.href); ev.pages!.set(r.href, { id: t.id, params: {} }); break; }
+    }
+    composed = composeBriefing(ev.envelopes, binding, { list: cls.list, cost, moreLink });
+  }
   const citations = citationsOf(ev, binding);
   const notes = citationNotes(citations, ev.envelopes);
-  const composed = composeBriefing(ev.envelopes, binding, { list: cls.list, cost });
 
   // A3: the model's framing sentence + next actions (page tools only).
   const pageLabel = (href: string) => { const id = ev.pages?.get(href)?.id; return id ? binding.listPages({}).find((t) => t.id === id)?.label ?? null : null; };
@@ -2139,6 +2204,7 @@ async function runComposedBriefing(input: {
   const framing = checkFraming(cand.framing, question);
   const actions = checkActions(cand.actions, ev, (href) => pageLabel(href), question);
   const typed: TypedAnswerSegment[] = [
+    ...lead,
     ...(framing.text ? [{ kind: "text" as const, text: `${framing.text}${composed.list ? "\n" : " "}` }] : []),
     ...composed.segments,
     ...(actions.kept.length ? [{ kind: "text" as const, text: "\n\nNext steps:" }, ...actions.kept.flatMap((a) => [{ kind: "text" as const, text: "\n- " }, { kind: "link" as const, text: a.text, href: a.href }])] : []),
@@ -2154,7 +2220,8 @@ async function runComposedBriefing(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced: false, verdict: composed.figures > 0 ? "RESOLVED" : "NONE", unresolvedBy: {}, malformedBy: {}, digitBy: framing.digitBy },
+      grounding: { replaced: false, verdict: composed.figures > 0 ? "RESOLVED" : "NONE", unresolvedBy: {}, malformedBy: {}, digitBy: framing.digitBy,
+        ...(framing.wordFamilyBy && Object.keys(framing.wordFamilyBy).length ? { wordFamilyBy: framing.wordFamilyBy } : {}) },
       claims: { claims: 0, resolved: 0, unresolved: 0, admitted: 0 },
       sanitised: { removed: actions.absolute, kinds: actions.absolute > 0 ? { url: actions.absolute } : {} },
       usage: { rounds, toolCalls, tokens },
@@ -2162,7 +2229,8 @@ async function runComposedBriefing(input: {
       trace: ev.trace,
       coverage: coverage.map(({ key, label, status }) => ({ key, label, status })),
       briefing: {
-        composed: true, pattern: cls.pattern ?? "UNKNOWN", list: composed.list, cost,
+        composed: true, kind: cls.costRanking ? "COST_RANKING" : "BRIEFING", pattern: cls.pattern ?? "UNKNOWN", list: composed.list, cost,
+        shown: composed.shown, overflow: composed.overflow, lines: composedLineCount(composed.segments), ...(lead.length ? { windowNote: true as const } : {}),
         framing: framing.outcome, framingVerdict: framing.verdict, actions: actions.kept.length, actionsDropped: actions.dropped, absoluteStripped: actions.absolute,
         issues: composed.facts.filter((f) => f.issue).length, figures: composed.figures,
         domains: Object.fromEntries(composed.domains.map((d) => [d.key, d.state])), ...(modelError ? { modelError: true as const } : {}),
