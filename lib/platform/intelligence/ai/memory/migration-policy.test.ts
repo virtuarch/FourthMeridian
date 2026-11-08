@@ -124,6 +124,8 @@ console.log("2. B2 — the registries and the payload allowlist = the constants"
   const allow: Record<string, Record<string, string[]>> = {};
   for (const m of ins.matchAll(/WHEN '([A-Z_]+)'\s+THEN '(\{[^']*\})'::jsonb/g)) allow[m[1]] = JSON.parse(m[2]);
   check("the payload allowlist = MEMORY_PAYLOAD_SCHEMA (every type, key and value)", JSON.stringify(allow) === JSON.stringify(MEMORY_PAYLOAD_SCHEMA), JSON.stringify(allow));
+  check("S2 M1: a supersedesId must name an existing fact of the SAME operator and area (read under the caller's RLS — INVOKER)",
+    /IF NEW\."supersedesId" IS NOT NULL AND NOT EXISTS \(\s*SELECT 1 FROM public\."PlatformAiMemoryFact" s\s+WHERE s\.id = NEW\."supersedesId" AND s\."operatorUserId" = NEW\."operatorUserId" AND s\."platformArea" = NEW\."platformArea"\) THEN\s+RAISE EXCEPTION/.test(ins));
   check("payload keys containing conversation / message / transcript are refused",
     /v_key ILIKE '%conversation%' OR v_key ILIKE '%message%' OR v_key ILIKE '%transcript%'/.test(ins));
 }

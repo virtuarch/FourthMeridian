@@ -33,7 +33,9 @@ by `npm run report:platform-ai-memory-precheck -- --env=preview`.
 4. Triggers (both SECURITY INVOKER):
    - `fm_platform_ai_memory_insert` (BEFORE INSERT): `createdAt = observedAt = now()` UTC,
      `expiresAt = createdAt + least(ttl, cap)`, the lifecycle columns forced NULL, the payload key/value
-     allowlist (any key containing conversation / message / transcript refused), and the **B2**
+     allowlist (any key containing conversation / message / transcript refused), **S2 M1**: a non-null
+     `supersedesId` must name a fact of the same operator and area visible under the caller's RLS,
+     and the **B2**
      `sourceRefs` validation: keys ⊆ {t, id, part, w, observedState} (t, id, observedState required
      strings), `t` in the ref-type enum, `id` ≤ 64 characters and matching its type (INCIDENT cuid;
      METRIC / PAGE / JOB / PROVIDER from literal registries), `part` / `w` on METRIC refs only and from

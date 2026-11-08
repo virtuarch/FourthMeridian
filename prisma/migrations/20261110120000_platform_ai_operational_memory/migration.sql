@@ -209,6 +209,14 @@ BEGIN
     RAISE EXCEPTION 'memory payload missing a required key';
   END IF;
 
+  -- S2 M1: a renewal may supersede ONLY a fact of the SAME operator and area that the
+  -- caller can see (this INVOKER trigger reads under the caller's RLS).
+  IF NEW."supersedesId" IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM public."PlatformAiMemoryFact" s
+        WHERE s.id = NEW."supersedesId" AND s."operatorUserId" = NEW."operatorUserId" AND s."platformArea" = NEW."platformArea") THEN
+    RAISE EXCEPTION 'memory supersedesId must name a visible fact of the same operator and area';
+  END IF;
+
   -- sourceRefs (S2 B2): every element checked key by key against the registries.
   IF jsonb_typeof(NEW."sourceRefs") IS DISTINCT FROM 'array' THEN RAISE EXCEPTION 'memory sourceRefs must be an array'; END IF;
   FOR v_ref IN SELECT value FROM jsonb_array_elements(NEW."sourceRefs") LOOP
