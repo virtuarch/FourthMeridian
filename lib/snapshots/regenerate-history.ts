@@ -96,20 +96,9 @@ import {
   isLegacyManualAsset, manualAssetHistoryFloor, manualAssetValueOn, realAssetTierFor,
   type ManualAssetHistoryInput,
 } from "@/lib/snapshots/manual-asset-history.core";
+import { liabilityKindEvidence } from "@/lib/debt/liquid-net-worth";
 
 type Client = PrismaClient | Prisma.TransactionClient;
-
-/**
- * Mortgage F1 — the liability-kind evidence a DEBT day-row carries into
- * classifyAccounts, so a reconstructed day's netLiquid excludes installment
- * loans exactly as today's row does. Debt rows only: a cash row's subtype is
- * deliberately not forwarded here (its restricted split is out of F1's scope).
- */
-function liabilityKindEvidence(a: { type: string; debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null }) {
-  return a.type === "debt"
-    ? { debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }
-    : {};
-}
 
 /** Kill switch — absent/false ⇒ no SpaceSnapshot writes from regeneration at all. */
 export function wealthRegenerationEnabled(): boolean {

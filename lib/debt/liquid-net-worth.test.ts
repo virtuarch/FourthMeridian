@@ -18,6 +18,7 @@ import { classifyAccounts } from "@/lib/account-classifier";
 import { computeSnapshotFields, computeLiquidSplit } from "@/lib/snapshots/backfill-core";
 import {
   LIQUID_NET_WORTH_DEFINITION, LIQUID_NET_WORTH_NOT_DEBT_FREE, NET_LIQUID_HISTORY_AI_NOTE,
+  LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthChartMarkers,
   aiLiquidNetWorth, isExcludedFromLiquidNetWorth, liquidNetWorthBasis, liquidNetWorthNoteText,
   netLiquidIdentityViolation, storedExcludedInstallmentDebt,
 } from "@/lib/debt/liquid-net-worth";
@@ -165,6 +166,42 @@ const MANUAL   = { id: "man", type: "debt", balance: 2_000, currency: "USD" }; /
   assert.equal(sum, -2_000, "Δ cash − Δ liquidDebt = Δ liquid NW (the mortgage paydown is not a liquid driver)");
   assert.ok(!METRIC_DRIVER_COMPONENTS.netWorth.includes("liquidDebt" as never), "liquidDebt never drives Net Worth");
   ok("Liquid NW drivers = cash + liquidDebt and reconcile; a mortgage paydown moves cash only");
+}
+
+// ── 8b. S2 B1 — a change across the F1 date is a DEFINITION change ─────────
+{
+  const mk = (date: string, debt: number, netLiquid: number, cash: number, isEstimated = false): Snapshot => ({
+    date, totalInvestments: 0, totalCrypto: 0, totalCash: cash, totalSavings: 0, totalDebt: debt,
+    totalAssets: cash, netWorth: cash - debt, netLiquid, cashOnHand: cash, isEstimated,
+  } as unknown as Snapshot);
+  // Pre-F1 OBSERVED row (old basis): mortgage 300,000 + card 5,000 subtracted.
+  // Post-F1 row: card paid down to 3,000, cash 10,000 → 11,000, mortgage unchanged.
+  const pre  = mk("2026-10-01", 305_000, 10_000 - 305_000, 10_000);
+  const post = mk("2026-11-09", 303_000, 11_000 - 3_000, 11_000);
+  const r = computeWealthTimeMachine({ snapshots: [pre, post], asOf: "2026-11-09", compareTo: "2026-10-01", currency: "USD" } as never);
+  const comp = r.deltas!.composition;
+  assert.equal(comp.liquidDefinitionChange, 300_000, "definition change = the mortgage balance");
+  assert.equal(comp.liquidDebt, -2_000, "liquid-debt movement = the real card paydown only (mortgage movement 0)");
+  assert.equal(comp.cash, 1_000);
+  assert.equal(comp.cash - comp.liquidDebt + comp.liquidDefinitionChange, r.deltas!.liquidNetWorth.abs, "parts reconcile to Δ liquid NW");
+  const def = r.drivers!.find((d) => d.id === "liquidDefinitionChange")!;
+  assert.equal(def.label, LIQUID_NW_DEFINITION_CHANGE_LABEL);
+  assert.match(def.label, /Definition change — installment loans no longer subtracted \(from 2026-11-08\)/);
+  // A window entirely on one side of the date has no definition part.
+  const r2 = computeWealthTimeMachine({ snapshots: [mk("2026-11-09", 303_000, 8_000, 11_000), mk("2026-11-20", 302_000, 9_000, 12_000)],
+    asOf: "2026-11-20", compareTo: "2026-11-09", currency: "USD" } as never);
+  assert.equal(r2.deltas!.composition.liquidDefinitionChange, 0);
+  // A compare row already regenerated onto the new basis is not double-counted.
+  const r3 = computeWealthTimeMachine({ snapshots: [mk("2026-10-01", 305_000, 5_000, 10_000, true), post],
+    asOf: "2026-11-09", compareTo: "2026-10-01", currency: "USD" } as never);
+  assert.equal(r3.deltas!.composition.liquidDefinitionChange, 0);
+  // Chart annotation at the date, liquid NW series only; AI note cites the same constant.
+  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth"), [{ date: LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, label: "Definition change" }]);
+  assert.deepEqual(liquidNetWorthChartMarkers("netWorth"), []);
+  assert.ok(readFileSync(join(process.cwd(), "components/space/widgets/wealth/WealthTrendChart.tsx"), "utf8").includes("markers={liquidNetWorthChartMarkers(metric)}"));
+  assert.ok(readFileSync(join(process.cwd(), "components/space/widgets/charts/TrendChart.tsx"), "utf8").includes("data-chart-marker={m.date}"));
+  assert.ok(NET_LIQUID_HISTORY_AI_NOTE.includes(`across ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM}`));
+  ok("B1: change across 2026-11-08 ⇒ definition change = mortgage, liquidDebt = card movement only; chart annotated; AI note cites the date");
 }
 
 // ── 9. Unobserved installment loan leaves liquid NW COMPLETE ─────────────────

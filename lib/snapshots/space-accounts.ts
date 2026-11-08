@@ -148,10 +148,10 @@ export interface SnapshotAccount {
    * buckets. OMITTED when null, so a row without a subtype stays byte-identical.
    */
   providerSubtype?: string;
-  /** Mortgage F1 — FinancialAccount.debtSubtype (debt rows; OMITTED when null). */
-  debtSubtype?: string;
-  /** Mortgage F1 — FinancialAccount.creditLimit (debt rows; OMITTED when null). */
-  creditLimit?: number;
+  /** Mortgage F1 — FinancialAccount.debtSubtype (debt rows only; null when unset). */
+  debtSubtype?: string | null;
+  /** Mortgage F1 — FinancialAccount.creditLimit (debt rows only; null when unset). */
+  creditLimit?: number | null;
 }
 
 /**
@@ -336,10 +336,10 @@ export async function readSpaceAccountsForSnapshot(
       ...(wb.valuationUnknown ? { valuationUnknown: true as const } : {}),
       // FIN-E F1 — OMITTED when the account has no provider subtype.
       ...(typeof fa.providerSubtype === "string" ? { providerSubtype: fa.providerSubtype } : {}),
-      // Mortgage F1 — liability-kind evidence, debt rows only; OMITTED elsewhere
-      // (and when null) so every other row stays byte-identical.
-      ...(fa.type === "debt" && typeof fa.debtSubtype === "string" ? { debtSubtype: fa.debtSubtype } : {}),
-      ...(fa.type === "debt" && typeof fa.creditLimit === "number" ? { creditLimit: fa.creditLimit } : {}),
+      // Mortgage F1 — liability-kind evidence on DEBT rows (null when absent, the
+      // same values the history writer forwards, so today's row and a
+      // regenerated row classify a loan identically); OMITTED on every other row.
+      ...(fa.type === "debt" ? { debtSubtype: fa.debtSubtype ?? null, creditLimit: fa.creditLimit ?? null } : {}),
     };
   });
 }

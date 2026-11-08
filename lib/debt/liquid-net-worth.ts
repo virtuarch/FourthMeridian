@@ -32,7 +32,22 @@
  * Pure: no DB, no server-only imports (client components import it).
  */
 
-import { liabilityKind, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+
+/**
+ * THE date liquid net worth stopped subtracting installment loans (owner
+ * decision 2026-11-08). Stored rows dated before it may carry the old
+ * definition (frozen observed rows are never rewritten): a change measured
+ * across it is split into a "definition change" part, never debt movement.
+ */
+export const LIQUID_NW_INSTALLMENT_EXCLUSION_FROM = "2026-11-08";
+
+/** The wealth-breakdown label for that part. */
+export const LIQUID_NW_DEFINITION_CHANGE_LABEL =
+  `Definition change — installment loans no longer subtracted (from ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM})`;
+
+/** The chart annotation label at that date. */
+export const LIQUID_NW_DEFINITION_CHANGE_MARKER = "Definition change";
 
 /** The definition every surface (UI + AI) states beside a liquid-net-worth figure. */
 export const LIQUID_NET_WORTH_DEFINITION =
@@ -59,6 +74,12 @@ export interface LiquidNetWorthLiability extends LiabilityKindInput {
  * excluded; revolving and unknown ⇒ counted (unknown conservatively).
  */
 export function liquidNetWorthTreatment(a: LiabilityKindInput): LiquidNetWorthTreatment {
+  // A limit-discriminated Plaid subtype ("home equity": HELOC vs closed-end
+  // loan) whose row did not CARRY the limit (field absent — e.g. a privacy tier
+  // that withholds it) has no evidence either way: unknown ⇒ counted, so a
+  // HELOC is never dropped from liquid NW for want of its limit.
+  const ps = a.providerSubtype?.trim().toLowerCase();
+  if (!a.debtSubtype?.trim() && ps && PLAID_LIMIT_DISCRIMINATED_SUBTYPES.has(ps) && a.creditLimit === undefined) return "COUNTED";
   return liabilityKind({ ...a, type: a.type ?? "debt" }) === "installment" ? "EXCLUDED_INSTALLMENT" : "COUNTED";
 }
 
@@ -140,7 +161,7 @@ export function liquidNetWorthBasis(accounts: ReadonlyArray<LiquidNetWorthLiabil
   let unknownKindCount = 0;
   for (const a of accounts) {
     if (a.type !== "debt") continue;
-    const kind = liabilityKind(a);
+    const kind = isExcludedFromLiquidNetWorth(a) ? "installment" : liabilityKind(a) === "installment" ? "unknown" : liabilityKind(a);
     if (kind === "installment") {
       excludedCount++;
       const label = installmentLoanLabel(a);
@@ -203,8 +224,8 @@ export const NET_LIQUID_HISTORY_AI_NOTE =
   `${LIQUID_NET_WORTH_DEFINITION} \`netLiquid\` does NOT subtract installment loans (mortgage, auto, student, personal installment); ` +
   "credit cards, lines of credit and debts of unknown type ARE subtracted. " +
   `${LIQUID_NET_WORTH_NOT_DEBT_FREE} ` +
-  "Points recorded before 2026-11-08 may still subtract installment loans; a rise in netLiquid that matches an installment balance " +
-  "between such a point and a later one is that definition change, not money gained — do not describe it as movement.";
+  `Points dated before ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM} may still subtract installment loans; a change in netLiquid measured ` +
+  `across ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM} includes that definition change, which is not money gained or debt repaid — do not describe it as movement.`;
 
 /**
  * The one UI sentence beside a liquid-net-worth figure: the definition, then
@@ -243,4 +264,47 @@ export function aiLiquidNetWorth(
     excludedKinds:             basis.excludedKinds,
     unknownKindLiabilityCount: basis.unknownKindCount,
   };
+}
+
+// ── The definition change across LIQUID_NW_INSTALLMENT_EXCLUSION_FROM ───────
+
+interface StoredLiquidRow { date: string; cash: number; savings: number; debt: number; netLiquid: number }
+
+/**
+ * The part of a liquid-NW change between two stored rows that is the F1
+ * DEFINITION CHANGE, not movement. Non-zero only when the window CROSSES
+ * LIQUID_NW_INSTALLMENT_EXCLUSION_FROM (compare dated before it, as-of on or
+ * after) AND the compare row is on the old basis (it excluded nothing — the
+ * stored identity's lower bound). The amount is the installment debt the as-of
+ * row no longer subtracts (recovered from that row). Without a stored
+ * installment column the compare row's own installment balance is unknown, so
+ * installment paydown inside the window is folded into this part rather than
+ * reported as liquid-debt movement — the conservative direction for
+ * attribution (S2 requires the column before Production).
+ */
+export function liquidNetWorthDefinitionChange(compare: StoredLiquidRow, asOf: StoredLiquidRow): number {
+  if (!(compare.date < LIQUID_NW_INSTALLMENT_EXCLUSION_FROM && asOf.date >= LIQUID_NW_INSTALLMENT_EXCLUSION_FROM)) return 0;
+  if (storedExcludedInstallmentDebt(compare) > 0.005) return 0; // compare row already on the new basis (regenerated)
+  return Math.max(storedExcludedInstallmentDebt(asOf), 0);
+}
+
+/** The liquid-NW chart annotation at the definition change (Liquid NW series only). */
+export function liquidNetWorthChartMarkers(metric: string): { date: string; label: string }[] {
+  return metric === "liquidNetWorth"
+    ? [{ date: LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, label: LIQUID_NW_DEFINITION_CHANGE_MARKER }]
+    : [];
+}
+
+/**
+ * The liability-kind evidence a DEBT row carries into classifyAccounts (null
+ * when unset) — the history writer's day rows use this; today's writer
+ * (lib/snapshots/space-accounts.ts) emits the same fields, so a mortgage is
+ * classified identically on both paths. Non-debt rows get nothing (a cash row's
+ * subtype is not forwarded by the history writer — out of F1's scope).
+ */
+export function liabilityKindEvidence(a: { type: string; debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null }):
+  { debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null } {
+  return a.type === "debt"
+    ? { debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }
+    : {};
 }
