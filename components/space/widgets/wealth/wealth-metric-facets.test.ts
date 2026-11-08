@@ -11,7 +11,7 @@
  *
  *   totalAssets      = cash + investments + crypto + real      (assets, no debt)
  *   totalLiabilities = liabilities                             (the debt scalar)
- *   liquidNetWorth   = cash − liabilities   (cash folds savings; liab = debt)
+ *   liquidNetWorth   = cash − liquidDebt    (Mortgage F1: liquidDebt = debt EXCLUDING installment loans)
  *   netWorth         = assets − liabilities                    (all five)
  *
  * We rebuild each metric's value from a synthetic composition using ONLY its
@@ -41,7 +41,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 // original series. The legacy four are RETAINED (their series and facets still
 // exist even though Liabilities / Liquid NW are no longer page destinations).
 const ALL_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth", "cash", "invested"];
-const ALL_COMPONENTS: WealthComponentId[] = ["cash", "investments", "crypto", "real", "liabilities"];
+const ALL_COMPONENTS: WealthComponentId[] = ["cash", "investments", "crypto", "real", "liabilities", "liquidDebt", "liquidDefinitionChange"];
 
 /**
  * Sign a component contributes to a given metric. Assets are always +1. The
@@ -53,6 +53,7 @@ const ALL_COMPONENTS: WealthComponentId[] = ["cash", "investments", "crypto", "r
  * Net Change total are both positive and both red.
  */
 function signFor(metric: WealthMetricKey, id: WealthComponentId): number {
+  if (id === "liquidDebt") return -1; // Mortgage F1 — only ever reduces liquid NW
   if (id !== "liabilities") return +1;
   return metric === "totalLiabilities" ? +1 : -1;
 }
@@ -67,7 +68,7 @@ function metricFromComposition(metric: WealthMetricKey, comp: Record<WealthCompo
   switch (metric) {
     case "totalAssets":      return assets;
     case "totalLiabilities": return comp.liabilities;
-    case "liquidNetWorth":   return comp.cash - comp.liabilities;
+    case "liquidNetWorth":   return comp.cash - comp.liquidDebt + comp.liquidDefinitionChange; // Mortgage F1
     case "netWorth":         return assets - comp.liabilities;
     // The Assets slices: disjoint buckets of `assets` (cash + invested ≤ assets).
     case "cash":             return comp.cash;
@@ -93,6 +94,8 @@ function main(): void {
   // on values proves it on deltas.
   const comp: Record<WealthComponentId, number> = {
     cash: 4000, investments: 9000, crypto: 1500, real: 250000, liabilities: 180000,
+    liquidDebt: 2500, // Mortgage F1 — e.g. a 2,500 card; the rest of 180,000 is a mortgage
+    liquidDefinitionChange: 700, // Mortgage F1 — delta-only part (any value proves the algebra)
   };
   for (const m of ALL_METRICS) {
     const reconstructed = METRIC_DRIVER_COMPONENTS[m].reduce((s, id) => s + signFor(m, id) * comp[id], 0);
@@ -115,12 +118,14 @@ function main(): void {
   check("Liabilities driver set is liabilities-ONLY",
     METRIC_DRIVER_COMPONENTS.totalLiabilities.length === 1 &&
     METRIC_DRIVER_COMPONENTS.totalLiabilities[0] === "liabilities");
-  check("Liquid driver set is cash + liabilities only (no investments/crypto/real)",
+  check("Liquid driver set is cash + liquidDebt only (no investments/crypto/real, never ALL liabilities — F1)",
     METRIC_DRIVER_COMPONENTS.liquidNetWorth.includes("cash") &&
-    METRIC_DRIVER_COMPONENTS.liquidNetWorth.includes("liabilities") &&
+    METRIC_DRIVER_COMPONENTS.liquidNetWorth.includes("liquidDebt") &&
+    !METRIC_DRIVER_COMPONENTS.liquidNetWorth.includes("liabilities") &&
     !["investments", "crypto", "real"].some((x) => METRIC_DRIVER_COMPONENTS.liquidNetWorth.includes(x as WealthComponentId)));
-  check("Net Worth driver set is all five components",
-    ALL_COMPONENTS.every((c) => METRIC_DRIVER_COMPONENTS.netWorth.includes(c)));
+  check("Net Worth driver set is all five balance-sheet components (never the Liquid-NW-only liquidDebt — F1)",
+    ALL_COMPONENTS.filter((c) => c !== "liquidDebt" && c !== "liquidDefinitionChange").every((c) => METRIC_DRIVER_COMPONENTS.netWorth.includes(c))
+      && !METRIC_DRIVER_COMPONENTS.netWorth.includes("liquidDebt") && !METRIC_DRIVER_COMPONENTS.netWorth.includes("liquidDefinitionChange"));
 
   console.log("Assets slices are disjoint and sum to the assets driver set (no double count)");
   {

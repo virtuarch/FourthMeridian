@@ -45,6 +45,7 @@
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { ALL_CASH_HISTORY_AI_NOTE, UNRESTRICTED_HISTORY_AI_NOTE, cashHistoryBasisOf, cashOnBasis } from '@/lib/liquidity/cash-history';
+import { NET_LIQUID_HISTORY_AI_NOTE } from '@/lib/debt/liquid-net-worth';
 /**
  * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
  * HOLDS NO CLIENT AT ALL.
@@ -280,6 +281,8 @@ export function projectSnapshotSection(
     // its restricted share, so the points are on `totalLiquid`'s basis.
     liquidBasis,
     liquidBasisNote:  liquidBasis === 'UNRESTRICTED' ? UNRESTRICTED_HISTORY_AI_NOTE : ALL_CASH_HISTORY_AI_NOTE,
+    // Mortgage F1 — the definition beside every historical netLiquid.
+    netLiquidNote:    NET_LIQUID_HISTORY_AI_NOTE,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,

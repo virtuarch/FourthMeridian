@@ -63,6 +63,7 @@ import "server-only";
 import { possessive } from "@/lib/format";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import { liquidityAccess } from "@/lib/account-classifier";
+import { liquidNetWorthTreatment } from "@/lib/debt/liquid-net-worth";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -458,6 +459,13 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       type:           string;
       /** A member's providerSubtype — every member shares its liquidity access (the key). */
       providerSubtype: string | null;
+      /**
+       * Mortgage F1 — debt groups: false once members DISAGREE on liquid-net-worth
+       * treatment (an installment loan merged with a card). Such an aggregate
+       * carries no kind evidence ⇒ unknown ⇒ counted (never overstated).
+       */
+      liquidTreatmentUniform: boolean;
+      liquidTreatment: string | null;
       /** Non-debt members only: signed sum (identical to per-member sums). */
       assetTotal:     number;
       /** Debt members only: Σ amountOwed — clamped PER MEMBER, never netted. */
@@ -529,8 +537,10 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
     const memberAsset = isDebt ? 0 : a.balance;
 
     const existing = groups.get(key);
+    const treatment = isDebt ? liquidNetWorthTreatment({ type: a.type, debtSubtype: a.debtSubtype, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }) : null;
     if (existing) {
       existing.count       += 1;
+      if (existing.liquidTreatment !== treatment) existing.liquidTreatmentUniform = false;
       existing.memberAccountIds.push(a.id);
       existing.owedTotal   += memberOwed;
       existing.creditTotal += memberCred;
@@ -561,6 +571,8 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         baseLabel,
         type:           a.type,
         providerSubtype: a.providerSubtype ?? null,
+        liquidTreatmentUniform: true,
+        liquidTreatment: treatment,
         assetTotal:     memberAsset,
         owedTotal:      memberOwed,
         creditTotal:    memberCred,
@@ -593,7 +605,9 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       id:          `balance-only:${key}`,
       name:        displayName,
       type:        g.type,
-      providerSubtype: g.providerSubtype,
+      // Mortgage F1 — a mixed-kind debt aggregate drops its (first member's)
+      // subtype: liquid NW then counts it (unknown), never excludes a card.
+      providerSubtype: g.type === "debt" && !g.liquidTreatmentUniform ? null : g.providerSubtype,
       balance,
       currency:    g.currency,
       lastUpdated: g.lastUpdated.toISOString(),

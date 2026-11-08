@@ -138,6 +138,8 @@ async function resolvePlatformAccess(
   user:   SessionUser,
   area:   PlatformArea,
   needed: PlatformAccessLevel,
+  /** PROBE (S2 #483): the same decision; a refusal is NOT recorded (an extra area the caller skips). */
+  probe:  boolean = false,
 ): Promise<[PlatformAuth, null] | [null, NextResponse]> {
   // Break-glass — the bypass lives in the adapter (07-07 ruling), not the pure
   // policy. SYSTEM_ADMIN never needs (and is never issued) a grant row. It is
@@ -150,7 +152,7 @@ async function resolvePlatformAccess(
       systemAdminDisabled: env.isSystemAdminDisabled,
     });
     if (verdict !== "ALLOW") {
-      recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "break_glass_refused" }, { client: db });
+      if (!probe) recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "break_glass_refused" }, { client: db });
       return [null, forbidden()];
     }
     return [{ user, grant: null }, null];
@@ -171,7 +173,7 @@ async function resolvePlatformAccess(
     // lib/platform/ops/access-denied.ts) so a mis-grant or an area enumeration
     // is visible on the Security Ops Detections surface. Decided first, then
     // recorded; never awaited, never able to change the answer.
-    recordPlatformAccessDenied(
+    if (!probe) recordPlatformAccessDenied(
       { userId: user.id, area, needed, grant: !row ? "none" : row.status !== "ACTIVE" ? "revoked" : "insufficient" },
       { client: db },
     );
@@ -182,7 +184,7 @@ async function resolvePlatformAccess(
   // must have TOTP enabled. Decided after the grant (so a caller with no grant
   // learns nothing about MFA) and recorded like any other refusal.
   if (decideOperatorTotpRefusal({ role: user.role, totpEnabled: row!.user.totpEnabled === true, enforced: env.isOperatorTotpEnforced })) {
-    recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "mfa_required" }, { client: db });
+    if (!probe) recordPlatformAccessDenied({ userId: user.id, area, needed, grant: "mfa_required" }, { client: db });
     return [null, operatorTotpRequired()];
   }
 
@@ -213,8 +215,15 @@ export async function requirePlatformAccess(
 export async function requireFreshPlatformAccess(
   area:   PlatformArea,
   needed: PlatformAccessLevel,
+  /**
+   * `probe: true` (Platform AI multi-area, S2 #483) — the SAME decision, but a refusal is not
+   * recorded (OBS-009): only for an extra area the caller silently skips when refused, which
+   * the operator never requested. Every other caller omits it.
+   */
+  opts:   { probe?: boolean } = {},
 ): Promise<[PlatformAuth, null] | [null, NextResponse]> {
   const [user, err] = await requireFreshUser();
   if (err) return [null, err]; // 401 — no session / revoked
+  if (opts.probe === true) return resolvePlatformAccess(user, area, needed, true);
   return resolvePlatformAccess(user, area, needed);
 }

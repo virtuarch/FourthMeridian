@@ -22,7 +22,9 @@
  * delta:
  *   totalAssets    = cash + investments + crypto + real           (sum of parts)
  *   totalLiabilities = liabilities                                 (the one part)
- *   liquidNetWorth = cash − liabilities  (cash folds savings; liabilities = debt)
+ *   liquidNetWorth = cash − liquidDebt   (cash folds savings; liquidDebt = debt
+ *                    EXCLUDING installment loans — Mortgage F1, owner 2026-11-08)
+ *                    + liquidDefinitionChange (delta-only, across the F1 date)
  *   netWorth       = assets − liabilities                          (all five)
  *   cash           = cash                     (OVERVIEW-CONSOLIDATION: the Cash slice)
  *   invested       = investments + crypto     (the Investments slice — disjoint from cash)
@@ -54,7 +56,7 @@ export const METRIC_DRIVER_COMPONENTS: Record<WealthMetricKey, WealthComponentId
   netWorth:         ["cash", "investments", "crypto", "real", "liabilities"],
   totalAssets:      ["cash", "investments", "crypto", "real"],
   totalLiabilities: ["liabilities"],
-  liquidNetWorth:   ["cash", "liabilities"],
+  liquidNetWorth:   ["cash", "liquidDebt", "liquidDefinitionChange"],
   cash:             ["cash"],
   invested:         ["investments", "crypto"],
 };

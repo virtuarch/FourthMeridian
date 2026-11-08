@@ -52,13 +52,18 @@ console.log("1. Unobserved DEBT ⇒ net worth PARTIAL, true total is lower");
   const counts = excludedAccountCounts(rows);
   const nw = unobservedTotalCoverage("NET_WORTH", counts);
   check("the balance stays EXCLUDED (no invented number): netWorth 510,000, liabilities 0", c.netWorth === 510_000 && c.totalLiabilities === 0, c);
-  check("counts: 1 debt, 0 assets", counts.debt === 1 && counts.asset === 0 && counts.liquid === 0, counts);
+  check("counts: 1 debt (an installment loan), 0 assets", counts.debt === 1 && counts.installmentDebt === 1 && counts.asset === 0 && counts.liquid === 0, counts);
   check("net worth PARTIAL, TRUE_TOTAL_LOWER", nw.status === "PARTIAL" && nw.directions.join() === "TRUE_TOTAL_LOWER" && nw.excludedDebtCount === 1, nw);
   check("note: 'Excludes a debt of unknown balance — the true total is lower'", nw.notes[0] === "Excludes a debt of unknown balance — the true total is lower", nw.notes);
   const debt = unobservedTotalCoverage("TOTAL_DEBT", counts);
   check("debt total PARTIAL — 'the true amount owed is higher'", debt.status === "PARTIAL" && debt.directions.join() === "TRUE_TOTAL_HIGHER"
     && debt.notes[0] === "Excludes a debt of unknown balance — the true amount owed is higher", debt);
-  check("liquid net worth (cash + savings − debt) PARTIAL, lower", unobservedTotalCoverage("LIQUID_NET_WORTH", counts).directions.join() === "TRUE_TOTAL_LOWER");
+  // Mortgage F1 — liquid NW never subtracts an installment loan, so an unknown
+  // mortgage balance cannot make it partial.
+  check("liquid net worth COMPLETE — a mortgage is excluded from it (F1)", unobservedTotalCoverage("LIQUID_NET_WORTH", counts).status === "COMPLETE");
+  const unknownKindDebt = { id: "d", type: "debt", currency: "USD", ...unobs };
+  check("…an unobserved debt of UNKNOWN kind still makes liquid net worth PARTIAL, lower",
+    unobservedTotalCoverage("LIQUID_NET_WORTH", excludedAccountCounts([CHECKING, unknownKindDebt])).directions.join() === "TRUE_TOTAL_LOWER");
   check("total assets unaffected by an excluded debt ⇒ COMPLETE", unobservedTotalCoverage("TOTAL_ASSETS", counts).status === "COMPLETE");
   check("badge: 'Partial — true total is lower'", exclusionBadge(nw.directions[0]) === "Partial — true total is lower");
   const two = unobservedTotalCoverage("NET_WORTH", { debt: 2, asset: 0, liquid: 0 });
@@ -116,8 +121,9 @@ console.log("5. Wealth envelope + hero, debt lens, AI tool contract");
 {
   const counts = excludedAccountCounts([CHECKING, PROPERTY, MORTGAGE_UNOBSERVED]);
   const cov = wealthTotalsCoverage(counts);
-  check("wealth: netWorth / liquidNetWorth / totalLiabilities partial; totalAssets / cash not",
-    cov.netWorth?.status === "PARTIAL" && cov.liquidNetWorth?.status === "PARTIAL" && cov.totalLiabilities?.status === "PARTIAL"
+  // Mortgage F1 — the excluded debt is a MORTGAGE, which liquid NW never subtracts.
+  check("wealth: netWorth / totalLiabilities partial; liquidNetWorth (mortgage excluded, F1) / totalAssets / cash not",
+    cov.netWorth?.status === "PARTIAL" && cov.liquidNetWorth === undefined && cov.totalLiabilities?.status === "PARTIAL"
       && cov.totalAssets === undefined && cov.cash === undefined, Object.keys(cov));
 
   // A minimal WealthResult — the envelope's wealth branch needs only asOfState.

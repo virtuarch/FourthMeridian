@@ -463,6 +463,39 @@ async function main(): Promise<void> {
     handlers.indexOf("deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId)") < handlers.indexOf("const refused = await admit(v, deps);", handlers.indexOf("export async function handleAppendMessage"))
       && handlers.indexOf("const access = await deps.areaAccess(v.area, v.operatorId);") < handlers.indexOf("deps.store.createConversation("));
 
+  // ── S2 #483 B1 option (b): conversations stay SINGLE-AREA (only the stateless ask route composes areas) ──
+  {
+    const csCtx = ctxFor("CUSTOMER_SUCCESS");
+    const ct = csCtx.metricToken;
+    const csR = { ...readers(), csOverview: async () => ({ checkedAt: NOW.toISOString(), windowDays: 30, customers: { active: 17, deactivated: 2 }, stages: [], attention: { customers: 5, floor: false, reasons: [] }, incidents: { days: [], floor: false, openByKind: [], open: 0, openFloor: false }, notes: [] }) } as unknown as RetrievalReaders;
+    // The binding exactly as area-access.ts builds it for a CUSTOMER_SUCCESS conversation (its own area only).
+    const csBinding: PlatformAiBinding = {
+      surfaceLabel: "Customer Success",
+      describeMetric: (id) => describeMetric(ct, id),
+      listMetrics: (f) => listMetrics(ct, { ...f, area: "CUSTOMER_SUCCESS" }),
+      readMetric: (id, p) => retrieveWith("CUSTOMER_SUCCESS", csR, csCtx, id, p, NOW),
+      listPages: (f) => listNavigationTargets("CUSTOMER_SUCCESS", ct, f),
+      resolvePage: (id, p) => resolveNavigationTarget("CUSTOMER_SUCCESS", ct, id, p, { now: NOW }),
+    };
+    const r = await turn("How are we looking today?", [], [
+      { calls: [gm("ops-overall-posture"), gm("economics-ai-cost"), gm("cs-needs-help"), { name: "open_page", args: { id: "PLATFORM_OPS:platform-incidents:open" } }] },
+      { content: "Customers needing help: {{m:cs-needs-help@1}}. Posture: {{m:ops-overall-posture@1|part=failed}}." },
+    ], csBinding);
+    const refs = r.outcome.status === "COMPLETE" ? r.outcome.evidenceRefs : [];
+    const tools = (r.transcript ?? []).filter((m) => (m as { role: string }).role === "tool").map((m) => (m as { content: string }).content);
+    check("B1(b): a CS conversation turn cannot read an Ops-only metric or open an Ops page (NOT_FOUND each), only its own area's",
+      tools[0] === JSON.stringify(NOT_FOUND) && tools[1] === JSON.stringify(NOT_FOUND) && JSON.parse(tools[2]).surface === "CUSTOMER_SUCCESS" && tools[3] === JSON.stringify(NOT_FOUND), tools.map((t) => t.slice(0, 60)));
+    check("B1(b): …so a stored turn can never cite one: evidence refs and citations hold the CS metric only, and the answer citing an Ops metric is refused",
+      refs.every((x) => x.k !== "m" || x.id === "cs-needs-help@1") && (r.result?.citations ?? []).every((c) => c.metric === "cs-needs-help@1") && r.result?.grounding.replaced === true, { refs, cit: r.result?.citations });
+    const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
+    check("B1(b): the conversation access helper binds ONLY the conversation's own area (one fresh guard, no composition, no directory read) and carries the B1(a) TODO",
+      (access.match(/requireFreshPlatformAccess\(/g) ?? []).length === 1 && !/composePlatformAiBindings|platformAiAreasFor|loadPlatformDirectory/.test(access)
+        && /TODO\(B1\(a\) provenance areasRead before multi-area conversations\)/.test(src("app/api/platform/ai/conversations/area-access.ts")));
+    const ask = code(src("app/api/platform/ai/ask/route.ts"));
+    check("B1(b): the stateless ask route still composes every held area, each behind its own fresh guard",
+      /for \(const other of platformAiAreasFor\(rows\)\)/.test(ask) && /await requireFreshPlatformAccess\(other, "READ"/.test(ask) && /composePlatformAiBindings\(parts\)/.test(ask));
+  }
+
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
 }

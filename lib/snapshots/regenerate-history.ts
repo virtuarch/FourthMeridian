@@ -96,6 +96,7 @@ import {
   isLegacyManualAsset, manualAssetHistoryFloor, manualAssetValueOn, realAssetTierFor,
   type ManualAssetHistoryInput,
 } from "@/lib/snapshots/manual-asset-history.core";
+import { liabilityKindEvidence } from "@/lib/debt/liquid-net-worth";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -1020,8 +1021,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // PB-8 — a non-walkable LIABILITY with transactions (a loan with
         // payments) takes the flat fallback below too: an ESTIMATE, said so.
         if (heldFlatIds.has(a.id) || (a.type === "debt" && !walkedCardIds.has(a.id))) dayHasHeldFlat = true;
-        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency }];
-        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency }];
+        if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency, ...liabilityKindEvidence(a) }];
+        if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency, ...liabilityKindEvidence(a) }];
         // RWA-2B — a manual asset answers from its ledger: the resolver's value
         // for THIS day, or nothing at all (not yet held / not yet valued — never
         // today's balance painted backward, never a zero).
@@ -1032,7 +1033,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           dayRealAssetBases.push(v.basis);
           return [{ type: a.type, balance: v.value, currency: a.currency }];
         }
-        return [{ type: a.type, balance: a.balance, currency: a.currency }];
+        return [{ type: a.type, balance: a.balance, currency: a.currency, ...liabilityKindEvidence(a) }];
       });
     // Skip a day only when there is nothing at all to value — but a holdings-only
     // Space (investment/crypto floored to today, so dayAccounts is empty) or a
@@ -1226,6 +1227,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         totalSavings:       c.totalSavings,
         totalLiabilities:   c.totalLiabilities,
         totalRealAssets:    c.totalRealAssets,
+        // Mortgage F1 — the installment share, excluded from netLiquid.
+        totalInstallmentLiabilities: c.totalInstallmentLiabilities,
         // FIN-E part 2 — the restricted share of the SAME walked cash.
         totalRestrictedCash: c.totalRestrictedCash,
       },

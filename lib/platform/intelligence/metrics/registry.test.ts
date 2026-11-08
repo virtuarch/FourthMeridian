@@ -182,7 +182,7 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
   check("describeMetric by bare id = the highest version; by id@version = that version", describeMetric(mo, "merchant-identity-linked")?.version === 1 && describeMetric(mo, "merchant-identity-linked@2") === null);
   check("SYSTEM_ADMIN break-glass sees every metric", listMetrics(admin).length === METRICS.length);
   check("domain and area filters narrow, never widen",
-    listMetrics(ops, { domain: "providers" }).every((m) => m.domain === "providers") && listMetrics(ops, { domain: "providers" }).length === 2
+    listMetrics(ops, { domain: "providers" }).every((m) => m.domain === "providers") && listMetrics(ops, { domain: "providers" }).length === 3
     && listMetrics(ops, { area: "CUSTOMER_SUCCESS" }).length === 0 && listMetrics(admin, { area: "MERCHANT_OPS" }).map(metricKey).join() === "merchant-identity-linked@1");
   const forged = Object.freeze({ grants: [{ area: "PLATFORM_OPS", level: "CONTROL" }] }) as unknown as MetricAccessToken;
   check("a hand-built / cast token is refused at runtime (lists nothing, describes nothing)",

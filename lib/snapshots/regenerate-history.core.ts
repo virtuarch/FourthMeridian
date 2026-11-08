@@ -50,6 +50,7 @@
  */
 
 import { computeSnapshotFields, snapshotRestrictedCash, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
+import { storedExcludedInstallmentDebt } from "@/lib/debt/liquid-net-worth";
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import {
   CRYPTO_MATERIALITY_EPSILON, type CryptoValuationStatus,
@@ -567,6 +568,13 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     totalChecking:      valueOf("cash"),
     totalSavings:       valueOf("savings"),
     totalLiabilities:   valueOf("debt"),
+    // Mortgage F1 — the installment share excluded from netLiquid travels WITH
+    // the debt component: recomputed debt ⇒ the fresh classification's share;
+    // PRESERVED debt ⇒ the share the stored row already excluded (recovered by
+    // subtraction), so a preserved component keeps its own basis.
+    totalInstallmentLiabilities: components.find((d) => d.component === "debt")!.action === "preserved" && existing
+      ? storedExcludedInstallmentDebt(existing)
+      : base.totalInstallmentLiabilities,
   };
   // AGGREGATES ARE ALWAYS RECOMPUTED FROM THE COMPONENTS THE ROW WILL CARRY.
   //

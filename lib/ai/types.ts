@@ -24,6 +24,7 @@ import type { AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
+import type { DebtType } from '@/lib/debt/liability-kind';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
@@ -489,9 +490,17 @@ export interface AccountSummaryItem {
   // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
   apr?:                   number | null; // effective rate (percent); null = known missing
   /** Mortgage F3 — the name of `apr` for THIS account (lib/debt/rate-label.ts):
-   *  'Mortgage rate' | 'Loan rate' | 'APR' (revolving credit only) | 'Interest rate'
+   *  'Mortgage rate' (mortgage only) | 'APR' (revolving credit only) | 'Interest rate'
    *  (no kind evidence). The same label the debt UI renders. */
   rateLabel?:             RateLabel;
+  /** Owner 2026-11-08 — the ONE fine-grained debt type (lib/debt/liability-kind.ts
+   *  `debtType`): credit_card | personal_installment | auto_loan | student_loan |
+   *  mortgage | heloc | personal_line_of_credit | overdraft | other_revolving |
+   *  other_installment | unknown. The model names the liability by `debtTypeLabel`
+   *  ("Auto loan", "HELOC", …) and applies mortgage-only reasoning (equity, escrow,
+   *  amortization) ONLY when debtType is "mortgage". */
+  debtType?:              DebtType;
+  debtTypeLabel?:         string;
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
   rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)
@@ -530,8 +539,33 @@ export interface KnowledgeGap {
   accountId:    string;
   accountName:  string;  // display-safe name (resolveDisplayName output)
   field:        'apr' | 'minimumPayment';
-  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage rate", "Loan rate" (F3: lib/debt/rate-label.ts)
+  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage rate", "Interest rate" (F3: lib/debt/rate-label.ts)
   debtSubtype?: string | null; // FinancialAccount.debtSubtype when present
+  /** Owner 2026-11-08 — the fine-grained debt type (lib/debt/liability-kind.ts). */
+  debtType?:    DebtType;
+}
+
+
+/**
+ * Mortgage F1 (owner 2026-11-08) — liquid net worth on the Hero's basis:
+ * UNRESTRICTED cash (`totalLiquid`) minus every liability EXCEPT installment
+ * loans (mortgage, auto, student, personal installment). Revolving debt (cards,
+ * HELOCs, lines of credit) and liabilities of UNKNOWN kind are subtracted
+ * (unknown conservatively, so the figure is never overstated). Net worth still
+ * subtracts every liability.
+ */
+export interface AiLiquidNetWorth {
+  amount:            number;
+  /** "Liquid net worth excludes mortgages and other long-term loans; total net worth includes all debts." */
+  definition:        string;
+  /** The rule the model must keep: excluded loans are still owed. */
+  notDebtFree:       string;
+  /** Owed on the excluded installment loans (still in totalLiabilities and netWorth). */
+  excludedInstallmentDebt: number;
+  /** Names of the excluded loans ("mortgage", "auto loan"); empty when none. */
+  excludedKinds:     string[];
+  /** Liabilities of unknown kind, INCLUDED in the subtraction; 0 when none. */
+  unknownKindLiabilityCount: number;
 }
 
 /**
@@ -608,6 +642,13 @@ export interface AccountsSectionData {
    * when every total is COMPLETE.
    */
   totalsCoverage?: AiTotalsCoverage;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — LIQUID net worth and how it differs from
+   * net worth, so the model can explain the difference and never present it as
+   * debt-free wealth. Optional so fixtures predating F1 still compile; the
+   * assembler always emits it.
+   */
+  liquidNetWorth?: AiLiquidNetWorth;
   counts: {
     liquid:       number;
     investments:  number;
@@ -1629,6 +1670,12 @@ export interface SnapshotSectionData {
    */
   liquidBasis?:     'ALL_CASH' | 'UNRESTRICTED';
   liquidBasisNote?: string;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — what every point's `netLiquid` means:
+   * installment loans (mortgage, auto, student) are NOT subtracted; total net
+   * worth still subtracts them. Always emitted by the assembler.
+   */
+  netLiquidNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

@@ -71,6 +71,10 @@ export const getFinancialSnapshot: ToolDefinition = {
       // above, beside them: an account of unknown balance is excluded (never
       // counted as 0). Present only when some total is PARTIAL.
       ...(acc.totalsCoverage ? { totalsCoverage: acc.totalsCoverage } : {}),
+      // Mortgage F1 (owner 2026-11-08) — liquid net worth WITH its definition and
+      // the loans it excludes, so the answer explains liquid vs total net worth
+      // and never presents liquid net worth as debt-free wealth.
+      ...(acc.liquidNetWorth ? { liquidNetWorth: acc.liquidNetWorth } : {}),
       // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
       // ⚠️ THE RELATION IS STATED, NOT LEFT TO INFERENCE. Shown beside `liquid` with no
       // relation, the model read restricted as a PART of liquid and subtracted it again
@@ -91,8 +95,11 @@ export const getFinancialSnapshot: ToolDefinition = {
         liabilityState: a2.liabilityState,
         apr: a2.apr, minimumPayment: a2.minimumPayment,
         // Mortgage F3 — the name of `apr` for this account ("Mortgage rate" /
-        // "Loan rate" / "APR" / "Interest rate"), the same label the debt UI shows.
+        // "APR" / "Interest rate"), the same label the debt UI shows.
         ...(a2.rateLabel ? { rateLabel: a2.rateLabel } : {}),
+        // Owner 2026-11-08 — the fine-grained debt type + its name ("Auto loan",
+        // "HELOC", "Mortgage", …). Mortgage-only reasoning applies ONLY to "mortgage".
+        ...(a2.debtType ? { debtType: a2.debtType, debtTypeLabel: a2.debtTypeLabel } : {}),
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
         // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
         // price; the assembler marks it and this row must not drop the mark.
