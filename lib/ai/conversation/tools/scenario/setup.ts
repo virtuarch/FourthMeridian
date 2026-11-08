@@ -332,7 +332,9 @@ function liabilityLinesOf(
     const apr = typeof r.apr === 'number' ? r.apr : null;
     const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
     liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
-      subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
+      // Owner 2026-11-08 — the fine-grained debt type (AccountSummaryItem never
+      // carried debtSubtype, so this was always null before).
+      subtype: r.debtType ?? null,
       termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
         minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
   }

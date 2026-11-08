@@ -135,6 +135,28 @@ async function main() {
     const line = logs.find((l) => l.startsWith("[platform-ai] turn "));
     t.check("the route logs ONE metadata line per answered turn — no question or answer text",
       logs.filter((l) => l.startsWith("[platform-ai] turn ")).length === 2 && !!line && line.includes("get_metric:MEASURED(incident-broken-now@1)+drill") && line.includes("claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED") && !/broken right now|See \[|incidents are broken/.test(logs.join("\n")), logs);
+
+    t.section("4. multi-area (owner 2026-11-08): the ask route composes every held area; an extra area refused at its fresh guard is skipped, unrecorded");
+    fake.seed("PlatformGrant", { userId: op, area: "CUSTOMER_SUCCESS", level: "READ", status: "ACTIVE" });
+    fake.seed("Space", { name: "Customer Success", type: "PLATFORM", platformArea: "CUSTOMER_SUCCESS" });
+    const csRead = await ask([{ calls: [{ name: "get_metric", args: { id: "cs-needs-help@1" } }] }, { content: "ok" }]);
+    const csEnv = JSON.parse(String((sent[1]?.messages ?? []).filter((m) => m.role === "tool")[0]?.content ?? "{}")) as { metric?: string; surface?: string; area?: string };
+    t.check("an operator holding Ops + CS: a CS-only metric is read on the CS surface through the ask route (composed binding)",
+      csRead.status === 200 && csEnv.metric === "cs-needs-help@1" && csEnv.surface === "CUSTOMER_SUCCESS" && csEnv.area === "Customer Success", csEnv);
+    // The CS grant is revoked between the directory read and its fresh guard (the race the probe exists for).
+    fake.on("PlatformGrant", "findUnique", (args) => {
+      const w = (args as { where?: { userId_area?: { area?: string } } }).where?.userId_area;
+      return w?.area === "CUSTOMER_SUCCESS" ? { area: "CUSTOMER_SUCCESS", level: "READ", status: "REVOKED", user: { totpEnabled: true } } : undefined;
+    });
+    const auditBefore = fake.callsTo("AuditLog").length;
+    const revoked = await ask([{ calls: [{ name: "get_metric", args: { id: "cs-needs-help@1" } }] }, { content: "ok" }]);
+    const revokedTool = String((sent[1]?.messages ?? []).filter((m) => m.role === "tool")[0]?.content ?? "");
+    t.check("…a revoked extra area is skipped: its metric is NOT_FOUND, the turn still answers from Ops", revoked.status === 200 && revokedTool === JSON.stringify({ found: false }), revokedTool);
+    await new Promise((r) => setTimeout(r, 20));
+    t.check("…and the skipped area's refusal writes NO access-denied AuditLog row (probe)", fake.callsTo("AuditLog").length === auditBefore, fake.callsTo("AuditLog").slice(auditBefore));
+    fake.clearHooks();
+    fake.on("SyncIssueOccurrence", "groupBy", () => []);
+    fake.on("RefreshExecution", "groupBy", () => []);
   } finally {
     console.info = info;
   }

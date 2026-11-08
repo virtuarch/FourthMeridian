@@ -186,6 +186,12 @@ export const TILE_HOMES: Readonly<Record<string, readonly ComponentHome[] | { no
   "components/platform/leads/customer-success-model.ts": [{ lead: "customer-success" }],
   "components/platform/widgets/security-posture-view.ts": [{ section: "sec_auth_posture" }],
   "components/platform/widgets/OpsUsersWidget.tsx": [{ section: "growth_users" }],
+  // Platform AI operational briefing (2026-11-08): the Platform Ops tiles the new operations metrics read.
+  "components/platform/leads/operations-model.ts": [{ lead: "operations" }],
+  "components/platform/widgets/overview/attention-view.ts": [{ lead: "operations" }],
+  "components/platform/widgets/platform-health-view.ts": [{ section: "ops_platform_health" }],
+  "components/platform/widgets/connection-health-view.ts": [{ section: "ops_connection_health" }],
+  "components/platform/widgets/OpsProviderHealthWidget.tsx": [{ section: "ops_provider_health" }],
   "lib/platform/customer/customer-core.ts": { none: "A server reader (the per-customer detail fold), not a rendered tile: its figure reaches the UI through CsCustomersWidget, which is homed." },
 };
 

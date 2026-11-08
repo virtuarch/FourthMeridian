@@ -25,6 +25,12 @@ import { getCsOverview } from "@/lib/platform/customer/overview";
 import { countAccountsWithLiveSession, countLiveSessions } from "@/lib/platform/security/live-sessions";
 import { getEconomicsSnapshot } from "@/lib/platform/economics/snapshot";
 import { getAiOperations } from "@/lib/platform/ai/invocations";
+import { getOperationsOverview } from "@/lib/platform/ops/overview";
+import { getAttention } from "@/lib/platform/ops/attention";
+import { loadRecentAlertRuns } from "@/lib/alerts/run";
+import { getConnectionHealth } from "@/lib/connections/health";
+import { checkScheduledJobHealth } from "@/lib/jobs/health";
+import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
 import { systemDb } from "@/lib/db";
 import {
   retrieveWith,
@@ -49,6 +55,14 @@ const READERS: RetrievalReaders = {
   economicsSnapshot: (nowMs) => getEconomicsSnapshot(nowMs),
   // The ai-invocations route with ?window=7d|30d and no other filter — exactly what the AI & Costs tile fetches.
   aiOperations: (window) => getAiOperations({ window }),
+  // Platform AI operational briefing (2026-11-08): each exactly the call its Platform Ops route makes.
+  operationsOverview: () => getOperationsOverview(),
+  // The attention route passes atOpsTier(incidentAudienceFor(auth)); retrieval hands the same OPS-tier token (incidentScoped "ANY").
+  attention: (token) => getAttention(token),
+  alertRuns: () => loadRecentAlertRuns(),
+  connectionHealth: () => getConnectionHealth(),
+  jobHealth: () => checkScheduledJobHealth(),
+  resourceFreshness: () => checkResourceFreshness(),
 };
 
 /**

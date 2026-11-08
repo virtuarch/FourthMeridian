@@ -73,7 +73,7 @@ export type DebtPayoffAccount = {
   currency:        string;
   interestRate?:   number;  // APR, e.g. 19.99 — undefined = UNKNOWN (never 0)
   // Mortgage F3 — kind evidence for the rate LABEL (lib/debt/rate-label.ts):
-  // "Mortgage rate" / "Loan rate" / "APR". Optional; absent ⇒ the untyped rule.
+  // "Mortgage rate" / "Interest rate" / "APR". Optional; absent ⇒ the untyped rule.
   debtSubtype?:     string | null;
   providerSubtype?: string | null;
   creditLimit?:     number | null;

@@ -54,6 +54,8 @@ export function gateFor(gate: WealthChangeGate | null | undefined, metric: Wealt
 const DRIVER_SERIES: Record<WealthComponentId, WealthMetricKey> = {
   cash:        "cash",
   liabilities: "totalLiabilities",
+  liquidDebt:  "liquidNetWorth", // Mortgage F1 — a Liquid-NW-only component
+  liquidDefinitionChange: "liquidNetWorth", // Mortgage F1 (S2 B1) — delta-only
   investments: "invested",
   crypto:      "invested",
   real:        "invested",

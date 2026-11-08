@@ -35,6 +35,10 @@ import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/ha
  * every accessor call takes a STRING-LITERAL surface per case; tokens minted here
  * from `auth`, never taken from the request or the row).
  */
+// TODO(B1(a) provenance areasRead before multi-area conversations): conversations stay SINGLE-AREA
+// (S2 #483 B1 option (b), interim). Only the stateless v0 ask route composes every held area
+// (composePlatformAiBindings). A stored turn must first record which areas it read (areasRead
+// provenance) before a conversation may bind more than its own area.
 export async function conversationAreaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null> {
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err || !auth.grant || auth.grant.area !== area || auth.user.id !== operatorId) return null;

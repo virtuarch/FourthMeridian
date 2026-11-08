@@ -77,6 +77,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { rateLabel } from '@/lib/debt/rate-label';
+import { debtType, DEBT_TYPE_LABEL } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -90,7 +91,9 @@ import type {
   AccountHealthSummary,
   KnowledgeGap,
   TrackedAccountLite,
+  AiLiquidNetWorth,
 } from '@/lib/ai/types';
+import { aiLiquidNetWorth } from '@/lib/debt/liquid-net-worth';
 import type { SpaceContext } from '@/lib/space';
 import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 import { aiTotalsCoverage, excludedAccountCounts, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
@@ -428,6 +431,10 @@ async function assembleAccounts(
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
     providerSubtype: l.financialAccount.providerSubtype,
+    // Mortgage F1 — liability-kind evidence (liabilityKind) so installment
+    // loans are split out of LIQUID net worth.
+    debtSubtype: l.financialAccount.debtSubtype,
+    creditLimit: l.financialAccount.creditLimit,
     ...(unvaluedIds.has(l.financialAccount.id) ? { valuationUnknown: true } : {}),
   }));
 
@@ -553,6 +560,7 @@ async function assembleAccounts(
         // providerSubtype "mortgage") is a "Mortgage rate", never an "APR".
         label:       rateLabel(fa),
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
 
@@ -563,6 +571,7 @@ async function assembleAccounts(
         field:       'minimumPayment',
         label:       'Minimum Payment',
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
   }
@@ -669,9 +678,15 @@ async function assembleAccounts(
 
           base.apr                  = effectiveApr;
           // Mortgage F3 — what `apr` IS for this account: "Mortgage rate" /
-          // "Loan rate" / "APR" (revolving credit only) / "Interest rate"
+          // "Interest rate" (other loans) / "APR" (revolving credit only) / "Interest rate"
           // (untyped). The model must use this name, never "APR" by default.
           base.rateLabel            = rateLabel(fa);
+          // Owner 2026-11-08 — the ONE fine-grained debt type + its name, so the
+          // model calls an auto loan an "Auto loan", never a mortgage, and keeps
+          // mortgage-only reasoning (equity, escrow) to debtType "mortgage".
+          const dt                  = debtType(fa);
+          base.debtType             = dt;
+          base.debtTypeLabel        = DEBT_TYPE_LABEL[dt];
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;
@@ -900,6 +915,9 @@ async function assembleAccounts(
       return c ? { totalsCoverage: c } : {};
     })(),
 
+    // Mortgage F1 (owner 2026-11-08) — the definition + what was excluded, so
+    // the model explains liquid vs total net worth and never calls it debt-free.
+    liquidNetWorth: aiLiquidNetWorth(classifiableAll, classification) satisfies AiLiquidNetWorth,
     counts: {
       liquid:        classification.liquid.length,
       investments:   classification.investments.length,
