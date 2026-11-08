@@ -34,7 +34,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 const text = (html: string) =>
   html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 const acct = (id: string, name: string, balance: number, over: Partial<DebtPerspectiveAccount> = {}): DebtPerspectiveAccount => ({
-  id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over,
+  id, name, type: "debt", institution: "Bank", balance, currency: "USD", visibilityLevel: "FULL", ...over,
 });
 const MORTGAGE = acct("mtg", "Home Loan", 300_000, { providerSubtype: "mortgage" });
 const MORTGAGE_RATED = acct("mtg", "Home Loan", 300_000, { providerSubtype: "mortgage", interestRate: 6.5 });

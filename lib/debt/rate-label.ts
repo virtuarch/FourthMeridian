@@ -28,7 +28,7 @@
  * Pure: no DB, no server-only imports (client components import it).
  */
 
-import { debtType, kindOfDebtType, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { debtType, kindOfDebtType, type DebtLabelAccess, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 export type RateLabel = "Mortgage rate" | "APR" | "Interest rate";
 
@@ -47,9 +47,25 @@ export function rateLabel(a: LiabilityKindInput): RateLabel {
   }
 }
 
+/**
+ * S2 PRIVACY P1 — the rate label a VIEWER sees. "Mortgage rate" names the debt
+ * type, so a COARSE viewer (balance-only co-member) reads the kind-level label
+ * "Interest rate" instead; FINE is `rateLabel` unchanged.
+ */
+export function viewerRateLabel(a: LiabilityKindInput, access: DebtLabelAccess): RateLabel {
+  const l = rateLabel(a);
+  return access === "COARSE" && l === "Mortgage rate" ? "Interest rate" : l;
+}
+
 /** The same label in running text ("Mortgage rate unknown", "no mortgage rate on file"). */
 export function rateLabelInline(a: LiabilityKindInput): string {
   const l = rateLabel(a);
+  return l === "APR" ? "APR" : l.toLowerCase();
+}
+
+/** `viewerRateLabel` in running text ("interest rate unknown"). */
+export function viewerRateLabelInline(a: LiabilityKindInput, access: DebtLabelAccess): string {
+  const l = viewerRateLabel(a, access);
   return l === "APR" ? "APR" : l.toLowerCase();
 }
 

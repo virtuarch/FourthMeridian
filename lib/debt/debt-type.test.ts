@@ -232,7 +232,7 @@ console.log("\n6. Surfaces carry the ONE type");
   const root = process.cwd();
   const asm = readFileSync(join(root, "lib/ai/assemblers/accounts.ts"), "utf8");
   check("AI accounts assembler emits debtType + debtTypeLabel on FULL debt rows and gaps",
-    /base\.debtType\s*=\s*dt/.test(asm) && /base\.debtTypeLabel\s*=\s*DEBT_TYPE_LABEL\[dt\]/.test(asm) && (asm.match(/debtType:\s+debtType\(fa\)/g) ?? []).length === 2);
+    /base\.debtType\s*=\s*viewerDebtType\(fa, access\)/.test(asm) && /base\.debtTypeLabel\s*=\s*viewerDebtLabel\(fa, access\)/.test(asm) && (asm.match(/debtType:\s+debtType\(fa\)/g) ?? []).length === 2);
   const snap = readFileSync(join(root, "lib/ai/conversation/tools/snapshot.ts"), "utf8");
   check("snapshot tool passes debtType + debtTypeLabel to the model", /debtType: a2\.debtType, debtTypeLabel: a2\.debtTypeLabel/.test(snap));
   // The ledger's display label agrees with debtTypeLabel wherever both name a specific type.
@@ -245,7 +245,7 @@ console.log("\n6. Surfaces carry the ONE type");
     [{ providerSubtype: "auto" }, "auto_loan"], [{ providerSubtype: "student" }, "student_loan"], [{ providerSubtype: "consumer" }, "personal_installment"],
   ];
   for (const [c, t] of agree) {
-    const a = { id: "x", name: "x", type: "debt", institution: "B", balance: 1, currency: "USD", ...c } as DebtPerspectiveAccount;
+    const a = { id: "x", name: "x", type: "debt", institution: "B", balance: 1, currency: "USD", visibilityLevel: "FULL", ...c } as DebtPerspectiveAccount;
     check(`ledger label = DEBT_TYPE_LABEL for ${JSON.stringify(c)}`,
       debtType(a) === t && presentationDebtLabel(a) === DEBT_TYPE_LABEL[t as DebtType], [debtType(a), presentationDebtLabel(a)]);
   }

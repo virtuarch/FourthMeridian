@@ -23,7 +23,7 @@
  * graded against live balances.
  */
 
-import { composeInvestments, ComponentState } from '@/lib/ai/economic-concepts';
+import { composeExcludedTotals, composeInvestments, ComponentState } from '@/lib/ai/economic-concepts';
 import { canonicalWindowChange, observedChange, type SeriesPoint } from '@/lib/data/snapshot-window';
 import { resolveSpaceFreshness } from '@/lib/freshness/space-freshness';
 import { staleSourcesForBrief, type SpaceDataHealth } from '@/lib/connections/space-data-health.core';
@@ -440,6 +440,15 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     unvaluedPositions: retrospective ? 0 : i.holdings?.valuationCompleteness.unvaluedCount ?? 0,
     totalsEstimated: acc?.totalsEstimated ?? false,
     totalsUnconverted: acc?.totalsUnconverted ?? false,
+    // Mortgage F8b — PARTIAL with direction at each total an exclusion moves
+    // (today only: the exclusion is a fact about today's accounts). OMITTED
+    // when nothing was excluded, so a complete Space's package is unchanged.
+    ...((): { partialTotals?: BriefPackage['dataQuality']['partialTotals'] } => {
+      const x = retrospective ? null : composeExcludedTotals(acc);
+      return x && x.totals.length > 0
+        ? { partialTotals: x.totals.map((t) => ({ total: t.total, directions: t.coverage.directions, note: t.text })) }
+        : {};
+    })(),
   };
 
   return {
