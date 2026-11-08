@@ -42,13 +42,15 @@
 
 import type { PlaidWebhookEventInput } from "@/lib/plaid/webhook-event";
 import { webhookBodySha256 } from "@/lib/plaid/webhook-dedupe";
+import { NEEDS_REAUTH_CODES } from "@/lib/plaid/reauth-codes";
 
 /**
  * FIN-007 — ITEM webhooks that mean the Item can no longer sync. Mapped to the
  * EXISTING health transitions (lib/connections/health-transitions.ts, which
  * refuses to resurrect a REVOKED Item) so the cron and the resume backstop —
  * both `status: ACTIVE` only — stop selecting a dead Item.
- *   ITEM/ERROR with ITEM_LOGIN_REQUIRED | INVALID_ACCESS_TOKEN → NEEDS_REAUTH
+ *   ITEM/ERROR with a NEEDS_REAUTH code (lib/plaid/reauth-codes.ts: ITEM_LOGIN_REQUIRED |
+ *     ACCESS_NOT_GRANTED | INVALID_ACCESS_TOKEN)              → NEEDS_REAUTH
  *   ITEM/LOGIN_REPAIRED is NOT mapped back (reactivation is the reconnect flow's)
  *   ITEM/USER_PERMISSION_REVOKED | ITEM/USER_ACCOUNT_REVOKED   → REVOKED
  * Deliberately NOT mapped:
@@ -57,7 +59,10 @@ import { webhookBodySha256 } from "@/lib/plaid/webhook-dedupe";
  *   ITEM/PENDING_EXPIRATION / PENDING_DISCONNECT — the Item still syncs until the
  *     date; marking it now would stop up to 7 days of good data. Recorded only.
  */
-export const WEBHOOK_REAUTH_ERROR_CODES: ReadonlySet<string> = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN"]);
+// The same NEEDS_REAUTH set errors.ts classifies sync failures with — one list
+// (lib/plaid/reauth-codes.ts), so a webhook and a failing sync of the same Item
+// can never disagree about its state.
+export const WEBHOOK_REAUTH_ERROR_CODES: ReadonlySet<string> = NEEDS_REAUTH_CODES;
 export const WEBHOOK_REVOKED_CODES: ReadonlySet<string> = new Set(["USER_PERMISSION_REVOKED", "USER_ACCOUNT_REVOKED"]);
 
 export type WebhookHealthTransition = { status: "NEEDS_REAUTH" | "REVOKED"; errorCode: string };

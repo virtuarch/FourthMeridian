@@ -34,6 +34,7 @@
  */
 
 import { db } from "@/lib/db";
+import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
 import { PlaidItemStatus, ConnectionStatus, type Prisma } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 
@@ -73,6 +74,12 @@ export async function setPlaidItemHealth(
      * not be able to resurrect one.
      */
     allowReactivation?: boolean;
+    /**
+     * Item-level incident seam (tests). Production omits it: the default records
+     * through the SyncIssue facade, but ONLY when `client` is a real root client
+     * (`db` / `systemDb`), so an injected test client can never write a real row.
+     */
+    recordItemIncident?: (input: SyncIssueInput) => Promise<void>;
   } = {},
 ): Promise<void> {
   const prior = await client.plaidItem.findUnique({
@@ -110,6 +117,17 @@ export async function setPlaidItemHealth(
   const changed = prior.status !== health.status || errorCodeChanged;
   if (!changed) return;
 
+  // Item-level incident: ONE lifecycle condition per item, opened when the item
+  // ENTERS a coded broken state (only on a real change, so a re-affirmed failure
+  // opens nothing new) and closed by the first completed transactions sync
+  // (resolveCursorBlockingIssues → the plaid-item-error classification).
+  // Requires an explicit code from the caller — an operator's code-less
+  // "request reauth" is not a provider error.
+  if ((health.status === PlaidItemStatus.NEEDS_REAUTH || health.status === PlaidItemStatus.ERROR)
+      && typeof health.errorCode === "string" && health.errorCode !== "") {
+    await recordItemErrorIncident(itemId, prior.status, health.status, health.errorCode, client, opts.recordItemIncident);
+  }
+
   try {
     await client.auditLog.create({
       data: {
@@ -126,6 +144,52 @@ export async function setPlaidItemHealth(
     });
   } catch (e) {
     console.warn(`[health-transitions] PlaidItem transition audit failed for ${itemId} (non-fatal):`, e);
+  }
+}
+
+/**
+ * The item-level incident for a Plaid Item that entered NEEDS_REAUTH / ERROR.
+ *
+ * EXISTING kind only (UPSERT_ERROR — no new SyncIssueKind: a new enum value
+ * breaks the staged B9 rollback kit). Its meaning comes from the registered
+ * operation `plaid-item-error` (lib/platform/incidents/operation-key.ts), which
+ * the semantics authority classifies as a transactions-domain CONDITION,
+ * severity error, NOT customer-actionable (the member already sees the
+ * Connections card and its Reconnect), cursor-blocking — the item's sync is
+ * halted, so the first completed sync is the proof that resolves it.
+ *
+ * Identity: v1::PLAID::<item>::transactions::plaid-item-error — one episode per
+ * item; the code travels in `detail` (codes only — no message, no institution).
+ * Lifecycle writes are entirely the authority's (recordIncidentObservation):
+ * this never touches lifecycleState / resolved. Never throws.
+ */
+async function recordItemErrorIncident(
+  itemId: string,
+  from: PlaidItemStatus,
+  to: PlaidItemStatus,
+  errorCode: string,
+  client: unknown,
+  seam?: (input: SyncIssueInput) => Promise<void>,
+): Promise<void> {
+  try {
+    let record = seam ?? null;
+    if (!record) {
+      const issues = await import("@/lib/plaid/syncIssues");
+      // The global client, or the SYSTEM client (the webhook path) — asked of
+      // the facade, which owns that authority (audit-db-authority).
+      if (client === db || issues.isSystemIncidentClient(client)) record = (input) => issues.recordSyncIssue(input);
+    }
+    if (!record) return;
+    await record({
+      kind:        "UPSERT_ERROR",
+      provider:    "PLAID",
+      plaidItemId: itemId,
+      // cursorBlocking is also stamped so a CODE ROLLBACK (whose classifier has
+      // no plaid-item-error arm) still auto-resolves the row on the next sync.
+      detail:      { stage: "plaid-item-error", cursorBlocking: true, errorCode, from, to },
+    });
+  } catch (e) {
+    console.warn(`[health-transitions] item incident record failed for ${itemId} (non-fatal):`, e instanceof Error ? e.name : "error");
   }
 }
 
