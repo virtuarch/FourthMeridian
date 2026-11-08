@@ -25,11 +25,11 @@ import {
   computeSnapshotFields, computeLiquidSplit, isReconstructableCard, isHeldFlatBalanceAccount,
   computeAccountFloors, reconstructDailyLiabilityBalances, addDaysUTC, isoDate,
 } from "@/lib/snapshots/backfill-core";
-import { classifyFlow } from "@/lib/transactions/flow-classifier";
+import { classifyFlow, isInstallmentServicerPaymentLeg } from "@/lib/transactions/flow-classifier";
 import { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { computeDebtService, netAfterDebtPaydown } from "@/lib/transactions/debt-service";
 import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
-import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { tierResolver, classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { LIABILITY_PAYMENT_DETAILS } from "@/lib/transactions/transfer-debt-payment-correction";
 import { computeDebtAggregate } from "@/lib/debt/aggregates";
@@ -57,11 +57,18 @@ const CHECKING = { id: "chk", type: "checking", balance: 10_000, currency: "USD"
 const MORTGAGE = { id: "mtg", type: "debt", balance: 300_000, currency: "USD", providerSubtype: "mortgage" };
 const CARD     = { id: "card", type: "debt", balance: 5_000, currency: "USD", providerSubtype: "credit card" };
 
-/** A Plaid mortgage-payment row as the import path would classify it. */
-function plaidFlow(accountType: string, amount: number, detailed = "LOAN_PAYMENTS_MORTGAGE_PAYMENT") {
-  const pfc = { primary: "LOAN_PAYMENTS", detailed, confidence_level: "HIGH" };
+/** A Plaid mortgage-payment row as the import path would classify it.
+ *  `providerSubtype` (Mortgage F5) is the account's Plaid subtype — the sync path
+ *  now hands it to the classifier as liability-kind evidence. */
+function plaidFlow(accountType: string, amount: number, detailed = "LOAN_PAYMENTS_MORTGAGE_PAYMENT", providerSubtype: string | null = null, primary = "LOAN_PAYMENTS") {
+  const pfc = { primary, detailed, confidence_level: "HIGH" };
   const category = mapPlaidCategory({ personal_finance_category: pfc, category: null, merchant_name: "Mortgage Servicer", name: "MORTGAGE PMT" } as never);
-  return { category, ...classifyFlow({ category, amount, accountType, debtSubtype: null, pfcPrimary: pfc.primary, pfcDetailed: pfc.detailed }) };
+  return { category, ...classifyFlow({ category, amount, accountType, debtSubtype: null, providerSubtype, pfcPrimary: pfc.primary, pfcDetailed: pfc.detailed }) };
+}
+
+/** Σ|amount| of rows the liquidity authority files as CASH_OUT (household Cash Out). */
+function cashOut(rows: readonly LiquidityTx[], ctx: LiquidityContext): number {
+  return rows.reduce((t, r) => t + (classifyLiquidity(r, ctx).effect === "CASH_OUT" ? Math.abs(r.amount) : 0), 0);
 }
 
 let seq = 0;
@@ -275,10 +282,13 @@ console.log(`H5. Mortgage carrying a creditLimit (balances.limit from Plaid) —
 console.log(`H6. Sign of the payment row on the mortgage account itself — ${LABEL}`);
 {
   const ctx = tierResolver([{ id: "chk", type: "checking" }, { id: "mtg", type: "debt" }]);
-  const debitRow  = plaidFlow("debt", -2_500); // servicer posts payment received as a DEBIT
-  const creditRow = plaidFlow("debt", 2_500);  // conventional: payment reduces owed
-  check("H6 mortgage-account −2,500 LOAN_PAYMENTS ⇒ SPENDING (CCPAY-2B liability-outflow veto)",
-    debitRow.flowType === "SPENDING" && debitRow.reason === "ACCOUNT_TYPE_CONTEXT", debitRow);
+  const debitRow  = plaidFlow("debt", -2_500, undefined, "mortgage"); // servicer posts payment received as a DEBIT
+  const creditRow = plaidFlow("debt", 2_500, undefined, "mortgage");  // conventional: payment reduces owed
+  // FIXED by F5 — desired behaviour: on an INSTALLMENT loan a payment-shaped
+  // debit is the servicer's sign-inverted RECEIVING leg, not a purchase. (Was:
+  // SPENDING via the CCPAY-2B liability-outflow veto.)
+  check("H6 mortgage-account −2,500 LOAN_PAYMENTS ⇒ DEBT_PAYMENT / INFLOW (receiving leg) — FIXED by F5",
+    debitRow.flowType === "DEBT_PAYMENT" && debitRow.flowDirection === "INFLOW" && debitRow.reason === "ACCOUNT_TYPE_CONTEXT", debitRow);
   check("H6 contrast: mortgage-account +2,500 ⇒ DEBT_PAYMENT / INFLOW", creditRow.flowType === "DEBT_PAYMENT", creditRow);
 
   const inverted = [
@@ -287,13 +297,12 @@ console.log(`H6. Sign of the payment row on the mortgage account itself — ${LA
   ];
   const s = computeDebtService(inverted, ctx, abs);
   const econ = economicTotals(inverted as never);
-  // SUSPECTED DEFECT: with a sign-inverted servicer row the same payment is a
-  // DEBT_PAYMENT cash leg AND a 2,500 "purchase" on the mortgage: spending +2,500
-  // and netPaydown 0. Expected: detect the pair (same amount/date, counterparty
-  // mortgage) and treat the liability row as the payment's receiving leg.
-  check("H6 inverted pair: economic spending = 2,500 (payment counted as a charge)", econ.spend === 2_500, econ);
-  check("H6 inverted pair: payments 2,500, newChargesOnLiabilities 2,500, netPaydown 0",
-    s.payments === 2_500 && s.newChargesOnLiabilities === 2_500 && s.netPaydown === 0, s);
+  // FIXED by F5 — desired behaviour: the payment is counted exactly once on each
+  // axis. (Was: spending 2,500, newChargesOnLiabilities 2,500, netPaydown 0.)
+  check("H6 inverted pair: economic spending = 0 (no part of the payment is a charge) — FIXED by F5", econ.spend === 0, econ);
+  check("H6 inverted pair: payments 2,500, newChargesOnLiabilities 0, netPaydown 2,500 — FIXED by F5",
+    s.payments === 2_500 && s.newChargesOnLiabilities === 0 && s.netPaydown === 2_500, s);
+  check("H6 inverted pair: Cash Out = 2,500 — the checking leg only, once — FIXED by F5", cashOut(inverted, ctx) === 2_500, cashOut(inverted, ctx));
   const ok = [
     tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT", cp: "mtg" }),
     tx({ own: "mtg", amount: 2_500, flowType: creditRow.flowType, cp: "chk" }),
@@ -301,6 +310,83 @@ console.log(`H6. Sign of the payment row on the mortgage account itself — ${LA
   const econOk = economicTotals(ok as never);
   check("H6 contrast: conventional pair ⇒ spending 0, netPaydown 2,500",
     econOk.spend === 0 && computeDebtService(ok, ctx, abs).netPaydown === 2_500, econOk);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F5. Installment-loan servicer leg (S2 ruling) — desired behaviour");
+{
+  const ctx = tierResolver([{ id: "chk", type: "checking" }, { id: "mtg", type: "debt" }, { id: "card", type: "debt" }]);
+  const sum = (rows: LiquidityTx[]) => ({ econ: economicTotals(rows as never), s: computeDebtService(rows, ctx, abs), out: cashOut(rows, ctx) });
+
+  // (1) Inverted debit on the mortgage PAIRED with the checking outflow ⇒ once.
+  const inv = plaidFlow("debt", -2_500, undefined, "mortgage");
+  const chkLeg = plaidFlow("checking", -2_500);
+  const paired = [
+    tx({ own: "chk", amount: 8_000, flowType: "INCOME" }),
+    tx({ own: "chk", amount: -2_500, flowType: chkLeg.flowType, cp: "mtg" }),
+    tx({ own: "mtg", amount: -2_500, flowType: inv.flowType, cp: "chk" }),
+  ];
+  const p = sum(paired);
+  check("F5.1 paired inverted posting: Cash Out 2,500 · payments 2,500 · netPaydown 2,500 · spending 0 · net 8,000",
+    p.out === 2_500 && p.s.payments === 2_500 && p.s.netPaydown === 2_500 && p.s.newChargesOnLiabilities === 0
+      && p.econ.spend === 0 && p.econ.net === 8_000, p);
+  check("F5.1 the loan-side row is the excluded liability leg, not a counted cash leg",
+    selectDebtPaymentCashLegs(paired, ctx).counted.length === 1 && selectDebtPaymentCashLegs(paired, ctx).excludedLiabilityLegs.length === 1);
+  // The same answer whether the kind comes from Plaid's subtype or FM's debtSubtype.
+  const viaDebtSubtype = classifyFlow({ category: "Payment", amount: -2_500, accountType: "debt", debtSubtype: "mortgage", pfcPrimary: null, pfcDetailed: null });
+  check("F5.1 Payment-category inverted posting on debtSubtype 'mortgage' ⇒ DEBT_PAYMENT / INFLOW",
+    viaDebtSubtype.flowType === "DEBT_PAYMENT" && viaDebtSubtype.flowDirection === "INFLOW", viaDebtSubtype);
+  for (const sub of ["auto", "student", "loan", "home equity"]) {
+    const r = plaidFlow("debt", -400, "LOAN_PAYMENTS_OTHER_PAYMENT", sub);
+    check(`F5.1 installment subtype '${sub}' (no limit) inverted LOAN_PAYMENTS ⇒ DEBT_PAYMENT`, r.flowType === "DEBT_PAYMENT", r);
+  }
+
+  // (2) Normal-sign posting unchanged.
+  const normal = plaidFlow("debt", 2_500, undefined, "mortgage");
+  check("F5.2 normal-sign +2,500 on the mortgage ⇒ DEBT_PAYMENT / INFLOW at 0.8 PLAID_PFC_PRIMARY (unchanged)",
+    normal.flowType === "DEBT_PAYMENT" && normal.flowDirection === "INFLOW" && normal.confidence === 0.8 && normal.reason === "PLAID_PFC_PRIMARY", normal);
+  check("F5.2 the predicate is outflow-only", !isInstallmentServicerPaymentLeg({ category: "Payment", amount: 2_500, accountType: "debt", providerSubtype: "mortgage" }));
+
+  // (3) A genuine fee / interest / other charge on the loan stays a cost.
+  const fee = plaidFlow("debt", -35, "BANK_FEES_LATE_PAYMENT", "mortgage", "BANK_FEES");
+  check("F5.3 late fee −35 on the mortgage (BANK_FEES) ⇒ FEE / OUTFLOW (unchanged)", fee.flowType === "FEE" && fee.flowDirection === "OUTFLOW", fee);
+  const feeCat = classifyFlow({ category: "Fee", amount: -35, accountType: "debt", debtSubtype: "mortgage" });
+  check("F5.3 `Fee` category −35 on the mortgage ⇒ FEE (unchanged)", feeCat.flowType === "FEE", feeCat);
+  const interest = plaidFlow("debt", -1_200, "LOAN_PAYMENTS_INTEREST", "mortgage");
+  check("F5.3 interest-detailed row on the mortgage ⇒ INTEREST (unchanged)", interest.flowType === "INTEREST", interest);
+  const otherCharge = classifyFlow({ category: "Other", amount: -90, accountType: "debt", providerSubtype: "mortgage" });
+  check("F5.3 a payment-less `Other` −90 on the mortgage ⇒ SPENDING (no payment semantics ⇒ unchanged)", otherCharge.flowType === "SPENDING", otherCharge);
+  const withFee = sum([...paired, tx({ own: "mtg", amount: -35, flowType: fee.flowType })]);
+  check("F5.3 pair + 35 fee: spending 35 (the fee only), newCharges 35, netPaydown 2,465, Cash Out 2,500",
+    withFee.econ.spend === 35 && withFee.s.newChargesOnLiabilities === 35 && withFee.s.netPaydown === 2_465 && withFee.out === 2_500, withFee);
+
+  // (4) Revolving lines unaffected — the CCPAY-2B veto holds byte-for-byte.
+  const cardInv = plaidFlow("debt", -506.98, "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", "credit card");
+  check("F5.4 credit-card −506.98 LOAN_PAYMENTS ⇒ SPENDING / OUTFLOW 0.7 ACCOUNT_TYPE_CONTEXT (CCPAY-2B unchanged)",
+    cardInv.flowType === "SPENDING" && cardInv.flowDirection === "OUTFLOW" && cardInv.confidence === 0.7 && cardInv.reason === "ACCOUNT_TYPE_CONTEXT", cardInv);
+  for (const [label, input] of [
+    ["debtSubtype credit_card", { debtSubtype: "credit_card" }],
+    ["Plaid 'line of credit'", { providerSubtype: "line of credit" }],
+    ["Plaid 'home equity' WITH a limit (HELOC)", { providerSubtype: "home equity", creditLimit: 50_000 }],
+    ["unknown kind (no subtype at all)", {}],
+  ] as const) {
+    const r = classifyFlow({ category: "Payment", amount: -400, accountType: "debt", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_OTHER_PAYMENT", ...input });
+    check(`F5.4 ${label}: inverted LOAN_PAYMENTS ⇒ SPENDING (veto unchanged)`, r.flowType === "SPENDING", r);
+  }
+  const cardRows = [
+    tx({ own: "chk", amount: -506.98, flowType: "DEBT_PAYMENT", cp: "card" }),
+    tx({ own: "card", amount: -506.98, flowType: cardInv.flowType }),
+  ];
+  check("F5.4 card: the vetoed row stays a charge (spending 506.98)", sum(cardRows).econ.spend === 506.98, sum(cardRows).econ);
+
+  // (5) Unpaired inverted debit on the loan (checking not connected) ⇒ receiving leg.
+  const ctxLoanOnly = tierResolver([{ id: "mtg", type: "debt" }]);
+  const unpaired = [tx({ own: "mtg", amount: -2_500, flowType: inv.flowType })];
+  const su = computeDebtService(unpaired, ctxLoanOnly, abs);
+  const eu = economicTotals(unpaired as never);
+  check("F5.5 unpaired inverted debit ⇒ DEBT_PAYMENT receiving leg: spending 0, newCharges 0, Cash Out 0, not a counted cash leg",
+    inv.flowType === "DEBT_PAYMENT" && eu.spend === 0 && su.newChargesOnLiabilities === 0 && su.payments === 0
+      && cashOut(unpaired, ctxLoanOnly) === 0, { su, eu });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

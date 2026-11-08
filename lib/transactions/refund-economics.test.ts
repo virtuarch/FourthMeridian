@@ -354,7 +354,9 @@ console.log("19. conservation + invariants");
   const acc = { income: 0, spendGross: 0, refunds: 0 };
   foldEconomicRow(acc, { flowType: "REFUND", amount: 500 });
   check("the fold puts a refund in `refunds` and nowhere else", acc.refunds === 500 && acc.income === 0 && acc.spendGross === 0);
-  check("classifier version is bumped for the rule change", FLOW_CLASSIFIER_VERSION === 5);
+  // Re-pinned deliberately: Mortgage F5 bumped 5 → 6 (installment-loan servicer
+  // leg). REFUND-1's rule (v5) is still in force; this pins "bumped at least to 5".
+  check("classifier version is bumped for the rule change (REFUND-1 = 5; Mortgage F5 = 6)", FLOW_CLASSIFIER_VERSION === 6);
 }
 
 console.log("20. Transaction Analysis output (Cash Flow ▸ Spending by category) + row label");

@@ -42,6 +42,9 @@ import { isSpendLedgerFlow } from './flow-predicates';
 // negative-liability veto) lives in ONE authority. Also a zero-import pure
 // module, so this stays Prisma-free and tsx-runnable: no cycle.
 import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './liability-payment';
+// Mortgage F5 — the ONE installment-vs-revolving authority (Mortgage F2). Also a
+// zero-import pure module, so this stays Prisma-free and tsx-runnable: no cycle.
+import { isInstallmentLoan } from '../debt/liability-kind';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Enums (TypeScript-only in P1 — no Prisma enum is created this phase)
@@ -93,6 +96,20 @@ import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './lia
  *       (resolved ONE layer up, lib/transactions/merchant-credit.ts) ⇒ REFUND;
  *       anything else ⇒ the honest UNKNOWN valve. Never INCOME, and never a
  *       fabricated refund. Existing rows: scripts/repair-liability-income-credits.ts.
+ *   6 = Mortgage F5 (S2 ruling) — the INSTALLMENT-LOAN servicer leg. Some loan
+ *       servicers post the payment they RECEIVED as a debit on the loan account
+ *       itself (sign-inverted against FM's "+ = into the row's own account"). The
+ *       CCPAY-2B veto read that row as a purchase, so one mortgage payment counted
+ *       twice: the checking-side DEBT_PAYMENT cash leg AND a SPENDING charge on the
+ *       loan (spending +1 payment, netPaydown 0). An installment loan
+ *       (lib/debt/liability-kind.ts isInstallmentLoan) has no purchases, so a
+ *       payment-shaped outflow on it (PFC LOAN_PAYMENTS or the `Payment` category)
+ *       is the payment's RECEIVING LEG: DEBT_PAYMENT/INFLOW, never spending. Credit
+ *       cards and other revolving lines, and liabilities of UNKNOWN kind, keep the
+ *       CCPAY-2B veto unchanged; a fee / interest row on the loan is untouched.
+ *       Changes semantic OUTPUT only for installment-loan outflows carrying payment
+ *       semantics. No backfill/repair ships with it: existing rows converge only
+ *       through an owner-gated run of the version-selective backfill.
  *
  * ── OWNERSHIP, not merely staleness (CCPAY-2F) ──────────────────────────────
  * This number records WHICH AUTHORITY produced a row's persisted flow facts, and
@@ -110,7 +127,7 @@ import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './lia
  * unknown-inflow honesty signal and raised confidence on a circular derivation.
  * See docs/doctrine/financial-semantics.md (§ Liability payment classification).
  */
-export const FLOW_CLASSIFIER_VERSION = 5;
+export const FLOW_CLASSIFIER_VERSION = 6;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -178,6 +195,16 @@ export interface FlowClassificationInput {
   accountType?: string | null;
   /** FinancialAccount.debtSubtype where available (e.g. "credit_card"). */
   debtSubtype?: string | null;
+  /**
+   * Mortgage F5 — FinancialAccount.providerSubtype (Plaid `subtype`, e.g.
+   * "mortgage") where the caller has it. Read ONLY to ask the liability-kind
+   * authority whether the row's account is an installment loan; absent ⇒ the
+   * kind is decided from debtSubtype alone (often "unknown" for Plaid rows, which
+   * keeps the CCPAY-2B veto exactly as before).
+   */
+  providerSubtype?: string | null;
+  /** Mortgage F5 — FinancialAccount.creditLimit; discriminates Plaid "home equity" (HELOC vs loan) only. */
+  creditLimit?: number | null;
   /** Plaid personal_finance_category.primary — ONLY if already in memory. */
   pfcPrimary?:  string | null;
   /** Plaid personal_finance_category.detailed — ONLY if already in memory. */
@@ -301,6 +328,11 @@ function debtPaymentUnlessLiabilityOutflow(
   reason: FlowReason,
 ): FlowClassification {
   if (isLiabilityOutflow(input)) {
+    // Mortgage F5 — EXCEPT on an installment loan, where a payment-shaped outflow
+    // is the servicer's sign-inverted RECEIVING leg (see isInstallmentServicerPaymentLeg).
+    if (isInstallmentServicerPaymentLeg(input)) {
+      return { flowType: 'DEBT_PAYMENT', flowDirection: 'INFLOW', confidence: 0.8, reason: 'ACCOUNT_TYPE_CONTEXT' };
+    }
     return { flowType: 'SPENDING', flowDirection: 'OUTFLOW', confidence: 0.7, reason: 'ACCOUNT_TYPE_CONTEXT' };
   }
   return {
@@ -309,6 +341,39 @@ function debtPaymentUnlessLiabilityOutflow(
     confidence,
     reason,
   };
+}
+
+/**
+ * Mortgage F5 (S2 ruling) — TRUE when a liability OUTFLOW sits on an
+ * INSTALLMENT loan (mortgage, auto, student, personal, closed-end home equity —
+ * lib/debt/liability-kind.ts, the single authority). Called ONLY from
+ * debtPaymentUnlessLiabilityOutflow, i.e. only for rows that already carry
+ * PAYMENT SEMANTICS (PFC LOAN_PAYMENTS, or the `Payment` category); a fee
+ * (BANK_FEES / `Fee`), an interest row (…INTEREST… / `Interest`) or any other
+ * charge on the loan never reaches it and stays a cost.
+ *
+ * Why the CCPAY-2B veto does not apply here: its premise is that money leaving a
+ * liability RAISES what is owed — a purchase. An installment loan takes no
+ * purchases. A payment-shaped debit on one is the servicer recording the payment
+ * it received with the opposite sign convention, and it is the RECEIVING leg of
+ * the payment the checking-side cash leg already counts. Classified that way it
+ * is DEBT_PAYMENT/INFLOW, which the liquidity authority holds NEUTRAL on the
+ * liability tier — so cash-out counts the payment once (the checking leg),
+ * paydown once, and spending none of it. Paired or unpaired, the answer is the
+ * same: a payment-shaped posting on the loan is itself the evidence.
+ *
+ * Revolving lines (credit cards, lines of credit, HELOCs with a limit) and
+ * liabilities of UNKNOWN kind (no debtSubtype, no providerSubtype) are NOT
+ * installment, so the CCPAY-2B veto — the Amex-Travel / Qlub mislabel defence —
+ * holds for them byte-for-byte.
+ */
+export function isInstallmentServicerPaymentLeg(input: FlowClassificationInput): boolean {
+  return isLiabilityOutflow(input) && isInstallmentLoan({
+    type:            input.accountType ?? null,
+    debtSubtype:     input.debtSubtype ?? null,
+    providerSubtype: input.providerSubtype ?? null,
+    creditLimit:     input.creditLimit ?? null,
+  });
 }
 
 /**

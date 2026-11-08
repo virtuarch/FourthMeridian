@@ -183,7 +183,7 @@ async function main(): Promise<void> {
         pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
         // description/merchant deliberately not selected — the classifier is
         // descriptor-blind and this script prints no PII.
-        financialAccount: { select: { type: true, debtSubtype: true, walletAddress: true } },
+        financialAccount: { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true, walletAddress: true } },
       },
     });
     if (rows.length === 0) break;
@@ -208,6 +208,9 @@ async function main(): Promise<void> {
           {
             accountType: (acct?.type as string | null) ?? null,
             debtSubtype: acct?.debtSubtype ?? null,
+            // Mortgage F5 — liability-kind evidence the classifier reads.
+            providerSubtype: acct?.providerSubtype ?? null,
+            creditLimit: acct?.creditLimit ?? null,
           },
         );
         const c = classifyFlow(input);
