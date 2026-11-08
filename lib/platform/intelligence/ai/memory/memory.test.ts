@@ -136,7 +136,8 @@ async function main(): Promise<void> {
     check("D7 (propose): a 6-word span of the question ⇒ NOTE_VERBATIM", reason("note: plaid webhook retries piling up for the sync", { verbatimSources: [q] }) === "NOTE_VERBATIM");
     check("D7 (propose): a 40-character span (fewer than 6 words) ⇒ NOTE_VERBATIM",
       hasVerbatimSpan("xx supercalifragilisticexpialidociousness overwhelming", ["supercalifragilisticexpialidociousness overwhelming yes"]));
-    check("D7: 5 shared words is not a span", reason("plaid webhook retries piling up today", { verbatimSources: [q] }) === "OK");
+    check("D7: a short shared phrase (< 24 characters, < 6 words) is not a span", reason("plaid webhook today", { verbatimSources: [q] }) === "OK");
+    check("…but a 5-word, 24+ character copy IS (the §8 24-character rule)", reason("plaid webhook retries piling up today", { verbatimSources: [q] }) === "NOTE_VERBATIM");
     check("D7 is propose-time only: the Remember button (no sources) does not run it", reason("plaid webhook retries piling up for the sync") === "OK");
     check("shingles are 6-word windows of normalised text", JSON.stringify(wordShingles("A, b. C d e F g")) === JSON.stringify(["a b c d e f", "b c d e f g"]));
     check("the amount shapes are the four B6 rules", AMOUNT_SHAPES.length === 4);

@@ -58,6 +58,8 @@ const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof Encrypti
   { file: "lib/platform/intelligence/ai/conversations/store.ts", purpose: "PLATFORM_AI_MESSAGE", count: 2, field: "PlatformAiMessage.contentEncrypted" },
   // Platform AI operational memory (design v2, D2) — the ONE memory data module: the operator's note at insert.
   { file: "lib/platform/intelligence/ai/memory/store.ts", purpose: "PLATFORM_AI_MEMORY", count: 1, field: "PlatformAiMemoryFact.noteEncrypted" },
+  // Platform AI memory (design v2 B5): the proposal token — sealed, handed to the confirm card and taken back; never stored.
+  { file: "lib/platform/intelligence/ai/memory/token.ts", purpose: "PLATFORM_AI_MEMORY_TOKEN", count: 1, field: "NON_STORED" },
 ];
 
 /**
