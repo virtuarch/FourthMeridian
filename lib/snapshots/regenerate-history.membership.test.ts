@@ -424,7 +424,9 @@ async function testLoader(): Promise<void> {
 // upserts the property columns (valueBasis, securedDebtAccountIds) and nothing
 // else. It is admitted only while that file never names an acquisition or
 // purchase column, so the floor's inputs stay create-only.
-const F9_PROFILE_WRITER = path.join("lib", "assets", "property-links.ts");
+// lib/assets/secured-debt-scrub.ts (S2 D1) removes a hard-deleted debt's id
+// from securedDebtAccountIds under the same rule.
+const F9_PROFILE_WRITERS = new Set([path.join("lib", "assets", "property-links.ts"), path.join("lib", "assets", "secured-debt-scrub.ts")]);
 function testProfileImmutability(): void {
   const root = path.resolve(__dirname, "..", "..");
   const offenders: string[] = [];
@@ -435,9 +437,10 @@ function testProfileImmutability(): void {
       if (statSync(full).isDirectory()) { walk(full); continue; }
       if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name)) continue;
       const src = readFileSync(full, "utf8");
-      if (path.relative(root, full) === F9_PROFILE_WRITER) {
+      const rel = path.relative(root, full);
+      if (F9_PROFILE_WRITERS.has(rel)) {
         if (/acquisitionDate|purchasePrice|purchaseCurrency|purchasePriceIsStartingValue/.test(src)
-          || /manualAssetProfile\s*\.\s*(updateMany|delete|deleteMany)\b/.test(src)) offenders.push(F9_PROFILE_WRITER);
+          || /manualAssetProfile\s*\.\s*(updateMany|delete|deleteMany)\b/.test(src)) offenders.push(rel);
         continue;
       }
       if (/manualAssetProfile\s*\.\s*(update|updateMany|upsert|delete|deleteMany)\b/.test(src)

@@ -20,13 +20,14 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { formatCurrencyWhole } from "@/lib/currency";
 import {
-  doubleCountDisclosure, SECURED_DEBT_KIND_LABEL,
+  doubleCountDisclosure, EQUITY_HIDDEN_MESSAGE, SECURED_DEBT_KIND_LABEL,
   type PropertyEquity, type PropertyValueBasis, type SecuredDebtKind,
 } from "@/lib/assets/property-equity";
 import { Facts, SectionLabel } from "@/components/connections/ConnectionDetailTabs";
 
 interface View {
   accountId: string;
+  canEdit: boolean;
   canLinkSecuredDebt: boolean;
   equity: PropertyEquity;
   candidates: { id: string; name: string; kind: SecuredDebtKind; amountOwed: number; currency: string }[];
@@ -68,8 +69,12 @@ export function PropertyEquityPanel({ accountId }: { accountId: string }) {
     router.refresh();
   }, [accountId, router]);
 
-  if (!view || !view.canLinkSecuredDebt) return null;
+  if (!view) return null;
   const eq = view.equity;
+  const hidden = eq.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE";
+  // Owner: whenever the asset can carry a loan. Viewer: only when there is something to show.
+  if (view.canEdit ? !view.canLinkSecuredDebt : !(hidden || eq.securedDebts.length > 0)) return null;
+  const edit = view.canEdit;
   const money = (n: number) => <span className="tabular-nums">{formatCurrencyWhole(n, eq.currency)}</span>;
   const suggested = view.candidates.find((c) => c.id === view.suggestedDebtId) ?? null;
 
@@ -82,17 +87,19 @@ export function PropertyEquityPanel({ accountId }: { accountId: string }) {
           `${SECURED_DEBT_KIND_LABEL[d.kind]} · ${d.name}`,
           <span key={d.id} className="flex items-center gap-2">
             {money(-d.amountOwed)}
-            <button type="button" className={BTN} disabled={busy} onClick={() => act({ unlink: d.id })}>Unlink</button>
+            {edit && <button type="button" className={BTN} disabled={busy} onClick={() => act({ unlink: d.id })}>Unlink</button>}
           </span>,
         ]),
-        ["Equity", eq.equity !== null ? money(eq.equity) : <span key="e" className="text-[var(--text-muted)]">Not available</span>],
+        // S2 R2 — a hidden linked loan ⇒ no figure, no count, no names.
+        ["Equity", eq.equity !== null ? money(eq.equity)
+          : <span key="e" data-equity-hidden={hidden ? "" : undefined} className="text-[var(--text-muted)]">{hidden ? EQUITY_HIDDEN_MESSAGE : "Not available"}</span>],
         ["Value is", BASIS_LABEL[eq.valueBasis]],
       ]} />
       <p className="mt-2 text-xs text-[var(--text-muted)]">
         Equity is shown for reference. Net worth counts the home at its value and the mortgage as debt, so equity is never added on top.
       </p>
 
-      {eq.doubleCount && (
+      {edit && eq.doubleCount && (
         <div role="alert" data-double-count className="mt-3 rounded-[var(--radius-md)] border border-[var(--amber-400,#f5b041)] px-3 py-2.5 text-xs text-[var(--text-secondary)]">
           <p>{doubleCountDisclosure(eq.doubleCount)}</p>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -104,7 +111,7 @@ export function PropertyEquityPanel({ accountId }: { accountId: string }) {
           )}
         </div>
       )}
-      {!eq.doubleCount && eq.valueBasis === "UNKNOWN" && (
+      {edit && !eq.doubleCount && eq.valueBasis === "UNKNOWN" && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
           <span>Is this value the home&apos;s market value or your equity?</span>
           <button type="button" className={BTN} disabled={busy} onClick={() => act({ valueBasis: "MARKET_VALUE" })}>Market value</button>

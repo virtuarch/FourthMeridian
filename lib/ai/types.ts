@@ -25,6 +25,7 @@ import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
 import type { DebtType } from '@/lib/debt/liability-kind';
+import type { AiPropertyFacts } from '@/lib/assets/property-equity';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
@@ -368,7 +369,9 @@ export interface AccountSummaryItem {
   /**
    * Mortgage F9 (owner 2026-11-08) — a manual PROPERTY's value basis, the
    * mortgage / HELOC debts (debtType, PR #485) the user linked as secured by it, and
-   * the DERIVED equity (value − linked secured debt). Net worth ALREADY counts
+   * the DERIVED equity (value − linked secured debt). If ANY linked debt is not
+   * visible to this viewer, only the flag is sent (`derivedEquity` null,
+   * `equityUnavailableReason` LINKED_DEBT_NOT_VISIBLE, no list or total). Net worth ALREADY counts
    * the property at `value` and each debt as a liability: equity is never
    * additional wealth and must never be added to netWorth. `derivedEquity` is
    * null when it cannot be stated honestly (`equityUnavailableReason`).
@@ -378,21 +381,7 @@ export interface AccountSummaryItem {
    * secured kinds appear: an auto, student or personal loan never reduces
    * equity. Manual FULL rows that state a kind, a link or a basis only.
    */
-  property?: {
-    value:            number;
-    valueBasis:       'MARKET_VALUE' | 'EQUITY_ENTERED' | 'UNKNOWN';
-    securedDebts:     { id: string; name: string; kind: 'mortgage' | 'heloc'; amountOwed: number }[];
-    securedDebtTotal: number;
-    derivedEquity:    number | null;
-    equityUnavailableReason?: 'EQUITY_ENTERED_WITH_LINKED_DEBT' | 'CURRENCY_MISMATCH' | 'LINKED_DEBT_NOT_VISIBLE';
-    possibleDoubleCount?: {
-      reason: 'EQUITY_ENTERED_WITH_LINKED_DEBT' | 'VALUE_BELOW_LINKED_DEBT';
-      possibleUnderstatement: number;
-      disclosure: string;
-    };
-    netWorthTreatment: 'PROPERTY_AT_VALUE_DEBT_AS_LIABILITY';
-    meaning:           string;
-  };
+  property?: AiPropertyFacts;
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;

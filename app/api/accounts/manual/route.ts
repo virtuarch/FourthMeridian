@@ -66,7 +66,7 @@ import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
 import { recordInitialValuation, type AcquisitionInput } from "@/lib/assets/valuations";
-import { isPropertyValueBasis }             from "@/lib/assets/property-equity";
+import { isPropertyValueBasis, parseManualAssetKind } from "@/lib/assets/property-equity";
 import { checkAcquisitionDate, checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
@@ -109,9 +109,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (typeof balance !== "number" || isNaN(balance) || balance < 0)
                                return NextResponse.json({ error: "Value must be a non-negative number." }, { status: 400 });
 
-  const VALID_KINDS = ["real_estate", "vehicle", "equipment", "other"];
-  if (!VALID_KINDS.includes(assetKind))
-                               return NextResponse.json({ error: `Invalid assetKind. Use: ${VALID_KINDS.join(", ")}` }, { status: 400 });
+  // S2 D2 — ONE allowlist (MANUAL_ASSET_KINDS), shared with the property endpoint.
+  const kindCheck = parseManualAssetKind(assetKind);
+  if (!kindCheck.ok)           return NextResponse.json({ error: kindCheck.error }, { status: 400 });
 
   // REVIEW-3 B-5 — the currency goes through the SAME allowlist rule the
   // reporting-currency boundary enforces (lib/spaces/reporting-currency.ts →

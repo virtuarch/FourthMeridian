@@ -15,13 +15,25 @@
  *   7. suggestion = exactly one candidate, never when something is linked;
  *   8. the action parser accepts exactly one action.
  *
- *   npx tsx lib/assets/property-equity.test.ts
+ *   9. S2 R2 viewer correctness: owner sees equity; co-member with every linked
+ *      debt balance-visible sees it; co-member missing one sees none, with no
+ *      hint which; the AI payload follows the same rule (flag only);
+ *  10. S2 D2 one kind allowlist (unknown kind rejected) + NULL-safe link arrays;
+ *  11. S2 R1 audit rows: actions, ids/enum-only metadata, same transaction.
+ *
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/assets/property-equity.test.ts
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { AuditAction, AUDIT_ACTION_GROUPS } from "@/lib/audit-actions";
+import { propertyAuditRow } from "./property-links";
 import {
   checkSecuredDebtLink, computePropertyEquity, parsePropertyAction, securedDebtKind, suggestSecuredDebt,
-  canCarrySecuredDebt, type LinkCandidateDebt, type LinkedDebtInput,
+  canCarrySecuredDebt, viewerPropertyEquity, aiPropertyFacts, normalizeSecuredDebtIds, parseManualAssetKind,
+  EQUITY_HIDDEN_MESSAGE, MANUAL_ASSET_KINDS,
+  type AiSpaceDebt, type LinkCandidateDebt, type LinkedDebtInput, type ViewerDebtRow,
 } from "./property-equity";
 
 let failures = 0;
@@ -100,8 +112,10 @@ console.log("4. HELOC reduces equity");
   check("a credit balance on the mortgage is 0 owed, never added", credit.equity === 500_000);
   const fx = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE", linkedDebts: [mortgage(300_000, { currency: "EUR" })] });
   check("currency mismatch ⇒ equity withheld", fx.equity === null && fx.equityUnavailableReason === "CURRENCY_MISMATCH");
-  const hidden = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE", linkedDebts: [], unavailableLinkedCount: 1 });
-  check("linked debt not visible ⇒ equity withheld (never overstated)", hidden.equity === null && hidden.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE");
+  const hidden = computePropertyEquity({ value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE", linkedDebts: [mortgage(300_000)], someLinkedDebtHidden: true });
+  check("a linked debt hidden ⇒ no equity, no partial list/total, no prompt",
+    hidden.equity === null && hidden.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE"
+    && hidden.securedDebts.length === 0 && hidden.securedDebtTotal === null && hidden.doubleCount === null);
 }
 
 console.log("5. UNKNOWN basis heuristic = prompt only");
@@ -158,6 +172,103 @@ console.log("8. action parser");
   check("two actions rejected", "error" in parsePropertyAction({ link: "d1", valueBasis: "MARKET_VALUE" }));
   check("bad basis rejected", "error" in parsePropertyAction({ valueBasis: "EQUITY" }));
   check("empty rejected", "error" in parsePropertyAction({}) && "error" in parsePropertyAction(null));
+}
+
+console.log("9. S2 R2 — viewer correctness (equity all-or-nothing)");
+{
+  const OWNER = "owner", CO = "co";
+  const row = (id: string, ownerUserId: string, links: { spaceId: string; visibilityLevel: string }[], over: Partial<ViewerDebtRow> = {}): ViewerDebtRow =>
+    ({ id, ownerUserId, deletedAt: null, type: "debt", providerSubtype: "mortgage", links, name: `Secret ${id}`, balance: 150_000, currency: "USD", ...over });
+  // Two linked loans: the owner's mortgage (FULL in s1) and a HELOC (BALANCE_ONLY to the co-member).
+  const m1 = row("m1", OWNER, [{ spaceId: "s1", visibilityLevel: "FULL" }]);
+  const h1 = row("h1", OWNER, [{ spaceId: "s1", visibilityLevel: "BALANCE_ONLY" }], { providerSubtype: "home equity", creditLimit: 100_000, balance: 50_000 });
+  const base = { propertySpaceIds: ["s1"], value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE" as const, linkedIds: ["m1", "h1"] };
+
+  const owner = viewerPropertyEquity({ ...base, viewerUserId: OWNER, debts: [m1, h1] });
+  check("owner sees equity (500k − 150k − 50k = 300k)", owner.equity === 300_000, String(owner.equity));
+  check("owner sees names", owner.securedDebts.map((d) => d.name).join() === "Secret m1,Secret h1");
+
+  const co = viewerPropertyEquity({ ...base, viewerUserId: CO, debts: [m1, h1] });
+  check("co-member with every linked debt balance-visible sees equity", co.equity === 300_000);
+  check("…a BALANCE_ONLY debt is named by its kind, never its name",
+    co.securedDebts.find((d) => d.id === "h1")?.name === "HELOC" && co.securedDebts.find((d) => d.id === "m1")?.name === "Secret m1");
+
+  // The HELOC is not visible to the co-member at all (unshared / RLS-hidden ⇒ not loaded).
+  const missing = viewerPropertyEquity({ ...base, viewerUserId: CO, debts: [m1] });
+  const payload = JSON.stringify(missing);
+  check("co-member missing one debt ⇒ no equity", missing.equity === null && missing.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE");
+  check("…no list, no total, no prompt", missing.securedDebts.length === 0 && missing.securedDebtTotal === null && missing.doubleCount === null);
+  check("…no hint which: neither id nor name of ANY linked loan, no count",
+    !payload.includes("m1") && !payload.includes("h1") && !payload.includes("Secret") && !/"(hidden|unavailable)[A-Za-z]*Count"/.test(payload), payload);
+  check("…the UI words", EQUITY_HIDDEN_MESSAGE === "Equity not shown — a linked loan isn't visible to you");
+  const notShared = viewerPropertyEquity({ ...base, viewerUserId: CO, debts: [m1, row("h1", OWNER, [{ spaceId: "s9", visibilityLevel: "FULL" }])] });
+  check("a linked debt visible only in ANOTHER Space ⇒ hidden", notShared.equity === null);
+  const deleted = viewerPropertyEquity({ ...base, viewerUserId: OWNER, debts: [m1, { ...h1, deletedAt: new Date() }] });
+  check("a deleted linked debt ⇒ hidden (never silently dropped from the subtraction)", deleted.equity === null);
+  const nullIds = viewerPropertyEquity({ ...base, linkedIds: null, viewerUserId: OWNER, debts: [m1] });
+  check("NULL securedDebtAccountIds ⇒ no links, equity = value", nullIds.equity === 500_000 && nullIds.securedDebts.length === 0);
+
+  // AI payload: the same rule over the Space's balance-disclosing rows.
+  const spaceDebts = new Map<string, AiSpaceDebt>([
+    ["m1", { id: "m1", name: "Secret m1", balance: 150_000, currency: "USD", type: "debt", providerSubtype: "mortgage", visibilityLevel: "FULL" }],
+    ["h1", { id: "h1", name: "Secret h1", balance: 50_000, currency: "USD", type: "debt", providerSubtype: "home equity", creditLimit: 100_000, visibilityLevel: "BALANCE_ONLY" }],
+  ]);
+  const profile = { assetKind: "real_estate", valueBasis: "MARKET_VALUE" as const, securedDebtAccountIds: ["m1", "h1"] };
+  const aiAll = aiPropertyFacts({ value: 500_000, currency: "USD", profile, spaceDebts });
+  check("AI: all visible ⇒ derivedEquity matches the viewer rule", aiAll?.derivedEquity === co.equity && aiAll?.securedDebtTotal === 200_000);
+  check("AI: BALANCE_ONLY loan named by kind", aiAll?.securedDebts.find((d) => d.id === "h1")?.name === "HELOC");
+  const aiMissing = aiPropertyFacts({ value: 500_000, currency: "USD", profile, spaceDebts: new Map([["m1", spaceDebts.get("m1")!]]) });
+  const aiPayload = JSON.stringify(aiMissing);
+  check("AI: missing one ⇒ flag only (no equity figure, total, list or prompt)",
+    aiMissing?.derivedEquity === null && aiMissing?.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE"
+    && aiMissing?.securedDebtTotal === null && aiMissing?.securedDebts.length === 0 && aiMissing?.possibleDoubleCount === undefined, aiPayload);
+  check("AI: missing one ⇒ no id or name of any linked loan", !aiPayload.includes("m1") && !aiPayload.includes("h1") && !aiPayload.includes("Secret"));
+  check("AI: an all-default profile emits nothing (pre-F9 context byte-identical)",
+    aiPropertyFacts({ value: 1, currency: "USD", profile: { assetKind: null, valueBasis: "UNKNOWN", securedDebtAccountIds: null }, spaceDebts }) === null
+    && aiPropertyFacts({ value: 1, currency: "USD", profile: undefined, spaceDebts }) === null);
+}
+
+console.log("10. S2 D2 — one kind allowlist; NULL-safety");
+{
+  check("the allowlist is the four route kinds", JSON.stringify([...MANUAL_ASSET_KINDS]) === JSON.stringify(["real_estate", "vehicle", "equipment", "other"]));
+  const bad = parseManualAssetKind("boat");
+  check("unknown kind ⇒ rejected with the allowlist in the error", !bad.ok && bad.error.includes("real_estate"));
+  check("non-string kind rejected", !parseManualAssetKind(7).ok && !parseManualAssetKind(null).ok);
+  check("real_estate accepted", parseManualAssetKind("real_estate").ok);
+  check("normalizeSecuredDebtIds(NULL) = []", JSON.stringify(normalizeSecuredDebtIds(null)) === "[]" && JSON.stringify(normalizeSecuredDebtIds(undefined)) === "[]");
+  check("normalizeSecuredDebtIds drops junk + dupes", JSON.stringify(normalizeSecuredDebtIds(["a", "", 3, "a", "b"])) === JSON.stringify(["a", "b"]));
+  const root = process.cwd();
+  const createRoute = readFileSync(path.join(root, "app/api/accounts/manual/route.ts"), "utf8");
+  check("create route validates through parseManualAssetKind and keeps no list of its own",
+    createRoute.includes("parseManualAssetKind(assetKind)") && !/VALID_KINDS|\["real_estate",\s*"vehicle"/.test(createRoute));
+  const links = readFileSync(path.join(root, "lib/assets/property-links.ts"), "utf8");
+  check("property endpoint rejects a stored kind outside the allowlist (400)",
+    links.includes("!isManualAssetKind(storedKind)") && /status: 400, error: `Invalid assetKind/.test(links));
+  const rawReads = links.match(/[\w(]*\b[pr]\.securedDebtAccountIds/g) ?? [];
+  check("property-links reads every DB array only through normalizeSecuredDebtIds (NULL ⇒ [])",
+    rawReads.length === 2 && rawReads.every((m) => m.startsWith("normalizeSecuredDebtIds(")), rawReads.join(" | "));
+}
+
+console.log("11. S2 R1 — audit rows (ids and enum values only)");
+{
+  const link = propertyAuditRow({ userId: "u", propertyId: "p", action: { op: "link", debtAccountId: "d" }, fromBasis: "UNKNOWN", ipAddress: "1.2.3.4" });
+  check("link ⇒ MANUAL_ASSET_SECURED_DEBT_LINKED {propertyId, debtAccountId}",
+    link.action === "MANUAL_ASSET_SECURED_DEBT_LINKED" && JSON.stringify(link.metadata) === JSON.stringify({ propertyId: "p", debtAccountId: "d" }) && link.ipAddress === "1.2.3.4");
+  const unlink = propertyAuditRow({ userId: "u", propertyId: "p", action: { op: "unlink", debtAccountId: "d" }, fromBasis: "UNKNOWN" });
+  check("unlink ⇒ MANUAL_ASSET_SECURED_DEBT_UNLINKED", unlink.action === "MANUAL_ASSET_SECURED_DEBT_UNLINKED" && JSON.stringify(unlink.metadata) === JSON.stringify({ propertyId: "p", debtAccountId: "d" }));
+  const basis = propertyAuditRow({ userId: "u", propertyId: "p", action: { op: "setBasis", valueBasis: "MARKET_VALUE" }, fromBasis: "EQUITY_ENTERED" });
+  check("basis ⇒ MANUAL_ASSET_VALUE_BASIS_CHANGED {propertyId, from, to}",
+    basis.action === "MANUAL_ASSET_VALUE_BASIS_CHANGED" && JSON.stringify(basis.metadata) === JSON.stringify({ propertyId: "p", from: "EQUITY_ENTERED", to: "MARKET_VALUE" }));
+  check("registered in the AuditLog vocabulary + the admin groups",
+    AuditAction.MANUAL_ASSET_SECURED_DEBT_LINKED === "MANUAL_ASSET_SECURED_DEBT_LINKED"
+    && AuditAction.MANUAL_ASSET_SECURED_DEBT_UNLINKED === "MANUAL_ASSET_SECURED_DEBT_UNLINKED"
+    && AuditAction.MANUAL_ASSET_VALUE_BASIS_CHANGED === "MANUAL_ASSET_VALUE_BASIS_CHANGED"
+    && ["MANUAL_ASSET_SECURED_DEBT_LINKED", "MANUAL_ASSET_SECURED_DEBT_UNLINKED", "MANUAL_ASSET_VALUE_BASIS_CHANGED"]
+      .every((a) => AUDIT_ACTION_GROUPS.some((g) => (g.actions as string[]).includes(a))));
+  const links = readFileSync(path.join(process.cwd(), "lib/assets/property-links.ts"), "utf8");
+  const fn = links.slice(links.indexOf("export async function applyPropertyLinkAction"));
+  check("the audit row is written on the SAME tx, after the profile upsert",
+    fn.indexOf("tx.manualAssetProfile.upsert(") > 0 && fn.indexOf("await tx.auditLog.create(") > fn.indexOf("tx.manualAssetProfile.upsert("));
 }
 
 if (failures > 0) { console.error(`\n✗ ${failures} failure(s)`); process.exit(1); }

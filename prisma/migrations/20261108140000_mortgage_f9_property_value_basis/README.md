@@ -33,13 +33,22 @@ subtracted. N is 1–2 per property.
 **Old-client compatibility.** Full — the running application never selects these
 columns; Prisma clients generated before this migration ignore them.
 
-**Rollback.**
-```sql
-ALTER TABLE "ManualAssetProfile" DROP COLUMN "valueBasis",
-  DROP COLUMN "securedDebtAccountIds", DROP COLUMN "assetKind";
+## Rollback (Preview only, S2 approval)
+
+Run ONLY on Preview, ONLY with S2's approval, and ONLY after the F9 code is reverted
+(the app reads these columns). One transaction; loses only user-entered basis/links/kind
+(net worth never depended on them):
+
+```sh
+psql -1 "$PREVIEW_DATABASE_URL" <<'SQL'
+ALTER TABLE "ManualAssetProfile" DROP COLUMN "assetKind", DROP COLUMN "securedDebtAccountIds", DROP COLUMN "valueBasis";
 DROP TYPE "PropertyValueBasis";
+DELETE FROM _prisma_migrations WHERE migration_name='20261108140000_mortgage_f9_property_value_basis';
+SQL
 ```
-(loses only user-entered basis/links; net worth never depended on them).
+
+**Freeze pin.** S2 approved `migration.sql` byte-for-byte; its sha256 is pinned by
+`lib/assets/property-equity-migration.test.ts`. Any change needs a new migration.
 
 **Apply.** NOT before S2 reviews this SQL. Then coordinator only, `db:migrate:safe`,
 Preview first. Mortgage hard gate: Preview only — never Production in this batch.

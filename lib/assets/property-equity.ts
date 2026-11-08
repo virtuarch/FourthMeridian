@@ -48,13 +48,42 @@ export function isPropertyValueBasis(v: unknown): v is PropertyValueBasis {
   return typeof v === "string" && (PROPERTY_VALUE_BASES as readonly string[]).includes(v);
 }
 
-/** The asset kinds the manual-asset route accepts (app/api/accounts/manual/route.ts). */
+/**
+ * THE ONE allowlist of manual-asset kinds (S2 D2): the create route
+ * (app/api/accounts/manual/route.ts) and the property endpoint both validate
+ * against it; anything else is a 400.
+ */
 export const MANUAL_ASSET_KINDS = ["real_estate", "vehicle", "equipment", "other"] as const;
 export type ManualAssetKind = (typeof MANUAL_ASSET_KINDS)[number];
 
-/** A secured debt can be linked to an asset whose kind is real estate or was never recorded. */
+export function isManualAssetKind(v: unknown): v is ManualAssetKind {
+  return typeof v === "string" && (MANUAL_ASSET_KINDS as readonly string[]).includes(v);
+}
+
+/** Validate a submitted kind against MANUAL_ASSET_KINDS. */
+export function parseManualAssetKind(v: unknown): { ok: true; kind: ManualAssetKind } | { ok: false; error: string } {
+  return isManualAssetKind(v)
+    ? { ok: true, kind: v }
+    : { ok: false, error: `Invalid assetKind. Use: ${MANUAL_ASSET_KINDS.join(", ")}` };
+}
+
+/**
+ * May a secured debt be linked to an asset of this STORED kind? Real estate, or
+ * never recorded (null, every pre-F9 asset). A stored kind outside the allowlist
+ * is rejected by the endpoint (400) before this is asked.
+ */
 export function canCarrySecuredDebt(assetKind: string | null | undefined): boolean {
-  return assetKind == null || assetKind === "real_estate";
+  return assetKind == null || assetKind === MANUAL_ASSET_KINDS[0];
+}
+
+/**
+ * ManualAssetProfile.securedDebtAccountIds is NULLABLE at the DB level (a
+ * Postgres array column without NOT NULL). NULL — or anything that is not an
+ * array of non-empty strings — reads as NO links. Every reader goes through this.
+ */
+export function normalizeSecuredDebtIds(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.filter((x): x is string => typeof x === "string" && x !== ""))];
 }
 
 /** UNKNOWN basis: prompt when value < this × linked secured debt. */
@@ -154,10 +183,15 @@ export interface PropertyEquityInput {
   value:      number;
   currency:   string;
   valueBasis: PropertyValueBasis;
-  /** The linked debts the caller can see (already authorized). */
+  /** The linked debts the viewer can see at a balance-disclosing visibility. */
   linkedDebts: LinkedDebtInput[];
-  /** Linked ids the caller can no longer see (deleted / unshared / not FULL). */
-  unavailableLinkedCount?: number;
+  /**
+   * S2 R2 — true when ANY linked id is not visible to this viewer at a
+   * visibility that includes its balance. Equity is then NOT SHOWN at all: no
+   * figure, no partial total, no debt list, no count and no names — only
+   * `equityUnavailableReason: "LINKED_DEBT_NOT_VISIBLE"`.
+   */
+  someLinkedDebtHidden?: boolean;
 }
 
 export type DoubleCountReason = "EQUITY_ENTERED_WITH_LINKED_DEBT" | "VALUE_BELOW_LINKED_DEBT";
@@ -171,7 +205,8 @@ export interface PropertyEquity {
   securedDebts: { id: string; name: string; kind: SecuredDebtKind; amountOwed: number; currency: string }[];
   /** Linked ids that do NOT reduce equity, and why. */
   ignoredLinks: { id: string; reason: "NOT_SECURED_KIND" | "CURRENCY_MISMATCH" }[];
-  securedDebtTotal: number;
+  /** Null when a linked debt is hidden from this viewer (S2 R2). */
+  securedDebtTotal: number | null;
   /** value − securedDebtTotal; null when it would be wrong to state one. */
   equity: number | null;
   equityUnavailableReason: EquityUnavailableReason | null;
@@ -183,7 +218,19 @@ export interface PropertyEquity {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** The viewer-facing words when a linked loan is hidden (no count, no names). */
+export const EQUITY_HIDDEN_MESSAGE = "Equity not shown — a linked loan isn't visible to you";
+
 export function computePropertyEquity(input: PropertyEquityInput): PropertyEquity {
+  if (input.someLinkedDebtHidden) {
+    return {
+      value: input.value, currency: input.currency, valueBasis: input.valueBasis,
+      securedDebts: [], ignoredLinks: [], securedDebtTotal: null,
+      equity: null, equityUnavailableReason: "LINKED_DEBT_NOT_VISIBLE",
+      doubleCount: null,
+      netWorthTreatment: "PROPERTY_AT_VALUE_DEBT_AS_LIABILITY",
+    };
+  }
   const securedDebts: PropertyEquity["securedDebts"] = [];
   const ignoredLinks: PropertyEquity["ignoredLinks"] = [];
   for (const d of input.linkedDebts) {
@@ -206,7 +253,6 @@ export function computePropertyEquity(input: PropertyEquityInput): PropertyEquit
   let equityUnavailableReason: EquityUnavailableReason | null = null;
   if (doubleCount?.reason === "EQUITY_ENTERED_WITH_LINKED_DEBT") equityUnavailableReason = "EQUITY_ENTERED_WITH_LINKED_DEBT";
   else if (ignoredLinks.some((l) => l.reason === "CURRENCY_MISMATCH")) equityUnavailableReason = "CURRENCY_MISMATCH";
-  else if ((input.unavailableLinkedCount ?? 0) > 0) equityUnavailableReason = "LINKED_DEBT_NOT_VISIBLE";
 
   return {
     value: input.value,
@@ -220,6 +266,65 @@ export function computePropertyEquity(input: PropertyEquityInput): PropertyEquit
     doubleCount,
     netWorthTreatment: "PROPERTY_AT_VALUE_DEBT_AS_LIABILITY",
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// S2 R2 — viewer visibility of a linked debt (equity is all-or-nothing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Link tiers that include the balance (grantsBalanceDisclosure's set). */
+export const BALANCE_DISCLOSING_LEVELS: ReadonlySet<string> = new Set(["FULL", "BALANCE_ONLY"]);
+
+/**
+ * Does `viewerUserId` see this linked debt's BALANCE? The viewer owns it, or
+ * holds an ACTIVE FULL / BALANCE_ONLY link to it in a Space the property is
+ * ACTIVE in (as visible to the viewer). A deleted or non-debt row is not a
+ * visible debt. `nameVisible` = owner or FULL only (BALANCE_ONLY never names).
+ */
+export function linkedDebtVisibility(args: {
+  viewerUserId: string; propertySpaceIds: readonly string[]; debt: LinkCandidateDebt | null | undefined;
+}): { visible: false } | { visible: true; nameVisible: boolean } {
+  const d = args.debt;
+  if (!d || d.deletedAt != null || d.type !== "debt") return { visible: false };
+  if (d.ownerUserId === args.viewerUserId) return { visible: true, nameVisible: true };
+  const shared = d.links.filter((l) => args.propertySpaceIds.includes(l.spaceId) && BALANCE_DISCLOSING_LEVELS.has(l.visibilityLevel));
+  if (shared.length === 0) return { visible: false };
+  return { visible: true, nameVisible: shared.some((l) => l.visibilityLevel === "FULL") };
+}
+
+/** One debt row as the property endpoint loads it (link evidence + balance). */
+export interface ViewerDebtRow extends LinkCandidateDebt {
+  name: string; balance: number; currency: string;
+}
+
+/**
+ * S2 R2 — the equity a given VIEWER may see. Every linked id must be
+ * balance-visible to the viewer (linkedDebtVisibility); otherwise the result is
+ * the hidden form (no figure, list, total, count or names). A BALANCE_ONLY debt
+ * is named by its kind label, never its name. The property endpoint's one rule.
+ */
+export function viewerPropertyEquity(args: {
+  viewerUserId: string; propertySpaceIds: readonly string[];
+  value: number; currency: string; valueBasis: PropertyValueBasis;
+  linkedIds: unknown; debts: readonly ViewerDebtRow[];
+}): PropertyEquity {
+  const byId = new Map(args.debts.map((d) => [d.id, d]));
+  const linked: LinkedDebtInput[] = [];
+  let hidden = false;
+  for (const id of normalizeSecuredDebtIds(args.linkedIds)) {
+    const d = byId.get(id);
+    const v = linkedDebtVisibility({ viewerUserId: args.viewerUserId, propertySpaceIds: args.propertySpaceIds, debt: d });
+    if (!v.visible || !d) { hidden = true; continue; }
+    const kind = securedDebtKind(d);
+    linked.push({
+      id: d.id, name: v.nameVisible ? d.name : (kind ? SECURED_DEBT_KIND_LABEL[kind] : "Linked loan"),
+      balance: d.balance, currency: d.currency,
+      type: d.type, debtSubtype: d.debtSubtype, providerSubtype: d.providerSubtype, creditLimit: d.creditLimit,
+    });
+  }
+  return computePropertyEquity({
+    value: args.value, currency: args.currency, valueBasis: args.valueBasis, linkedDebts: linked, someLinkedDebtHidden: hidden,
+  });
 }
 
 /** Exactly-one-candidate auto-SUGGESTION (never an auto-link: the user confirms). */
@@ -263,3 +368,66 @@ export function parsePropertyAction(body: unknown): PropertyLinkAction | { error
   return b.link !== undefined ? { op: "link", debtAccountId: id } : { op: "unlink", debtAccountId: id };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The AI payload (lib/ai/assemblers/accounts.ts → AccountSummaryItem.property)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A debt row of the Space being assembled, with the viewer's link tier. */
+export interface AiSpaceDebt extends LinkedDebtInput {
+  visibilityLevel: string;
+}
+
+export type AiPropertyFacts = {
+  value:            number;
+  valueBasis:       PropertyValueBasis;
+  securedDebts:     { id: string; name: string; kind: SecuredDebtKind; amountOwed: number }[];
+  securedDebtTotal: number | null;
+  derivedEquity:    number | null;
+  equityUnavailableReason?: EquityUnavailableReason;
+  possibleDoubleCount?: { reason: DoubleCountReason; possibleUnderstatement: number; disclosure: string };
+  netWorthTreatment: "PROPERTY_AT_VALUE_DEBT_AS_LIABILITY";
+  meaning:           string;
+};
+
+/**
+ * The `property` fact for ONE manual asset, or null when its profile states
+ * nothing (no real_estate kind, no link, UNKNOWN basis — every pre-F9 asset, so
+ * those contexts stay byte-identical). A linked debt counts as visible only when
+ * it is in `spaceDebts` at a balance-disclosing tier; if ANY linked id is not,
+ * the payload carries the flag only (S2 R2): no equity, no total, no debt list,
+ * no double-count figure, no count, no names. BALANCE_ONLY debts are named by
+ * their kind label, never their name.
+ */
+export function aiPropertyFacts(args: {
+  value: number; currency: string;
+  profile: { assetKind: string | null; valueBasis: PropertyValueBasis; securedDebtAccountIds: unknown } | undefined;
+  spaceDebts: ReadonlyMap<string, AiSpaceDebt>;
+}): AiPropertyFacts | null {
+  const p = args.profile;
+  if (!p) return null;
+  const ids = normalizeSecuredDebtIds(p.securedDebtAccountIds);
+  if (p.assetKind !== MANUAL_ASSET_KINDS[0] && ids.length === 0 && p.valueBasis === "UNKNOWN") return null;
+  const linked: LinkedDebtInput[] = [];
+  let hidden = false;
+  for (const id of ids) {
+    const d = args.spaceDebts.get(id);
+    if (!d || !BALANCE_DISCLOSING_LEVELS.has(d.visibilityLevel)) { hidden = true; continue; }
+    const kind = securedDebtKind(d);
+    linked.push({ ...d, name: d.visibilityLevel === "FULL" ? d.name : (kind ? SECURED_DEBT_KIND_LABEL[kind] : "Linked loan") });
+  }
+  const eq = computePropertyEquity({
+    value: args.value, currency: args.currency, valueBasis: p.valueBasis, linkedDebts: linked, someLinkedDebtHidden: hidden,
+  });
+  return {
+    value:            eq.value,
+    valueBasis:       eq.valueBasis,
+    securedDebts:     eq.securedDebts.map((d) => ({ id: d.id, name: d.name, kind: d.kind, amountOwed: d.amountOwed })),
+    securedDebtTotal: eq.securedDebtTotal,
+    derivedEquity:    eq.equity,
+    ...(eq.equityUnavailableReason ? { equityUnavailableReason: eq.equityUnavailableReason } : {}),
+    ...(eq.doubleCount ? { possibleDoubleCount: { ...eq.doubleCount, disclosure: doubleCountDisclosure(eq.doubleCount) } } : {}),
+    netWorthTreatment: eq.netWorthTreatment,
+    meaning:           PROPERTY_EQUITY_AI_MEANING,
+  };
+}
