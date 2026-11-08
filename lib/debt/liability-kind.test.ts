@@ -15,6 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import * as F6 from "@/lib/debt/liability-kind";
 import { join } from "node:path";
 
 import {
@@ -252,6 +253,37 @@ console.log("8. S2 HELOC ruling — home equity / line of credit / overdraft, an
   // sub-lists stay inside the enum-parity list
   check("revolving/limit-discriminated Plaid loan subtypes are members of PLAID_LOAN_SUBTYPES",
     [...PLAID_REVOLVING_LOAN_SUBTYPES, ...PLAID_LIMIT_DISCRIMINATED_SUBTYPES].every((x) => PLAID_LOAN_SUBTYPES.has(x)));
+}
+
+console.log("F6. Unsplit loan-payment label by loan type (owner F6 / S2 D3)");
+{
+  const M = "loan payment (principal + interest + escrow, not split)";
+  const PI = "loan payment (principal + interest, not split)";
+  const N = "loan payment (not split)";
+  check("constants are the approved wording",
+    F6.UNSPLIT_MORTGAGE_PAYMENT_LABEL === M && F6.UNSPLIT_INSTALLMENT_LOAN_PAYMENT_LABEL === PI && F6.UNSPLIT_UNKNOWN_LOAN_PAYMENT_LABEL === N);
+  check("mortgage pfcDetailed ⇒ escrow variant", F6.unsplitLoanPaymentLabel("LOAN_PAYMENTS_MORTGAGE_PAYMENT") === M);
+  for (const d of ["LOAN_PAYMENTS_CAR_PAYMENT", "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT", "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT"]) {
+    check(`${d} ⇒ P+I variant`, F6.unsplitLoanPaymentLabel(d) === PI);
+    check(`${d} ⇒ case-insensitive`, F6.unsplitLoanPaymentLabel(` ${d.toLowerCase()} `) === PI);
+  }
+  check("unknown / null / card / other ⇒ neutral",
+    [null, undefined, "", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", "LOAN_PAYMENTS_OTHER_PAYMENT", "FOOD_AND_DRINK_COFFEE"]
+      .every((d) => F6.unsplitLoanPaymentLabel(d) === N));
+  check("no pfcDetailed: debtType fallback — mortgage ⇒ escrow, other installment ⇒ P+I, else neutral",
+    F6.unsplitLoanPaymentLabel(null, "mortgage") === M
+      && (["auto_loan", "student_loan", "personal_installment", "other_installment"] as const).every((t) => F6.unsplitLoanPaymentLabel(null, t) === PI)
+      && (["credit_card", "heloc", "personal_line_of_credit", "overdraft", "other_revolving", "unknown"] as const).every((t) => F6.unsplitLoanPaymentLabel(null, t) === N));
+  check("pfcDetailed outranks debtType", F6.unsplitLoanPaymentLabel("LOAN_PAYMENTS_CAR_PAYMENT", "mortgage") === PI);
+  check("the variant map covers exactly INSTALLMENT_LOAN_PAYMENT_DETAILS (each resolves to a non-neutral kind)",
+    [...F6.INSTALLMENT_LOAN_PAYMENT_DETAILS].every((d) => F6.unsplitLoanKind(d) !== "unknown"));
+  check("no non-mortgage variant contains 'escrow'",
+    !/escrow/.test(PI) && !/escrow/.test(N) && !/escrow/.test(F6.UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.installment) && !/escrow/.test(F6.UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.unknown));
+  check("aggregate: one kind ⇒ that kind; mix or none ⇒ unknown",
+    F6.unsplitLoanKindOf(["mortgage", "mortgage"]) === "mortgage" && F6.unsplitLoanKindOf(["installment"]) === "installment"
+      && F6.unsplitLoanKindOf(["mortgage", "installment"]) === "unknown" && F6.unsplitLoanKindOf([]) === "unknown");
+  check("AI note says P/I/escrow are not individually verified and forbids principal-reduction framing",
+    /not been individually verified/i.test(F6.UNSPLIT_LOAN_PAYMENT_AI_NOTE) && /principal reduction/i.test(F6.UNSPLIT_LOAN_PAYMENT_AI_NOTE));
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }

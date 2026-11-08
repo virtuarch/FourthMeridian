@@ -70,7 +70,8 @@
  *   · Mortgage F10 — a payment to an installment loan that is NOT connected (the
  *     liquidity reason UNTRACKED_LOAN_PAYMENT: the provider named the loan payee,
  *     no owned account qualified). It is debt SERVICE, unsplit (principal +
- *     interest + escrow), so it is in neither `payments` (the debt-payment
+ *     interest, + escrow for a mortgage — owner F6: components not individually
+ *     verified), so it is in neither `payments` (the debt-payment
  *     authority counts only attested legs) nor `netPaydown` (there is no tracked
  *     liability it paid down). It is reported on its own, `untrackedLoanPayments`,
  *     and `netAfterDebtPaydown` subtracts it: the economic net never contained
@@ -122,7 +123,8 @@ export interface DebtService {
   /**
    * Mortgage F10 — Σ|amount| of cash legs paid to an installment loan that is
    * NOT connected (liquidity reason UNTRACKED_LOAN_PAYMENT). Unsplit loan
-   * payments (principal + interest + escrow). In Cash Out; NOT in `payments`,
+   * payments (principal + interest, + escrow for a mortgage; not individually
+   * verified — owner F6). In Cash Out; NOT in `payments`,
    * NOT in `netPaydown`, NOT in spending.
    */
   untrackedLoanPayments: number;

@@ -32,7 +32,7 @@ import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-autho
 import { tierResolver, classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { LIQUIDITY_REASON_LABEL } from "@/lib/transactions/liquidity-breakdown";
 import { resolveDestinationEvidence, maturityForEvidence } from "@/lib/transactions/transfer-maturation";
-import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
+import { UNSPLIT_MORTGAGE_PAYMENT_LABEL, unsplitLoanPaymentLabel } from "@/lib/debt/liability-kind";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { LIABILITY_PAYMENT_DETAILS } from "@/lib/transactions/transfer-debt-payment-correction";
 import { computeDebtAggregate } from "@/lib/debt/aggregates";
@@ -179,8 +179,9 @@ console.log(`H2. Mortgage payment from checking: paydown vs spending — ${LABEL
   // subtracted once from the after-debt net (it was a vanishing payment before).
   check("H2c FIXED by F10 — in Cash Out once (2,500) as UNTRACKED_LOAN_PAYMENT, labelled 'loan payment (principal + interest + escrow, not split)'",
     cashOut(unpaired, ctxU) === 2_500 && liqU.effect === "CASH_OUT" && liqU.reason === "UNTRACKED_LOAN_PAYMENT"
-      && LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT.includes(UNSPLIT_LOAN_PAYMENT_LABEL)
-      && UNSPLIT_LOAN_PAYMENT_LABEL === "loan payment (principal + interest + escrow, not split)", liqU);
+      && LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT.startsWith("Loan payment not matched to a connected loan")
+      && unsplitLoanPaymentLabel("LOAN_PAYMENTS_MORTGAGE_PAYMENT") === UNSPLIT_MORTGAGE_PAYMENT_LABEL
+      && UNSPLIT_MORTGAGE_PAYMENT_LABEL === "loan payment (principal + interest + escrow, not split)", liqU);
   check("H2c FIXED by F10 — untrackedLoanPayments = 2,500; after-debt net = 8,000 − 2,500 = 5,500",
     sU.untrackedLoanPayments === 2_500 && netAfterDebtPaydown(econU.net, sU) === 5_500, { sU, net: econU.net });
 

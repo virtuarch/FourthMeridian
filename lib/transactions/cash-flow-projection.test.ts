@@ -15,12 +15,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { tierResolver, type LiquidityTx } from "./liquidity";
+import { tierResolver, type LiquidityTx, type LiquidityReason, type LiquidityEffect } from "./liquidity";
+import { LIQUIDITY_REASON_SIDE } from "./liquidity-breakdown";
 import { economicTotals, outflowByCategory, incomeBySource } from "./cash-flow";
 import {
   aggregateDayFacts, projectDailyFacts, bucketDayFacts,
   perspectiveTotals, economicSpend, netOfMeasures, defaultMeasures,
-  rowsForMeasures, CALENDAR_MEASURES, type CalendarMeasureId,
+  rowsForMeasures, CALENDAR_MEASURES, type CalendarMeasureId, foldLiquidityEffect,
 } from "./cash-flow-projection";
 
 let n = 0;
@@ -333,4 +334,23 @@ test("Spending filter: credit-card + direct/debit spending partition Spending gr
   const cc = new Set(rowsForMeasures(spendingRows, ["creditCardSpending"], liqCtx).map((r) => r.id));
   const dd = rowsForMeasures(spendingRows, ["directDebitSpending"], liqCtx).map((r) => r.id);
   assert.ok(dd.every((id) => !cc.has(id)), "no purchase is both credit-card AND direct/debit");
+});
+
+// S2 R1 (#488) — the liquidity fold is ONE else-if chain: every reason × effect
+// pair lands in AT MOST ONE of cashIn / cashOut / unresolved / neutral-context byReason.
+test("foldLiquidityEffect: every reason × effect lands in at most one bucket", () => {
+  const reasons = Object.keys(LIQUIDITY_REASON_SIDE) as LiquidityReason[];
+  const effects: LiquidityEffect[] = ["CASH_IN", "CASH_OUT", "NEUTRAL", "UNRESOLVED"];
+  for (const reason of reasons) for (const effect of effects) {
+    const acc = aggregateDayFacts([], liqCtx);
+    foldLiquidityEffect(acc, { effect, reason }, 7, "LOAN_PAYMENTS_MORTGAGE_PAYMENT");
+    const reasonAmt = acc.byReason[reason] ?? 0;
+    const buckets = [acc.cashIn, acc.cashOut, acc.unresolved, effect === "NEUTRAL" ? reasonAmt : 0].filter((x) => x !== 0);
+    assert.ok(buckets.length <= 1, `${reason}/${effect}: ${JSON.stringify(acc)}`);
+    // byReason moves only with a CASH_IN/CASH_OUT bucket or as a neutral-context reason.
+    if (effect === "UNRESOLVED") assert.equal(reasonAmt, 0, `${reason}/UNRESOLVED leaked into byReason`);
+    if (effect === "CASH_IN" || effect === "CASH_OUT") assert.equal(reasonAmt, 7, `${reason}/${effect}`);
+    assert.equal(Object.values(acc.byReason).reduce((s, v) => s + (v ?? 0), 0), reasonAmt, `${reason}/${effect}: other reasons untouched`);
+    assert.equal(acc.untrackedLoanKinds !== undefined, effect === "CASH_OUT" && reason === "UNTRACKED_LOAN_PAYMENT", `${reason}/${effect} kinds`);
+  }
 });

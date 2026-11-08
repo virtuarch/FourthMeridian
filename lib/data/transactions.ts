@@ -327,6 +327,7 @@ function contextFields(
     transferEvidenceConfidence: number | null; transferEvidenceReason: string | null;
     transferEvidenceSource: string | null; transferEvidenceVersion: string | null;
     merchantId: string | null; counterpartyAccountId: string | null;
+    pfcDetailed?: string | null;
   },
   assessments: Map<string, { counterpartyAccountId: string | null; maturity: string }>,
 ) {
@@ -354,6 +355,9 @@ function contextFields(
     transferDisposition: c.transferDisposition,
     needsClassification: c.needsClassification,
     transferMaturity:    a?.maturity ?? null,
+    // Owner F6 / S2 D3 — the loan type behind an unsplit payment's label. Only on
+    // the untracked-loan leaf, so no other row's DTO changes.
+    ...(a?.maturity === "UNTRACKED_LOAN_PAYMENT" ? { loanPaymentDetail: r.pfcDetailed ?? null } : {}),
   };
 }
 
