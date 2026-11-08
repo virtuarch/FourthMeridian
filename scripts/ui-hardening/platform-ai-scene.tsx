@@ -38,6 +38,7 @@ export function PlatformAiScene({empty}: {empty: boolean}) {
   const [draft, setDraft] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
   const noop = () => {};
   return (
     <>
@@ -48,7 +49,7 @@ export function PlatformAiScene({empty}: {empty: boolean}) {
         sheetOpen={sheetOpen} railCollapsed={railCollapsed} confirmDelete={null} deleting={false}
         onDraft={setDraft} onSend={() => setDraft('')} onStarter={noop} onRetrySend={noop} onRetryFailed={noop} onCheckPending={noop}
         onSelect={() => setSheetOpen(false)} onNew={noop} onAskDelete={noop} onConfirmDelete={noop} onCancelDelete={noop}
-        onSheet={setSheetOpen} onRail={setRailCollapsed}
+        onSheet={setSheetOpen} onRail={setRailCollapsed} noticeOpen={noticeOpen} onNotice={setNoticeOpen}
       />
       <nav style={{position: 'fixed', bottom: 0, height: 56, background: 'var(--glass-thick)', left: 0, right: 0}}>Fixture platform bottom bar</nav>
     </>

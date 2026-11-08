@@ -27,7 +27,11 @@ node scripts/ui-hardening/platform-ai.mjs
 `PlatformAiConversationsView` with fabricated conversations and no API calls.
 It checks horizontal overflow, the docked composer, the rail/sheet switch at `lg`,
 the composer centred on the message column beside the rail, header fit with the
-sr-only "Conversations" label below `sm`, and wrapping starter chips.
+sr-only "Conversations" label below `sm`, wrapping starter chips, and the OD-5
+notice: shown in full (never in a scroll container) for a new conversation, also at
+keyboard-open sizes (320×480, 360/375/390×440), and behind an inline "Privacy &
+retention" disclosure below `sm` in an ongoing one. Local 375 px screenshots of both
+notice states are written to the evidence directory.
 
 Set `FM_UI_BROWSER_TOOLS` to change the external tool directory;
 `FM_UI_BROWSER_OUTPUT` changes the generated fixture directory. The browser runner

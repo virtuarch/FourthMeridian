@@ -314,7 +314,19 @@ export interface ComposerProps {
   onSubmit: () => void;
   disabled: boolean;
   busy: boolean;
+  /**
+   * How the OD-5 notice shows (parity PR5, S2 ruling). "full": the whole text,
+   * always visible (a new conversation, before the first send). "toggle": an
+   * ongoing conversation — below `sm` a "Privacy & retention" disclosure button
+   * reveals it inline; at `sm` and up it is shown inline. Never a scroll box.
+   */
+  noticeMode?: "full" | "toggle";
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
 }
+
+/** The OD-5 disclosure region id (aria-controls of the "Privacy & retention" button). */
+export const PLATFORM_AI_NOTICE_REGION_ID = "platform-ai-notice";
 
 /** While a send is in flight the send button shows, disabled. There is NO Stop (S2: an abort would not cancel the server turn). */
 const BUSY_SEND_CLASS = "w-11 h-11 rounded-full flex items-center justify-center shrink-0 text-white bg-[var(--accent-info)] opacity-35 cursor-not-allowed";
@@ -325,7 +337,20 @@ const BUSY_SEND_CLASS = "w-11 h-11 rounded-full flex items-center justify-center
  * `platform-ai-question` id, 500 characters, the privacy hint and the OD-5
  * line tied by aria-describedby — with a character counter beneath.
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }: ComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, noticeMode = "full", noticeOpen = false, onNotice }: ComposerProps) {
+  const toggle = noticeMode === "toggle";
+  const open = !toggle || noticeOpen;
+  const counter = <span data-platform-ai-counter="" className="ml-auto shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>;
+  // The full OD-5 text is always in the DOM (aria-describedby target). Collapsed, it is
+  // display:none below `sm` only; it is never inside a scroll container.
+  const notice = (
+    <div id={PLATFORM_AI_NOTICE_REGION_ID} data-platform-ai-notice={toggle ? (noticeOpen ? "open" : "closed") : "full"}
+      className={open ? "min-w-0" : "min-w-0 max-sm:hidden"}>
+      <p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" className="min-w-0 break-words">
+        {PLATFORM_AI_CONVERSATIONS_DISCLOSURE}
+      </p>
+    </div>
+  );
   return (
     <ComposerFrame
       value={value}
@@ -334,7 +359,7 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }
       label="Ask Platform AI"
       inputId="platform-ai-question"
       maxLength={PLATFORM_AI_COMPOSER_MAX}
-      placeholder="Ask about jobs, providers, costs, incidents or customers"
+      placeholder="Ask about the platform…"
       describedBy="platform-ai-privacy-hint platform-ai-conversations-disclosure"
       disabled={disabled}
       trailing={busy && !disabled ? (
@@ -343,22 +368,29 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }
         </button>
       ) : undefined}
       footer={
-        // Parity PR5: the privacy hint + OD-5 line are long; on a short (keyboard-shrunk)
-        // viewport they pushed the dock past the shell. They are capped to a share of the
-        // visible viewport (AiShell's --ai-viewport-height) and scroll; the full wording
-        // stays rendered, visible and tied to the textarea. The counter stays outside
-        // the scroller so it is always visible.
-        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 items-end gap-3 px-1 text-[11px] text-[var(--text-muted)]">
-          <div data-platform-ai-composer-notes="" tabIndex={0} role="group" aria-label="Privacy and retention notice"
-            className="flex max-h-[calc(var(--ai-viewport-height,100dvh)*0.18)] min-w-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
-            <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="min-w-0 break-words text-[var(--text-secondary)]">
-              {PLATFORM_AI_PRIVACY_HINT}
-            </p>
-            <p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" className="min-w-0 break-words">
-              {PLATFORM_AI_CONVERSATIONS_DISCLOSURE}
-            </p>
-          </div>
-          <span data-platform-ai-counter="" className="shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>
+        <div data-platform-ai-composer-footer="" className="mt-1.5 flex min-w-0 flex-col gap-0.5 px-1 text-[11px] leading-[1.3] text-[var(--text-muted)]">
+          <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="min-w-0 break-words text-[var(--text-secondary)]">
+            {PLATFORM_AI_PRIVACY_HINT}
+          </p>
+          {toggle ? (
+            <>
+              <div className="flex min-w-0 items-center gap-3">
+                <button type="button" data-platform-ai-notice-toggle="" aria-expanded={noticeOpen} aria-controls={PLATFORM_AI_NOTICE_REGION_ID}
+                  onClick={() => onNotice?.(!noticeOpen)}
+                  className="-my-1 inline-flex min-h-7 shrink-0 items-center rounded px-0.5 text-[11px] font-medium text-[var(--text-secondary)] underline underline-offset-2 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)] sm:hidden">
+                  Privacy &amp; retention
+                </button>
+                {counter}
+              </div>
+              {notice}
+            </>
+          ) : (
+            <>
+              {/* Full width: the notice wraps onto fewer lines than beside the counter. */}
+              {notice}
+              <div className="flex min-w-0">{counter}</div>
+            </>
+          )}
         </div>
       }
     />
@@ -397,6 +429,9 @@ export interface PlatformAiConversationsViewProps {
   onCancelDelete: () => void;
   onSheet: (open: boolean) => void;
   onRail: (collapsed: boolean) => void;
+  /** Ongoing conversation: the "Privacy & retention" disclosure (below sm). */
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
 }
 
 /** Header action: the same quiet "New chat" control Personal Space AI shows. */
@@ -486,7 +521,8 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {atLimit ? (
             <p data-platform-ai-limit="" role="status" className="mx-auto mb-2 w-full min-w-0 max-w-3xl break-words rounded-xl border border-[var(--border-hairline)] p-3 text-sm text-[var(--text-secondary)]">{CONVERSATION_LIMIT_COPY}</p>
           ) : null}
-          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading} />
+          <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
+            noticeMode={conversationMode ? "toggle" : "full"} noticeOpen={p.noticeOpen} onNotice={p.onNotice} />
         </>
       )}
     </>
@@ -595,6 +631,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
   const [problem, setProblem] = useState<SendProblem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ClientConversation | null>(null);
   const [deleting, setDeleting] = useState(false);
   /** The latest selection request: a slower, older read never overwrites a newer choice. */
@@ -762,6 +799,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
       onCancelDelete={() => { if (!deleting) setConfirmDelete(null); }}
       onSheet={setSheetOpen}
       onRail={(v) => { setRailCollapsed(v); writeRailCollapsed(v); }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
     />
   );
 }
