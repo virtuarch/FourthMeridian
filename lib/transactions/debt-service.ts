@@ -67,6 +67,15 @@
  *     improves the after-paydown net: borrowed money is not a surplus.
  *   · Balance transfers — liability → liability, no liquid leg: not a payment,
  *     not a charge, not proceeds. Nothing here moves.
+ *   · Mortgage F10 — a payment to an installment loan that is NOT connected (the
+ *     liquidity reason UNTRACKED_LOAN_PAYMENT: the provider named the loan payee,
+ *     no owned account qualified). It is debt SERVICE, unsplit (principal +
+ *     interest + escrow), so it is in neither `payments` (the debt-payment
+ *     authority counts only attested legs) nor `netPaydown` (there is no tracked
+ *     liability it paid down). It is reported on its own, `untrackedLoanPayments`,
+ *     and `netAfterDebtPaydown` subtracts it: the economic net never contained
+ *     any of it (it is not spending), so subtracting it once is the cash truth,
+ *     and omitting it would report the payment as surplus.
  *
  * ⚠️ Evidence is POSITIVE (the v2.6-DEBT-1 rule). A charge offsets payments only
  * when its own account is a known liability; proceeds only when the liquidity
@@ -110,6 +119,13 @@ export interface DebtService {
   netPaydown: number;
   /** max(0, newChargesOnLiabilities + debtProceeds − payments): what is owed grew by this, from flows. */
   netNewBorrowing: number;
+  /**
+   * Mortgage F10 — Σ|amount| of cash legs paid to an installment loan that is
+   * NOT connected (liquidity reason UNTRACKED_LOAN_PAYMENT). Unsplit loan
+   * payments (principal + interest + escrow). In Cash Out; NOT in `payments`,
+   * NOT in `netPaydown`, NOT in spending.
+   */
+  untrackedLoanPayments: number;
 }
 
 
@@ -133,6 +149,7 @@ export function computeDebtService<T extends LiquidityTx>(
   let charges  = 0;
   let refunds  = 0;
   let proceeds = 0;
+  let untracked = 0;
 
   for (const r of rows) {
     const m = magnitude(r);
@@ -152,8 +169,10 @@ export function computeDebtService<T extends LiquidityTx>(
       continue;
     }
 
-    if (ownTier === "liquid" && classifyLiquidity(r, ctx).reason === "DEBT_PROCEEDS") {
-      proceeds += mag;
+    if (ownTier === "liquid") {
+      const reason = classifyLiquidity(r, ctx).reason;
+      if (reason === "DEBT_PROCEEDS") proceeds += mag;
+      else if (reason === "UNTRACKED_LOAN_PAYMENT") untracked += mag;
     }
   }
 
@@ -165,16 +184,22 @@ export function computeDebtService<T extends LiquidityTx>(
     debtProceeds:            round2(proceeds),
     netPaydown:              round2(Math.max(0, net)),
     netNewBorrowing:         round2(Math.max(0, -net)),
+    untrackedLoanPayments:   round2(untracked),
   };
 }
 
 /**
- * The economic net after the cash that genuinely went to reducing debt.
+ * The economic net after the cash that genuinely went to reducing debt — and,
+ * since Mortgage F10, after unsplit payments to loans that are not connected
+ * (debt service the economic net never contained; see the module header).
  *
  * ≤ the economic net, always: new borrowing is never credited as surplus, so a
  * household whose spending exceeds its income still reads as exactly that
  * however the gap was financed.
  */
-export function netAfterDebtPaydown(economicNet: number, service: DebtService): number {
-  return economicNet - service.netPaydown;
+export function netAfterDebtPaydown(
+  economicNet: number,
+  service: Pick<DebtService, "netPaydown"> & Partial<Pick<DebtService, "untrackedLoanPayments">>,
+): number {
+  return economicNet - service.netPaydown - (service.untrackedLoanPayments ?? 0);
 }
