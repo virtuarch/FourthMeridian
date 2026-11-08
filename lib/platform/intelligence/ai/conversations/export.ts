@@ -11,7 +11,8 @@
  *     text with their citations and code-written notes;
  *   · a LOST area   ⇒ NO content at all — no question, answer, title or derived
  *     label. Its messages were never read; the bundle carries one line per
- *     area: "N conversations in <area> omitted: you no longer have access",
+ *     area: "N conversation(s) in <area> omitted: you no longer have access"
+ *     (singular for 1),
  *     and the manifest a count per area.
  *   · soft-deleted conversations never leave the database.
  *
@@ -70,7 +71,7 @@ const areaLabel = (area: PlatformArea) => PLATFORM_AREAS[area]?.label ?? area;
 
 /** The S2 STRICT omission line, per lost area. */
 export const omittedConversationsNote = (count: number, area: PlatformArea) =>
-  `${count} conversations in ${areaLabel(area)} omitted: you no longer have access`;
+  `${count} ${count === 1 ? "conversation" : "conversations"} in ${areaLabel(area)} omitted: you no longer have access`;
 
 /** A stored answer as plain rendered text: text, figure and link spans in order (links by their text only). */
 export function renderAnswerText(a: StoredAnswerV1): string {

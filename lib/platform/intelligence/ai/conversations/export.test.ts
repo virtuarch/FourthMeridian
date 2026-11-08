@@ -88,6 +88,11 @@ console.log("1. the projection (S2 STRICT export ruling)");
       && !/Any failed logins spike|SECRET-SECURITY-ANSWER|cvlost/.test(JSON.stringify(leaked)));
   const none = projectPlatformAiConversationsForExport({ conversations: [], omitted: [{ area: "PLATFORM_OPS", count: 3 }, { area: "SECURITY_OPS", count: 1 }] }, new Set());
   check("NO held area (e.g. operator 2FA refused) ⇒ nothing but per-area counts", none.conversations.length === 0 && none.omitted.map((o) => `${o.area}:${o.count}`).join() === "PLATFORM_OPS:3,SECURITY_OPS:1");
+  check("the omission line is singular for 1 and plural otherwise",
+    /^1 conversation in .+ omitted: you no longer have access$/.test(omittedConversationsNote(1, "SECURITY_OPS"))
+      && /^3 conversations in .+ omitted: you no longer have access$/.test(omittedConversationsNote(3, "PLATFORM_OPS"))
+      && leaked.omitted[0].note === omittedConversationsNote(1, "SECURITY_OPS") && leaked.omitted[0].note.startsWith("1 conversation in "),
+    [omittedConversationsNote(1, "SECURITY_OPS"), leaked.omitted[0].note]);
   check("renderAnswerText concatenates every span's text", renderAnswerText(ANSWER) === "There are 3 open incidents — see the incident list.");
   check("nothing stored ⇒ an empty section", (() => { const e = projectPlatformAiConversationsForExport({ conversations: [], omitted: [] }, new Set()); return e.conversations.length === 0 && e.omitted.length === 0; })());
 }

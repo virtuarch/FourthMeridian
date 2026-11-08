@@ -599,6 +599,9 @@ console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answ
   for (const c of chips) (c.props as { onSelect: () => void }).onSelect();
   check("each chip submits exactly its own text (onStarter → ask → a fresh clientRequestId)",
     chips.length === PLATFORM_AI_STARTER_PROMPTS.length && asked.join("|") === PLATFORM_AI_STARTER_PROMPTS.join("|"), asked);
+  const startersRow = (emptyShell?.props as { aside?: { props?: { className?: string } } } | undefined)?.aside?.props?.className ?? "";
+  check("the starters end with the dock's fade height (pb-8 = AiShell's h-8 fade), so the last chip scrolls clear of the dock",
+    /(^|\s)pb-8(\s|$)/.test(startersRow) && /-top-8 h-8/.test(readFileSync(path.join(process.cwd(), "components/ai/AiShell.tsx"), "utf8")), startersRow);
   check("no chips when a new conversation is not allowed (limit reached)", !/data-platform-ai-starters/.test(view({ selected: null, limits: { used: 50, max: 50 } })));
   check("the empty state is the composer's, not a conversation's: no chips once a thread is open", !/data-platform-ai-starters/.test(conv));
 }

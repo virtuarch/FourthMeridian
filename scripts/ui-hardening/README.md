@@ -27,7 +27,8 @@ node scripts/ui-hardening/platform-ai.mjs
 `PlatformAiConversationsView` with fabricated conversations and no API calls.
 It checks horizontal overflow, the docked composer, the rail/sheet switch at `lg`,
 the composer centred on the message column beside the rail, header fit with the
-sr-only "Conversations" label below `sm`, wrapping starter chips, and the OD-5
+sr-only "Conversations" label below `sm`, wrapping starter chips (scrolled to the end
+of the reading region, no chip intersects the dock or its fade; 375×688 included), and the OD-5
 notice: shown in full (never in a scroll container) for a new conversation, also at
 keyboard-open sizes (320×480, 360/375/390×440), and behind an inline "Privacy &
 retention" disclosure below `sm` in an ongoing one. Local 375 px screenshots of both
