@@ -20,6 +20,7 @@
  *   adapters and sync execution.
  */
 
+import type { AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
@@ -571,6 +572,14 @@ export interface AccountsSectionData {
    * is an honest PARTIAL. OMITTED when nothing was excluded.
    */
   totalsUnvaluedCount?: number;
+  /**
+   * Mortgage F8 (S2) — PARTIAL status + DIRECTION beside netWorth / totalAssets /
+   * totalLiabilities / liquid when an account of unknown balance (never
+   * observed, FIN-A2; or not yet valued) was excluded: an excluded debt ⇒ the
+   * true net worth is lower; an excluded asset ⇒ it may be higher. OMITTED
+   * when every total is COMPLETE.
+   */
+  totalsCoverage?: AiTotalsCoverage;
   counts: {
     liquid:       number;
     investments:  number;

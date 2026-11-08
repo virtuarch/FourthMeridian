@@ -67,6 +67,10 @@ export const getFinancialSnapshot: ToolDefinition = {
       totalLiabilities: acc.totalLiabilities,
       /** Unrestricted cash. Deliberately not named `cash` — see get_net_worth_history. */
       liquid: acc.totalLiquid,
+      // Mortgage F8 (S2) — the PARTIAL status + DIRECTION of the four totals
+      // above, beside them: an account of unknown balance is excluded (never
+      // counted as 0). Present only when some total is PARTIAL.
+      ...(acc.totalsCoverage ? { totalsCoverage: acc.totalsCoverage } : {}),
       // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
       // ⚠️ THE RELATION IS STATED, NOT LEFT TO INFERENCE. Shown beside `liquid` with no
       // relation, the model read restricted as a PART of liquid and subtracted it again

@@ -36,6 +36,41 @@ import { gateFor, gatedCompareLabel, type WealthChangeGate } from "./wealth-chan
 import { ESTIMATED_CHANGE_SUFFIX } from "@/lib/connections/balance-coverage.core";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
 import type { TalkSection } from "@/components/ai/talk-about-this";
+import { unobservedTotalCoverage, type ExcludedAccountCounts, type ExclusionTotal, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
+
+/**
+ * Mortgage F8 (S2) — which total each wealth metric IS, for the PARTIAL /
+ * direction statement. `invested` has no F8 total (its exclusions are the
+ * wallet-worded FM-AUDIT-022 caveat, unchanged).
+ */
+const METRIC_TOTAL: Record<WealthMetricKey, ExclusionTotal | null> = {
+  netWorth:         "NET_WORTH",
+  liquidNetWorth:   "LIQUID_NET_WORTH",
+  totalAssets:      "TOTAL_ASSETS",
+  totalLiabilities: "TOTAL_DEBT",
+  cash:             "LIQUID_CASH",
+  invested:         null,
+};
+
+/** Mortgage F8 — the PARTIAL coverage of every wealth metric that has one (COMPLETE ones omitted). */
+export type WealthTotalsCoverage = Partial<Record<WealthMetricKey, UnobservedTotalCoverage>>;
+
+export function wealthTotalsCoverage(counts: ExcludedAccountCounts): WealthTotalsCoverage {
+  const out: WealthTotalsCoverage = {};
+  for (const [metric, total] of Object.entries(METRIC_TOTAL) as [WealthMetricKey, ExclusionTotal | null][]) {
+    if (!total) continue;
+    const c = unobservedTotalCoverage(total, counts);
+    if (c.status === "PARTIAL") out[metric] = c;
+  }
+  return out;
+}
+
+/** The coverage the ENVELOPE states for a headline metric: PARTIAL, COMPLETE, or
+ *  undefined for a metric with no F8 total (legacy wallet caveat applies). */
+export function wealthHeadlineCoverage(coverage: WealthTotalsCoverage, metric: WealthMetricKey, counts: ExcludedAccountCounts): UnobservedTotalCoverage | undefined {
+  const total = METRIC_TOTAL[metric];
+  return total ? (coverage[metric] ?? unobservedTotalCoverage(total, counts)) : undefined;
+}
 
 /** v2.7 R6 — which topic the AI entry names for the headline metric (both layouts). */
 const TALK_SECTION: Record<WealthMetricKey, TalkSection> = {
@@ -92,6 +127,7 @@ export function WealthHero({
   freshnessLabel = null,
   timePreset,
   changeGate = null,
+  totalsCoverage,
 }: {
   result:   WealthResult;
   currency: string;
@@ -123,6 +159,12 @@ export function WealthHero({
    * floor is withheld and said; an estimated one is labelled. Absent ⇒ as before.
    */
   changeGate?: WealthChangeGate | null;
+  /**
+   * Mortgage F8 (S2) — PARTIAL coverage per metric (an account of unknown
+   * balance is excluded). The headline's own caveat rides the envelope; each
+   * secondary stat that is partial is marked "partial" with its direction.
+   */
+  totalsCoverage?: WealthTotalsCoverage;
 }) {
   const { asOfState, compareState } = result;
   const gate = gateFor(changeGate, metric);
@@ -214,6 +256,7 @@ export function WealthHero({
             {secondaryRows.map((row) => (
               <Stat key={row.key} label={row.label}>
                 {formatCurrency(asOfState[row.key], currency)}
+                <PartialMark coverage={totalsCoverage?.[row.key]} />
                 <SecondaryChange delta={gatedDelta(result, changeGate, row.key)} goodDirection={row.goodDirection} currency={currency} />
               </Stat>
             ))}
@@ -269,6 +312,21 @@ export function SecondaryChange({
   return (
     <span className={className ?? "ml-1.5"} style={{ color: good ? "var(--accent-positive)" : "var(--accent-negative)" }}>
       {delta.abs >= 0 ? "+" : "−"}{formatCurrency(Math.abs(delta.abs), currency)}
+    </span>
+  );
+}
+
+/**
+ * Mortgage F8 — a secondary stat whose total excludes an account of unknown
+ * balance says so beside the figure, with the direction in its title. Renders
+ * nothing when the stat is COMPLETE.
+ */
+export function PartialMark({ coverage }: { coverage?: UnobservedTotalCoverage }) {
+  if (!coverage || coverage.status !== "PARTIAL") return null;
+  const text = coverage.notes.join("; ");
+  return (
+    <span className="ml-1 text-[var(--accent-warning)]" title={text} data-partial-total>
+      partial<span className="sr-only"> — {text}</span>
     </span>
   );
 }
