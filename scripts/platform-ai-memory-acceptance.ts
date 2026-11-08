@@ -133,6 +133,15 @@ async function main(): Promise<number> {
   const payloadVal = asApp(A, ins("mf_pl2", A, "PLATFORM_OPS", "OPERATIONAL_STATE", "H72", REF_M, `'{"expected":"the customer is angry"}'::jsonb`));
   check(14, "the payload allowlist: a conversation key, or a free-text value ⇒ refused", /payload key refused/.test(payloadBad.err) && /payload value not allowed/.test(payloadVal.err), `${errLine(payloadBad)} | ${errLine(payloadVal)}`);
 
+  // S2 M1: supersedesId must name a visible fact of the same operator and area.
+  asApp(A, ins("mf_m1own", A));
+  const supIns = (op: string, id: string, sup: string, area = "PLATFORM_OPS") => asApp(op, `insert into ${T} (id,"operatorUserId","platformArea","factType",origin,payload,"sourceRefs",ttl,"supersedesId") values ('${id}','${op}','${area}','WATCHING_ISSUE','TOOL_DERIVED','{}'::jsonb,${REF_M},'D7','${sup}');`);
+  const supOther = supIns(A, "mf_m1x", "mf_b1");
+  const supArea = supIns(A, "mf_m1y", "mf_m1own", "SECURITY_OPS");
+  const supOwn = supIns(A, "mf_m1z", "mf_m1own");
+  check(62, "S2 M1: another operator's fact id as supersedesId ⇒ refused; own fact of another area ⇒ refused; own fact, same area ⇒ OK",
+    /same operator and area/.test(supOther.err) && /same operator and area/.test(supArea.err) && supOwn.ok, `${errLine(supOther)} | ${errLine(supArea)} | ${errLine(supOwn)}`);
+
   // fm_system / fm_auth: nothing on the table; EXECUTE matrix.
   const sysOpen = [`select count(*) from ${T};`, `delete from ${T};`, `update ${T} set "invalidReason"='GONE';`, ins("mf_sys", A)].filter((q) => !deniedByGrant(asSys(q)));
   check(15, "fm_system has NO table access (SELECT / INSERT / UPDATE / DELETE ⇒ permission denied)", sysOpen.length === 0, sysOpen.join(" | "));
