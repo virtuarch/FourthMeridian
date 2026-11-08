@@ -19,12 +19,30 @@ export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
  * The qualification an estimate must carry, or null for an interest-aware plan.
  * `headline` is the badge; `detail` says what was and was not counted.
  */
-export function payoffEstimateNotice(plan: PayoffPlan): { headline: string; detail: string } | null {
+export function payoffEstimateNotice(
+  plan: PayoffPlan,
+  /** Mortgage F3 — "APR" only when every debt in the plan is revolving credit
+   *  (lib/debt/rate-label.ts blendedRateLabel); otherwise the neutral "rate". */
+  rateWord: "APR" | "rate" = "APR",
+): { headline: string; detail: string } | null {
   const basis = payoffBasisOf(plan);
   if (!basis || basis.interest === "INTEREST_AWARE") return null;
   return basis.interest === "PRINCIPAL_ONLY"
-    ? { headline: "Estimated without interest", detail: "No APR is on file, so this counts payments against the balance only." }
-    : { headline: "Estimated without some interest", detail: "Interest is counted only on the debts with an APR on file." };
+    ? { headline: "Estimated without interest", detail: `No ${rateWord} is on file, so this counts payments against the balance only.` }
+    : { headline: "Estimated without some interest", detail: `Interest is counted only on the debts with ${rateWord === "APR" ? "an APR" : "a rate"} on file.` };
+}
+
+/**
+ * Mortgage F3 (S2 ruling, item 3) — the payoff never assumes 0% SILENTLY: the
+ * "rate unknown" note, with how many debts it covers, from the engine's own
+ * counts (`basis.unknownAprCount` / `basis.owingCount`). Null when every owing
+ * debt has a rate on file.
+ */
+export function payoffUnknownRateNote(plan: PayoffPlan): string | null {
+  const basis = payoffBasisOf(plan);
+  if (!basis || basis.unknownAprCount === 0) return null;
+  const { unknownAprCount: u, owingCount: n } = basis;
+  return `Rate unknown for ${u} of ${n} debt${n === 1 ? "" : "s"} — projected without interest and left out of the interest total.`;
 }
 
 /** The one call to action — it points at the Interest cost widget, never at a second APR input. */

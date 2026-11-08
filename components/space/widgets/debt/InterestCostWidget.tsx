@@ -25,6 +25,7 @@
 import { useState } from "react";
 import { Check, Loader2, Pencil, Plus, X } from "lucide-react";
 import { computeInterestCost } from "@/lib/debt/interest-cost";
+import { rateLabel, rateLabelInline, blendedRateLabel } from "@/lib/debt/rate-label";
 import { parseAprInput, saveAccountApr } from "@/lib/debt/user-terms";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { convertMoney } from "@/lib/money/convert";
@@ -59,6 +60,8 @@ export function InterestCostWidget({
     debts.map((a) => ({ id: a.id, balance: inDisp(a.balance, a.currency, ctx), aprPct: a.interestRate })),
   );
   const byId = new Map(debts.map((a) => [a.id, a]));
+  // Mortgage F3 — the footer names "APR" only when every unknown-rate debt is revolving.
+  const unknownRateWord = blendedRateLabel(cost.rows.filter((r) => r.monthly == null).map((r) => byId.get(r.id)!).filter(Boolean));
   const owingIds = new Set(cost.rows.map((r) => r.id));
   // Owing rows first (costliest first, unknowns last — the authority's order),
   // then the accounts that owe nothing: their rate still matters the day they do.
@@ -115,7 +118,7 @@ export function InterestCostWidget({
                       ? "No balance owed"
                       : monthly != null
                         ? `${formatAggregateMoney(monthly, ctx)}/mo est. interest`
-                        : "Interest unknown — no APR on file"}
+                        : `Interest unknown — no ${rateLabelInline(a)} on file`}
                   </p>
                 </div>
 
@@ -124,7 +127,7 @@ export function InterestCostWidget({
                     <input
                       autoFocus
                       inputMode="decimal"
-                      aria-label={`APR for ${a.name}`}
+                      aria-label={`${rateLabel(a)} for ${a.name}`}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -139,7 +142,7 @@ export function InterestCostWidget({
                       type="button"
                       onClick={() => save(a.id)}
                       disabled={saving}
-                      aria-label="Save APR"
+                      aria-label={`Save ${rateLabelInline(a)}`}
                       className="p-1 rounded text-[var(--accent-info)] disabled:opacity-50"
                     >
                       {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
@@ -159,10 +162,10 @@ export function InterestCostWidget({
                     type="button"
                     disabled={!editable}
                     onClick={() => open(a)}
-                    aria-label={`Edit APR for ${a.name}`}
+                    aria-label={`Edit ${rateLabelInline(a)} for ${a.name}`}
                     className="group flex items-center gap-1.5 shrink-0 text-[12px] font-semibold tabular-nums text-[var(--text-primary)] disabled:cursor-default"
                   >
-                    {a.interestRate.toFixed(2)}% APR
+                    {a.interestRate.toFixed(2)}% {rateLabel(a)}
                     {editable && <Pencil size={11} className="text-[var(--text-faint)] group-hover:text-[var(--accent-info)]" />}
                   </button>
                 ) : editable ? (
@@ -171,10 +174,10 @@ export function InterestCostWidget({
                     onClick={() => open(a)}
                     className="flex items-center gap-1 shrink-0 text-[11px] font-medium text-[var(--accent-info)]"
                   >
-                    <Plus size={12} /> Add APR
+                    <Plus size={12} /> Add {rateLabelInline(a)}
                   </button>
                 ) : (
-                  <span className="shrink-0 text-[11px] text-[var(--text-faint)]">APR unknown</span>
+                  <span className="shrink-0 text-[11px] text-[var(--text-faint)]">{rateLabel(a)} unknown</span>
                 )}
               </div>
               {editing && error && (
@@ -194,7 +197,7 @@ export function InterestCostWidget({
         )}
         {cost.unknownCount > 0 && (
           <p className="text-[10px] text-[var(--text-faint)] mt-0.5">
-            {cost.unknownCount} debt{cost.unknownCount === 1 ? "" : "s"} without an APR not counted — an unknown rate is never treated as 0%
+            {cost.unknownCount} debt{cost.unknownCount === 1 ? "" : "s"} without {unknownRateWord === "APR" ? "an APR" : "a rate"} not counted — an unknown rate is never treated as 0%
           </p>
         )}
       </div>

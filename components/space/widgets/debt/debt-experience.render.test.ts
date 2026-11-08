@@ -207,7 +207,9 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("the schedule comes from planPayoff — no local amortization", planner.includes("planPayoff(") && !planner.includes("simulatePayoff") && !/Math\.ceil\(\s*balance/.test(planner) && !/30\.44/.test(planner));
   check("minimum payments are not read", !/\.minimumPayment\b/.test(planner) && !/minPayment/.test(planner));
   check("'is this an estimate?' is read from the engine's basis — never inferred from a rate",
-    planner.includes("payoffEstimateNotice(plan)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
+    // Mortgage F3 — pin updated intentionally: the call now also passes the
+    // blended rate WORD ("APR" | "rate"); the basis still comes from the plan.
+    planner.includes("payoffEstimateNotice(plan, R)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
   check("the planner never manufactures a 0% for an unknown account", !/interestRate\s*\?\?\s*0/.test(planner) && !/apr:\s*[^,\n]*\?\?\s*0/.test(planner));
 }
 

@@ -431,7 +431,14 @@ export const getBaselines: ToolDefinition = {
         ...(liquidBehind > 0 ? { completeness: { tier: 'incomplete' as Tier,
           reason: `${liquidBehind} liquid account(s) need reconnecting; the balance is the last one read` } } : {}) },
       ...(aggregate.missingMinimumCount > 0
-        ? { minimumDebtServiceUnknownFor: aggregate.missingMinimumCount } : {}),
+        ? { minimumDebtServiceUnknownFor: aggregate.missingMinimumCount,
+            // Mortgage F3 — the typed PARTIAL/NONE: the minimum debt service above
+            // covers the known minimums only; an unknown one is never a silent 0.
+            minimumDebtServiceCoverage: {
+              status: aggregate.minimumCoverage.status,
+              note: `${aggregate.minimumCoverage.note}; minimumDebtService covers the known minimums only — an unknown minimum is not 0`,
+              unknownOwedShare: Math.round(aggregate.minimumCoverage.unknownOwedShare * 1000) / 1000,
+            } } : {}),
       measuredSpending: { byWindow,
         note: 'The measured monthly figure depends on the window. None of these is wrong; say which one '
           + 'an answer used. These are MEASUREMENTS: the canonical baseline (`expense`, the cash projection\'s '

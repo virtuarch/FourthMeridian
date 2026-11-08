@@ -20,6 +20,7 @@ import type { ReactNode } from "react";
 import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { LiabilityRow } from "./debt-ledger-util";
 import { debtSubtypeLabel } from "./debt-ledger-util";
+import { rateLabel } from "@/lib/debt/rate-label";
 
 const UTIL_COLOR: Record<string, string> = {
   low:      "var(--accent-positive)",
@@ -98,7 +99,7 @@ export function DebtAccountDetail({ row, currency }: { row: LiabilityRow; curren
       {/* Facts. */}
       <div className="mt-5 divide-y divide-[var(--border-hairline)] border-t border-[var(--border-hairline)]">
         <Row
-          label="APR"
+          label={rateLabel(a)}
           value={a.interestRate != null ? `${a.interestRate.toFixed(2)}%` : "Unknown — add it in Interest cost"}
           valueColor={a.interestRate == null ? "var(--text-faint)" : undefined}
         />

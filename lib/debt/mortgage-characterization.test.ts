@@ -36,6 +36,8 @@ import { computeDebtAggregate } from "@/lib/debt/aggregates";
 import { computeInterestCost } from "@/lib/debt/interest-cost";
 import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import { planPayoff } from "@/lib/debt/payoff";
+import { rateLabel } from "@/lib/debt/rate-label";
+import { payoffUnknownRateNote } from "@/components/space/widgets/debt/payoff-copy";
 import { isRevolvingLine, creditUtilization } from "@/lib/accounts/credit-utilization";
 import { resolveAccountBalances } from "@/lib/balances/account-balances";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
@@ -159,16 +161,19 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
     { balance: 5_000,   apr: 25,   minimumPayment: 150  }, // card
   ]);
   check("H3 totalOwed = 305,000", agg.totalOwed === 305_000, agg);
-  // SUSPECTED DEFECT: Σ minimums omits the mortgage entirely (it contributes 0),
-  // so monthly obligations read ~150 instead of ~150 + the mortgage payment.
-  // Expected: mortgage payment sourced from /liabilities or user terms, or the
-  // total flagged as partial wherever it is shown (missingMinimumCount exists).
-  check("H3 Σ minimumPayment = 150 (mortgage contributes 0); missingMinimumCount = 1",
-    agg.minimumPayment === 150 && agg.missingMinimumCount === 1, agg);
-  // SUSPECTED DEFECT: the "weighted APR" over 305k of debt reads 25% because
-  // only the card is rated. Expected: disclose as partial (unratedCount=1) or
-  // avoid presenting it as the household's rate.
-  check("H3 weightedApr = 25 (card only); unratedCount = 1", agg.weightedApr === 25 && agg.unratedCount === 1, agg);
+  // FIXED by F3 — desired behaviour: the Σ minimums still covers only the card
+  // (150 — the mortgage's unknown minimum is never invented), but it is a TYPED
+  // PARTIAL that says how many debts and what share of the balance lack it.
+  check("H3 Σ minimumPayment = 150 (known only) — FIXED by F3: minimumCoverage PARTIAL, '1 of 2 debts has no minimum payment on file'",
+    agg.minimumPayment === 150 && agg.missingMinimumCount === 1
+      && agg.minimumCoverage.status === "PARTIAL" && agg.minimumCoverage.unknownCount === 1 && agg.minimumCoverage.owingCount === 2
+      && agg.minimumCoverage.unknownOwed === 300_000 && near(agg.minimumCoverage.unknownOwedShare, 300_000 / 305_000, 1e-9)
+      && agg.minimumCoverage.note === "1 of 2 debts has no minimum payment on file", agg.minimumCoverage);
+  // FIXED by F3 — desired behaviour: the 25% is over the card only and is never
+  // averaged over the unknown mortgage; rateCoverage PARTIAL travels with it.
+  check("H3 weightedApr = 25 over known rates only — FIXED by F3: rateCoverage PARTIAL, '1 of 2 debts has no rate on file'",
+    agg.weightedApr === 25 && agg.unratedCount === 1
+      && agg.rateCoverage.status === "PARTIAL" && agg.rateCoverage.note === "1 of 2 debts has no rate on file", agg.rateCoverage);
 
   const ic = computeInterestCost([{ id: "mtg", balance: 300_000, aprPct: null }, { id: "card", balance: 5_000, aprPct: 25 }]);
   check("H3 monthly interest = 104.17 (card only); mortgage unknown, sorted last", near(ic.totalMonthly, 104.1667, 0.01) && ic.unknownCount === 1 && ic.rows[1]?.id === "mtg", ic);
@@ -178,24 +183,27 @@ console.log(`H3. Plaid mortgage with no terms (debtSubtype/interestRate/minimumP
   ] });
   const mtg = plan.status === "paid_off" ? plan.liabilities.find((l) => l.id === "mtg") : undefined;
   const basis = "basis" in plan ? plan.basis : null;
-  console.log(`    observed: status=${plan.status} basis=${basis?.interest} mtgBasis=${mtg?.interestBasis} mtgInterest=${mtg?.interestPaid}`);
+  console.log(`    observed: status=${plan.status} basis=${basis?.interest} mtgBasis=${mtg?.interestBasis} mtgRate=${mtg?.rateStatus}`);
   check("H3 payoff basis = PARTIAL_INTEREST", basis?.interest === "PARTIAL_INTEREST", basis);
-  // SUSPECTED DEFECT (disclosed, but material at mortgage scale): the mortgage
-  // is modelled at an ASSUMED 0%, so its payoff date and total interest are
-  // wildly optimistic. Expected: require/collect a rate before projecting a
-  // mortgage, or exclude it from the payoff plan.
-  check("H3 mortgage modelled ASSUMED_ZERO_UNKNOWN_APR with interestPaid = 0",
-    mtg?.interestBasis === "ASSUMED_ZERO_UNKNOWN_APR" && mtg?.interestPaid === 0, mtg);
+  // FIXED by F3 — desired behaviour: the mortgage is never SILENTLY at 0%. Its
+  // projection is labelled RATE_UNKNOWN, the plan's interest total is scoped to
+  // known-rate debts, and the surfaced note says "Rate unknown for 1 of 2 debts".
+  // (The pro-rata date itself is H4's subject and is unchanged.)
+  check("H3 mortgage projection — FIXED by F3: rateStatus RATE_UNKNOWN, interest total KNOWN_RATE_ONLY, '1 of 2 debts' counts",
+    mtg?.rateStatus === "RATE_UNKNOWN" && mtg?.aprPct === null
+      && plan.status === "paid_off" && plan.interestTotalScope === "KNOWN_RATE_ONLY"
+      && plan.totalInterest === plan.liabilities.find((l) => l.id === "card")?.interestPaid
+      && basis?.unknownAprCount === 1 && basis?.owingCount === 2, { mtg, scope: plan.status === "paid_off" ? plan.interestTotalScope : null });
+  check("H3 payoff note — FIXED by F3: 'Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.'",
+    payoffUnknownRateNote(plan) === "Rate unknown for 1 of 2 debts — projected without interest and left out of the interest total.", payoffUnknownRateNote(plan));
 
-  // Rate label: keyed on debtSubtype ONLY (never providerSubtype, which is the
-  // field Plaid actually sets). resolveRateLabel is module-private → source scan.
+  // FIXED by F3 — desired behaviour: the label follows the liability KIND
+  // (providerSubtype), in the UI and in the AI tool contract alike.
+  check("H3 rate label — FIXED by F3: Plaid mortgage (debtSubtype null) ⇒ 'Mortgage rate', card ⇒ 'APR'",
+    rateLabel(MORTGAGE) === "Mortgage rate" && rateLabel(CARD) === "APR");
   const src = readFileSync(join(process.cwd(), "lib/ai/assemblers/accounts.ts"), "utf8");
-  const fn = src.slice(src.indexOf("function resolveRateLabel("), src.indexOf("function resolveRateLabel(") + 700);
-  check("H3 rate label resolver switches on debtSubtype", fn.includes("switch (debtSubtype)") && fn.includes("case 'mortgage':       return 'Mortgage Rate';"));
-  check("H3 rate label resolver never reads providerSubtype; default is 'APR'", !fn.includes("providerSubtype") && fn.includes("default:               return 'APR';"));
-  check("H3 call site passes fa.debtSubtype (null for Plaid) ⇒ a Plaid mortgage is labelled 'APR'",
-    src.includes("label:       resolveRateLabel(fa.debtSubtype),"));
-  // SUSPECTED DEFECT: expected label "Mortgage Rate" when providerSubtype is "mortgage".
+  check("H3 AI assembler — FIXED by F3: knowledge-gap label and per-row rateLabel come from rateLabel(fa); resolveRateLabel(debtSubtype) is gone",
+    src.includes("label:       rateLabel(fa),") && src.includes("base.rateLabel            = rateLabel(fa);") && !src.includes("resolveRateLabel("));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

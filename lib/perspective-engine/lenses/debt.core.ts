@@ -318,13 +318,27 @@ export function computeDebt(
   if (interestKnown) {
     metrics.push(
       { id: "monthlyInterest", label: "Estimated interest per month", value: monthlyInterest, format: "currency", tone: "warning", estimated: true },
-      { id: "blendedApr", label: "Blended APR (balance-weighted, known rates)", value: blendedApr as number, format: "percent" },
+      // Mortgage F3 — "rate", not "APR": the blend can include a mortgage or a
+      // loan (APR is revolving credit only), and this lens carries no kind. A
+      // blend over SOME of the debts is labelled PARTIAL with the coverage note.
+      {
+        id: "blendedApr",
+        label: fullAgg.rateCoverage.status === "PARTIAL"
+          ? `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`
+          : "Blended rate (balance-weighted)",
+        value: blendedApr as number,
+        format: "percent",
+      },
     );
   }
   if (minPaymentsKnown) {
     metrics.push({
       id: "minPayments",
-      label: "Minimum payments per month",
+      // Mortgage F3 — a sum over SOME of the owing debts is PARTIAL, never
+      // "the missing ones are 0".
+      label: fullAgg.minimumCoverage.status === "PARTIAL"
+        ? `Minimum payments per month — partial: ${fullAgg.minimumCoverage.note}`
+        : "Minimum payments per month",
       value: minPayments,
       format: "currency",
       estimated: anyMinEstimated || undefined,
@@ -361,6 +375,13 @@ export function computeDebt(
       id: "estimated-minimums",
       text: "Some minimum payments are estimated (the greater of $35 or 1% of balance plus monthly interest); actual issuer minimums may differ.",
       source: "estimate",
+    });
+  }
+  if (minPaymentsKnown && fullAgg.minimumCoverage.status === "PARTIAL") {
+    assumptions.push({
+      id: "partial-minimums",
+      text: `Minimum payments are partial: ${fullAgg.minimumCoverage.note} — a missing minimum is never counted as 0.`,
+      source: "default",
     });
   }
   // Knowledge gap — FULL rows only, by the assemblers' rule: naming a gap on
