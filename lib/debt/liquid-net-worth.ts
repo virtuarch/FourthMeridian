@@ -32,7 +32,7 @@
  * Pure: no DB, no server-only imports (client components import it).
  */
 
-import { liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { debtTypeLabel, liabilityKind, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 /**
  * THE date liquid net worth stopped subtracting installment loans (owner
@@ -88,24 +88,19 @@ export function isExcludedFromLiquidNetWorth(a: LiabilityKindInput): boolean {
   return liquidNetWorthTreatment(a) === "EXCLUDED_INSTALLMENT";
 }
 
-// Plain-English names for an excluded installment loan. Keyed by the SAME
-// evidence liabilityKind reads (FM debtSubtype first, then Plaid subtype); a
-// key missing here only changes the WORD ("loan"), never the classification.
-const DEBT_SUBTYPE_LABEL: Record<string, string> = {
-  mortgage: "mortgage", auto_loan: "auto loan", student_loan: "student loan", personal_loan: "personal loan",
-};
-const PLAID_SUBTYPE_LABEL: Record<string, string> = {
-  mortgage: "mortgage", auto: "auto loan", student: "student loan", consumer: "personal loan",
-  "home equity": "home equity loan", construction: "construction loan",
-  business: "business loan", commercial: "business loan",
-};
-
-/** "mortgage" / "auto loan" / … — the name of an EXCLUDED installment loan. */
+/**
+ * The in-sentence name of an EXCLUDED installment loan ("mortgage", "auto
+ * loan", …). THE label source is `debtTypeLabel` (lib/debt/liability-kind.ts);
+ * this only lower-cases its first letter for use mid-sentence ("Excludes:
+ * mortgage, auto loan") — an all-caps acronym ("HELOC") is left alone.
+ */
 export function installmentLoanLabel(a: LiabilityKindInput): string {
-  const ds = a.debtSubtype?.trim().toLowerCase();
-  if (ds) return DEBT_SUBTYPE_LABEL[ds] ?? "loan";
-  const ps = a.providerSubtype?.trim().toLowerCase();
-  return (ps && PLAID_SUBTYPE_LABEL[ps]) || "loan";
+  return inSentence(debtTypeLabel(a));
+}
+
+/** "Auto loan" → "auto loan"; "HELOC" stays "HELOC". */
+export function inSentence(label: string): string {
+  return /^[A-Z]{2,}\b/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1);
 }
 
 /**

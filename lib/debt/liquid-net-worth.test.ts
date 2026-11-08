@@ -19,7 +19,7 @@ import { computeSnapshotFields, computeLiquidSplit } from "@/lib/snapshots/backf
 import {
   LIQUID_NET_WORTH_DEFINITION, LIQUID_NET_WORTH_NOT_DEBT_FREE, NET_LIQUID_HISTORY_AI_NOTE,
   LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthChartMarkers,
-  aiLiquidNetWorth, isExcludedFromLiquidNetWorth, liquidNetWorthBasis, liquidNetWorthNoteText,
+  aiLiquidNetWorth, inSentence, isExcludedFromLiquidNetWorth, liquidNetWorthBasis, liquidNetWorthNoteText,
   netLiquidIdentityViolation, storedExcludedInstallmentDebt,
 } from "@/lib/debt/liquid-net-worth";
 import { excludedAccountCounts, unobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
@@ -88,7 +88,16 @@ const MANUAL   = { id: "man", type: "debt", balance: 2_000, currency: "USD" }; /
   assert.deepEqual(basis.excludedKinds, ["mortgage", "auto loan", "student loan"]);
   assert.equal(basis.excludedNote, "Excludes: mortgage, auto loan, student loan");
   assert.equal(computeSnapshotFields(classifyAccounts(rows)).netLiquid, 10_000);
-  ok("mortgage + auto + student ⇒ all excluded and named in first-seen order");
+  // Labels come from debtTypeLabel (#485), lower-cased mid-sentence; a closed-end
+  // home-equity loan and other Plaid loan subtypes are "installment loan".
+  const more = liquidNetWorthBasis([
+    { type: "debt", balance: 1, providerSubtype: "home equity", creditLimit: null },
+    { type: "debt", balance: 1, providerSubtype: "construction" },
+    { type: "debt", balance: 1, debtSubtype: "personal_loan" },
+  ]);
+  assert.deepEqual(more.excludedKinds, ["installment loan", "personal loan"]);
+  assert.equal(inSentence("HELOC"), "HELOC");
+  ok("mortgage + auto + student ⇒ all excluded and named in first-seen order; labels from debtTypeLabel");
 }
 
 // ── 4. Unknown kind is COUNTED and disclosed (never overstated) ──────────────
