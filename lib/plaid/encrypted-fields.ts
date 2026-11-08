@@ -28,7 +28,7 @@ export type EncryptedFieldFormat = "cipher" | "sealed";
 
 export interface EncryptedField {
   /** Prisma model == table name (none of these models is @@map-ped). */
-  readonly model: "PlaidItem" | "User" | "Connection" | "BetaAbuseEvidence" | "PlatformAiMessage";
+  readonly model: "PlaidItem" | "User" | "Connection" | "BetaAbuseEvidence" | "PlatformAiMessage" | "PlatformAiMemoryFact";
   /** Prisma field == column name. */
   readonly field: string;
   readonly purpose: EncryptionPurpose;
@@ -48,6 +48,10 @@ export const ENCRYPTED_FIELDS: readonly EncryptedField[] = [
   // rotation's contentEncrypted-only UPDATE by a role that bypasses RLS (the
   // settle trigger's one exception; migration 20261104120000).
   { model: "PlatformAiMessage", field: "contentEncrypted",     purpose: EncryptionPurpose.PLATFORM_AI_MESSAGE,   format: "cipher" },
+  // Platform AI operational memory (design v2, D2). Rows are immutable except the
+  // rotation's noteEncrypted-only UPDATE by a role that bypasses RLS (the
+  // immutability trigger's one exception; migration 20261110120000).
+  { model: "PlatformAiMemoryFact", field: "noteEncrypted",     purpose: EncryptionPurpose.PLATFORM_AI_MEMORY,    format: "cipher" },
 ] as const;
 
 /**
@@ -57,7 +61,7 @@ export const ENCRYPTED_FIELDS: readonly EncryptedField[] = [
  * the carrier fails to open and its reader starts fresh (by design — see
  * lib/ai/conversation/runtime-state.ts).
  */
-export const NON_STORED_PURPOSES: readonly EncryptionPurpose[] = [EncryptionPurpose.AI_RUNTIME_STATE];
+export const NON_STORED_PURPOSES: readonly EncryptionPurpose[] = [EncryptionPurpose.AI_RUNTIME_STATE, EncryptionPurpose.PLATFORM_AI_MEMORY_TOKEN];
 
 /**
  * Prisma `where` fragment selecting only the rows of `f` that hold ciphertext

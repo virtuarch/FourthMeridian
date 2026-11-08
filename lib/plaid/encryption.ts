@@ -99,6 +99,19 @@ export const EncryptionPurpose = {
    * lib/platform/intelligence/ai/conversations/store.ts.
    */
   PLATFORM_AI_MESSAGE:   "platform_ai_message",
+  /**
+   * PlatformAiMemoryFact.noteEncrypted — the operator's own ≤ 140-character note
+   * on a Platform AI memory fact (operational memory design v2, D2). Written only
+   * by lib/platform/intelligence/ai/memory/store.ts.
+   */
+  PLATFORM_AI_MEMORY:    "platform_ai_memory",
+  /**
+   * The Platform AI memory PROPOSAL TOKEN (design v2 §2, B5) — NOT A STORED FIELD:
+   * a sealed proposal the server hands to the confirm card and takes back
+   * (15 minutes, single-use jti), and the subkey of the HMAC shingles it carries
+   * (key_memory). Its own purpose, never the conversations key.
+   */
+  PLATFORM_AI_MEMORY_TOKEN: "platform_ai_memory_token",
 } as const;
 
 export type EncryptionPurpose = typeof EncryptionPurpose[keyof typeof EncryptionPurpose];
