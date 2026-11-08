@@ -35,7 +35,9 @@ export type StoredSegment =
   /** A link: a registry page id plus params — NEVER an href (re-resolved on every read). */
   | { kind: "link"; text: string; page: string; params: Record<string, string> }
   /** S2 F-C1 (ii): the server's code-written period CORRECTION (shown above the answer; never model text). */
-  | { kind: "correction"; text: string };
+  | { kind: "correction"; text: string }
+  /** F-1 (S2 2026-11-08): the server's code-written WINDOW NOTE (its own segment, shown above the answer; never model text). */
+  | { kind: "note"; text: string };
 
 export interface StoredCitation { metric: string; label: string; window: string }
 
@@ -64,7 +66,8 @@ function validSegment(s: unknown): s is StoredSegment {
   if (!isObj(s)) return false;
   switch (s.kind) {
     case "text":
-    case "correction": return exactKeys(s, ["kind", "text"]) && isText(s.text);
+    case "correction":
+    case "note": return exactKeys(s, ["kind", "text"]) && isText(s.text);
     case "figure":
       return exactKeys(s, ["kind", "text", "metric", "window"]) && isText(s.text, 120) && isRefId(s.metric)
         && (s.window === null || (typeof s.window === "number" && Number.isInteger(s.window) && s.window > 0 && s.window <= 3660) || isText(s.window, 120));

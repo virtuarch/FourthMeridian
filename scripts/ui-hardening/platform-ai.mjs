@@ -195,6 +195,30 @@ try {
     results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'collapsed rail+centred', header: 'pass', starters: 'pass', disclosure: 'line + inline notice', startersClearDock: clearDock });
   }
 
+  // Server callouts (2026-11-08, S2 capture): the correction and the quiet window note render as their own
+  // role="note" callouts ABOVE their answers, the briefing's section label is not a bullet and the nested
+  // item sits one level in — at 390 and 1280, inside the viewport, no horizontal overflow.
+  for (const [w, h] of [[390, 844], [1280, 800]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`${base}/?platform-ai=callouts`);
+    const corr = page.locator('[role="note"][aria-label="Correction"][data-platform-ai-correction]');
+    const note = page.locator('[role="note"][aria-label="Note"][data-platform-ai-window-note]');
+    await corr.first().waitFor();
+    assert.equal(await corr.count(), 1, 'one correction callout at ' + w);
+    assert.equal(await note.count(), 1, 'one window-note callout at ' + w);
+    assert(await noOverflow(page), 'callouts: horizontal overflow at ' + w);
+    for (const c of [corr, note]) {
+      await c.scrollIntoViewIfNeeded();
+      assert(inside(await c.boundingBox(), w), 'callout inside the viewport at ' + w);
+    }
+    assert.equal(await page.locator('[data-platform-ai-body] li', { hasText: 'Connections need attention' }).count(), 0, 'section label is not a bullet at ' + w);
+    assert.equal(await page.locator('[data-platform-ai-nested] li').count(), 1, 'one nested item at ' + w);
+    await corr.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${evidence}/platform-ai-callouts-${w}.png` });
+    await note.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${evidence}/platform-ai-callouts-note-${w}.png` });
+  }
+
   // Input growth and a simulated shorter viewport keep the dock above the bar; the counter appears near the limit only.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${base}/?platform-ai`);
