@@ -413,6 +413,23 @@ export function openWithPurposeReportingKey(sealed: string, purpose: EncryptionP
   return { plaintext: r.value, kid: r.kid };
 }
 
+// ─── Purpose-keyed HMAC (Platform AI memory shingles, design v2 B5) ──────────
+
+/**
+ * HMAC-SHA256 of `message` under the PURPOSE subkey of a keyring root key (the
+ * same HKDF derivation as the ciphers, so the MAC key is domain-separated by
+ * purpose and never the root key). `kid` selects the keyring entry (current by
+ * default; the previous key during a rotation) — a proposal token records the
+ * kid its shingles were computed under, and its confirm recomputes under the
+ * same one. Throws (value-free) for an unknown kid. Never logs.
+ */
+export function macWithPurpose(message: string, purpose: EncryptionPurpose, opts: { kid?: string } = {}): { mac: Buffer; kid: string } {
+  const k = getKeyring();
+  const entry = opts.kid === undefined ? k.current : [k.current, k.previous].find((e) => e !== null && e.kid === opts.kid) ?? null;
+  if (!entry) throw new Error("Unknown key id for this keyring");
+  return { mac: crypto.createHmac("sha256", deriveKey(purpose, entry.rootKey)).update(message, "utf8").digest(), kid: entry.kid };
+}
+
 export function openWithPurpose(sealed: string, purpose: EncryptionPurpose): string {
   return openWithPurposeReportingKey(sealed, purpose).plaintext;
 }

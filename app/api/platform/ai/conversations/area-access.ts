@@ -21,7 +21,8 @@
 import "server-only";
 
 import type { PlatformArea } from "@prisma/client";
-import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
+import { requireFreshPlatformAccess, type PlatformAuth } from "@/lib/platform/authorize";
+import { buildMemoryReaders } from "@/lib/platform/intelligence/ai/memory/readers.server";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import { describeMetric, listMetrics, metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { retrieveMetric, type RetrievalContext } from "@/lib/platform/intelligence/metrics/retrieve";
@@ -42,6 +43,14 @@ import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/ha
 export async function conversationAreaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null> {
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err || !auth.grant || auth.grant.area !== area || auth.user.id !== operatorId) return null;
+  const bound = bindArea(auth);
+  if (!bound) return null;
+  // Platform AI memory (design v2 §2): the authorized readers come from THIS fresh guard result.
+  return { ...bound, area, memoryReaders: buildMemoryReaders(auth, area, bound.binding) };
+}
+
+function bindArea(auth: PlatformAuth): Pick<AreaAccess, "resolvePage" | "binding"> | null {
+  if (!auth.grant) return null;
   const t = metricAccessFor(auth);
   if (!t) return null;
   const ctx: RetrievalContext = { metricToken: t, incidentToken: incidentAudienceFor(auth) };

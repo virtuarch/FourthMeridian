@@ -88,8 +88,14 @@ export const MEMORY_PROPOSAL_TTL_MS = 15 * 60_000;
 export const MEMORY_SHINGLES_MAX = 512;
 /** A shingle is this many consecutive normalised words (D7 threshold). */
 export const MEMORY_SHINGLE_WORDS = 6;
-/** The character threshold of the propose-time verbatim check (D7). */
-export const MEMORY_VERBATIM_CHARS = 40;
+/**
+ * The character threshold of the verbatim checks. D7 approved 40; this build uses 24
+ * — STRICTER — because the design's own §8 loophole assertion is "no span of 24 or
+ * more characters" and a 5-word, 30-character copy passes 6 words / 40 characters.
+ * Applied at propose time AND (as word-aligned 24-character windows in the token's
+ * B5 MACs) at confirm. Flagged to S2 as an explicit deviation.
+ */
+export const MEMORY_VERBATIM_CHARS = 24;
 
 /** An invalidated row is kept this long (hidden by the store) before the purge removes it (D8). */
 export const MEMORY_INVALIDATED_KEEP_DAYS = 1;
@@ -171,3 +177,9 @@ export const MEMORY_JOB_NAMES = [
 
 /** = PROVIDER_SPECS keys (lib/platform/provider-health.ts — the provider pages' identity; pinned). */
 export const MEMORY_PROVIDER_IDS = ["PLAID", "OPEN_EXCHANGE_RATES"] as const;
+
+// ── Routes (#352 limiter keys) ───────────────────────────────────────────────
+
+export const PLATFORM_AI_MEMORY_WRITE_ROUTE = "platform-ai-memory-write";
+export const PLATFORM_AI_MEMORY_DELETE_ROUTE = "platform-ai-memory-delete";
+export const PLATFORM_AI_MEMORY_ADMIN_PURGE_ROUTE = "platform-ai-memory-admin-purge";

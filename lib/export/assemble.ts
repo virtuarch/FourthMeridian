@@ -104,6 +104,7 @@ import { decideOperatorTotpRefusal } from "@/lib/platform/authorize";
 import { grantedAreasFrom } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import { readConversationsForExport } from "@/lib/platform/intelligence/ai/conversations/store";
 import { projectPlatformAiConversationsForExport } from "@/lib/platform/intelligence/ai/conversations/export";
+import { readFactsForExport, recordMemoryExported } from "@/lib/platform/intelligence/ai/memory/store";
 import {
   capTransactions,
   EXPORT_TRANSACTION_CAP,
@@ -364,6 +365,11 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   const totpRefused = decideOperatorTotpRefusal({ role: user.role, totpEnabled: user.totpEnabled, enforced: env.isOperatorTotpEnforced });
   const heldAreas = totpRefused ? new Set<never>() : grantedAreasFrom(await loadPlatformDirectory(userId));
   const platformAi = projectPlatformAiConversationsForExport(await readConversationsForExport(userId, heldAreas), heldAreas);
+  // Platform AI operational memory (design v2 D13): held areas only (RLS also hides a lost area), the
+  // note decrypted, type, refs and dates; the EXPORTED audit row carries the count only. Not gated on
+  // the memory flags (subject access covers what is STORED; flags off ⇒ 0 rows).
+  const memoryFacts = await readFactsForExport(userId, heldAreas);
+  if (memoryFacts.length > 0) await recordMemoryExported(userId, memoryFacts.length);
 
   const auditHistory = auditRows.map((r) => {
     const meta = (r.metadata ?? null) as { reason?: unknown } | null;
@@ -465,6 +471,10 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     syncIncidents: await readExportIncidents(userId),
     platformAiConversations: platformAi.conversations,
     platformAiConversationsOmitted: platformAi.omitted,
+    platformAiMemory: memoryFacts.map((f) => ({
+      area: f.area, factType: f.factType, origin: f.origin, concern: f.concern, note: f.note,
+      refs: f.refs.map((r) => ({ ...r })), ttl: f.ttl, notedAt: f.observedAt.toISOString(), expiresAt: f.expiresAt.toISOString(),
+    })),
   };
 
   const counts: Record<string, number> = {
@@ -485,6 +495,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     platformAiConversations: data.platformAiConversations.length,
     // S2 STRICT — the count per LOST area (no content of those conversations is exported).
     ...Object.fromEntries(data.platformAiConversationsOmitted.map((o) => [`platformAiConversationsOmitted:${o.area}`, o.count])),
+    platformAiMemory: data.platformAiMemory.length,
   };
 
   const notes = [

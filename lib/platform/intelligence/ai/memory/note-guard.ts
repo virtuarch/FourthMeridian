@@ -61,7 +61,19 @@ export function wordShingles(text: string, n = MEMORY_SHINGLE_WORDS): string[] {
   return out;
 }
 
-/** D7 at propose time: a ≥ 6-word or ≥ 40-character span of any source, in the note. */
+/**
+ * The word-aligned MEMORY_VERBATIM_CHARS-character windows of normalised text: one per
+ * word start (the window may run across words). The confirm-time counterpart of the
+ * character rule (B5 MACs these with a "c:" tag beside the "w:" word shingles).
+ */
+export function charWindows(text: string, n = MEMORY_VERBATIM_CHARS): string[] {
+  const t = normaliseForShingles(text);
+  const out: string[] = [];
+  for (let i = 0; i + n <= t.length; i++) if (i === 0 || t[i - 1] === " ") out.push(t.slice(i, i + n));
+  return out;
+}
+
+/** D7 at propose time: a ≥ 6-word or ≥ MEMORY_VERBATIM_CHARS-character span of any source, in the note. */
 export function hasVerbatimSpan(note: string, sources: readonly string[]): boolean {
   const normNote = normaliseForShingles(note);
   const normSources = sources.map(normaliseForShingles).filter(Boolean);
@@ -83,7 +95,7 @@ export function hasVerbatimSpan(note: string, sources: readonly string[]): boole
 export function validateOperatorNote(raw: string | null | undefined, ctx: { verbatimSources?: readonly string[] } = {}): NoteVerdict {
   const note = clipNote(raw);
   if (note === null) return { ok: true, note: null };
-  if (Buffer.byteLength(note, "utf8") > MEMORY_NOTE_MAX_BYTES) return { ok: false, reason: "NOTE_TOO_LONG" };
+  if (new TextEncoder().encode(note).length > MEMORY_NOTE_MAX_BYTES) return { ok: false, reason: "NOTE_TOO_LONG" };
   if (LINK.test(note)) return { ok: false, reason: "NOTE_LINK" };
   if (IDENTITY.some((r) => r.test(note))) return { ok: false, reason: "NOTE_IDENTITY" };
   // The scrub's one period-year exemption ("October 2026") does not apply to a stored note: any 4+ digit run is refused.

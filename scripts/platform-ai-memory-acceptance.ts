@@ -18,6 +18,10 @@
  *              restores, offboarding + purge ⇒ 0
  *   [stale]    72 h + 1 s invisible before any purge; 100 reads never move expiresAt
  *   [job]      the real retention seam: audited count == rows removed
+ *   [loophole] design §8: canary conversations, an adversarial proposer (copied
+ *              spans, the email, the amount, the cuid — as proposed AND as edited
+ *              notes at confirm), ref-id smuggling, the transcript purge, then
+ *              every memory column decrypted and scanned
  *   [precheck] the pre-enable check against the real catalog PASSES
  *
  *   npm run rls:accept:ai-memory [-- --keep]
@@ -316,6 +320,94 @@ async function main(): Promise<number> {
   check(52, "account deletion as fm_system (the account purge's role) under FORCE RLS cascades — every fact of the user removed",
     aRows >= 1 && uDel.ok && count(`"operatorUserId"='${A}'`) === 0, `${aRows} ${errLine(uDel)}`);
 
+  // ── [loophole] design §8: memory can never become a transcript side channel ──
+  console.log("\n[loophole] canary conversations, an adversarial proposer, the transcript purge, then every memory column decrypted\n");
+  {
+    const D = "aimem_op_d";
+    one(`insert into "User" (id,email,name,"updatedAt") values ('${D}','aimem-d@example.test','Operator D',now());
+      insert into "PlatformGrant" (id,"userId",area,level,"updatedAt") values ('pg_d_ops','${D}','PLATFORM_OPS','READ',now()); select 'ok';`);
+    const convStore = await import("@/lib/platform/intelligence/ai/conversations/store");
+    const { scrubOperatorText } = await import("@/lib/ai/privacy/scrub");
+    const { buildMemoryTurn } = await import("@/lib/platform/intelligence/ai/memory/turn");
+    const { handleConfirm } = await import("@/lib/platform/intelligence/ai/memory/handlers");
+    const CANARY_CUID = `c${randomBytes(12).toString("hex")}`;
+    const CANARY_EMAIL = "canary.person@example.test";
+    const CANARY_SENTENCE = "the orange heron flies at midnight over the quiet harbour";
+    const CANARY_ANSWER = "the violet lantern hums beneath the old stone bridge tonight";
+    const rawQ = `${CANARY_SENTENCE}; mail ${CANARY_EMAIL} about $4,321.99 and incident ${CANARY_CUID}`;
+    const q = scrubOperatorText(rawQ, 500);
+    const conv = await convStore.createConversation({ operatorId: D, area: "PLATFORM_OPS", createRequestId: randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-4$3-8$4-$5").slice(0, 36), scrubbedQuestion: q });
+    if (conv.kind !== "CREATED") throw new Error(`loophole fixture: ${conv.kind}`);
+    await convStore.settleTurn(D, conv.conversation.id, conv.pair.assistant.id, { status: "COMPLETE", answer: { v: 1, segments: [{ kind: "text", text: `${CANARY_ANSWER} and the $4,321.99 figure` }], citations: [], notes: [], stop: "ANSWERED" }, evidenceRefs: [] });
+    const purgedTexts = [q, `${CANARY_ANSWER} and the $4,321.99 figure`];
+    const PAGE = "PLATFORM_OPS:platform-incidents:open";
+    const pageReaders = { metric: async () => null, page: async () => ({ state: "OK" as const, label: "Open incidents", updatedAt: null }), incident: async () => null, job: async () => null, provider: async () => null };
+    const deps = { heldAreas: async () => new Set(["PLATFORM_OPS"] as const), readersFor: async () => pageReaders, store, now: () => new Date() };
+    const ev = { envelopes: [], hrefs: new Set<string>(), definitions: [], labels: new Set<string>(), trace: [], pages: new Map([["/x", { id: PAGE, params: {} }]]) } as never;
+    // The adversarial generator: notes copying spans, the email, the amount, the cuid — as proposed notes AND as edited notes at confirm.
+    const attacks = [
+      CANARY_SENTENCE, `remember ${CANARY_SENTENCE.split(" ").slice(2, 8).join(" ")}`, CANARY_ANSWER.split(" ").slice(1, 7).join(" "),
+      `ping ${CANARY_EMAIL}`, "about $4,321.99", "about 4321 dollars", `see ${CANARY_CUID}`, CANARY_CUID.slice(0, 25),
+      "orange heron flies at midnight", "watch the queue tomorrow",
+    ];
+    let accepted = 0, offered = 0;
+    for (const note of attacks) {
+      for (const mode of ["proposed", "edited"] as const) {
+        const t = buildMemoryTurn({ operatorId: D, area: "PLATFORM_OPS", facts: [], question: q, historyNewestFirst: [], metricLabel: () => null, pageLabel: () => "Open incidents", now: () => new Date() });
+        t.hooks.propose({ factType: "WATCHING_ISSUE", subjectRef: PAGE, ...(mode === "proposed" ? { note } : {}) }, ev);
+        const fin = t.finalize(`${CANARY_ANSWER} and the $4,321.99 figure`);
+        if (!fin.card) continue;
+        offered++;
+        const r = await handleConfirm(D, { token: fin.card.token, ttl: "D7", ...(mode === "edited" ? { note } : {}) }, deps);
+        if (r.status === 201) accepted++;
+      }
+    }
+    // Ref-id smuggling straight at the table (the writer's own path): the trigger refuses it.
+    const smuggle = asApp(D, `insert into ${T} (id,"operatorUserId","platformArea","factType",origin,payload,"sourceRefs",ttl) values ('mf_smug','${D}','PLATFORM_OPS','WATCHING_ISSUE','TOOL_DERIVED','{}'::jsonb,'[{"t":"INCIDENT","id":"${CANARY_SENTENCE.slice(0, 40)}","observedState":"OPEN"}]'::jsonb,'D7');`);
+    check(55, "LOOPHOLE: a ref id holding transcript text is rejected by the trigger", !smuggle.ok && /not a cuid/.test(smuggle.err), errLine(smuggle));
+    // The transcript purge: the conversation's messages expire and fm_system purges them.
+    one(`begin; alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
+      update "PlatformAiMessage" set "createdAt" = ${N} - interval '8 days', "purgeAfter" = ${N} - interval '1 day' where "conversationId" = '${conv.conversation.id}';
+      alter table "PlatformAiMessage" enable trigger platform_ai_message_settle; commit; select 'ok';`);
+    asSys(`select * from fm_purge_platform_ai_conversations(500);`);
+    const leftMsgs = one(`select count(*) from "PlatformAiMessage" where "conversationId" = '${conv.conversation.id}';`);
+    // Decrypt EVERY memory column of D and scan.
+    const encMod = await import("@/lib/plaid/encryption");
+    const dump = psql(owner, `select coalesce("noteEncrypted",'') || E'\t' || payload::text || E'\t' || "sourceRefs"::text from ${T} where "operatorUserId" = '${D}';`).out.split("\n").filter(Boolean);
+    const plain = dump.map((line) => { const [c, pl, refs] = line.split("\t"); return { note: c ? encMod.decryptWithPurpose(c, encMod.EncryptionPurpose.PLATFORM_AI_MEMORY) : "", pl, refs }; });
+    const all = plain.map((x) => `${x.note}\n${x.pl}\n${x.refs}`).join("\n").toLowerCase();
+    const canaries = [CANARY_EMAIL, CANARY_CUID, "4,321", "4321", "orange heron", "violet lantern"];
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9\s]+/g, " ").replace(/\s+/g, " ").trim();
+    const purgedNorm = purgedTexts.map(norm);
+    const words6 = plain.flatMap((x) => { const w = norm(x.note).split(" ").filter(Boolean); const out: string[] = []; for (let i = 0; i + 6 <= w.length; i++) out.push(w.slice(i, i + 6).join(" ")); return out; });
+    const chars24 = plain.flatMap((x) => { const n = norm(x.note); const out: string[] = []; for (let i = 0; i + 24 <= n.length; i++) out.push(n.slice(i, i + 24)); return out; });
+    const cuidsOutsideIncident = plain.flatMap((x) => [...`${x.note} ${x.pl}`.matchAll(/\bc[a-z0-9]{20,}\b/g)].map((m) => m[0]))
+      .concat(plain.flatMap((x) => (JSON.parse(x.refs) as Array<{ t: string; id: string }>).filter((r) => r.t !== "INCIDENT" && /^c[a-z0-9]{20,}$/.test(r.id)).map((r) => r.id)));
+    check(56, "LOOPHOLE: the adversary was answered (proposals offered, at least the benign one confirmed) and the transcript is purged",
+      offered >= 1 && accepted >= 1 && leftMsgs === "0", `offered=${offered} accepted=${accepted} left=${leftMsgs}`);
+    check(57, "LOOPHOLE: after the purge, no canary (email, cuid, amount, sentence) in ANY decrypted memory column",
+      !canaries.some((c) => all.includes(c.toLowerCase())), canaries.filter((c) => all.includes(c.toLowerCase())).join(","));
+    check(58, "LOOPHOLE: no span of 6+ words or 24+ characters of any purged message; no conversation / message keys; no cuid outside an INCIDENT id",
+      !words6.some((w) => purgedNorm.some((p) => p.includes(w))) && !chars24.some((c) => purgedNorm.some((p) => p.includes(c)))
+        && !/conversation|message|transcript/i.test(plain.map((x) => `${x.pl}${x.refs}`).join("")) && cuidsOutsideIncident.length === 0,
+      JSON.stringify({ w: words6.filter((w) => purgedNorm.some((p) => p.includes(w))), c: cuidsOutsideIncident }));
+
+    // D13 — the operator's own data export: held areas only, the note in plaintext, type, refs and dates; EXPORTED audit = count only.
+    const { assembleUserExport } = await import("@/lib/export/assemble");
+    const quietly = async <X,>(f: () => Promise<X>): Promise<X> => { const o = { log: console.log, error: console.error, warn: console.warn }; console.log = () => {}; console.error = () => {}; console.warn = () => {}; try { return await f(); } finally { Object.assign(console, o); } };
+    // The Platform directory lists an ACTIVE grant only beside its Platform Space (loadPlatformDirectory).
+    one(`insert into "Space" (id,name,"platformArea","updatedAt") values ('sp_aimem_ops','Platform Ops','PLATFORM_OPS',now()) on conflict do nothing; select 'ok';`);
+    const visibleD = Number(one(`select count(*) from ${T} where "operatorUserId"='${D}' and "deletedAt" is null and "invalidatedAt" is null and "expiresAt" > ${N};`));
+    const ex = await quietly(() => assembleUserExport(D));
+    const audEx = one(`select coalesce(max(metadata::text),'') from "AuditLog" where action='PLATFORM_AI_MEMORY_EXPORTED' and "performedByAdminId"='${D}';`);
+    one(`update "PlatformGrant" set status='REVOKED', "revokedAt"=now() where id='pg_d_ops'; select 'ok';`);
+    const exLost = await quietly(() => assembleUserExport(D));
+    check(59, "D13: the export carries the operator's visible facts (note plaintext, type, refs, dates) and an EXPORTED audit with the count only; a lost area exports none",
+      visibleD >= 1 && ex.platformAiMemory.length === visibleD && ex.platformAiMemory.every((f) => typeof f.notedAt === "string" && Array.isArray(f.refs))
+        && ex.manifest.counts.platformAiMemory === visibleD && new RegExp(`"count":\\s*${visibleD}`).test(audEx) && !/note|refs/.test(audEx.replace(/"actor"[^}]*\}/, ""))
+        && exLost.platformAiMemory.length === 0, `${visibleD} ${ex.platformAiMemory.length} ${audEx} lost=${exLost.platformAiMemory.length}`);
+  }
+
   // ── [precheck] the pre-enable check against the real catalog ───────────────
   console.log("\n[precheck] the memory pre-enable check against the real catalog\n");
   {
@@ -330,14 +422,14 @@ async function main(): Promise<number> {
       };
     });
     const v = core.evaluateMemoryPrecheck(rows.fns, rows.table, rows.ret);
-    check(53, "the pre-enable check PASSES on the migrated catalog (definer inventory, owners bypass, EXECUTE matrix, no fm_app UPDATE on deletedAt, 7-day retention)",
+    check(60, "the pre-enable check PASSES on the migrated catalog (definer inventory, owners bypass, EXECUTE matrix, no fm_app UPDATE on deletedAt, 7-day retention)",
       v.ok, JSON.stringify(v.lines.filter((l) => !l.ok)));
     setOwner("fm_aimem_nobypass");
     one(`alter function public.fm_platform_ai_memory_soft_delete(text) owner to fm_aimem_nobypass; select 'ok';`);
     const fns2 = await db.$queryRawUnsafe<import("./lib/platform-ai-memory-precheck.core").MemoryFunctionRow[]>(core.MEMORY_PRECHECK_FUNCTIONS_SQL);
     const v2 = core.evaluateMemoryPrecheck(fns2, rows.table, rows.ret);
     setOwner("fm_aimem_owner");
-    check(54, "…and FAILS when the definers are owned by a role without BYPASSRLS", !v2.ok && v2.lines.some((l) => !l.ok && /OWNER bypasses RLS/.test(l.text)));
+    check(61, "…and FAILS when the definers are owned by a role without BYPASSRLS", !v2.ok && v2.lines.some((l) => !l.ok && /OWNER bypasses RLS/.test(l.text)));
     await db.$disconnect();
   }
   const { tenantDb, systemDb } = await import("@/lib/db");

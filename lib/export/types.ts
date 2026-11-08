@@ -133,4 +133,22 @@ export interface ExportData {
    * count and a fixed line per area, never any content.
    */
   platformAiConversationsOmitted: ExportPlatformAiOmission[];
+  /**
+   * Platform AI operational memory (design v2 D13) — the operator's own visible
+   * facts in areas they hold today: type, note plaintext, refs and dates. A lost
+   * area exports nothing (its facts are hidden and removed at the next purge).
+   */
+  platformAiMemory: ExportPlatformAiMemoryFact[];
+}
+
+export interface ExportPlatformAiMemoryFact {
+  area: string;
+  factType: string;
+  origin: string;
+  concern: string | null;
+  note: string | null;
+  refs: Array<{ t: string; id: string; part?: string; w?: number; observedState: string }>;
+  ttl: string;
+  notedAt: string;
+  expiresAt: string;
 }

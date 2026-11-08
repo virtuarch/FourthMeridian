@@ -343,3 +343,35 @@ export async function softDeleteAllFacts(operatorId: string): Promise<{ deleted:
 export async function readFactsForExport(operatorId: string, heldAreas: ReadonlySet<PlatformArea>, opts: { decrypt?: NoteDecrypt } = {}): Promise<MemoryFactRecord[]> {
   return visibleFacts(operatorId, { areas: [...heldAreas], decrypt: opts.decrypt });
 }
+
+// ── Refusals (design §7: PROPOSAL_REFUSED {reasonCode}, no content) ─────────
+
+/** One PROPOSAL_REFUSED audit row per code — `{area, reasonCode}` only. */
+export async function recordProposalRefusals(operatorId: string, area: PlatformArea, codes: readonly string[]): Promise<void> {
+  if (codes.length === 0) return;
+  await withTenantDb(operatorId, async (tx) => {
+    for (const reasonCode of codes.slice(0, 10)) {
+      await recordOperatorAction(auditClient(tx), {
+        actor: { userId: operatorId, via: "PLATFORM_GRANT", area },
+        action: AuditAction.PLATFORM_AI_MEMORY_PROPOSAL_REFUSED,
+        target: { kind: "PLATFORM_AI_MEMORY", id: "proposal" },
+        result: "REFUSED",
+        detail: { area, reasonCode },
+      });
+    }
+  });
+}
+
+/** EXPORTED (D13): counts only, in the export's own transaction-free step. */
+export async function recordMemoryExported(operatorId: string, count: number): Promise<void> {
+  await withTenantDb(operatorId, async (tx) => {
+    await recordOperatorAction(auditClient(tx), {
+      actor: { userId: operatorId, via: "PLATFORM_GRANT" },
+      action: AuditAction.PLATFORM_AI_MEMORY_EXPORTED,
+      target: { kind: "PLATFORM_AI_MEMORY", id: "export" },
+      result: "SUCCESS",
+      detail: { count },
+    });
+  });
+}
+
