@@ -3,7 +3,8 @@
  *
  * Design: docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md (PR #416). PURE — no
  * database, no env, no I/O, no imports. Every retention interval here is DUPLICATED in
- * prisma/migrations/20261104120000_platform_ai_conversations/migration.sql and
+ * prisma/migrations/20261104120000_platform_ai_conversations/migration.sql (the
+ * retention window: in its successor 20261108120000_platform_ai_retention_7_days) and
  * pinned to it by ./migration-policy.test.ts (the DB-010 pattern): change one
  * and CI fails until a follow-up migration moves the SQL with it.
  */
@@ -16,8 +17,13 @@
 const PLATFORM_AI_QUESTION_MAX = 500;        // = core.PLATFORM_AI_QUESTION_MAX
 const PLATFORM_AI_TURN_TIMEOUT_MS = 45_000;  // = core.PLATFORM_AI_TURN_TIMEOUT_MS
 
-/** OD-1 + OD-7 (owner, APPROVED 2026-11-04): each message is kept 90 days from its creation. */
-export const PLATFORM_AI_RETENTION_DAYS = 90;
+/**
+ * OD-1 + OD-7, amended by the owner 2026-11-08: each message is kept at most 7 days
+ * from its creation (was 90). A question and its answer expire together, 7 days
+ * after the question. The DB side (purgeAfter default + bound) lives in
+ * prisma/migrations/20261108120000_platform_ai_retention_7_days (pinned).
+ */
+export const PLATFORM_AI_RETENTION_DAYS = 7;
 /** OD-10 (owner): soft-delete grace. Default IMMEDIATE — purged on the next daily run. */
 export const PLATFORM_AI_DELETE_GRACE_DAYS = 0;
 /** An empty conversation shell is purged only once older than this (a create in flight is never raced). */

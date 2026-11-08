@@ -135,6 +135,7 @@ async function main() {
             persistedCounterpartyAccountId: r.counterpartyAccountId,
             railType: x.railType ?? null, venueClass: x.venueClass ?? null,
             counterpartyClass: r.counterpartyType,
+            pfcDetailed: r.pfcDetailed ?? null,
           }),
         });
       }

@@ -30,6 +30,9 @@ import { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { computeDebtService, netAfterDebtPaydown } from "@/lib/transactions/debt-service";
 import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
 import { tierResolver, classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { LIQUIDITY_REASON_LABEL } from "@/lib/transactions/liquidity-breakdown";
+import { resolveDestinationEvidence, maturityForEvidence } from "@/lib/transactions/transfer-maturation";
+import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 import { economicTotals } from "@/lib/transactions/cash-flow";
 import { LIABILITY_PAYMENT_DETAILS } from "@/lib/transactions/transfer-debt-payment-correction";
 import { computeDebtAggregate } from "@/lib/debt/aggregates";
@@ -43,6 +46,13 @@ import { resolveAccountBalances } from "@/lib/balances/account-balances";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import { resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 import { excludedAccountCounts, unobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
+import { liabilityKind } from "@/lib/debt/liability-kind";
+import { resolveAccountsAsOf } from "@/lib/data/accounts-asof.core";
+import { resolveAccountCoverage, coverageClassFor } from "@/lib/data/account-coverage.core";
+import {
+  deriveBalanceCoverage, writerAlignedFloorISO, estimatedCoverageLabel, markPartialBalanceCoverage,
+} from "@/lib/connections/balance-coverage.core";
+import { isEstimatedOn } from "@/lib/ai/conversation/tools/history";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -139,18 +149,39 @@ console.log(`H2. Mortgage payment from checking: paydown vs spending — ${LABEL
   const econI = economicTotals(rowsI as never);
   check("H2b with a lender interest row: netPaydown = 1,000, spending = 1,500", sI.netPaydown === 1_000 && econI.spend === 1_500, { sI, spend: econI.spend });
 
-  // (c) Mortgage NOT connected: unpaired cash leg, no counterparty, no maturity.
+  // (c) Mortgage NOT connected: unpaired cash leg, no counterparty. The transfer
+  //     authority sees the provider's mortgage-payee detail and NO owned
+  //     destination, and names the leaf UNTRACKED_LOAN_PAYMENT (Mortgage F10).
   const ctxU = tierResolver([{ id: "chk", type: "checking" }]);
-  const unpaired = [tx({ own: "chk", amount: 8_000, flowType: "INCOME" }), tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT" })];
+  const noDest = resolveDestinationEvidence([], { movementForm: null, competingSourceCount: 1 });
+  const untrackedMaturity = maturityForEvidence(noDest, {
+    accountType: "checking", amount: -2_500, providerFamily: "LOAN_PAYMENTS", persistedCounterpartyAccountId: null,
+    railType: null, venueClass: null, counterpartyClass: null, pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+  });
+  check("H2c the transfer authority names an unconnected mortgage payment UNTRACKED_LOAN_PAYMENT (F10)", untrackedMaturity === "UNTRACKED_LOAN_PAYMENT", untrackedMaturity);
+  const unpaired = [
+    tx({ own: "chk", amount: 8_000, flowType: "INCOME" }),
+    tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT", transferMaturity: untrackedMaturity }),
+  ];
   const sel = selectDebtPaymentCashLegs(unpaired, ctxU);
   const sU = computeDebtService(unpaired, ctxU, abs);
   const econU = economicTotals(unpaired as never);
-  console.log(`    observed (c): counted=${sel.counted.length} payments=${sU.payments} netPaydown=${sU.netPaydown} spend=${econU.spend}`);
-  check("H2c unattested unpaired leg: NOT counted as a debt payment (payments = 0)", sel.counted.length === 0 && sU.payments === 0, sU);
-  check("H2c ... and still not in spending (spend = 0) — the 2,500 is in neither figure", econU.spend === 0, econU);
-  // SUSPECTED DEFECT (c): an unconnected mortgage payment vanishes from both
-  // spending and paydown on the economic axis. Expected: at least the housing
-  // cost (interest + escrow) is visible somewhere, or the gap is disclosed.
+  const liqU = classifyLiquidity(unpaired[1], ctxU);
+  console.log(`    observed (c): counted=${sel.counted.length} payments=${sU.payments} netPaydown=${sU.netPaydown} untracked=${sU.untrackedLoanPayments} spend=${econU.spend} cashOut=${cashOut(unpaired, ctxU)}`);
+  // FIXED by F10 — desired behaviour: still NOT a counted (tracked) debt payment
+  // and NOT paydown — there is no tracked liability for it to pay down …
+  check("H2c FIXED by F10 — not a tracked debt payment: payments = 0, netPaydown = 0", sel.counted.length === 0 && sU.payments === 0 && sU.netPaydown === 0, sU);
+  // FIXED by F10 — … and not discretionary spending …
+  check("H2c FIXED by F10 — not in spending (spend = 0)", econU.spend === 0, econU);
+  // FIXED by F10 — desired behaviour: … but VISIBLE: counted once in Cash Out as
+  // debt service to an untracked loan, labelled as an unsplit loan payment, and
+  // subtracted once from the after-debt net (it was a vanishing payment before).
+  check("H2c FIXED by F10 — in Cash Out once (2,500) as UNTRACKED_LOAN_PAYMENT, labelled 'loan payment (principal + interest + escrow, not split)'",
+    cashOut(unpaired, ctxU) === 2_500 && liqU.effect === "CASH_OUT" && liqU.reason === "UNTRACKED_LOAN_PAYMENT"
+      && LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT.includes(UNSPLIT_LOAN_PAYMENT_LABEL)
+      && UNSPLIT_LOAN_PAYMENT_LABEL === "loan payment (principal + interest + escrow, not split)", liqU);
+  check("H2c FIXED by F10 — untrackedLoanPayments = 2,500; after-debt net = 8,000 − 2,500 = 5,500",
+    sU.untrackedLoanPayments === 2_500 && netAfterDebtPaydown(econU.net, sU) === 5_500, { sU, net: econU.net });
 
   // (d) Unpaired leg, transfer authority proved a liability destination TYPE.
   const attested = [tx({ own: "chk", amount: -2_500, flowType: "DEBT_PAYMENT", transferMaturity: "DEBT_PAYMENT" })];
@@ -276,6 +307,59 @@ console.log(`H5. Mortgage carrying a creditLimit (balances.limit from Plaid) —
   const walk = reconstructDailyLiabilityBalances(walked, deltas, today, addDaysUTC(today, -90));
   const d80 = walk.get(isoDate(addDaysUTC(today, -80)))?.get("mtg");
   check("H5 not walked as a card: no reconstructed owed for the mortgage (held flat)", walked.length === 0 && d80 === undefined, d80);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log(`F7. Revolving lines WITHOUT a limit — history replay — ${LABEL}`);
+{
+  // Every genuine revolving kind per liabilityKind (credit card, HELOC, line of
+  // credit, overdraft) — with no creditLimit on the row.
+  const REVOLVING_NO_LIMIT = [
+    ["Plaid 'credit card'",     { type: "debt", debtSubtype: null,            providerSubtype: "credit card",    creditLimit: null }],
+    ["debtSubtype credit_card", { type: "debt", debtSubtype: "credit_card",   providerSubtype: null,             creditLimit: null }],
+    ["debtSubtype heloc",       { type: "debt", debtSubtype: "heloc",         providerSubtype: null,             creditLimit: null }],
+    ["debtSubtype line_of_credit", { type: "debt", debtSubtype: "line_of_credit", providerSubtype: null,         creditLimit: null }],
+    ["Plaid 'line of credit'",  { type: "debt", debtSubtype: null,            providerSubtype: "line of credit", creditLimit: null }],
+    ["Plaid 'overdraft'",       { type: "debt", debtSubtype: null,            providerSubtype: "overdraft",      creditLimit: null }],
+  ] as const;
+  for (const [label, a] of REVOLVING_NO_LIMIT) {
+    check(`F7 ${label}, no limit: liabilityKind = revolving`, liabilityKind(a) === "revolving");
+  }
+  check("F7 Plaid credit card, no limit ⇒ walked (PB-8)", isReconstructableCard(REVOLVING_NO_LIMIT[0][1]) === true);
+  check("F7 debtSubtype credit_card, no limit ⇒ walked", isReconstructableCard(REVOLVING_NO_LIMIT[1][1]) === true);
+  // FIXED by F7 — desired behaviour: every revolving kind (liabilityKind) is
+  // replayed from its posted ledger, limit or no limit. (Was: HELOC / line of
+  // credit / overdraft without a limit, or with an explicit FM revolving
+  // debtSubtype, held flat at today's balance.)
+  for (const [label, a] of REVOLVING_NO_LIMIT.slice(2)) {
+    check(`F7 ${label}, no limit ⇒ walked — FIXED by F7`, isReconstructableCard(a) === true);
+  }
+  check("F7 debtSubtype heloc WITH a limit ⇒ walked — FIXED by F7",
+    isReconstructableCard({ type: "debt", debtSubtype: "heloc", providerSubtype: null, creditLimit: 50_000 }) === true);
+
+  // Installment kinds with a limit stay out of the walk and utilization.
+  for (const sub of ["mortgage", "auto", "student"]) {
+    const a = { type: "debt", debtSubtype: null, providerSubtype: sub, creditLimit: 400_000 };
+    check(`F7 Plaid '${sub}' + limit ⇒ installment, not walked, no utilization`,
+      liabilityKind(a) === "installment" && isReconstructableCard(a) === false && isRevolvingLine(a) === false);
+  }
+  check("F7 debtSubtype personal_loan + limit ⇒ not walked, no utilization",
+    isReconstructableCard({ type: "debt", debtSubtype: "personal_loan", providerSubtype: null, creditLimit: 9_000 }) === false
+      && isRevolvingLine({ debtSubtype: "personal_loan", providerSubtype: null, creditLimit: 9_000 }) === false);
+  check("F7 Plaid 'home equity' with NO limit ⇒ installment, not walked (S2 HELOC ruling)",
+    isReconstructableCard({ type: "debt", debtSubtype: null, providerSubtype: "home equity", creditLimit: null }) === false);
+  check("F7 legacy untyped row with a limit ⇒ walked; without ⇒ held flat (unknown kind)",
+    isReconstructableCard({ type: "debt", debtSubtype: null, providerSubtype: null, creditLimit: 5_000 }) === true
+      && isReconstructableCard({ type: "debt", debtSubtype: null, providerSubtype: null, creditLimit: null }) === false);
+
+  // A HELOC (no limit) with a +1,000 payment (FM sign: into the liability) 10 days ago.
+  const today = new Date("2026-06-30T00:00:00.000Z");
+  const heloc = { id: "heloc", balance: 21_000, ...REVOLVING_NO_LIMIT[2][1] };
+  const walked = [heloc].filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
+  const walk = reconstructDailyLiabilityBalances(walked, new Map([["heloc", new Map([[isoDate(addDaysUTC(today, -10)), 1_000]])]]), today, addDaysUTC(today, -30));
+  const d20 = walk.get(isoDate(addDaysUTC(today, -20)))?.get("heloc");
+  // FIXED by F7 — the payment is reversed: day −20 owed = 21,000 + 1,000.
+  check("F7 HELOC (no limit) history replayed — day −20 owed 22,000 — FIXED by F7", walked.length === 1 && d20 === 22_000, d20);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -424,6 +508,33 @@ console.log(`H7. History: past mortgage balances — ${LABEL}`);
   // trend). Expected: walk installment principal back from payments (needs the
   // P/I split) or mark the liability component explicitly flat/estimated.
   check("H7a day −364 debt = 300,000 (held at today's balance)", withTx.debt === 300_000, withTx);
+
+  // F7 (d) — the held-at-today value is LABELLED, never presented as observed
+  // or reconstructed: per-account tier `estimated` (method held-flat), coverage
+  // class HELD_FLAT, the aggregate point basis `carried` + "Estimated" line, and
+  // no amortization is invented (value stays today's balance).
+  {
+    const d364 = addDaysUTC(today, -364);
+    const floorISO = isoDate(addDaysUTC(today, -365));
+    const mtgIn = { id: "mtg", type: "debt", balance: 300_000, debtSubtype: null, creditLimit: null, providerSubtype: "mortgage", floorISO };
+    const r = resolveAccountsAsOf([mtgIn], new Map(), new Map(), today, d364).get("mtg")!;
+    check("H7a per-account: method held-flat, tier estimated, balance 300,000 (no amortization)",
+      r.method === "held-flat" && r.tier === "estimated" && r.balance === 300_000, r);
+    const cls = coverageClassFor("debt", isReconstructableCard(mtgIn));
+    const cov = resolveAccountCoverage({
+      accountId: "mtg", coverageClass: cls, connectionFloorISO: isoDate(connected), earliestPostedTxISO: floorISO,
+      earliestPositionObservationISO: null, earliestReconstructionAnchorISO: null, earliestInvestmentEventISO: null,
+    });
+    const bc = deriveBalanceCoverage([{ side: "liability", coverageClass: cls, balance: 300_000,
+      floorISO: writerAlignedFloorISO(cov, cls, isoDate(connected), isoDate(connected), false) }]);
+    check("H7a coverage class HELD_FLAT; listed in estimatedLiabilityFloors", cls === "HELD_FLAT" && bc?.estimatedLiabilityFloors.length === 1, { cls, bc });
+    const label = estimatedCoverageLabel(bc, ["liability"], isoDate(d364));
+    const [pt] = markPartialBalanceCoverage<{ date: string; estimated?: boolean; basis?: string; coverageLabel?: string | null; value: number }>(
+      [{ date: isoDate(d364), estimated: true, value: 300_000 }], bc, ["liability"]);
+    check("H7a aggregate point flagged estimated: basis 'carried' + 'Estimated' coverage line, value unchanged",
+      label !== null && label.startsWith("Estimated:") && pt.basis === "carried" && pt.coverageLabel === label && pt.value === 300_000, { label, pt });
+    check("H7a AI history tool: the day is flagged `estimated: true`", isEstimatedOn(bc, isoDate(d364), true) === true);
+  }
 
   // (b) Mortgage with NO transactions: held flat from its connection date (PB-8).
   const noTxAfter  = dayDebt(false, null, 10);
