@@ -25,6 +25,11 @@ import {
   type PlannedMovement, type AllocationTarget,
 } from './scenario-ledger';
 import { findScenarioCrossing } from './scenario-crossing';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { liabilityKind, type LiabilityKindInput } from '@/lib/debt/liability-kind';
+import { liabilityLinesOf } from './tools/scenario/setup';
+import type { AccountsSectionData } from '@/lib/ai/types';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -47,7 +52,7 @@ const spine = (): SpinePoint[] => DATES.map((d, i) => ({ date: d, liquid: SPINE_
 const spineAt = (d: string) => SPINE_VALUE(d, DATES.indexOf(d));
 
 const line = (id: string, balance: number, apr: number | null, minimumPayment: number | null): LiabilityLine =>
-  ({ id, label: id, balance, apr, minimumPayment });
+  ({ id, label: id, balance, apr, minimumPayment, kind: 'revolving' });
 const opening = (liabilities: LiabilityLine[], extraDebt = 0): LedgerOpening => ({
   asOfISO: ASOF, liquid: 8_000, investments: 5_000, otherAssets: 0,
   debt: round2(liabilities.reduce((t, l) => t + Math.max(0, l.balance), 0) + extraDebt), liabilities });
@@ -336,6 +341,55 @@ console.log('\nF4. mortgage F4 — strategy words never pick an installment loan
     liab(snow, '2026-09-30', 'S').extraPaid === 500 && liab(snow, '2026-09-30', 'C').extraPaid === 0 && liab(snow, '2026-09-30', 'M').extraPaid === 0);
   const ava = run([card, small], [monthly(500, 'highest_apr')]);
   check('…whereas highest_apr pays the 22% card first', liab(ava, '2026-09-30', 'C').extraPaid === 500 && liab(ava, '2026-09-30', 'S').extraPaid === 0);
+}
+
+console.log('\nF4/R1. every ledger line carries kind === liabilityKind(account); an untyped line is never a strategy target');
+{
+  const ACCTS: { id: string; ev: LiabilityKindInput }[] = [
+    { id: 'mortgage', ev: { type: 'debt', debtSubtype: null, providerSubtype: 'mortgage' } },
+    { id: 'auto',     ev: { type: 'debt', debtSubtype: 'auto_loan', providerSubtype: 'auto' } },
+    { id: 'student',  ev: { type: 'debt', debtSubtype: null, providerSubtype: 'student' } },
+    { id: 'card',     ev: { type: 'debt', debtSubtype: null, providerSubtype: 'credit card' } },
+    { id: 'heloc',    ev: { type: 'debt', debtSubtype: null, providerSubtype: 'home equity', creditLimit: 50_000 } },
+    { id: 'heloc_ds', ev: { type: 'debt', debtSubtype: 'heloc', providerSubtype: null } },
+    { id: 'unknown',  ev: { type: 'debt', debtSubtype: null, providerSubtype: null } },
+  ];
+  const expected = Object.fromEntries(ACCTS.map((a) => [a.id, liabilityKind(a.ev)]));
+  check('fixture covers installment, revolving and unknown verdicts',
+    expected.mortgage === 'installment' && expected.auto === 'installment' && expected.student === 'installment'
+      && expected.card === 'revolving' && expected.heloc === 'revolving' && expected.heloc_ds === 'revolving' && expected.unknown === 'unknown');
+  const row = (a: typeof ACCTS[number], withKind: boolean) => ({
+    id: a.id, name: a.id, type: 'debt', balance: 1_000, reportingBalance: 1_000, currency: 'USD', visibilityLevel: 'FULL',
+    apr: 10, minimumPayment: 50, providerSubtype: a.ev.providerSubtype, debtSubtype: a.ev.debtSubtype,
+    // the assembler sets base.liabilityKind = liabilityKind(fa) on the FULL account
+    ...(withKind ? { liabilityKind: liabilityKind(a.ev) } : {}),
+  });
+  const viaAssembler = liabilityLinesOf({ accounts: ACCTS.map((a) => row(a, true)) } as unknown as AccountsSectionData, undefined);
+  check('setup.ts (assembler-provided kind): every line kind === liabilityKind(account)',
+    viaAssembler.length === ACCTS.length && viaAssembler.every((l) => l.kind === expected[l.id]), viaAssembler.map((l) => `${l.id}:${l.kind}`).join());
+  // Fallback (no liabilityKind on the row): the same authority on the row's own evidence.
+  // A limit-discriminated HELOC ('home equity' without the limit) falls back to installment — the safe side.
+  const fallback = liabilityLinesOf({ accounts: ACCTS.map((a) => row(a, false)) } as unknown as AccountsSectionData, undefined);
+  check('setup.ts (no assembler kind): kind is still always set, from liabilityKind on the row\'s evidence',
+    fallback.every((l) => typeof l.kind === 'string')
+      && fallback.filter((l) => l.id !== 'heloc').every((l) => l.kind === expected[l.id]) && fallback.find((l) => l.id === 'heloc')!.kind === 'installment',
+    fallback.map((l) => `${l.id}:${l.kind}`).join());
+  const asm = readFileSync(join(process.cwd(), 'lib/ai/assemblers/accounts.ts'), 'utf8');
+  check('accounts assembler: liabilityKind comes from liabilityKind(fa), set beside rateLabel on every FULL debt row',
+    /base\.rateLabel\s+= rateLabel\(fa\);\s*\n\s*base\.liabilityKind\s+= liabilityKind\(fa\);/.test(asm));
+
+  // Negative case: a mortgage line reaching the ledger WITHOUT kind (an untyped caller).
+  const untypedMtg = { ...line('M', 250_000, 31, 1_800) } as Partial<LiabilityLine>;
+  delete untypedMtg.kind;
+  const card: LiabilityLine = { ...line('C', 4_000, 22, 80), kind: 'revolving' };
+  const r = run([untypedMtg as LiabilityLine, card], [monthly(1_000, 'highest_apr')]);
+  check('R1: an untyped (higher-rate) mortgage is NOT picked by highest_apr — the card gets the extra',
+    liab(r, '2026-09-30', 'C').extraPaid === 1_000 && r.checkpoints.every((c) => liab(r, c.date, 'M').extraPaid === 0));
+  check('R1: …and the ledger warns that the line has no kind', r.warnings.some((w) => w.startsWith('M: no liability kind on file')), r.warnings.join(' | '));
+  const sb = run([untypedMtg as LiabilityLine], [monthly(500, 'smallest_balance')]);
+  check('R1: smallest_balance never picks it either', sb.checkpoints.every((c) => liab(sb, c.date, 'M').extraPaid === 0));
+  const named = run([untypedMtg as LiabilityLine, card], [monthly(1_000, 'M')]);
+  check('R1: naming its id still sends extra there', liab(named, '2026-09-30', 'M').extraPaid === 1_000);
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} FAILED`);

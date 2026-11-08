@@ -159,8 +159,15 @@ export interface LiabilityLine {
   /** Stated per-cycle minimum. null = none stated ⇒ no baseline payment. */
   minimumPayment: number | null;
   subtype?: string | null;
-  /** Mortgage F4 — 'installment' lines are never selected by `highest_apr` / `smallest_balance`. */
-  kind?: 'revolving' | 'installment' | 'unknown';
+  /**
+   * Mortgage F4 — REQUIRED: lib/debt/liability-kind.ts's verdict. Only 'revolving'
+   * and 'unknown' lines are selected by `highest_apr` / `smallest_balance`; an
+   * 'installment' line keeps its scheduled payment. R1 runtime guard: a line that
+   * arrives WITHOUT a valid kind (an untyped caller) is treated as not targetable
+   * by the strategy words — never an avalanche/snowball target unless its id is
+   * named — and the ledger warns.
+   */
+  kind: 'revolving' | 'installment' | 'unknown';
   /** Where the terms came from, for the echo. */
   termsProvenance?: { apr: 'STATED' | 'USER_ASSUMED' | 'UNKNOWN';
     minimumPayment: 'STATED' | 'USER_ASSUMED' | 'UNKNOWN' };
@@ -953,6 +960,11 @@ export function rankByApr<T extends { line: LiabilityLine; balance: number }>(st
     || (a.line.id < b.line.id ? -1 : a.line.id > b.line.id ? 1 : 0));
 }
 
+/** F4 / R1 — may a strategy word (`highest_apr`, `smallest_balance`) select this line? */
+export function isStrategyTargetable(line: LiabilityLine): boolean {
+  return line.kind === 'revolving' || line.kind === 'unknown';
+}
+
 /**
  * Smallest-balance order — the snowball ranking (Mortgage F4). Balance
  * ASCENDING at the moment of placement, then rate descending (unknown last),
@@ -1044,6 +1056,13 @@ export function settleMovements(
 
   const states: LiabilityState[] = liabilities.map((l) => ({ line: l, balance: Math.max(0, round2(l.balance)),
     openingSinceSpine: Math.max(0, round2(l.balance)), extraSinceSpine: 0 }));
+  // F4 / R1 — an untyped line is never picked by a strategy word; say so.
+  for (const l of liabilities) {
+    if (l.kind !== 'revolving' && l.kind !== 'installment' && l.kind !== 'unknown') {
+      warnings.push(`${l.label}: no liability kind on file — it is not an extra-payment target for `
+        + '`highest_apr` / `smallest_balance` unless its id is named.');
+    }
+  }
   const spineDates = [...new Set(spine.map((p) => p.date))].sort();
   const spineSet = new Set(spineDates);
   // ⚠️ FM-AUDIT-009 — A STATED MINIMUM IS A MONTHLY OBLIGATION, NOT A SPINE EVENT.
@@ -1211,8 +1230,8 @@ export function settleMovements(
         if (remaining <= 0) break;
         if (t === 'investments') { investments = round2(investments + remaining); remaining = 0; continue; }
         // F4 — the strategy words never pick an installment loan; an id does.
-        const candidates = t === 'highest_apr' ? rankByApr(states.filter((st) => st.line.kind !== 'installment'))
-          : t === 'smallest_balance' ? rankByBalance(states.filter((st) => st.line.kind !== 'installment'))
+        const candidates = t === 'highest_apr' ? rankByApr(states.filter((st) => isStrategyTargetable(st.line)))
+          : t === 'smallest_balance' ? rankByBalance(states.filter((st) => isStrategyTargetable(st.line)))
           : states.filter((st) => st.line.id === (t as { liability: string }).liability);
         for (const st of candidates) {
           if (remaining <= 0) break;

@@ -15,6 +15,7 @@
  */
 
 import type { AccountsSectionData, AccountSummaryItem } from '@/lib/ai/types';
+import { liabilityKind } from '@/lib/debt/liability-kind';
 import { composeInvestments } from '@/lib/ai/economic-concepts';
 import type { CanonicalSpendingBaseline } from '@/lib/transactions/canonical-spending';
 import { resolveTransformableCategory } from '@/lib/transactions/category-vocabulary';
@@ -316,7 +317,7 @@ function toSpendingChangeRules(
  * the ledger's lines and the spine's S1-N1 interest exclusion both read it, so a
  * liability cannot be "modelled" for one and not the other.
  */
-function liabilityLinesOf(
+export function liabilityLinesOf(
   accounts: AccountsSectionData, stated: unknown,
   onRefuse: (r: RefusedInput) => void = () => {},
   declaredOk: (raw: Record<string, unknown>, name: string) => boolean = () => true,
@@ -333,9 +334,13 @@ function liabilityLinesOf(
     const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
     liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
       subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
-      // Mortgage F4 — from the assembler's liabilityKind (lib/debt/liability-kind.ts):
-      // an installment loan is never picked by `highest_apr` / `smallest_balance`.
-      ...(r.liabilityKind ? { kind: r.liabilityKind } : {}),
+      // Mortgage F4 / R1 — ALWAYS set: the assembler's liabilityKind (lib/debt/
+      // liability-kind.ts on the full account), else the same authority on the
+      // row's own evidence. An installment loan is never picked by
+      // `highest_apr` / `smallest_balance`.
+      kind: r.liabilityKind ?? liabilityKind({ type: r.type,
+        debtSubtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
+        providerSubtype: r.providerSubtype ?? null }),
       termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
         minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
   }
