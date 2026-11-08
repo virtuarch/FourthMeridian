@@ -369,7 +369,7 @@ const SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, error: 1
 const SEVERITY_TONE: Record<AttentionSeverity, StatusTone> = { critical: "bad", error: "bad", warning: "warn", info: "info" };
 const KIND_PLURAL: Record<AttentionEntityKind, string> = {
   connection: "connections", job: "jobs", provider: "providers", resource: "resources",
-  "alert-rule": "alert rules", incident: "incidents", customer: "customers",
+  "alert-rule": "alert rules", "alert-source": "alert sources", incident: "incidents", customer: "customers",
 };
 
 export type AttentionGroupAction =

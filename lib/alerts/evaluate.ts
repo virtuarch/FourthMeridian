@@ -32,6 +32,7 @@ import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 import type { PlatformAiPurgeHealth } from "@/lib/platform/intelligence/ai/conversations/purge-health";
 import type { AlertFlapRecord, AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
+import { ALERT_AUTHORITY_SOURCES, type AlertAuthoritySource, type AlertAuthorityGatherStatus } from "@/lib/alerts/authority-sources";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -762,6 +763,29 @@ export interface AlertRunSummary {
   flap?: AlertFlapRecord[];
   /** FLAP PROTECTION — flapping-notice keys delivered by this run (the dedupe record). */
   flapNotices?: string[];
+  /**
+   * B10 monitoring (S2 ruling) — per-authority GATHER status for this cycle:
+   * `ok` = the authority returned output the rules read; `failed` = it threw (or
+   * was absent) and its rules contributed NO signals, so "nothing firing" from
+   * that source means "not asked", not "no breach". One entry per
+   * ALERT_AUTHORITY_SOURCES key; fixed words only — never error text.
+   * Optional: rows written before the field lack it, and every reader treats
+   * absence as `unknown`, never as `ok` (older code simply ignores the key).
+   */
+  authorities?: Partial<Record<AlertAuthoritySource, AlertAuthorityGatherStatus>>;
+}
+
+export { ALERT_AUTHORITY_SOURCES, ALERT_AUTHORITY_SOURCE_LABEL, type AlertAuthoritySource, type AlertAuthorityGatherStatus } from "@/lib/alerts/authority-sources";
+
+/**
+ * Pure: the gather status of every source. A null OR absent output is `failed`
+ * — the gather boundary maps a throw to null, and an absent optional field
+ * means it did not gather either (AuthorityOutputs doc). Never infers `ok`.
+ */
+export function authorityGatherStatus(outputs: AuthorityOutputs): Record<AlertAuthoritySource, AlertAuthorityGatherStatus> {
+  const out = {} as Record<AlertAuthoritySource, AlertAuthorityGatherStatus>;
+  for (const k of ALERT_AUTHORITY_SOURCES) out[k] = outputs[k] == null ? "failed" : "ok";
+  return out;
 }
 
 /**

@@ -46,6 +46,7 @@ import type { FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { openAiFactLines } from "./env-status-view";
 import { platformViewTarget } from "@/lib/platform/workspaces";
+import { alertSourceUnavailableSentence, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
 
 // ── Status vocabulary ─────────────────────────────────────────────────────────
 
@@ -262,13 +263,25 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
   const firing = d.latest ? d.latest.rules.filter((r) => r.firing) : [];
   const anyCritical = firing.some((r) => r.severity === "critical");
 
-  const status: HealthStatus = neverEvaluated ? "unknown" : anyCritical ? "critical" : firing.length > 0 ? "caution" : "nominal";
+  // B10 monitoring (S2 ruling) — a source that failed to gather left its rules blind:
+  // "no rule firing" over it is not nominal. Warn (caution), name each source.
+  const blind = unavailableAlertSources(d.latest);
+
+  const status: HealthStatus = neverEvaluated ? "unknown" : anyCritical ? "critical" : firing.length > 0 || blind.length > 0 ? "caution" : "nominal";
 
   const headline = neverEvaluated
     ? "Never evaluated"
     : firing.length > 0
       ? `${firing.length} rule${firing.length === 1 ? "" : "s"} firing now`
-      : `No rule firing · ${enabled} of ${d.rules.length} enabled`;
+      : blind.length > 0
+        ? `No rule firing · ${blind.length} alert source${blind.length === 1 ? "" : "s"} unavailable`
+        : `No rule firing · ${enabled} of ${d.rules.length} enabled`;
+
+  const blindLines: HealthLine[] = blind.map((k): HealthLine => ({
+    label: alertSourceUnavailableSentence(k),
+    detail: "failed to gather in the latest evaluation — its rules could not fire (not the same as no breach)",
+    tone: "bad",
+  }));
 
   const firingLines: HealthLine[] = firing.map((r): HealthLine => ({
     label: titleOf(r.id),
@@ -303,7 +316,7 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
     tone: "normal",
   }));
 
-  const { lines, details } = splitLines([...firingLines, ...facts]);
+  const { lines, details } = splitLines([...firingLines, ...blindLines, ...facts]);
   return {
     status,
     headline,

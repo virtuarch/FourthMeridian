@@ -24,7 +24,8 @@ import type { RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { EnvReport } from "@/lib/env";
-import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { unavailableAlertSources, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { ALERT_AUTHORITY_SOURCE_LABEL } from "@/lib/alerts/authority-sources";
 import { platformViewTarget } from "@/lib/platform/workspaces";
 
 /** PLATFORM OPS PHASE 1 UX — posture chips open the Policies VIEW that holds
@@ -436,8 +437,15 @@ export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): Pos
   const firing = a.latest.rules.filter((r) => r.firing);
   const critical = firing.some((r) => r.severity === "critical");
   const evaluated = a.latest.rules.filter((r) => r.enabled).length;
-  if (firing.length === 0) return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
-  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
+  // B10 monitoring (S2 ruling) — a source that failed to gather left its rules
+  // blind: never "Quiet" over it. Warn and name the source(s).
+  const blind = unavailableAlertSources(a.latest);
+  const blindText = blind.length ? `alert source unavailable: ${blind.map((k) => ALERT_AUTHORITY_SOURCE_LABEL[k]).join(", ")}` : "";
+  if (firing.length === 0) {
+    if (blind.length) return { key: "alerts", label: "Alerts", word: "Alert source unavailable", tone: "warn", count: `0 of ${evaluated} firing · ${blindText}`, state: "observed", workspace: ALERTS_VIEW, basis: `${basis} + per-authority gather status` };
+    return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
+  }
+  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing${blind.length ? ` · ${blindText}` : ""}`, state: "observed", workspace: ALERTS_VIEW, basis };
 }
 
 /** PROVIDERS — the provider authority's own worst-wins trust roll-up. */
