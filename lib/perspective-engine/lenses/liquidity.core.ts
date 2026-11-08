@@ -57,6 +57,7 @@ import { amountOwed } from "@/lib/debt/balance-semantics";
 import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import { countedBalance, liquidityAccess } from "@/lib/account-classifier";
 import { totalReachableCash, type ReachableInput } from "@/lib/balances/reachable";
+import { detectExcludedAccounts, partialTotalStatement } from "@/lib/balances/unobserved-totals";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -138,6 +139,13 @@ export interface LiquidityAccountRow {
    * reachable (headline) figure, which stays provider-attested.
    */
   adjustedBalance?: number | null;
+  /**
+   * Mortgage F8b — the data layer EXCLUDED this row's balance (FIN-A2: never
+   * observed; or an unvalued wallet): `balance` is a structural 0. The lens
+   * sums stay arithmetically exclusive; this flag makes the affected totals
+   * PARTIAL with a direction. OMITTED otherwise.
+   */
+  valuationUnknown?: boolean;
   /** SpaceAccountLink.visibilityLevel string (existing model, no parallel vocabulary). */
   visibilityLevel: string;
 }
@@ -304,19 +312,30 @@ export function computeLiquidity(
     );
   }
 
+  // ── Mortgage F8b — exclusions, through the ONE detector ─────────────────────
+  // Over CONTRIBUTING rows only (a summary-only row is a redaction, disclosed
+  // above). Cash excluded ⇒ the cash headline is PARTIAL ("may be understated");
+  // an excluded revolving / unknown debt or cash account ⇒ liquid net worth is
+  // PARTIAL; an excluded installment loan (a mortgage) never is (Mortgage F1).
+  const excluded = detectExcludedAccounts(contributing);
+  const cashPartial = partialTotalStatement("LIQUID_CASH", excluded);
+  const liquidNwPartial = partialTotalStatement("LIQUID_NET_WORTH", excluded);
+  const marketablePartial = partialTotalStatement("TOTAL_ASSETS",
+    excluded.filter((e) => e.accountClass === "INVESTMENT" || e.accountClass === "DIGITAL_ASSET"));
+
   // ── Metrics ───────────────────────────────────────────────────────────────
   // v2.6-L3 — the headline is REACHABLE cash. Its label was already
   // "Available as cash now"; the number now agrees with the words.
   const headline: LensMetric = {
     id: "cashNow",
-    label: "Available as cash now",
+    label: cashPartial ? `Available as cash now — partial: ${cashPartial.detail}` : "Available as cash now",
     value: cashNow,
     format: "currency",
     tone: cashNow > 0 ? "positive" : "warning",
   };
   const metrics: LensMetric[] = [
     headline,
-    { id: "marketable", label: "Raisable by selling investments", value: marketable, format: "currency" },
+    { id: "marketable", label: marketablePartial ? `Raisable by selling investments — partial: ${marketablePartial.detail}` : "Raisable by selling investments", value: marketable, format: "currency" },
     { id: "illiquid",   label: "Held in other assets (not readily sellable)", value: illiquid, format: "currency" },
     // 2026-10-07 — emitted only when present, so a Space without them is unchanged.
     ...(restricted !== 0
@@ -392,6 +411,13 @@ export function computeLiquidity(
       source: "default",
     });
   }
+  if (liquidNwPartial) {
+    assumptions.push({
+      id: "liquid-net-worth-partial",
+      text: `${liquidNwPartial.text}. The missing balance is not estimated and not counted as zero.`,
+      source: "provider",
+    });
+  }
   if (creditKnown) {
     assumptions.push({
       id: "credit-not-liquidity",
@@ -427,6 +453,9 @@ export function computeLiquidity(
     // context-less results serialize byte-identically (kill switch).
     ...(ctx ? { estimated: flag.estimated } : {}),
     ...(ctx && flag.unconverted ? { unconverted: true } : {}), // V25-FINAL-1 — incomplete total
+    // Mortgage F8b — present ONLY when PARTIAL (byte-identical otherwise).
+    ...(cashPartial ? { totalsCoverage: cashPartial.coverage } : {}),
+    ...(liquidNwPartial ? { liquidNetWorthCoverage: liquidNwPartial.coverage } : {}),
     assumptions,
     provenance: {
       accountIds,
