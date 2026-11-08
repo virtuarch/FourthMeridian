@@ -5290,11 +5290,11 @@ model PlatformAiMessage {
   createdAt        DateTime                @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
   /// Set by the BEFORE UPDATE trigger when a PENDING row settles; not in any fm_app grant.
   completedAt      DateTime?
-  /// R1 option (b) (S2's recommendation; OD-7 pending): per-message expiry.
-  /// DB default createdAt + 90 days; not in any fm_app grant. The USER and
+  /// R1 option (b), OD-7 (owner): per-message expiry, amended 2026-11-08 to 7 days.
+  /// DB default createdAt + 7 days (20261108120000); not in any fm_app grant. The USER and
   /// ASSISTANT rows of a turn are inserted in ONE transaction (now() is the
   /// transaction's start), so a pair always expires together.
-  purgeAfter       DateTime                @default(dbgenerated("((now() AT TIME ZONE 'UTC'::text) + '90 days'::interval)"))
+  purgeAfter       DateTime                @default(dbgenerated("((now() AT TIME ZONE 'UTC'::text) + '7 days'::interval)"))
 
   @@unique([conversationId, id])
   /// Prisma requires the composite FK fields of a 1:1 relation to be unique together.

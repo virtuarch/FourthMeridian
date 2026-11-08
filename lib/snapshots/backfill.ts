@@ -261,9 +261,10 @@ export async function backfillSpaceSnapshots(
   const dailyCash = reconstructDailyCashBalances(cashAccounts, deltaByAccountDay, today, effectiveStart);
 
   // ── D2.x Slice 4B — credit-card debt reconstruction ─────────────────────────
-  // Revolving credit cards only (isReconstructableCard). Non-card debt (loans,
-  // mortgages, HELOC/LOC with an explicit subtype) stays flat, as do
-  // investments/crypto/manual assets. Pending transactions are EXCLUDED so the
+  // Revolving lines only (isReconstructableCard — every revolving liabilityKind:
+  // card, HELOC, line of credit, overdraft; Mortgage F7). Installment debt
+  // (mortgage, auto, student, personal loans) stays flat even with a limit and is
+  // labelled estimated downstream, as do investments/crypto/manual assets. Pending transactions are EXCLUDED so the
   // window matches the posted `current` balance anchor. Liability walk ADDS
   // amounts (owed rises with purchases). Cash reconstruction above is untouched.
   const cardAccounts: CashAccountBalance[] = accounts
