@@ -129,7 +129,7 @@ export async function POST(
           pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true,
           // v2.6-OWN-1 — who owns this row's flow facts.
           flowAuthority: true,
-          financialAccount: { select: { type: true, debtSubtype: true } },
+          financialAccount: { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true } },
         },
       });
       if (!row) return { kind: "not-found" };
@@ -137,6 +137,8 @@ export async function POST(
       const acct: CorrectionAcct = {
         accountType: (row.financialAccount?.type as string | null) ?? null,
         debtSubtype: row.financialAccount?.debtSubtype ?? null,
+        providerSubtype: row.financialAccount?.providerSubtype ?? null,
+        creditLimit: row.financialAccount?.creditLimit ?? null,
       };
       const correctionRow: CorrectionRow = {
         id: row.id, merchant: row.merchant, description: row.description, category: row.category,

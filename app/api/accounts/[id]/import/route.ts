@@ -229,7 +229,7 @@ export const POST = withApiHandler(async (
     });
     return tx.financialAccount.findUnique({
       where:  { id: financialAccountId },
-      select: { type: true, debtSubtype: true, currency: true },
+      select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true, currency: true },
     });
   });
   const batch = { id: batchId };
@@ -237,6 +237,9 @@ export const POST = withApiHandler(async (
   const flowAccountContext = {
     accountType: (flowAcct?.type as string | null) ?? null,
     debtSubtype: flowAcct?.debtSubtype ?? null,
+    // Mortgage F5 — liability-kind evidence for the installment servicer leg.
+    providerSubtype: flowAcct?.providerSubtype ?? null,
+    creditLimit:     flowAcct?.creditLimit ?? null,
   };
   function computeFlowFields(rowLike: {
     category:           string;

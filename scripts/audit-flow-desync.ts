@@ -125,7 +125,9 @@ async function main(): Promise<void> {
         pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true, categorySource: true,
         // description/merchant deliberately not selected — the classifier is
         // descriptor-blind (CCPAY-2C-5) and this audit prints no PII.
-        financialAccount: { select: { type: true, debtSubtype: true } },
+        // providerSubtype/creditLimit: Mortgage F5 liability-KIND evidence the
+        // classifier reads, so an installment servicer leg recomputes as written.
+        financialAccount: { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true } },
       },
     });
     if (rows.length === 0) break;
@@ -179,6 +181,8 @@ async function main(): Promise<void> {
         {
           accountType: (r.financialAccount?.type as string | null) ?? null,
           debtSubtype: r.financialAccount?.debtSubtype ?? null,
+          providerSubtype: r.financialAccount?.providerSubtype ?? null,
+          creditLimit: r.financialAccount?.creditLimit ?? null,
         },
       );
       const c = classifyFlow(input);

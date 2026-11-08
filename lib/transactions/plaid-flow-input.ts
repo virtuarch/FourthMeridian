@@ -90,6 +90,9 @@ export interface PlaidFlowAccountContext {
   amount:       number;          // FM sign convention (already flipped by the caller)
   accountType?: string | null;   // FinancialAccount.type
   debtSubtype?: string | null;   // FinancialAccount.debtSubtype
+  /** Mortgage F5 — FinancialAccount.providerSubtype / creditLimit: liability KIND evidence only. */
+  providerSubtype?: string | null;
+  creditLimit?:     number | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +121,9 @@ export function buildPlaidFlowInput(
     amount:      ctx.amount,
     accountType: ctx.accountType ?? null,
     debtSubtype: ctx.debtSubtype ?? null,
+    // Mortgage F5 — liability-kind evidence (installment loan vs revolving).
+    providerSubtype: ctx.providerSubtype ?? null,
+    creditLimit:     ctx.creditLimit ?? null,
     pfcPrimary:  pfc?.primary ?? null,
     pfcDetailed: pfc?.detailed ?? null,
   };
@@ -438,6 +444,15 @@ export const isUserCategorySource = (source: string | null | undefined): boolean
 export interface FlowRowAccountContext {
   accountType: string | null;   // FinancialAccount.type or Account.type
   debtSubtype: string | null;   // FinancialAccount.debtSubtype only; null for legacy Account
+  /**
+   * Mortgage F5 — FinancialAccount.providerSubtype / creditLimit (null for legacy
+   * Account). Optional so every existing caller compiles; omitted ⇒ the liability
+   * kind is decided from debtSubtype alone. ⚠️ A recompute site that certifies or
+   * rewrites stored rows MUST pass them, or it recomputes an installment-loan
+   * servicer leg under the pre-F5 veto.
+   */
+  providerSubtype?: string | null;
+  creditLimit?:     number | null;
 }
 
 /**
@@ -456,6 +471,8 @@ export function buildFlowInputFromRow(
     amount:      row.amount,
     accountType: acct.accountType ?? null,
     debtSubtype: acct.debtSubtype ?? null,
+    providerSubtype: acct.providerSubtype ?? null,
+    creditLimit:     acct.creditLimit ?? null,
     // FIN-002 — the PFC stays on the input VERBATIM (buildFlowWriteFields
     // persists it from here, so the provider fact is never mutated); what a USER
     // source changes is whether it may DECIDE.
