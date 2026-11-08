@@ -105,6 +105,8 @@ async function liquidityLens(
     ...(!options.asOf && typeof account.adjustedBalance === "number"
       ? { adjustedBalance: account.adjustedBalance }
       : {}),
+    // Mortgage F8b — the data layer excluded this balance; OMITTED otherwise.
+    ...(account.valuationUnknown === true ? { valuationUnknown: true } : {}),
     visibilityLevel,
   }));
 
