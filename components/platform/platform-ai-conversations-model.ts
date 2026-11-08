@@ -49,7 +49,12 @@ export const PLATFORM_AI_COMPOSER_MAX = 500;
 /** A rendered answer segment as the server sends it (handlers.ts RenderedSegment). */
 export type ClientSegment =
   | { kind: "text"; text: string }
-  | { kind: "figure"; text: string; metric: string; window: string | number | null }
+  /**
+   * `observedAt`: when the figure's value was read, if the server sends it. Today the
+   * server does not (handlers.ts RenderedSegment), so every figure of an answer shares
+   * the answer's own time (createdAt) — see `staleChips`.
+   */
+  | { kind: "figure"; text: string; metric: string; window: string | number | null; observedAt?: string }
   | { kind: "link"; text: string; href: string }
   /** S2 F-C1 (ii): the server's period correction — rendered prominently ABOVE the answer. */
   | { kind: "correction"; text: string };
@@ -99,7 +104,10 @@ function parseSegment(s: unknown): ClientSegment | null {
   if (s.kind === "correction") return { kind: "correction", text: s.text };
   if (s.kind === "figure" && typeof s.metric === "string") {
     const w = s.window;
-    return { kind: "figure", text: s.text, metric: s.metric, window: typeof w === "string" || typeof w === "number" ? w : null };
+    return {
+      kind: "figure", text: s.text, metric: s.metric, window: typeof w === "string" || typeof w === "number" ? w : null,
+      ...(typeof s.observedAt === "string" && Number.isFinite(Date.parse(s.observedAt)) ? { observedAt: s.observedAt } : {}),
+    };
   }
   if (s.kind === "link" && typeof s.href === "string") return { kind: "link", text: s.text, href: s.href };
   return null; // an unknown kind is dropped, never shown as raw text
@@ -238,9 +246,9 @@ export function utcStamp(iso: string): string {
   return `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-/** §4.3: the line over every prior answer. */
-export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime(iso, now)}. Figures are as of then.`;
-/** §4.3: the chip on each prior figure. */
+/** §4.3: the answer-level chip (every figure of the answer shares one observation time). */
+export const answerAsOf = (iso: string, now: Date) => `Figures as of ${relativeTime(iso, now)}`;
+/** §4.3: the chip on a figure whose observation time differs from the answer's. */
 export const asOfChip = (iso: string, now: Date) => `as of ${relativeTime(iso, now)}`;
 
 /**
@@ -281,23 +289,152 @@ export function questionBefore(messages: readonly ClientMessage[], assistantInde
 /** Per-viewer convenience only (§11): the desktop rail's collapsed state. Never content, never shared. */
 export const RAIL_COLLAPSED_KEY = "fm.platform-ai.rail-collapsed";
 
-// ── Empty state (parity PR3) ────────────────────────────────────────────────
+// ── Empty state (parity PR3; Personal parity PR6) ───────────────────────────
 
 /**
- * The empty-state headline and starter chips. Static, Platform-owned copy:
- * generic questions about the kinds of evidence Platform AI reads (jobs,
- * providers, costs, incidents). No figure, no name, no customer data. A chip
- * asks exactly its text through the normal send path (a fresh clientRequestId).
+ * The empty-state headline (rendered by the shared StarterLine at Personal's
+ * size) and the starter chips: a SHORT label on the chip, the full question
+ * behind it (Personal's StarterPrompt shape). Static, Platform-owned copy about
+ * the kinds of evidence Platform AI reads. No figure, no name, no customer data.
+ * A chip asks exactly its `prompt` through the normal send path (a fresh
+ * clientRequestId). The first chip is the general check-in.
  */
 export const PLATFORM_AI_STARTER_HEADLINE = "What would you like to check?";
-export const PLATFORM_AI_STARTER_PROMPTS: readonly string[] = [
-  "Which jobs failed or ran late recently?",
-  "How are providers performing this week?",
-  "What is driving operating costs this month?",
-  "Are there any open incidents right now?",
+export interface PlatformAiStarter { label: string; prompt: string }
+export const PLATFORM_AI_STARTER_PROMPTS: readonly PlatformAiStarter[] = [
+  { label: "How are we looking today?", prompt: "How is the platform looking today? Summarise anything that needs attention." },
+  { label: "Customer-impacting issues", prompt: "Is anything affecting customers right now?" },
+  { label: "Open incidents", prompt: "Are there any open incidents right now?" },
+  { label: "Sync & connection health", prompt: "How healthy are syncs and provider connections this week?" },
+  { label: "Jobs & providers", prompt: "Which jobs failed or ran late recently, and how are providers performing?" },
+  { label: "Costs this month", prompt: "What is driving operating costs this month?" },
 ];
 /** Screen-reader label for the in-flight indicator (the three dots). */
 export const PLATFORM_AI_THINKING_LABEL = "Platform AI is answering…";
+
+// ── Quiet chrome (Personal parity PR6) ──────────────────────────────────────
+
+/**
+ * S2 ruling C1 (2026-11-08): the short line, ALWAYS visible beneath the composer
+ * (every viewport, never truncated): read-only, the AI provider as the OD-5 notice
+ * names it, the retention from the retention constant with the word "hidden"
+ * (never "deleted" — removal is the next purge, stated in the full notice), and
+ * "don't enter personal details". The test pins the exact string.
+ */
+export const PLATFORM_AI_PROVIDER = "OpenAI";
+export const PLATFORM_AI_CONVERSATIONS_LINE =
+  `Read-only · Sent to ${PLATFORM_AI_PROVIDER} · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`;
+/** The same line for v0 (flag on, conversations off): nothing is stored. */
+export const PLATFORM_AI_SESSION_LINE = `Read-only · Sent to ${PLATFORM_AI_PROVIDER} · Not saved · Don’t enter personal details`;
+/** v0's expanded privacy text adds this sentence (the v0 route stores nothing; platform-ai.test.ts §10 pins the route). */
+export const PLATFORM_AI_SESSION_NOT_SAVED =
+  "Questions and answers here are not saved. Leaving or reloading the page clears them.";
+
+/**
+ * S2 ruling C3: the full OD-5 notice is expanded by default on a first visit —
+ * SERVER-derived: the operator's conversation list (from the list route) is
+ * empty and nothing is open. It collapses once a conversation exists (after
+ * the first message is sent) and expands again when every conversation is
+ * deleted. An operator's own toggle wins until one of those transitions.
+ */
+export function noticeDefaultOpen(conversations: readonly unknown[] | null, hasSelection: boolean): boolean {
+  return conversations !== null && conversations.length === 0 && !hasSelection;
+}
+
+/** The character counter appears only from here (80 % of the 500 limit). */
+export const PLATFORM_AI_COUNTER_FROM = 400;
+export const showComposerCounter = (length: number) => length >= PLATFORM_AI_COUNTER_FROM;
+
+/** "N of 50 conversations" appears only this close to the cap. */
+export const PLATFORM_AI_LIMIT_WARN_WITHIN = 5;
+export const showConversationCount = (limits: ClientLimits | null) =>
+  limits !== null && limits.max - limits.used <= PLATFORM_AI_LIMIT_WARN_WITHIN;
+
+/**
+ * Stale evidence (§4.3; owner 2026-11-08 + S2 pre-flag 3). Never present a stale
+ * figure as current:
+ *   - every figure's observation time is its `observedAt`, or the answer's
+ *     createdAt when the server sends none (today: always);
+ *   - when ALL figures share one observation time, ONE answer-level chip
+ *     ("Figures as of …") replaces the per-figure chips;
+ *   - otherwise the answer-level chip states the answer's time, and every figure
+ *     whose observation time differs keeps its OWN "as of …" chip;
+ *   - a chip shows when the answer is a prior (stale) one, or when that time is at
+ *     least STALE_AFTER_MS old.
+ */
+export const STALE_AFTER_MS = 60 * 60 * 1000;
+export interface StaleChips {
+  /** The answer-level chip's time, or null (nothing to show). */
+  answer: string | null;
+  /** Per-figure chips by the figure's index in the segment list. */
+  figures: ReadonlyMap<number, string>;
+}
+export function staleChips(message: Pick<ClientMessage, "content" | "createdAt" | "stale">, now: Date): StaleChips {
+  const segments = Array.isArray(message.content) ? message.content : [];
+  const observed: [number, string][] = [];
+  segments.forEach((s, i) => { if (s.kind === "figure") observed.push([i, s.observedAt ?? message.createdAt]); });
+  const times = new Set(observed.map(([, t]) => Date.parse(t)));
+  const answerAt = times.size === 1 ? observed[0][1] : message.createdAt;
+  const old = (iso: string) => { const t = Date.parse(iso); return Number.isFinite(t) && now.getTime() - t >= STALE_AFTER_MS; };
+  const show = (iso: string) => message.stale || old(iso);
+  const figures = new Map<number, string>();
+  if (times.size > 1) for (const [i, t] of observed) if (Date.parse(t) !== Date.parse(answerAt) && show(t)) figures.set(i, t);
+  return { answer: observed.length > 0 && show(answerAt) ? answerAt : null, figures };
+}
+
+// ── Answer blocks (paragraphs and lists inside typed segments) ──────────────
+
+/** An inline piece of an answer: the typed segment kinds, never markup. A figure carries its index in the segment list (`seg`). */
+export type InlineSegment = Exclude<ClientSegment, { kind: "correction" | "figure" }> | (Extract<ClientSegment, { kind: "figure" }> & { seg: number });
+export type AnswerBlock =
+  | { kind: "p"; lines: InlineSegment[][] }
+  | { kind: "ul" | "ol"; items: InlineSegment[][] };
+
+const BULLET = /^[ \t]*(?:[-*•])[ \t]+/;
+const NUMBERED = /^[ \t]*\d{1,2}[.)][ \t]+/;
+
+/**
+ * Lay the typed segments out as paragraphs and simple lists — STRUCTURE ONLY.
+ * A blank line ends a paragraph; a line that starts with "- ", "* ", "• " or
+ * "1. " is a list item (the marker is dropped). Nothing else is interpreted:
+ * `**x**`, `<b>`, `[a](b)` stay literal text, a link is still only a server
+ * `link` segment, and every piece is still rendered as React text. Correction
+ * segments are not part of the body (they render above it).
+ */
+export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] {
+  const lines: InlineSegment[][] = [[]];
+  segments.forEach((s, seg) => {
+    if (s.kind === "correction") return;
+    // A figure ({{m:}}) and a link are typed server segments: never split, never read as a list marker.
+    if (s.kind === "figure") { lines[lines.length - 1].push({ ...s, seg }); return; }
+    if (s.kind === "link") { lines[lines.length - 1].push(s); return; }
+    s.text.split("\n").forEach((part, i) => {
+      if (i > 0) lines.push([]);
+      if (part) lines[lines.length - 1].push({ kind: "text", text: part });
+    });
+  });
+  const blocks: AnswerBlock[] = [];
+  let para: InlineSegment[][] | null = null;
+  const lineText = (l: InlineSegment[]) => l.map((x) => x.text).join("");
+  for (const line of lines) {
+    if (lineText(line).trim() === "") { para = null; continue; }
+    const first = line[0];
+    const marker = first?.kind === "text" ? (BULLET.exec(first.text) ?? NUMBERED.exec(first.text)) : null;
+    if (marker && first.kind === "text") {
+      const kind = BULLET.test(first.text) ? "ul" : "ol";
+      const rest = first.text.slice(marker[0].length);
+      const item: InlineSegment[] = [...(rest ? [{ kind: "text" as const, text: rest }] : []), ...line.slice(1)];
+      const prev = blocks[blocks.length - 1];
+      if (para === null && prev && prev.kind === kind) prev.items.push(item);
+      else blocks.push({ kind, items: [item] });
+      para = null;
+      continue;
+    }
+    if (para) para.push(line);
+    else { para = [line]; blocks.push({ kind: "p", lines: para }); }
+  }
+  return blocks;
+}
 
 // ── History (parity PR4) ────────────────────────────────────────────────────
 

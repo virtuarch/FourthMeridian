@@ -40,11 +40,11 @@ console.log("1. Rate label follows the liability kind");
     ["Plaid mortgage (debtSubtype null)",            { type: "debt", providerSubtype: "mortgage" },                       "Mortgage rate"],
     ["Plaid mortgage carrying a limit (F2 H5)",      { type: "debt", providerSubtype: "mortgage", creditLimit: 400_000 },  "Mortgage rate"],
     ["FM debtSubtype mortgage",                      { type: "debt", debtSubtype: "mortgage" },                            "Mortgage rate"],
-    ["FM debtSubtype wins over Plaid subtype",       { type: "debt", debtSubtype: "auto_loan", providerSubtype: "mortgage" }, "Loan rate"],
-    ["Plaid auto",                                   { type: "debt", providerSubtype: "auto" },                            "Loan rate"],
-    ["Plaid student",                                { type: "debt", providerSubtype: "student" },                         "Loan rate"],
-    ["FM personal_loan",                             { type: "debt", debtSubtype: "personal_loan" },                       "Loan rate"],
-    ["Plaid home equity, no limit (closed-end)",     { type: "debt", providerSubtype: "home equity" },                     "Loan rate"],
+    ["FM debtSubtype wins over Plaid subtype",       { type: "debt", debtSubtype: "auto_loan", providerSubtype: "mortgage" }, "Interest rate"],
+    ["Plaid auto",                                   { type: "debt", providerSubtype: "auto" },                            "Interest rate"],
+    ["Plaid student",                                { type: "debt", providerSubtype: "student" },                         "Interest rate"],
+    ["FM personal_loan",                             { type: "debt", debtSubtype: "personal_loan" },                       "Interest rate"],
+    ["Plaid home equity, no limit (closed-end)",     { type: "debt", providerSubtype: "home equity" },                     "Interest rate"],
     ["Plaid home equity with a limit (HELOC)",       { type: "debt", providerSubtype: "home equity", creditLimit: 50_000 }, "APR"],
     ["FM heloc",                                     { type: "debt", debtSubtype: "heloc" },                               "APR"],
     ["Plaid credit card",                            { type: "debt", providerSubtype: "credit card" },                     "APR"],
@@ -59,9 +59,9 @@ console.log("1. Rate label follows the liability kind");
   }
   check("APR is never the label of an installment loan",
     cases.filter(([, i]) => rateLabel(i) === "APR").every(([, i]) => !["mortgage", "auto", "student"].includes(i.providerSubtype ?? "")));
-  check("inline: 'mortgage rate' / 'loan rate' / 'APR'",
+  check("inline: 'mortgage rate' / 'interest rate' / 'APR'",
     rateLabelInline({ providerSubtype: "mortgage" }) === "mortgage rate"
-      && rateLabelInline({ providerSubtype: "auto" }) === "loan rate"
+      && rateLabelInline({ providerSubtype: "auto" }) === "interest rate"
       && rateLabelInline({ providerSubtype: "credit card" }) === "APR");
   check("isMortgage reads FM subtype first, then Plaid's",
     isMortgage({ providerSubtype: "Mortgage" }) && !isMortgage({ debtSubtype: "auto_loan", providerSubtype: "mortgage" }));

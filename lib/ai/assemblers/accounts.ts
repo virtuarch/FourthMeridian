@@ -77,7 +77,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { rateLabel } from '@/lib/debt/rate-label';
-import { liabilityKind } from '@/lib/debt/liability-kind';
+import { debtType, DEBT_TYPE_LABEL, liabilityKind } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -554,6 +554,7 @@ async function assembleAccounts(
         // providerSubtype "mortgage") is a "Mortgage rate", never an "APR".
         label:       rateLabel(fa),
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
 
@@ -564,6 +565,7 @@ async function assembleAccounts(
         field:       'minimumPayment',
         label:       'Minimum Payment',
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
   }
@@ -670,10 +672,16 @@ async function assembleAccounts(
 
           base.apr                  = effectiveApr;
           // Mortgage F3 — what `apr` IS for this account: "Mortgage rate" /
-          // "Loan rate" / "APR" (revolving credit only) / "Interest rate"
+          // "Interest rate" (other loans) / "APR" (revolving credit only) / "Interest rate"
           // (untyped). The model must use this name, never "APR" by default.
           base.rateLabel            = rateLabel(fa);
-          base.liabilityKind        = liabilityKind(fa);   // Mortgage F4 — payoff targeting
+          base.liabilityKind        = liabilityKind(fa);   // Mortgage F4 — payoff targeting (via debtType)
+          // Owner 2026-11-08 — the ONE fine-grained debt type + its name, so the
+          // model calls an auto loan an "Auto loan", never a mortgage, and keeps
+          // mortgage-only reasoning (equity, escrow) to debtType "mortgage".
+          const dt                  = debtType(fa);
+          base.debtType             = dt;
+          base.debtTypeLabel        = DEBT_TYPE_LABEL[dt];
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;

@@ -63,7 +63,7 @@ export interface DebtPerspectiveAccount {
    *  ONLY by the display classifier `presentationDebtClass` when `debtSubtype` is
    *  empty, and by the installment-loan rule (lib/debt/liability-kind.ts, Mortgage F2)
    *  that keeps a Plaid loan out of utilization and the "add limit" prompt, and by
-   *  the rate LABEL (lib/debt/rate-label.ts, Mortgage F3: "Mortgage rate" / "Loan
+   *  the rate LABEL (lib/debt/rate-label.ts, Mortgage F3: "Mortgage rate" / "Interest
    *  rate" / "APR"); never by totals, interest, or payoff figures. null/absent = unknown. */
   providerSubtype?: string | null;
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
