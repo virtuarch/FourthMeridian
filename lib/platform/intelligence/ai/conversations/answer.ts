@@ -36,6 +36,8 @@ export type StoredSegment =
   | { kind: "link"; text: string; page: string; params: Record<string, string> }
   /** S2 F-C1 (ii): the server's code-written period CORRECTION (shown above the answer; never model text). */
   | { kind: "correction"; text: string }
+  /** F-1 (S2 2026-11-08): the server's code-written WINDOW NOTE (its own segment, shown above the answer; never model text). */
+  | { kind: "note"; text: string }
   /**
    * Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span. Its text is
    * EXACTLY "noted <d Mon yyyy>" (+ " — now changed" / " — updated since") — never the
@@ -73,7 +75,8 @@ function validSegment(s: unknown): s is StoredSegment {
   if (!isObj(s)) return false;
   switch (s.kind) {
     case "text":
-    case "correction": return exactKeys(s, ["kind", "text"]) && isText(s.text);
+    case "correction":
+    case "note": return exactKeys(s, ["kind", "text"]) && isText(s.text);
     case "memory": return exactKeys(s, ["kind", "text"]) && typeof s.text === "string" && MEMORY_SPAN_SHAPE.test(s.text);
     case "figure":
       return exactKeys(s, ["kind", "text", "metric", "window"]) && isText(s.text, 120) && isRefId(s.metric)

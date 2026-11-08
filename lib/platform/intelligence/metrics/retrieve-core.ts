@@ -224,6 +224,13 @@ export interface MetricEnvelope {
   estimatedParts: EstimatedParts | null;
   /** Configuration parts rendered with no window label (UnwindowedParts); null = none. */
   unwindowedParts: UnwindowedParts | null;
+  /**
+   * F-3 (S2, 2026-11-08): on a PARTIAL envelope, the parts that are nevertheless EXACT (the
+   * metric is incomplete — e.g. a domain had nothing to judge, a reader failed — but this
+   * count was read in full). Platform AI renders "at least" ONLY for a PARTIAL part NOT
+   * listed here (a capped scan / failed reader / a floor). Absent / null = none exact.
+   */
+  exactParts?: readonly string[] | null;
   /** Each part's role (PartRole: total / category / ranking); null = not declared (S2 ruling 2026-11-05). */
   partRoles: Readonly<Record<string, PartRole>> | null;
   /**
@@ -355,6 +362,8 @@ interface Projected {
   windowLabel?: string;
   /** Named subjects (MetricSubject) — registry / module names only; envelope() drops any label that is not one. */
   subjects?: readonly MetricSubject[];
+  /** F-3: PARTIAL, but these parts are exact (MetricEnvelope.exactParts). */
+  exactParts?: readonly string[];
 }
 
 interface ReadInput {
@@ -702,8 +711,9 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       for (const d of o.domains) v[DOMAIN_PART[d.state]]++;
       const subjects = o.domains.filter((d) => d.state !== "HEALTHY").map((d) => ({ label: DOMAIN_LABEL[d.key], state: DOMAIN_SUBJECT[d.state] }));
       if (o.domains.length === 0) return { value: null, status: "UNAVAILABLE", reason: "the overview returned no domain verdicts", asOf: o.checkedAt };
+      // F-3: every domain verdict is counted in full — an unknown domain makes the posture incomplete, never a count a floor.
       return v.unknown > 0
-        ? { value: v, status: "PARTIAL", reason: `${plural(v.unknown, "domain")} had nothing to judge (unknown, never counted healthy)`, missing: subjects.filter((x) => x.state === "unknown").map((x) => `${x.label}: unknown`), asOf: o.checkedAt, subjects }
+        ? { value: v, status: "PARTIAL", reason: `${plural(v.unknown, "domain")} had nothing to judge (unknown, never counted healthy)`, missing: subjects.filter((x) => x.state === "unknown").map((x) => `${x.label}: unknown`), asOf: o.checkedAt, subjects, exactParts: Object.keys(v) }
         : { value: v, asOf: o.checkedAt, subjects };
     },
   },
@@ -725,9 +735,22 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
         ...(u.floors.length > 0 ? [`${plural(u.floors.length, "impact reader")} returned a floor`] : []),
       ];
       const base = { asOf: a.checkedAt, hours: u.windowHours };
+      // F-3: a part is EXACT when its own authority answered and did not report a floor (a capped page);
+      // customers / sources are exact only when every authority answered with no floor and every row named its customer.
+      const ok = (a: string) => u.authorities.checked.includes(a as never) && !u.authorities.failed.includes(a as never);
+      const floored = (prefix: string) => u.floors.some((f) => f.startsWith(prefix) && f.includes("a floor"));
+      const whole = u.authorities.failed.length === 0 && !u.floors.some((f) => f.includes("a floor"));
+      const exactParts = [
+        ...(ok("refresh-executions") && !floored("Refresh:") ? ["refreshFailed", "refreshPartial"] : []),
+        ...(ok("ai-failures") ? ["aiFailures"] : []),
+        ...(ok("brief-ops") && !floored("Brief:") ? ["briefFailed"] : []),
+        ...(ok("connection-health") ? ["needsReauth"] : []),
+        ...(whole && u.usersAffected.count !== null && u.usersAffected.reason === null ? ["customersAffected"] : []),
+        ...(whole ? ["sourcesAffected"] : []),
+      ];
       if (u.authorities.checked.length === 0) return { ...base, value: null, status: "UNAVAILABLE", reason: "no customer-impact reader could be read", missing };
       return missing.length > 0
-        ? { ...base, value, status: "PARTIAL", reason: "a floor — not every impact fact could be read or attributed", missing }
+        ? { ...base, value, status: "PARTIAL", reason: "a floor — not every impact fact could be read or attributed", missing, exactParts }
         : { ...base, value };
     },
   },
@@ -1113,6 +1136,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     valueUnits,
     estimatedParts,
     unwindowedParts,
+    ...(status === "PARTIAL" && p.exactParts && value !== null && typeof value === "object" ? { exactParts: p.exactParts.filter((k) => Object.prototype.hasOwnProperty.call(value, k)) } : {}),
     partRoles: partRolesOf(parts),
     partLabels: partLabelsOf(parts),
     value,
