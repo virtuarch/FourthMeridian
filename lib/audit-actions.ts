@@ -392,6 +392,21 @@ export const AuditAction = {
   PLATFORM_AI_CONVERSATION_DELETED:  "PLATFORM_AI_CONVERSATION_DELETED",
   PLATFORM_AI_CONVERSATIONS_PURGED:  "PLATFORM_AI_CONVERSATIONS_PURGED",
 
+  // Platform AI operational memory (design v2 §7; Preview only). NEVER a note,
+  // a payload or a ref id — types, areas and counts only. CONFIRMED / RENEWED /
+  // DELETED / EXPORTED / PROPOSAL_REFUSED: the operator's own action, written in
+  // the same tenant transaction. INVALIDATED: aggregated per turn (system).
+  // OPERATOR_PURGED: a System Admin's purge of one operator (target id + count).
+  // PURGED: the retention job (fm_system), counts only, no userId.
+  PLATFORM_AI_MEMORY_CONFIRMED:        "PLATFORM_AI_MEMORY_CONFIRMED",
+  PLATFORM_AI_MEMORY_RENEWED:          "PLATFORM_AI_MEMORY_RENEWED",
+  PLATFORM_AI_MEMORY_DELETED:          "PLATFORM_AI_MEMORY_DELETED",
+  PLATFORM_AI_MEMORY_INVALIDATED:      "PLATFORM_AI_MEMORY_INVALIDATED",
+  PLATFORM_AI_MEMORY_PROPOSAL_REFUSED: "PLATFORM_AI_MEMORY_PROPOSAL_REFUSED",
+  PLATFORM_AI_MEMORY_OPERATOR_PURGED:  "PLATFORM_AI_MEMORY_OPERATOR_PURGED",
+  PLATFORM_AI_MEMORY_EXPORTED:         "PLATFORM_AI_MEMORY_EXPORTED",
+  PLATFORM_AI_MEMORY_PURGED:           "PLATFORM_AI_MEMORY_PURGED",
+
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
   // token, exchange a public_token into a new PlaidItem under the OWNER's
