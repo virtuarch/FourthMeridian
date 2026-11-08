@@ -427,7 +427,10 @@ export async function getAccountsWithVisibility(
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,
       displayName:   r.displayName  ?? undefined,
-      creditLimit:    r.creditLimit ?? undefined,
+      // S2 P1-R1 — a known-absent limit is NULL (as on the mount, AI and snapshot
+      // paths), so a closed-end "home equity" loan classifies as installment here
+      // too. `undefined` stays reserved for a genuinely withheld field.
+      creditLimit:    r.creditLimit ?? null,
       debtSubtype:    r.debtSubtype ?? undefined,
       providerSubtype: r.providerSubtype ?? null,
       interestRate:   effectiveApr,

@@ -198,13 +198,40 @@ async function main(): Promise<void> {
   };
   const mBo = clientMath(bo.mount), mFull = clientMath(full.mount);
   check("mount payload: classifier + liquid-NW + kind totals identical to FULL", money(mBo) === money(mFull), { mBo, mFull });
-  // The data layer's own FULL rows turn a null creditLimit into `undefined`
-  // (pre-existing), which counts a closed-end Plaid "home equity" loan as
-  // unknown; the server's classification (and the mount / AI / snapshot FULL
-  // views) excludes it. The coarse rows match the canonical FULL classification.
-  const vBo = clientMath(bo.vis.map((r) => r.account));
-  check("data-layer payload: classifier + liquid-NW + kind totals identical to the canonical FULL classification",
-    JSON.stringify(vBo) === JSON.stringify(mFull), { vBo, mFull });
+  // S2 P1-R1 — the data layer's FULL rows now carry a known-absent limit as
+  // NULL (was undefined), so a closed-end "home equity" loan is installment and
+  // excluded on EVERY path; the coarse rows equal the FULL data-layer view.
+  const vBo = clientMath(bo.vis.map((r) => r.account)), vFull = clientMath(full.vis.map((r) => r.account));
+  check("data-layer payload: classifier + liquid-NW + kind totals identical to the FULL data-layer view",
+    JSON.stringify(vBo) === JSON.stringify(vFull), { vBo, vFull });
+
+  // Four-path parity (FULL): data layer, mount, AI, snapshot writer.
+  const { computeSnapshotFields } = await import("@/lib/snapshots/backfill-core");
+  const { regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate");
+  const snapClient = clientFor("FULL");
+  let snapRow: any = null;
+  snapClient.spaceSnapshot = { async upsert(a: any) { snapRow = a.create; return {}; } };
+  await regenerateSpaceSnapshot("space-1", new Date(Date.UTC(2026, 10, 9)), snapClient);
+  const dataRows = full.vis.map((r) => r.account) as any[];
+  const lnw = {
+    dataLayer: computeSnapshotFields(classifyAccounts(dataRows)).netLiquid,
+    mount:     computeSnapshotFields(classifyAccounts(full.mount)).netLiquid,
+    ai:        full.ai.liquidNetWorth.amount,
+    snapshot:  snapRow?.netLiquid,
+  };
+  check("FULL liquid NW identical on data layer / mount / AI / snapshot",
+    [lnw.mount, lnw.ai, lnw.snapshot].every((v) => typeof v === "number" && near(v, lnw.dataLayer)), lnw);
+  const kinds = {
+    dataLayer: liquidNetWorthBasis(dataRows).excludedKinds,
+    mount:     liquidNetWorthBasis(full.mount).excludedKinds,
+    ai:        full.ai.liquidNetWorth.excludedKinds,
+  };
+  check("FULL liquid-NW exclusion lists identical on data layer / mount / AI",
+    // as SETS: the mount re-sorts rows by display name, so first-seen order differs.
+    JSON.stringify([...kinds.dataLayer].sort()) === JSON.stringify([...kinds.mount].sort())
+    && JSON.stringify([...kinds.mount].sort()) === JSON.stringify([...kinds.ai].sort()), kinds);
+  check("closed-end home-equity loan (no limit) is EXCLUDED on the FULL data layer (null, not undefined)",
+    (dataRows.find((r) => r.id === "hel")?.creditLimit === null) && kinds.dataLayer.includes("installment loan"), kinds.dataLayer);
   check("AI totals + liquid NW amount identical",
     near(bo.ai.netWorth, full.ai.netWorth) && near(bo.ai.totalLiabilities, full.ai.totalLiabilities)
     && near(bo.ai.liquidNetWorth.amount, full.ai.liquidNetWorth.amount)

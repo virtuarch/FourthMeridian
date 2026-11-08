@@ -127,7 +127,7 @@ async function evaluateHistorical(
     debtType: r.account.debtType ?? null, // S2 P1-R1
     balance: r.account.balance,
     currency: r.account.currency ?? null,
-    creditLimit: r.account.creditLimit ?? undefined,
+    creditLimit: r.account.creditLimit, // null = known-absent; undefined = withheld (S2 P1-R1)
     lastUpdated: r.account.lastUpdated,
     visibilityLevel: r.visibilityLevel as string,
     tier: r.tier,

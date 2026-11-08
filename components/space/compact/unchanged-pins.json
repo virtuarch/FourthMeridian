@@ -103,7 +103,7 @@
  "lib/liquidity/expense-baseline.ts": "5ccd55fc068276413e9b0b27af5527407765cbdec619904071108b683df51afa",
  "lib/liquidity/historical-splice.ts": "9156ddb2f442a8e88ce49f8dda33ec930937e1ef5224e15fea5a67de5132532f",
  "lib/liquidity/space-data-core.ts": "a2c4ff4874cef1cac53bf2e02d255370d4f14342d4f8be35c073c0be12925066",
- "lib/liquidity/space-data.ts": "fe10b95f2196c629b47f54ae9ea87a888ed4e7826ba9fe37d360f21b71e55f13",
+ "lib/liquidity/space-data.ts": "f81f56d2942871b183c0fa3da7445a237e711e86e71438840048b47be35af015",
  "lib/money/context.ts": "ce0f9c2d9004ee27d977bbcfe985d21c7e90c9af687a69eea2a2a1e1d72ec503",
  "lib/money/convert.ts": "53a902410c2d00b28ea80d51c381a28d98d733d49072a2993c350ec935e777d2",
  "lib/money/fx-freshness.ts": "47eff9c989fe9ae78038b07da804b98476b15a44d541a5ebf8dfc1acd532b749",

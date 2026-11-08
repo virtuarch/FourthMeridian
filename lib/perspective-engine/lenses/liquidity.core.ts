@@ -117,7 +117,7 @@ export interface LiquidityAccountRow {
    */
   currency?: string | null;
   /** Present only on FULL rows (withheld otherwise by the data layer). */
-  creditLimit?: number;
+  creditLimit?: number | null; // S2 P1-R1: null = known-absent; undefined = withheld
   /** ISO timestamp of last balance write (Account.lastUpdated) — OUR clock. */
   lastUpdated: string;
   /** v2.6-L2 — the INSTITUTION's own balance clock, or null when it reports none.
