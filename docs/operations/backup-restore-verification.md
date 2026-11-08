@@ -109,7 +109,7 @@ A rehearsal is **PASSED** when: sha256 matches, restore ran with `ON_ERROR_STOP`
 **Rule (S2, OD-7 activation (b)).** After restoring any environment that holds the B11 tables (`PlatformAiConversation`, `PlatformAiMessage`), run the purge, by dispatch or by the job, **BEFORE the app or any flag is enabled**, and **record the counts**.
 
 A restore brings back rows that retention had already removed as of the backup point:
-- messages more than 90 days old (per message, from creation; OD-7);
+- messages more than 7 days old (per message, from creation; OD-7 as amended 2026-11-08). A backup taken before migration `20261108120000` restores the 90-day `purgeAfter` values: apply migrations to head (which clamps them) before the purge;
 - conversations an operator deleted (`docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md` §7.3).
 
 On a target without the B11 migration, step 1 reports the functions as absent and this section does not apply.

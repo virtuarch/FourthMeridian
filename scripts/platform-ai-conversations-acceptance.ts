@@ -32,8 +32,12 @@
  *   [expiry] expiry on read (20261105120000): expired rows invisible to every
  *           fm_app path (SQL, read, history, list, append, export, settle,
  *           soft delete) before any purge; the definer purge still deletes them;
- *           one pair moved across the 90-day line; the strict read boundary
+ *           one pair moved across the 7-day line; the strict read boundary
  *           (purgeAfter = now() + 1 ms visible, = now() hidden, one DB now())
+ *   [retention-7d] 20261108120000 (owner 2026-11-08): legacy 90-day rows are
+ *           CLAMPED to question createdAt + 7 days, pairs together, never
+ *           lengthened, a re-run is a no-op; the settle trigger is back on and
+ *           still refuses; the 7-day read boundary; the purge removes them
  *   [pre-disable] PR D — the S2 disable order: the counts-only check FAILS
  *           while rows remain, FAILS CLOSED for a non-bypass reader, PASSES empty
  *
@@ -45,6 +49,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PLATFORM_AI_RETENTION_DAYS } from "../lib/platform/intelligence/ai/conversations/constants";
 import { prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, deniedByGrant, deniedByRls } from "./lib/rls-harness";
 
 const KEEP = process.argv.includes("--keep");
@@ -55,6 +60,8 @@ delete process.env.ENCRYPTION_KEY_PREVIOUS;
 // The job case runs the REAL rule; its flag must be on in THIS process only (read at lib/env import).
 process.env.PLATFORM_AI_PURGE_ENABLED = "true";
 
+/** The retention window as SQL (= PLATFORM_AI_RETENTION_DAYS = the migration's default and bound). */
+const RET = `interval '${PLATFORM_AI_RETENTION_DAYS} days'`;
 const A = "aiconv_op_a", B = "aiconv_op_b", C = "aiconv_op_c";
 const first = (r: { out: string; err: string }) => r.out.trim() || r.err.split("\n")[0];
 const errLine = (r: { err: string }) => r.err.split("\n").find((l) => /ERROR/.test(l)) ?? r.err.split("\n")[0] ?? "";
@@ -93,8 +100,8 @@ async function main(): Promise<number> {
   const u1 = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted") values ('m_a1u','cv_a1','USER','COMPLETE','r-a1','cipher-a1');`);
   const a1 = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('m_a1a','cv_a1','ASSISTANT','PENDING','m_a1u');`);
   check(5, "fm_app appends a USER row and its PENDING ASSISTANT reply", u1.ok && a1.ok, `${u1.err} ${a1.err}`);
-  const pa = one(`select ("purgeAfter" = "createdAt" + interval '90 days')::text from "PlatformAiMessage" where id='m_a1u';`);
-  check(6, "purgeAfter = createdAt + 90 days (DB default; R1 option (b))", pa === "true", pa);
+  const pa = one(`select ("purgeAfter" = "createdAt" + ${RET})::text from "PlatformAiMessage" where id='m_a1u';`);
+  check(6, `purgeAfter = createdAt + ${PLATFORM_AI_RETENTION_DAYS} days (DB default; OD-7 as amended 2026-11-08)`, PLATFORM_AI_RETENTION_DAYS === 7 && pa === "true", pa);
   const moved = one(`select ("lastActivityAt" > "createdAt")::text from "PlatformAiConversation" where id='cv_a1';`);
   check(7, "the USER insert moved lastActivityAt (the DEFINER touch trigger) — fm_app holds no grant on it", moved === "true", moved);
   const upd = [
@@ -194,11 +201,11 @@ async function main(): Promise<number> {
   // Two operators' expired and unexpired rows (seeded as the owner — the only role that can set time).
   const seedExchange = (cid: string, n: string, ageSql: string) => `
     insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted","createdAt","purgeAfter")
-      values ('${n}u','${cid}','USER','COMPLETE','${n}-k','c-${n}', (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + interval '90 days');
+      values ('${n}u','${cid}','USER','COMPLETE','${n}-k','c-${n}', (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + ${RET});
     insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId","contentEncrypted","evidenceRefs","createdAt","purgeAfter","completedAt")
-      values ('${n}a','${cid}','ASSISTANT','COMPLETE','${n}u','c-${n}a','[]'::jsonb, (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + interval '90 days', (now() at time zone 'UTC') - ${ageSql});`;
+      values ('${n}a','${cid}','ASSISTANT','COMPLETE','${n}u','c-${n}a','[]'::jsonb, (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + ${RET}, (now() at time zone 'UTC') - ${ageSql});`;
   one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_pa','${A}','PLATFORM_OPS','k-pa'), ('cv_pb','${B}','SECURITY_OPS','k-pb');
-    ${seedExchange("cv_pa", "px_a_old1", "interval '91 days'")} ${seedExchange("cv_pa", "px_a_old2", "interval '120 days'")} ${seedExchange("cv_pa", "px_a_new", "interval '10 days'")}
+    ${seedExchange("cv_pa", "px_a_old1", "interval '91 days'")} ${seedExchange("cv_pa", "px_a_old2", "interval '120 days'")} ${seedExchange("cv_pa", "px_a_new", "interval '3 days'")}
     ${seedExchange("cv_pb", "px_b_old1", "interval '95 days'")} ${seedExchange("cv_pb", "px_b_new", "interval '1 day'")}
     select 'ok';`);
   const total = () => Number(one(`select count(*) from "PlatformAiMessage";`));
@@ -212,22 +219,22 @@ async function main(): Promise<number> {
     r30.ok && r30.out.trim().split("|")[1] === String(removed) && removed === 6 + /* cv_a2 (deleted, grace 0) holds 0 rows */ 0, `${first(r30)} removed=${removed}`);
   check(32, "…and the deleted conversation (grace 0, OD-10 default IMMEDIATE) was purged with it", r30.out.trim().split("|")[0] === "1" && one(`select count(*) from "PlatformAiConversation" where id='cv_a2';`) === "0", first(r30));
 
-  // R6 boundary — 90 d + 1 s purged, 89 d kept, exactly 90 d kept (strict <, the same-transaction clock).
+  // R6 boundary — 7 d + 1 s purged, 6 d kept, exactly 7 d kept (strict <, the same-transaction clock).
   one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_bd','${A}','PLATFORM_OPS','k-bd');
     insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt","purgeAfter") values
-      ('bd_over','cv_bd','USER','COMPLETE','bd-1', (now() at time zone 'UTC') - interval '90 days 1 second', (now() at time zone 'UTC') - interval '1 second'),
-      ('bd_89','cv_bd','USER','COMPLETE','bd-2', (now() at time zone 'UTC') - interval '89 days', (now() at time zone 'UTC') - interval '89 days' + interval '90 days');
+      ('bd_over','cv_bd','USER','COMPLETE','bd-1', (now() at time zone 'UTC') - ${RET} - interval '1 second', (now() at time zone 'UTC') - interval '1 second'),
+      ('bd_under','cv_bd','USER','COMPLETE','bd-2', (now() at time zone 'UTC') - interval '6 days', (now() at time zone 'UTC') - interval '6 days' + ${RET});
     select 'ok';`);
   const exact = psql(owner, `BEGIN;
     insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt","purgeAfter") values
-      ('bd_exact','cv_bd','USER','COMPLETE','bd-3', (now() at time zone 'UTC') - interval '90 days', (now() at time zone 'UTC'));
+      ('bd_exact','cv_bd','USER','COMPLETE','bd-3', (now() at time zone 'UTC') - ${RET}, (now() at time zone 'UTC'));
     SET LOCAL ROLE fm_system;
     SELECT messages FROM fm_purge_platform_ai_conversations(500);
     RESET ROLE;
     SELECT string_agg(id, ',' order by id) FROM "PlatformAiMessage" WHERE "conversationId" = 'cv_bd';
     ROLLBACK;`, false);
   const [, after] = exact.out.split("\n");
-  check(33, "R6 boundary: 90 d + 1 s ⇒ purged; 89 d ⇒ kept; EXACTLY 90 d ⇒ kept (strict <, same clock)", exact.ok && after === "bd_89,bd_exact", `${exact.out.replace(/\n/g, " / ")} ${errLine(exact)}`);
+  check(33, "R6 boundary: 7 d + 1 s ⇒ purged; 6 d ⇒ kept; EXACTLY 7 d ⇒ kept (strict <, same clock)", exact.ok && after === "bd_exact,bd_under", `${exact.out.replace(/\n/g, " / ")} ${errLine(exact)}`);
   // Shells.
   one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId","createdAt") values ('cv_shell_old','${B}','PLATFORM_OPS','k-so', (now() at time zone 'UTC') - interval '2 days'),
     ('cv_shell_new','${B}','PLATFORM_OPS','k-sn', (now() at time zone 'UTC') - interval '1 hour'); select 'ok';`);
@@ -615,7 +622,7 @@ async function main(): Promise<number> {
     // transaction because settled rows are otherwise immutable; fm_app can write neither column).
     const expire = (ids: string[]) => one(`begin;
       alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
-      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - interval '91 days', "purgeAfter" = (now() at time zone 'UTC') - interval '1 day' where id in (${ids.map((i) => `'${i}'`).join(",")});
+      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - interval '8 days', "purgeAfter" = (now() at time zone 'UTC') - interval '1 day' where id in (${ids.map((i) => `'${i}'`).join(",")});
       alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
       commit; select 'ok';`);
     // X: an expired exchange then a live one. Y: one exchange, all expired. Z: a PENDING turn, expired.
@@ -667,8 +674,8 @@ async function main(): Promise<number> {
     check(91, "NOT a substitute for the purge: the definer purge (fm_system) still physically deletes every expired row; the live exchange stays",
       purged.ok && Number(purged.out.trim()) >= 6 && leftExpired === "0" && leftLive === "2", `${purged.out || purged.err} expiredLeft=${leftExpired} live=${leftLive}`);
 
-    // (a) ONE question/answer pair moved across the 90-day line, read on the fm_app path. Back-dated as the
-    // migration principal relative to the DATABASE clock (purgeAfter = createdAt + 90 days, as the default sets it).
+    // (a) ONE question/answer pair moved across the 7-day line, read on the fm_app path. Back-dated as the
+    // migration principal relative to the DATABASE clock (purgeAfter = createdAt + 7 days, as the default sets it).
     const E = "aiconv_op_e";
     one(`insert into "User" (id,email,name,"updatedAt") values ('${E}','aiconv-e@example.test','Operator E',now()); select 'ok';`);
     const line = await store.createConversation({ operatorId: E, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "LINE-QUESTION" });
@@ -677,18 +684,18 @@ async function main(): Promise<number> {
     const ls = line.conversation.id, lu = line.pair.user.id, la = line.pair.assistant.id;
     const backdate = (age: string) => one(`begin;
       alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
-      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - ${age}, "purgeAfter" = (now() at time zone 'UTC') - ${age} + interval '90 days' where id in ('${lu}','${la}');
+      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - ${age}, "purgeAfter" = (now() at time zone 'UTC') - ${age} + ${RET} where id in ('${lu}','${la}');
       alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
       commit; select 'ok';`);
     const appIds = () => asApp(E, `select coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId"='${ls}';`);
     const pairIds = [lu, la].sort().join(",");
-    backdate("(interval '90 days' - interval '1 minute')"); // 89 d 23 h 59 min old: one minute inside the line
+    backdate(`(${RET} - interval '1 minute')`); // 6 d 23 h 59 min old: one minute inside the line
     const inside = appIds();
     const insideRead = await store.readConversation(E, ls, NOW());
-    backdate("(interval '90 days' + interval '1 second')"); // moved across: one second past the line
+    backdate(`(${RET} + interval '1 second')`); // moved across: one second past the line
     const across = appIds();
     const acrossRead = await store.readConversation(E, ls, NOW());
-    check(95, "ONE question/answer pair moved across the 90-day line (fm_app): both visible one minute inside it (SQL + store.readConversation), both hidden one second past it",
+    check(95, "ONE question/answer pair moved across the 7-day line (fm_app): both visible one minute inside it (SQL + store.readConversation), both hidden one second past it",
       inside.ok && inside.out === pairIds && insideRead?.messages.length === 2 && JSON.stringify(insideRead.messages).includes("LINE-QUESTION")
         && across.ok && across.out === "" && acrossRead === null,
       `inside=${inside.out || inside.err} read=${insideRead?.messages.length} across=${across.out || across.err} read=${acrossRead === null ? "null" : acrossRead.messages.length}`);
@@ -721,6 +728,87 @@ rollback;
     const bOut = boundary.out.split("\n");
     check(96, "read boundary is STRICT ('>'), one DB now(): purgeAfter = now() + 1 ms ⇒ visible to fm_app; purgeAfter = now() exactly ⇒ hidden",
       boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`) && !bOut.includes("nohit"), `${boundary.out.slice(0, 200)} ${errLine(boundary)}`);
+  }
+
+  // ── [retention-7d] 20261108120000 (owner 2026-11-08): the clamp of existing rows ──
+  console.log("\n[retention-7d] legacy 90-day rows clamped to question createdAt + 7 days; the trigger, default, bound, read boundary and purge\n");
+  {
+    // ONE owner transaction, rolled back: put the table back in its pre-migration shape (the 90-day default, no
+    // 7-day bound), seed legacy rows, apply the REAL migration file twice, then read as fm_app and purge as fm_system.
+    const MIG = path.join(process.cwd(), "prisma/migrations/20261108120000_platform_ai_retention_7_days/migration.sql");
+    const N = `(now() at time zone 'UTC')`;
+    const legacy = `interval '90 days'`;
+    const q = (id: string, created: string, purge: string) => `('${id}','cv_cl','USER','COMPLETE','${id}-k',NULL,NULL,${created},${purge})`;
+    const a = (id: string, reply: string, created: string, purge: string, status = "COMPLETE") => `('${id}','cv_cl','ASSISTANT','${status}',NULL,'${reply}','[]'::jsonb,${created},${purge})`;
+    const rows = [
+      q("cl1u", `${N} - interval '3 days'`, `${N} - interval '3 days' + ${legacy}`), a("cl1a", "cl1u", `${N} - interval '3 days'`, `${N} - interval '3 days' + ${legacy}`),
+      q("cl2u", `${N} - interval '30 days'`, `${N} - interval '30 days' + ${legacy}`), a("cl2a", "cl2u", `${N} - interval '30 days'`, `${N} - interval '30 days' + ${legacy}`),
+      q("cl3u", `${N} - interval '2 days'`, `${N} - interval '1 day'`), a("cl3a", "cl3u", `${N} - interval '2 days'`, `${N} - interval '1 day'`),
+      q("cl4u", `${N} - interval '5 days'`, `${N} - interval '5 days' + ${legacy}`), a("cl4a", "cl4u", `${N} - interval '5 days' + interval '1 minute'`, `${N} - interval '5 days' + interval '1 minute' + ${legacy}`),
+      q("cl5u", `${N} - interval '4 days'`, `${N} - interval '4 days' + ${legacy}`), a("cl5a", "cl5u", `${N} - interval '4 days'`, `${N} - interval '2 days'`),
+      q("cl6u", `${N} - ${RET} + interval '1 minute'`, `${N} - ${RET} + interval '1 minute' + ${legacy}`), a("cl6a", "cl6u", `${N} - ${RET} + interval '1 minute'`, `${N} - ${RET} + interval '1 minute' + ${legacy}`, "PENDING"),
+      q("cl7u", `${N} - ${RET} - interval '1 second'`, `${N} - ${RET} - interval '1 second' + ${legacy}`),
+    ];
+    const expected = `case id
+        when 'cl1u' then ${N} - interval '3 days' + ${RET}   when 'cl1a' then ${N} - interval '3 days' + ${RET}
+        when 'cl2u' then ${N} - interval '30 days' + ${RET}  when 'cl2a' then ${N} - interval '30 days' + ${RET}
+        when 'cl3u' then ${N} - interval '1 day'             when 'cl3a' then ${N} - interval '1 day'
+        when 'cl4u' then ${N} - interval '5 days' + ${RET}   when 'cl4a' then ${N} - interval '5 days' + ${RET}
+        when 'cl5u' then ${N} - interval '4 days' + ${RET}   when 'cl5a' then ${N} - interval '2 days'
+        when 'cl6u' then ${N} + interval '1 minute'          when 'cl6a' then ${N} + interval '1 minute'
+        when 'cl7u' then ${N} - interval '1 second' end`;
+    const snap = `select string_agg(id || '@' || "purgeAfter"::text, ',' order by id) from "PlatformAiMessage"`;
+    const sqlText = `BEGIN;
+alter table "PlatformAiMessage" drop constraint "PlatformAiMessage_purgeAfter_bounded";
+alter table "PlatformAiMessage" alter column "purgeAfter" set default (${N} + ${legacy});
+insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_cl','${A}','PLATFORM_OPS','k-cl');
+insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","replyToId","evidenceRefs","createdAt","purgeAfter") values
+  ${rows.join(",\n  ")};
+create temp table cl_pre as select id, "purgeAfter" from "PlatformAiMessage";
+create temp table cl_r (k text, v text);
+\\i ${MIG}
+select 'clamp|' || coalesce(string_agg(id, ',' order by id) filter (where "purgeAfter" is distinct from (${expected})::timestamp(3)), 'ok') from "PlatformAiMessage" where "conversationId" = 'cv_cl';
+select 'never-longer|' || bool_and(m."purgeAfter" <= p."purgeAfter")::text || '|' || count(*) from "PlatformAiMessage" m join cl_pre p using (id);
+select 'pairs|' || bool_and(a."purgeAfter" <= u."purgeAfter" and u."purgeAfter" <= u."createdAt" + ${RET})::text from "PlatformAiMessage" a join "PlatformAiMessage" u on u.id = a."replyToId";
+create temp table cl_s1 as ${snap};
+\\i ${MIG}
+select 'rerun|' || ((${snap}) = (select * from cl_s1))::text;
+select 'trigger|' || tgenabled::text from pg_trigger where tgrelid = '"PlatformAiMessage"'::regclass and tgname = 'platform_ai_message_settle';
+DO $t$ BEGIN
+  BEGIN UPDATE "PlatformAiMessage" SET "purgeAfter" = "purgeAfter" - interval '1 second' WHERE id = 'cl1a'; INSERT INTO cl_r VALUES ('immutable', 'UPDATED');
+  EXCEPTION WHEN raise_exception THEN INSERT INTO cl_r VALUES ('immutable', SQLERRM); END;
+  BEGIN INSERT INTO "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt","purgeAfter") VALUES ('cl9u','cv_cl','USER','COMPLETE','cl9-k', ${N}, ${N} + ${RET} + interval '1 second'); INSERT INTO cl_r VALUES ('bound', 'INSERTED');
+  EXCEPTION WHEN check_violation THEN INSERT INTO cl_r VALUES ('bound', 'check_violation'); END;
+END $t$;
+insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('cl0u','cv_cl','USER','COMPLETE','cl0-k');
+select 'default|' || ("purgeAfter" = "createdAt" + ${RET})::text from "PlatformAiMessage" where id = 'cl0u';
+delete from "PlatformAiMessage" where id = 'cl0u';
+select k || '|' || v from cl_r order by k;
+set local role fm_app;
+set local app.user_id = '${A}';
+select 'visible|' || coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId" = 'cv_cl';
+reset role;
+set local role fm_system;
+select 'purged|' || messages from fm_purge_platform_ai_conversations(500);
+reset role;
+select 'left|' || coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId" = 'cv_cl';
+ROLLBACK;
+`;
+    const r = psql(owner, sqlText);
+    const out = new Map(r.out.split("\n").map((l) => { const i = l.indexOf("|"); return [l.slice(0, i), l.slice(i + 1)] as const; }));
+    const detail = `${r.out.replace(/\n/g, " / ").slice(0, 600)} ${errLine(r)}`;
+    check(97, "CLAMP: legacy 90-day rows ⇒ question createdAt + 7 d (a later-written answer takes its QUESTION's line); already-shorter rows unchanged; PENDING rows too",
+      r.ok && out.get("clamp") === "ok", detail);
+    check(98, "the clamp NEVER lengthens a row (every row, every operator) and no answer outlives its question; no row is deleted by the migration",
+      r.ok && out.get("never-longer")?.startsWith("true|") === true && out.get("pairs") === "true", detail);
+    check(99, "IDEMPOTENT: applying the migration a second time changes nothing", r.ok && out.get("rerun") === "true", detail);
+    check(100, "the settle trigger is ENABLED after the migration and still refuses a purgeAfter change on a settled row",
+      r.ok && out.get("trigger") === "O" && out.get("immutable") === "settled message is immutable", detail);
+    check(101, "the DB default is createdAt + 7 d and the CHECK refuses createdAt + 7 d + 1 s", r.ok && out.get("default") === "true" && out.get("bound") === "check_violation", detail);
+    check(102, "expiry on read at the 7-day line (fm_app): 1 min inside visible; 1 s past hidden; clamped-expired pairs hidden; a shorter answer hidden alone",
+      r.ok && out.get("visible") === "cl1a,cl1u,cl4a,cl4u,cl5u,cl6a,cl6u", detail);
+    check(103, "the purge (fm_system) removes the clamped-expired exchanges (cl2 pair, cl3 pair, 7 d + 1 s); the rest stay (an expired answer goes with its question)",
+      r.ok && Number(out.get("purged")) >= 5 && out.get("left") === "cl1a,cl1u,cl4a,cl4u,cl5a,cl5u,cl6a,cl6u", detail);
   }
 
   // ── [pre-disable] PR D — the S2 disable order: never the purge flag while rows remain ──
