@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
-import { createIncidentAccessors, type IncidentFactsReader } from "./intelligence/index";
+import { createIncidentAccessors, incidentBelongsToItem, type IncidentFactsReader } from "./intelligence/index";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "./intelligence/audience";
 import { deriveDisplayStatus, DISPLAY_STATUS_WORD, type DisplayStatusInput } from "./display-status";
 import {
@@ -30,8 +30,8 @@ import {
 } from "./explanations";
 import { incidentDetailDTO, recoveryActionsFor } from "./investigation-dto";
 import { ATTEMPTS_SHOWN, summariseAttempts, unreadableAttempts, type RawItemAttempt } from "./attempts-summary";
-import { incidentIdFromSearch, reauthRequestOutcome } from "./action-context";
-import { IncidentDetailSurface, reauthOutcomeText, recoveryPath } from "@/components/platform/incidents/IncidentsLead";
+import { incidentIdFromSearch, reauthRequestOutcome, verifiedIncidentId } from "./action-context";
+import { CONFIRM, IncidentDetailSurface, REQUEST_REAUTH_CONFIRM_MESSAGE, reauthOutcomeText, recoveryPath } from "@/components/platform/incidents/IncidentsLead";
 import { primaryGuidance } from "@/components/platform/incidents/incidents-model";
 import type { IncidentInvestigation, IncidentVerdict } from "./intelligence/types";
 
@@ -129,10 +129,19 @@ console.log("\n4. request-reauth reports what happened; audits name the incident
     && reauthRequestOutcome(true, "skipped") === "marked_not_notified" && reauthRequestOutcome(false, "error") === "no_change" && reauthRequestOutcome(false, "removed") === "no_change");
   const route = readFileSync("app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts", "utf8");
   check("route: no bare { ok: true } — it returns the outcome", !/json\(\{\s*ok:\s*true\s*\}\)/.test(route) && /NextResponse\.json\(\{ outcome, statusChanged, notice \}\)/.test(route));
-  check("route: the outcome and the incident id go into the operator-action audit",
-    /outcome, statusChanged, notice, \.\.\.incidentAuditDetail\(incidentIdFromSearch\(req\.nextUrl\.searchParams\)\)/.test(route));
+  check("route: the outcome and the VERIFIED incident id go into the operator-action audit",
+    /outcome, statusChanged, notice, \.\.\.incidentAuditDetail\(incidentId\)/.test(route)
+    && /const incidentId = await verifiedIncidentId\(incidentIdFromSearch\(req\.nextUrl\.searchParams\), item\.id, incidentBelongsToItem\)/.test(route));
+  check("route: verification runs after the guard and both limiters",
+    route.indexOf("requireFreshPlatformAccess(") < route.indexOf("limitByUser(") && route.indexOf("limitByKey(item.id") < route.indexOf("verifiedIncidentId(incidentIdFromSearch"));
   const resync = readFileSync("app/api/platform/platform-ops/connections/[id]/resync/route.ts", "utf8");
-  check("resync: the incident id rides every resync audit row", /incidentAuditDetail\(incidentIdFromSearch\(req\.nextUrl\.searchParams\)\)/.test(resync) && /outcome, \.\.\.incidentRef, \.\.\.extra/.test(resync));
+  check("resync: only a VERIFIED incident id rides the resync audit rows, after guard + limiter + item read",
+    /incidentAuditDetail\(await verifiedIncidentId\(incidentIdFromSearch\(req\.nextUrl\.searchParams\), item\.id, incidentBelongsToItem\)\)/.test(resync)
+    && /outcome, \.\.\.incidentRef, \.\.\.extra/.test(resync)
+    && resync.indexOf("limitPlatformMutation(") < resync.indexOf("verifiedIncidentId(") && resync.indexOf("plaidItem.findUnique") < resync.indexOf("verifiedIncidentId("));
+  check("R1: the request-reauth confirmation says exactly what the customer receives",
+    CONFIRM["request-reauth"].message === "Marks the connection as needing reauthorization and sends the customer an in-app notice and an email asking them to reconnect (unless one is already open). It does NOT remove the connection or any data. Audited as an operator action."
+    && REQUEST_REAUTH_CONFIRM_MESSAGE === CONFIRM["request-reauth"].message);
   check("both routes keep the fresh PLATFORM_OPS WRITE guard", [route, resync].every((s) => /requireFreshPlatformAccess\(\s*"PLATFORM_OPS",\s*"WRITE"\s*\)/.test(s)));
   check("incidentId param: id-shaped only", incidentIdFromSearch(new URLSearchParams("incidentId=inc_123")) === "inc_123"
     && incidentIdFromSearch(new URLSearchParams("incidentId=../x")) === null && incidentIdFromSearch(new URLSearchParams("")) === null);
@@ -241,6 +250,25 @@ async function main(): Promise<void> {
   const rd = incidentDetailDTO(resolvedInv, "ops", NOW);
   check("resolved ⇒ Resolved, not ongoing, no customer action, no recovery", rd.summary.displayStatus === "resolved" && !rd.summary.ongoing && !rd.summary.customerActionRequired && rd.recovery.length === 0);
   check("recurrence: generation 2 ⇒ at least one earlier episode", rd.diagnosis.recurrence.generation === 2 && rd.diagnosis.recurrence.earlierEpisodes >= 1 && rd.diagnosis.recurrence.previousIncidentId === "inc_prev");
+
+  console.log("\n9. S2 R2 — the audit's incidentId is verified server-side");
+  const rows: Record<string, { plaidItemId: string | null }> = { inc_on_item: { plaidItemId: "item_1" }, inc_other_item: { plaidItemId: "item_2" }, inc_no_item: { plaidItemId: null } };
+  let reads = 0;
+  const fake = { syncIssue: { findUnique: (async (a: { where: { id: string }; select: Record<string, boolean> }) => {
+    reads++;
+    if (a.where.id === "inc_boom") throw new Error("db down");
+    const keys = Object.keys(a.select).join();
+    return keys === "plaidItemId" ? (rows[a.where.id] ?? null) : { leaked: true };
+  }) as never } };
+  const belongs = (id: string, item: string) => incidentBelongsToItem(id, item, fake);
+  check("matching id (exists, names this connection) ⇒ recorded", (await verifiedIncidentId("inc_on_item", "item_1", belongs)) === "inc_on_item");
+  check("another connection's incident ⇒ dropped", (await verifiedIncidentId("inc_other_item", "item_1", belongs)) === null);
+  check("unknown id ⇒ dropped", (await verifiedIncidentId("inc_missing", "item_1", belongs)) === null);
+  check("incident with no connection ⇒ dropped", (await verifiedIncidentId("inc_no_item", "item_1", belongs)) === null);
+  check("a failed read ⇒ dropped silently (never throws)", (await verifiedIncidentId("inc_boom", "item_1", belongs)) === null);
+  const before = reads;
+  check("no candidate / malformed ⇒ dropped with NO read", (await verifiedIncidentId(null, "item_1", belongs)) === null && (await incidentBelongsToItem("../x", "item_1", fake)) === false && reads === before);
+  check("ONE primary-key read selecting plaidItemId only", (await incidentBelongsToItem("inc_on_item", "item_1", fake)) && reads === before + 1);
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nincident-detail-v1.test: all passed.");

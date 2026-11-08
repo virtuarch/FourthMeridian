@@ -524,9 +524,12 @@ export function reauthOutcomeText(body: Record<string, unknown>): string {
   }
 }
 
-const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; message: string; icon: typeof RefreshCw }>> = {
+/** S2 R1 — the request-reauth confirmation says exactly what the customer receives (pinned by test). */
+export const REQUEST_REAUTH_CONFIRM_MESSAGE = "Marks the connection as needing reauthorization and sends the customer an in-app notice and an email asking them to reconnect (unless one is already open). It does NOT remove the connection or any data. Audited as an operator action.";
+
+export const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; message: string; icon: typeof RefreshCw }>> = {
   resync: { title: "Resync this connection now?", message: "Re-runs this connection's sync through the existing per-item path (respects the in-flight lock and manual cooldown). Audited as an operator action.", icon: RefreshCw },
-  "request-reauth": { title: "Ask the customer to reauthorize this connection?", message: "Marks the connection as needing reauthorization and prompts the customer to reconnect. It does NOT remove the connection or any data. Audited as an operator action.", icon: KeyRound },
+  "request-reauth": { title: "Ask the customer to reauthorize this connection?", message: REQUEST_REAUTH_CONFIRM_MESSAGE, icon: KeyRound },
   "refresh-customer": { title: "Refresh all of this customer's connections?", message: "Runs the customer's Refresh all through the one orchestrator with operator authority. Nothing is reported as refreshed that was skipped or refused. Audited as an operator action.", icon: RotateCcw },
 };
 

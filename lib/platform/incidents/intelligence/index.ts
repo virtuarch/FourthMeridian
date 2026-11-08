@@ -543,6 +543,27 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
   };
 }
 
+/**
+ * Incident detail v1 (S2 R2) — does incident `incidentId` exist AND name
+ * `plaidItemId` as its subject? One primary-key read, `plaidItemId` only:
+ * the recovery routes record an incident id in their audit ONLY when this is
+ * true (lib/platform/incidents/action-context.ts verifiedIncidentId). It
+ * decides nothing about open/closed and returns no row. Never throws.
+ */
+export async function incidentBelongsToItem(
+  incidentId: string,
+  plaidItemId: string,
+  client: { syncIssue: Pick<Db["syncIssue"], "findUnique"> } = systemDb,
+): Promise<boolean> {
+  if (!INCIDENT_ID.test(incidentId) || !plaidItemId) return false;
+  try {
+    const row = await client.syncIssue.findUnique({ where: { id: incidentId }, select: { plaidItemId: true } });
+    return row !== null && row.plaidItemId === plaidItemId;
+  } catch {
+    return false;
+  }
+}
+
 /** The loader's reader over an fm_system-typed client (the caller's own; stage attempts always ride the row seam). */
 export function incidentReaderFor(client: Db): IncidentFactsReader {
   return {

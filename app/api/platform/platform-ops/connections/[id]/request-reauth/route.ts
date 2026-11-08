@@ -32,7 +32,8 @@ import { recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailedWithOutcome } from "@/lib/plaid/sync-notifications";
-import { incidentAuditDetail, incidentIdFromSearch, reauthRequestOutcome } from "@/lib/platform/incidents/action-context";
+import { incidentBelongsToItem } from "@/lib/platform/incidents/intelligence";
+import { incidentAuditDetail, incidentIdFromSearch, verifiedIncidentId, reauthRequestOutcome } from "@/lib/platform/incidents/action-context";
 import { limitByKey, limitByUser } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -72,6 +73,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const limitedItem = await limitByKey(item.id, "platform-reauth-item", { limit: REAUTH_PER_ITEM_PER_DAY, windowSec: 86_400 });
   if (limitedItem) return limitedItem;
 
+  // S2 R2 — the incident id rides the audit ONLY when verified: it exists and names THIS connection.
+  const incidentId = await verifiedIncidentId(incidentIdFromSearch(req.nextUrl.searchParams), item.id, incidentBelongsToItem);
+
   // Mark NEEDS_REAUTH (the single chokepoint; records the transition on change) —
   // this lights the existing owner reconnect prompt. NEVER itemRemove.
   const statusChanged = item.status !== PlaidItemStatus.NEEDS_REAUTH;
@@ -88,7 +92,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     result: "SUCCESS",
     detail: {
       connectionId: item.id, provider: "PLAID", institution: item.institutionName,
-      outcome, statusChanged, notice, ...incidentAuditDetail(incidentIdFromSearch(req.nextUrl.searchParams)),
+      outcome, statusChanged, notice, ...incidentAuditDetail(incidentId),
     },
   });
 

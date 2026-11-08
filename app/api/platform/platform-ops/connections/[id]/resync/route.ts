@@ -33,7 +33,8 @@ import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
-import { incidentAuditDetail, incidentIdFromSearch } from "@/lib/platform/incidents/action-context";
+import { incidentBelongsToItem } from "@/lib/platform/incidents/intelligence";
+import { incidentAuditDetail, incidentIdFromSearch, verifiedIncidentId } from "@/lib/platform/incidents/action-context";
 import { checkManualRefreshCooldown, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects";
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
@@ -86,7 +87,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   // email, never a balance.
   let refreshExecutionId: string | null = null;
   // Incident detail v1 — the incident this resync was taken from (context only).
-  const incidentRef = incidentAuditDetail(incidentIdFromSearch(req.nextUrl.searchParams));
+  // S2 R2 — recorded ONLY when verified: it exists and names THIS connection; otherwise dropped.
+  const incidentRef = incidentAuditDetail(await verifiedIncidentId(incidentIdFromSearch(req.nextUrl.searchParams), item.id, incidentBelongsToItem));
   const auditResync = (outcome: string, result: "SUCCESS" | "FAILURE" | "REFUSED", extra: Record<string, unknown> = {}) =>
     recordOperatorAction(db, {
       actor:     operatorActorFrom(auth, "PLATFORM_OPS"),

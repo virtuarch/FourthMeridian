@@ -16,6 +16,26 @@ export function incidentIdFromSearch(search: URLSearchParams): string | null {
   return v && INCIDENT_ID.test(v) ? v : null;
 }
 
+/**
+ * S2 R2 — the incident id is recorded ONLY when it is VERIFIED server-side: the
+ * incident exists and its subject is THIS route's connection (`belongs`, one
+ * indexed read — intelligence/index.ts incidentBelongsToItem). Anything else —
+ * absent, malformed, unknown, another connection's incident, a failed read —
+ * is dropped silently: the action is still audited, without an incidentId.
+ */
+export async function verifiedIncidentId(
+  candidate: string | null,
+  plaidItemId: string,
+  belongs: (incidentId: string, plaidItemId: string) => Promise<boolean>,
+): Promise<string | null> {
+  if (!candidate) return null;
+  try {
+    return (await belongs(candidate, plaidItemId)) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Spread into an operator-action audit `detail`: `{ incidentId }` when present, else nothing. */
 export function incidentAuditDetail(incidentId: string | null): { incidentId?: string } {
   return incidentId ? { incidentId } : {};
