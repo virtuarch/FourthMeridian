@@ -41,7 +41,7 @@
 --                                              _METRIC_WINDOWS, _JOB_NAMES, _PROVIDER_IDS,
 --                                              _OBSERVED_STATES, _INCIDENT_ID_PATTERN
 --   …and ./memory.test.ts pins those registries to the live metric / navigation
---   registries, the retrieval contracts' parts, the job facts and ProviderType.
+--   registries, the retrieval contracts' parts, the job facts and PROVIDER_SPECS.
 --   Adding a key memory may reference therefore needs a migration.
 --
 -- BOUNDARIES. Timestamps are TIMESTAMP(3) WITHOUT TIME ZONE holding UTC (Prisma);
@@ -269,7 +269,7 @@ BEGIN
       END IF;
     ELSIF v_t = 'PROVIDER' THEN
       IF NOT (v_id = ANY (ARRAY[
-      'PLAID', 'MANUAL', 'WALLET', 'CSV', 'EXCHANGE', 'BROKERAGE']::text[])) THEN
+      'PLAID', 'OPEN_EXCHANGE_RATES']::text[])) THEN
         RAISE EXCEPTION 'memory PROVIDER ref id is not a registered provider';
       END IF;
     ELSE

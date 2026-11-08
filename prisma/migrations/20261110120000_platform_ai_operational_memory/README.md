@@ -60,7 +60,7 @@ holders exactly as above, no PUBLIC / API EXECUTE.
 
 **Constants duplicated from code.** Pinned by `lib/platform/intelligence/ai/memory/migration-policy.test.ts`
 to `memory/constants.ts`; the registries are pinned to the live metric / navigation registries, the
-retrieval parts, the job facts and `ProviderType` by `memory/memory.test.ts`. Adding a key memory may
+retrieval parts, the job facts and `PROVIDER_SPECS` (provider health) by `memory/memory.test.ts`. Adding a key memory may
 reference needs a migration.
 
 **Proof.** `npm run rls:accept:ai-memory` (real PG roles, own throwaway container), including every

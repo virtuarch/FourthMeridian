@@ -169,5 +169,5 @@ export const MEMORY_JOB_NAMES = [
   "plaid-removal-retry", "product-event-retention", "comms-automations", "sol-history-backfill", "evaluate-alerts",
 ] as const;
 
-/** = the Prisma ProviderType enum (pinned). */
-export const MEMORY_PROVIDER_IDS = ["PLAID", "MANUAL", "WALLET", "CSV", "EXCHANGE", "BROKERAGE"] as const;
+/** = PROVIDER_SPECS keys (lib/platform/provider-health.ts — the provider pages' identity; pinned). */
+export const MEMORY_PROVIDER_IDS = ["PLAID", "OPEN_EXCHANGE_RATES"] as const;

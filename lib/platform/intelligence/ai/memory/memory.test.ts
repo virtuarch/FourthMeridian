@@ -4,7 +4,7 @@
  * Design v2 §8 (unit, schema). No database, no network:
  *   1. the B2 registries in ./constants.ts = the LIVE sources (metric registry,
  *      navigation registry, retrieval parts, metric windows, scheduled jobs,
- *      ProviderType) — so a new key cannot be referenced without a migration;
+ *      PROVIDER_SPECS) — so a new key cannot be referenced without a migration;
  *   2. schema tests: the table has no column referencing a conversation; D6 —
  *      PlatformGrant has status ∈ {ACTIVE, REVOKED} and NO expiry / suspension
  *      column (fails if one is added, so the RLS grant term changes with it);
@@ -21,11 +21,11 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { ProviderType } from "@prisma/client";
 import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { NAVIGATION_TARGETS } from "@/lib/platform/intelligence/navigation/registry";
 import { RETRIEVAL } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
+import { PROVIDER_SPECS } from "@/lib/platform/provider-health";
 import {
   MEMORY_FACT_TYPES, MEMORY_JOB_NAMES, MEMORY_METRIC_KEYS, MEMORY_METRIC_PARTS, MEMORY_METRIC_WINDOWS, MEMORY_OBSERVED_STATES,
   MEMORY_PAGE_IDS, MEMORY_PROVIDER_IDS, MEMORY_PURGE_BATCH, MEMORY_PURGE_MAX_CALLS, MEMORY_REF_ID_MAX, MEMORY_TTL_CHOICES,
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
     check("MEMORY_METRIC_PARTS = every retrieval contract's valueUnits part", sorted(MEMORY_METRIC_PARTS) === sorted([...parts]));
     check("MEMORY_METRIC_WINDOWS = the union of every metric's window.days", sorted(MEMORY_METRIC_WINDOWS) === sorted([...new Set(METRICS.flatMap((m) => m.window.days ?? []))]));
     check("MEMORY_JOB_NAMES = SCHEDULED_JOB_FACTS names", sorted(MEMORY_JOB_NAMES) === sorted(SCHEDULED_JOB_FACTS.map((j) => j.name)));
-    check("MEMORY_PROVIDER_IDS = the Prisma ProviderType enum", sorted(MEMORY_PROVIDER_IDS) === sorted(Object.values(ProviderType)));
+    check("MEMORY_PROVIDER_IDS = PROVIDER_SPECS keys (the provider pages' identity)", sorted(MEMORY_PROVIDER_IDS) === sorted(PROVIDER_SPECS.map((p) => p.key)));
     const all = [...MEMORY_METRIC_KEYS, ...MEMORY_PAGE_IDS, ...MEMORY_JOB_NAMES, ...MEMORY_PROVIDER_IDS];
     check(`every registered id fits the ${MEMORY_REF_ID_MAX}-character ref id bound`, all.every((x) => x.length <= MEMORY_REF_ID_MAX), all.filter((x) => x.length > MEMORY_REF_ID_MAX));
     check("TTL choices (D8): OPERATIONAL_STATE fixed 72 h; others 7 d or 30 d",
@@ -149,11 +149,12 @@ async function main(): Promise<void> {
       metricObservedState({ status: "MEASURED", subjects: [{ state: "stale" }] }), metricObservedState({ status: "PARTIAL", subjects: [] }),
       incidentObservedState("active"), incidentObservedState("acknowledged"), incidentObservedState("resolved"), incidentObservedState("archived"), incidentObservedState("weird"),
       jobObservedState("running"), jobObservedState("succeeded"), jobObservedState("failed"), jobObservedState(null),
-      providerObservedState("HEALTHY"), providerObservedState("DEGRADED"), providerObservedState("FAILING"), providerObservedState("NOT_ENOUGH_DATA"),
+      providerObservedState("OPERATIONAL"), providerObservedState("DEGRADED"), providerObservedState("STALE"), providerObservedState("FAILING"), providerObservedState("INSUFFICIENT_DATA"),
     ];
     check("every map yields a member of MEMORY_OBSERVED_STATES", all.every((s) => (MEMORY_OBSERVED_STATES as readonly string[]).includes(s)), all);
     check("metric: UNAVAILABLE ⇒ UNKNOWN; failing subject ⇒ FAILING; other subject ⇒ DEGRADED; none ⇒ OK", JSON.stringify(all.slice(0, 4)) === JSON.stringify(["UNKNOWN", "FAILING", "DEGRADED", "OK"]));
     check("incident: active ⇒ OPEN, acknowledged ⇒ ACKNOWLEDGED, resolved / archived ⇒ RESOLVED", JSON.stringify(all.slice(4, 9)) === JSON.stringify(["OPEN", "ACKNOWLEDGED", "RESOLVED", "RESOLVED", "UNKNOWN"]));
+    check("provider trust: OPERATIONAL ⇒ OK, DEGRADED / STALE ⇒ DEGRADED, FAILING ⇒ FAILING, else UNKNOWN", JSON.stringify(all.slice(13)) === JSON.stringify(["OK", "DEGRADED", "DEGRADED", "FAILING", "UNKNOWN"]), all.slice(13));
     check("fact types are the four of the design", MEMORY_FACT_TYPES.length === 4);
   }
 

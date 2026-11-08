@@ -119,10 +119,10 @@ export function jobObservedState(status: string | null): MemoryObservedState {
   return "UNKNOWN";
 }
 
-/** A provider verdict (lib/platform/verdicts/provider-outcome.ts OutcomeVerdict). */
-export function providerObservedState(verdict: string | null): MemoryObservedState {
-  if (verdict === "HEALTHY") return "OK";
-  if (verdict === "DEGRADED") return "DEGRADED";
-  if (verdict === "FAILING") return "FAILING";
+/** A provider's trust roll-up (lib/platform/provider-health.ts ProviderTrust). */
+export function providerObservedState(trust: string | null): MemoryObservedState {
+  if (trust === "OPERATIONAL") return "OK";
+  if (trust === "DEGRADED" || trust === "STALE") return "DEGRADED";
+  if (trust === "FAILING") return "FAILING";
   return "UNKNOWN";
 }
