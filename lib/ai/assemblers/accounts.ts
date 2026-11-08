@@ -77,6 +77,7 @@ import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { rateLabel } from '@/lib/debt/rate-label';
+import { liabilityKind } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -672,6 +673,7 @@ async function assembleAccounts(
           // "Loan rate" / "APR" (revolving credit only) / "Interest rate"
           // (untyped). The model must use this name, never "APR" by default.
           base.rateLabel            = rateLabel(fa);
+          base.liabilityKind        = liabilityKind(fa);   // Mortgage F4 — payoff targeting
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;

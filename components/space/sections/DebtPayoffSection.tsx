@@ -21,9 +21,12 @@
  * with budget to spare, the engine reports the spare amount and this panel says
  * so as information (never an error — any amount may be entered).
  *
- * Inputs to the schedule are balance + APR + the chosen payment. Minimum
- * payments are not read, shown, or required. There is ONE cadence — monthly —
- * and no other mode exists in this component's state.
+ * Inputs to the schedule are balance + APR + required payment (the account's
+ * minimum / scheduled payment, when on file) + kind evidence + the chosen
+ * payment and STRATEGY. Mortgage F4: every debt gets its required payment, the
+ * rest goes to one revolving debt at a time (highest rate first by default, or
+ * smallest balance first); installment loans get only their scheduled payment
+ * unless the user includes them. There is ONE cadence — monthly.
  *
  * UNKNOWN APR does not block the planner, and is never turned into a rate. Each
  * selected account goes to the engine with its own APR or `null`; an unknown one
@@ -48,7 +51,8 @@ import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregat
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
-import { planPayoff, DEFAULT_PAYOFF_PAYMENT, type PayoffLiabilityInput } from "@/lib/debt/payoff";
+import { planPayoff, DEFAULT_PAYOFF_PAYMENT, DEFAULT_PAYOFF_STRATEGY, PAYOFF_STRATEGIES, type PayoffLiabilityInput, type PayoffStrategy } from "@/lib/debt/payoff";
+import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import { rateLabel, rateLabelInline, blendedRateLabel } from "@/lib/debt/rate-label";
 import { todayUTCISO } from "@/lib/time/clock";
 import {
@@ -58,6 +62,11 @@ import {
   payoffOverBudgetNotice,
   isSinglePaymentPayoff,
   ADD_APR_PROMPT,
+  PAYOFF_STRATEGY_LABEL,
+  payoffStrategyLine,
+  payoffUnprojectedLines,
+  payoffCoverageNote,
+  payoffShortfallLine,
 } from "@/components/space/widgets/debt/payoff-copy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -77,6 +86,9 @@ export type DebtPayoffAccount = {
   debtSubtype?:     string | null;
   providerSubtype?: string | null;
   creditLimit?:     number | null;
+  /** Mortgage F4 — the required monthly payment (minimum / scheduled installment);
+   *  undefined/null = UNKNOWN — never invented. A mortgage's may include escrow. */
+  minimumPayment?:  number | null;
 };
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -156,6 +168,10 @@ export function DebtPayoffSection({
   const [inputStr,    setInputStr]    = useState(String(DEFAULT_PAYOFF_PAYMENT));
   // Track explicit user deselections; new accounts auto-include, removed ones auto-exclude
   const [deselectedIds, setDeselectedIds] = useState<Set<string>>(new Set());
+  // Mortgage F4 — the allocation strategy (default avalanche) and the opt-in for
+  // extra payments to installment loans (default off: they amortise on schedule).
+  const [strategy, setStrategy] = useState<PayoffStrategy>(DEFAULT_PAYOFF_STRATEGY);
+  const [includeInstallmentExtra, setIncludeInstallmentExtra] = useState(false);
 
   function toggleAccount(id: string) {
     setDeselectedIds((prev) => {
@@ -205,9 +221,14 @@ export function DebtPayoffSection({
   const total = agg.totalOwed;
   // The engine's input: ONE ROW PER LIABILITY, each with its own APR or null
   // (UNKNOWN — never 0, never a neighbour's rate; there is no shared rate).
+  // F4 — plus its required payment (converted like the balance; unknown stays
+  // null) and its kind evidence (lib/debt/liability-kind.ts decides the kind).
   const liabilities: PayoffLiabilityInput[] = filteredConv.map(({ a, bal }) => ({
     id: a.id, label: a.name, balance: bal.amount, aprPct: a.interestRate ?? null,
+    requiredPayment: a.minimumPayment != null ? inDisp(a.minimumPayment, a.currency).amount : null,
+    kind: { type: a.type, debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null },
   }));
+  const hasInstallment = filtered.some((a) => isInstallmentLoan(a));
   const unratedNames = filteredConv
     .filter(({ a, bal }) => bal.amount > 0 && a.interestRate == null)
     .map(({ a }) => a.name);
@@ -231,7 +252,7 @@ export function DebtPayoffSection({
 
   // The clock seam (lib/time) — never an inline current-day derivation.
   const startISO = today ?? todayUTCISO();
-  const plan     = planPayoff({ liabilities, payment: amount, startISO });
+  const plan     = planPayoff({ liabilities, payment: amount, startISO, strategy, includeInstallmentExtra });
   // STRUCTURAL, from the engine — not inferred from a missing rate or a 0.
   const notice     = payoffEstimateNotice(plan, R);
   const unknownRateNote = payoffUnknownRateNote(plan);
@@ -262,7 +283,11 @@ export function DebtPayoffSection({
 
   /** Why there is no timeline, in the user's terms. Null when there is one. */
   const refusalLine =
-    plan.status === "non_amortizing"
+    plan.status === "shortfall"
+      ? payoffShortfallLine(plan, (n) => `${est}${formatCurrencyExact(n, disp)}`)
+    : plan.status === "not_projectable"
+      ? "No payoff date can be projected: the selected loans are missing a rate or payment terms."
+    : plan.status === "non_amortizing"
       ? `${formatBalance(amount, disp)} a month does not cover the interest (${est}${formatCurrencyExact(plan.firstPeriodInterest, disp)} in the first month), so the balance never falls.`
     : plan.status === "beyond_horizon"
       ? "At this payment the balance is not cleared within 100 years."
@@ -348,7 +373,7 @@ export function DebtPayoffSection({
       <div className="divide-y divide-[var(--border-hairline)]">
         <div className="flex items-center justify-between px-3 py-2">
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>Principal</p>
-          <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{est}{formatBalance(total, disp)}</p>
+          <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{est}{formatBalance(paidOff?.principal ?? total, disp)}</p>
         </div>
         <div className="flex items-center justify-between px-3 py-2">
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -391,7 +416,7 @@ export function DebtPayoffSection({
    *  engine's basis is not INTEREST_AWARE — beside the timeline, never instead of it. */
   const estimateNotice = notice && (
     <div
-      data-payoff-basis={plan.status === "paid_off" || plan.status === "non_amortizing" || plan.status === "beyond_horizon" ? plan.basis.interest : undefined}
+      data-payoff-basis={"basis" in plan ? plan.basis.interest : undefined}
       className="rounded-lg border px-3 py-2"
       style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}
     >
@@ -470,9 +495,14 @@ export function DebtPayoffSection({
                   : `Interest not included — ${rateLabelInline(src)} unknown`}
               </p>
               <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>
-                {l.paidOffWithFirstPayment ? "Paid off with one payment" : `Paid off over ${l.paymentCount} payments`}
-                {" · "}{formatDate(l.payoffISO)}
-                {known ? "" : " · estimated on principal only"}
+                {l.payoffISO === null
+                  ? "Payoff date unknown — scheduled payment only"
+                  : <>
+                      {l.paidOffWithFirstPayment ? "Paid off with one payment" : `Paid off over ${l.paymentCount} payments`}
+                      {" · "}{formatDate(l.payoffISO)}
+                      {known ? "" : " · estimated on principal only"}
+                    </>}
+                {l.order !== null ? ` · extra payments: #${l.order}` : l.kind === "installment" ? " · scheduled payment only" : ""}
               </p>
             </li>
           );
@@ -481,11 +511,48 @@ export function DebtPayoffSection({
     </details>
   );
 
+  /** Mortgage F4 — the strategy control and everything the plan could not know. */
+  const strategyLine     = payoffStrategyLine(plan);
+  const unprojectedLines = payoffUnprojectedLines(plan);
+  const coverageNote     = payoffCoverageNote(plan);
+  const strategyPanel = (
+    <div data-payoff-strategy={strategy} className="rounded-lg border px-3 py-2 space-y-1" style={{ borderColor: "var(--border-hairline)" }}>
+      <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Payoff strategy">
+        {PAYOFF_STRATEGIES.map((s) => (
+          <button
+            key={s}
+            type="button"
+            role="radio"
+            aria-checked={strategy === s}
+            onClick={() => setStrategy(s)}
+            className="rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
+            style={strategy === s
+              ? { borderColor: "var(--accent-info)", color: "var(--accent-info)" }
+              : { borderColor: "var(--border-hairline)", color: "var(--text-muted)" }}
+          >
+            {PAYOFF_STRATEGY_LABEL[s]}
+          </button>
+        ))}
+      </div>
+      {hasInstallment && (
+        <label className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <input type="checkbox" checked={includeInstallmentExtra} onChange={(e) => setIncludeInstallmentExtra(e.target.checked)} />
+          Also put extra toward installment loans (mortgage, auto, student)
+        </label>
+      )}
+      {strategyLine && <p className="text-[11px] leading-snug" style={{ color: "var(--text-faint)" }}>{strategyLine}</p>}
+      {unprojectedLines.map((line) => (
+        <p key={line} data-payoff-unprojected className="text-[11px] leading-snug" style={{ color: "var(--accent-warning)" }}>{line}</p>
+      ))}
+      {coverageNote && <p data-payoff-coverage className="text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>{coverageNote}</p>}
+    </div>
+  );
+
   const disclaimer = (
     <p className="text-[10px] text-center" style={{ color: "var(--text-faint)" }}>
       {!isEstimate
-        ? `An estimate, not an issuer payoff quote · each debt accrues interest daily at its own ${R} · each payment is split across debts in proportion to what each owes · grace periods, statement timing and fees are not modelled`
-        : `An estimate, not an issuer payoff quote: interest is not included for accounts with an unknown ${R}. Their ${R} stays unknown — nothing is saved as 0%. Each payment is split across debts in proportion to what each owes.`}
+        ? `An estimate, not an issuer payoff quote · each debt accrues interest daily at its own ${R} · required payments first, then one debt at a time · grace periods, statement timing and fees are not modelled`
+        : `An estimate, not an issuer payoff quote: interest is not included for accounts with an unknown ${R}. Their ${R} stays unknown — nothing is saved as 0%. Required payments first, then one debt at a time.`}
     </p>
   );
 
@@ -572,6 +639,7 @@ export function DebtPayoffSection({
               </div>
               {overBudgetNotice}
               {estimateNotice}
+              {strategyPanel}
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
@@ -686,6 +754,7 @@ export function DebtPayoffSection({
                 </div>
                 {overBudgetNotice}
                 {estimateNotice}
+                {strategyPanel}
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
@@ -793,6 +862,7 @@ export function DebtPayoffSection({
       {resultDetail("text-[11px] px-1")}
       {overBudgetNotice}
       {estimateNotice}
+      {strategyPanel}
       {paidOff && breakdown}
       {byAccount}
       {disclaimer}

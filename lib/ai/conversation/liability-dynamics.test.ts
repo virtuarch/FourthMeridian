@@ -56,7 +56,7 @@ type Ret = { fromISO: string; toISO: string; annualPct: number };
 interface Grid { grid: true; amount: number; target?: unknown }
 const monthly = (amount: number, target?: unknown): Grid => ({ grid: true, amount, target });
 const toTargets = (t: unknown): AllocationTarget[] | undefined => t === undefined ? undefined
-  : (Array.isArray(t) ? t : [t]).map((x) => (x === 'investments' || x === 'highest_apr') ? x as AllocationTarget
+  : (Array.isArray(t) ? t : [t]).map((x) => (x === 'investments' || x === 'highest_apr' || x === 'smallest_balance') ? x as AllocationTarget
     : typeof x === 'string' ? { liability: x } : x as AllocationTarget);
 const gridMovements = (g: Grid): PlannedMovement[] => DATES.map((date) => ({ date, label: 'monthly', amount: g.amount,
   ...(toTargets(g.target) ? { targets: toTargets(g.target) } : {}) }));
@@ -317,6 +317,25 @@ console.log('\nZ. goal seek: the extra monthly payment that clears the debt by t
   check('feasible, and the solved amount clears the debt by the horizon', solved.feasible && at(run(lines, [monthly((solved as { required: number }).required, 'highest_apr')]), HORIZON).debt.amount === 0,
     JSON.stringify(solved));
   check('…a cent less does not', !solved.feasible || at(run(lines, [monthly((solved as { required: number }).required - 0.01, 'highest_apr')]), HORIZON).debt.amount > 0);
+}
+
+console.log('\nF4. mortgage F4 — strategy words never pick an installment loan; smallest_balance is the snowball');
+{
+  const mtg: LiabilityLine = { ...line('M', 250_000, 31, 1_800), kind: 'installment' };
+  const card: LiabilityLine = { ...line('C', 4_000, 22, 80), kind: 'revolving' };
+  const small: LiabilityLine = { ...line('S', 1_000, 12, 25), kind: 'revolving' };
+  const r = run([mtg, card], [monthly(1_000, 'highest_apr')]);
+  check('highest_apr skips the (higher-rate) installment loan: all extra to the card',
+    liab(r, '2026-09-30', 'C').extraPaid === 1_000 && liab(r, '2026-09-30', 'M').extraPaid === 0);
+  check('…and after the card clears, the extra stays unplaced rather than flowing to the mortgage',
+    r.checkpoints.every((c) => liab(r, c.date, 'M').extraPaid === 0));
+  const named = run([mtg, card], [monthly(1_000, 'M')]);
+  check('naming the mortgage id explicitly still sends extra there', liab(named, '2026-09-30', 'M').extraPaid === 1_000);
+  const snow = run([card, small, mtg], [monthly(500, 'smallest_balance')]);
+  check('smallest_balance pays the smallest revolving balance first (S before the 22% card), never the mortgage',
+    liab(snow, '2026-09-30', 'S').extraPaid === 500 && liab(snow, '2026-09-30', 'C').extraPaid === 0 && liab(snow, '2026-09-30', 'M').extraPaid === 0);
+  const ava = run([card, small], [monthly(500, 'highest_apr')]);
+  check('…whereas highest_apr pays the 22% card first', liab(ava, '2026-09-30', 'C').extraPaid === 500 && liab(ava, '2026-09-30', 'S').extraPaid === 0);
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} FAILED`);

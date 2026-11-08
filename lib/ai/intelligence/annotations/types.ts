@@ -539,10 +539,11 @@ export interface DebtCandidate {
 export interface DebtStrategySection {
   confidence:                 ConfidenceLevel;
   payoffUrgency:              DebtPayoffUrgency;
-  /** Highest-APR FULL-visibility account — the avalanche strategy target. null if APR unknown everywhere. */
+  /** Highest-APR FULL-visibility NON-installment account — the avalanche strategy target
+   *  (F4: installment loans are never candidates). null if no targetable debt has a known APR. */
   avalancheCandidate:         DebtCandidate | null;
-  /** Lowest REPORTING-balance debt account — the snowball strategy target (ranked in
-   *  the Space reporting currency, not native magnitudes). null if no accounts available. */
+  /** Lowest REPORTING-balance NON-installment debt account — the snowball strategy target
+   *  (ranked in the Space reporting currency, not native magnitudes). null if none is targetable. */
   snowballCandidate:          DebtCandidate | null;
   /** Weighted average rate across ALL owing debt, weighted by REPORTING balance —
    *  present ONLY when every owing debt has a rate on file (coverage COMPLETE).
@@ -558,6 +559,11 @@ export interface DebtStrategySection {
   knownMonthlyInterestBurden: number | null;
   missingAprAccountNames:     string[];
   hasBalanceOnlyDebt:         boolean;
+  /** Mortgage F4 — owing installment loans (mortgage, auto, student, personal):
+   *  paid on schedule, never avalanche/snowball candidates. */
+  scheduledOnlyAccountNames:  string[];
+  /** Mortgage F4 — the targeting rule in words the model states with any strategy. */
+  targetPolicy:               string;
   /**
    * P2-7D — true when any debt account driving this strategy had an ESTIMATED
    * reporting-currency balance (missing/walked-back FX or null-residue provenance),

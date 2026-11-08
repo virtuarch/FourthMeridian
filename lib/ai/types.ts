@@ -24,6 +24,7 @@ import type { AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
+import type { LiabilityKind } from '@/lib/debt/liability-kind';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
@@ -464,6 +465,10 @@ export interface AccountSummaryItem {
    *  'Mortgage rate' | 'Loan rate' | 'APR' (revolving credit only) | 'Interest rate'
    *  (no kind evidence). The same label the debt UI renders. */
   rateLabel?:             RateLabel;
+  /** Mortgage F4 — lib/debt/liability-kind.ts: 'installment' loans (mortgage, auto,
+   *  student, personal) amortise on schedule and are never extra-payment targets
+   *  by default; 'revolving' (cards, lines, HELOCs) and 'unknown' are. */
+  liabilityKind?:         LiabilityKind;
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
   rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)

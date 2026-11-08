@@ -15,6 +15,7 @@
 import { resolveTransformableCategory } from '@/lib/transactions/category-vocabulary';
 import type { SpendingChangeRule } from '@/lib/ai/forecast/assemble';
 import { SCENARIO_INPUTS } from '../../scenario-inputs';
+import { isAllocationTargetWord } from '../../scenario-rules';
 import { elapsedBetween } from '../../scenario-crossing';
 import {
   solveForTarget, returnHorizon, returnRepresentation, annualizedFromPeriodPct, periodFromAnnualizedPct,
@@ -106,8 +107,10 @@ export const scenarioGoalSeek: ToolDefinition = {
         + 'monthly payment gets me debt free by December" = monthlyContribution, measure debt, '
         + 'target 0, contributionTarget highest_apr).' },
     contributionTarget: { description: 'For solveFor monthlyContribution: where the solved '
-        + 'monthly amount goes — `investments` (default), `highest_apr`, a liability id, or an '
-        + 'ordered list, exactly as `contributions[].target`.',
+        + 'monthly amount goes — `investments` (default), `highest_apr` (avalanche), '
+        + '`smallest_balance` (snowball), a liability id, or an ordered list, exactly as '
+        + '`contributions[].target`. The two strategy words never pick an installment loan '
+        + '(mortgage, auto, student) — it keeps its scheduled payment; name its id to send extra there.',
       anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
     ...SCENARIO_INPUTS,
   }, ['target', 'by', 'solveFor']),
@@ -122,7 +125,7 @@ export const scenarioGoalSeek: ToolDefinition = {
     // balance, so the ledger's debt is negated on the way in and the target on
     // the way out. Nothing else about the solver changes.
     const sign = measure === 'debt' ? -1 : 1;
-    const toTarget = (t: unknown): AllocationTarget => (t === 'investments' || t === 'highest_apr') ? t
+    const toTarget = (t: unknown): AllocationTarget => isAllocationTargetWord(t) ? t
       : typeof t === 'string' ? { liability: t } : t as AllocationTarget;
     const contributionTargets: AllocationTarget[] | undefined = a.contributionTarget === undefined ? undefined
       : Array.isArray(a.contributionTarget) ? a.contributionTarget.map(toTarget) : [toTarget(a.contributionTarget)];

@@ -333,6 +333,9 @@ function liabilityLinesOf(
     const minimumPayment = typeof r.minimumPayment === 'number' ? r.minimumPayment : null;
     liabilities.push({ id: r.id, label: r.name, balance: round2(balance), apr, minimumPayment,
       subtype: (r as { debtSubtype?: string | null }).debtSubtype ?? null,
+      // Mortgage F4 — from the assembler's liabilityKind (lib/debt/liability-kind.ts):
+      // an installment loan is never picked by `highest_apr` / `smallest_balance`.
+      ...(r.liabilityKind ? { kind: r.liabilityKind } : {}),
       termsProvenance: { apr: apr === null ? 'UNKNOWN' : 'STATED',
         minimumPayment: minimumPayment === null ? 'UNKNOWN' : 'STATED' } });
   }
