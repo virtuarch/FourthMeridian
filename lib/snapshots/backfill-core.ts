@@ -15,7 +15,7 @@
  * loans) are held flat by the caller (they aren't passed here). No FlowType.
  */
 
-import { isInstallmentLoan, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
+import { liabilityKind, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
 import { liquidNetWorthDebt } from "@/lib/debt/liquid-net-worth";
 
 // ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
@@ -182,20 +182,16 @@ export function isBoundaryContinuous(
 // ── Reconstructable-card predicate ────────────────────────────────────────────
 
 /**
- * Is this debt account a reconstructable revolving credit card?
+ * Is this debt account a reconstructable REVOLVING line (its history replayed
+ * from posted transactions back from the current balance)?
  *
- * Plaid import never writes debtSubtype (exchangeToken.ts), so Plaid cards have
- * debtSubtype = null. We therefore accept an explicit credit_card OR a
- * null-subtype debt account that carries a creditLimit OR (PB-8) whose Plaid
- * `providerSubtype` is a credit subtype ("credit card", "paypal") — Plaid sends
- * some cards with no limit at all, and those were being held flat. Any account with an explicit NON-card subtype
- * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
- * is excluded and stays flat.
- *
- * Mortgage F2 (S2 ruling) — a null-subtype row whose Plaid providerSubtype is a
- * `loan` subtype (mortgage, student, auto, home equity, line of credit, …; see
- * lib/debt/liability-kind.ts) is an installment liability and is NOT walked,
- * even when Plaid sent a limit. Never touches non-debt.
+ * Mortgage F7 (S2 ruling) — decided by `liabilityKind` alone (no local subtype
+ * checks): every revolving kind walks (credit card, HELOC, line of credit,
+ * overdraft; FM debtSubtype or Plaid subtype), with or without a creditLimit;
+ * every installment kind (mortgage, auto, student, personal, other loans) never
+ * walks, even with a creditLimit (F2/H5). A row with no kind evidence (legacy
+ * untyped) walks only when it carries a limit. Never touches non-debt.
+ * (Name kept for its many callers; "card" here means "revolving line".)
  *
  * SINGLE AUTHORITY (HIST-1A). Formerly duplicated as four logic-identical copies
  * — backfill.ts, regenerate-history.ts, accounts-asof.core.ts (named), and
@@ -217,18 +213,21 @@ export function isReconstructableCard(a: {
   providerSubtype?: string | null;
 }): boolean {
   if (a.type !== "debt") return false;
-  if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype !== null) return false; // an explicit non-card subtype stays flat
-  // Mortgage F2 — a Plaid `loan` subtype (mortgage/student/auto/…) is an
-  // installment liability: its creditLimit is NOT card evidence, so it is never
-  // walked (held flat, the existing non-revolving path).
-  if (isInstallmentLoan(a)) return false;
-  if (a.creditLimit != null) return true;
-  // PB-8 — Plaid sends many cards (Capital One among them) with
-  // `balances.limit: null`, so the limit cannot be the only revolving signal.
-  // The provider's own subtype is evidence of the same fact.
-  const sub = a.providerSubtype?.trim().toLowerCase() ?? null;
-  return sub !== null && PLAID_CREDIT_SUBTYPES.has(sub);
+  // Mortgage F7 (S2 ruling) — ONE classification, lib/debt/liability-kind.ts:
+  //   · revolving (credit card, HELOC, line of credit, overdraft — FM debtSubtype
+  //     or Plaid subtype) ⇒ walked, limit or no limit (PB-8: Plaid sends many
+  //     cards with `balances.limit: null`; a HELOC/LOC is just as
+  //     transaction-driven);
+  //   · installment (mortgage, auto, student, personal, any other loan) ⇒ never
+  //     walked, even when a creditLimit is set (F2/H5) — held flat and labelled
+  //     estimated by the as-of ladder;
+  //   · unknown (legacy untyped row, unrecognised subtype) ⇒ a limit is the only
+  //     revolving evidence (the pre-F7 rule, unchanged).
+  switch (liabilityKind(a)) {
+    case "revolving":   return true;
+    case "installment": return false;
+    default:            return a.creditLimit != null;
+  }
 }
 
 /**
