@@ -1,4 +1,4 @@
-// Platform AI conversation scene (parity PR5): the same viewport sweep as the
+// Platform AI conversation scene (parity PR5/PR6): the same viewport sweep as the
 // Personal AI fixture in browser.mjs, against the real PlatformAiConversationsView
 // rendered with fabricated data (scripts/ui-hardening/platform-ai-scene.tsx).
 import { createRequire } from 'node:module';
@@ -17,59 +17,43 @@ const OD5 = fs.readFileSync(path.resolve(process.cwd(), 'components/platform/pla
   .match(/PLATFORM_AI_CONVERSATIONS_DISCLOSURE =\s*"([^"]+)"/)[1];
 // Keyboard-open geometries (visual viewport ~440-480 px tall on a phone).
 const KEYBOARD_OPEN = [[320,440],[320,480],[360,440],[375,440],[390,440]];
-const NOTICE_IN_LOG_BELOW = 340; // S2 option (b): narrower viewports show the new-conversation notice in the reading region
+const STARTERS = 6;
 const textOf = (loc) => loc.evaluate((el) => el.textContent.replace(/\s+/g, ' ').trim());
-/** No ancestor of the notice (nor the notice) is a scroll container. */
-const noScrollAncestor = (page) => page.locator('#platform-ai-notice').evaluate((el) => {
-  for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-    const cs = getComputedStyle(n);
-    if (/(auto|scroll)/.test(cs.overflowY + ' ' + cs.overflowX)) return n.outerHTML.slice(0, 120);
-  }
-  return true;
-});
 /**
- * Below 340 px a new conversation's notice sits at the top of the reading region: fully
- * rendered there, its first line on screen on load (scrollTop 0, no auto-scroll), the
- * reading region its ONLY scroll ancestor, no copy in the footer, the composer on screen.
+ * S2 C1–C4: the short line is visible beneath the composer at every width (never
+ * truncated: its text fits its box), the "Privacy & retention" button is reachable by
+ * keyboard and expands the FULL OD-5 text inline (no dialog, no scroll ancestor other
+ * than the reading region, nothing clipped), focus stays on the button, and the full
+ * text is always in the DOM as the box's aria-describedby target.
  */
-async function noticeInLog(page, width, height, at) {
-  const notice = page.locator('[data-ai-scroll] [data-platform-ai-notice-lead] #platform-ai-notice');
-  assert.equal(await notice.count(), 1, 'notice in the reading region at ' + at);
-  assert.equal(await notice.getAttribute('data-platform-ai-notice'), 'log');
-  assert.equal(await page.locator('[data-ai-dock] #platform-ai-notice').count(), 0, 'no footer copy at ' + at);
-  assert.equal(await page.locator('#platform-ai-conversations-disclosure').count(), 1, 'one OD-5 element at ' + at);
-  assert(await notice.isVisible(), 'notice rendered at ' + at);
-  assert.equal(await textOf(page.locator('#platform-ai-conversations-disclosure')), OD5, 'OD-5 text identical at ' + at);
-  const scrollers = await notice.evaluate((el) => {
-    const out = [];
-    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-      const cs = getComputedStyle(n);
-      if (/(auto|scroll)/.test(cs.overflowY + ' ' + cs.overflowX)) out.push(n.hasAttribute('data-ai-scroll') ? 'log' : n.outerHTML.slice(0, 100));
-    }
-    return out;
-  });
-  assert.deepEqual(scrollers, ['log'], 'the reading region is the only scroll ancestor at ' + at);
-  assert.equal(await page.locator('[data-ai-scroll]').evaluate((el) => el.scrollTop), 0, 'empty thread opens at the top at ' + at);
-  const region = await page.locator('[data-ai-scroll]').boundingBox();
-  const firstLine = await page.locator('#platform-ai-conversations-disclosure').evaluate((el) => {
-    const r = document.createRange(); r.selectNodeContents(el); const b = r.getClientRects()[0]; return { y: b.y, h: b.height };
-  });
-  assert(firstLine.y >= region.y - 1 && firstLine.y + firstLine.h <= Math.min(region.y + region.height, height) + 1, 'first notice line on screen at ' + at + ' ' + JSON.stringify({ firstLine, region }));
-  const form = await page.locator('[data-ai-dock] form').boundingBox();
-  assert(form.y >= 0 && form.y + form.height <= height - 40, 'composer on screen at ' + at);
-  assert(await page.locator('#platform-ai-privacy-hint').isVisible(), 'privacy hint visible at ' + at);
-}
-/** The notice is rendered in full: visible, inside the shell and above the bottom bar, the composer on-screen too. */
-async function noticeFullyVisible(page, width, height, at) {
-  const notice = page.locator('#platform-ai-notice');
-  assert(await notice.isVisible(), 'OD-5 notice visible at ' + at);
-  assert.equal(await textOf(page.locator('#platform-ai-conversations-disclosure')), OD5, 'OD-5 text identical to the constant at ' + at);
-  assert.equal(await noScrollAncestor(page), true, 'no scroll container wraps the notice at ' + at);
-  const shell = await page.locator('[data-ai-layout]').boundingBox();
-  const n = await notice.boundingBox();
-  assert(n.y >= shell.y - 1 && n.y + n.height <= shell.y + shell.height + 1 && n.y + n.height <= height - 40, 'notice fully on screen at ' + at + ' ' + JSON.stringify({ n, shell }));
-  const form = await page.locator('[data-ai-dock] form').boundingBox();
-  assert(form.y >= 0 && form.y + form.height <= height - 40, 'composer on screen at ' + at);
+async function disclosureLine(page, width, height, at, { expand = false } = {}) {
+  const line = page.locator('[data-ai-dock] [data-platform-ai-line]');
+  assert.equal(await line.count(), 1, 'one short line at ' + at);
+  assert(await line.isVisible(), 'short line visible at ' + at);
+  const b = await line.boundingBox();
+  assert(inside(b, width) && b.y + b.height <= height - 40, 'short line on screen at ' + at + ' ' + JSON.stringify(b));
+  assert(await line.evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis'), 'short line not truncated at ' + at);
+  assert.equal(await page.locator('#platform-ai-conversations-disclosure').count(), 1, 'OD-5 describedby target in the DOM at ' + at);
+  assert.equal(await page.getByRole('textbox', { name: 'Ask Platform AI' }).getAttribute('aria-describedby'), 'platform-ai-privacy-hint platform-ai-conversations-disclosure');
+  const toggle = page.locator('[data-platform-ai-notice-toggle]');
+  assert(await toggle.isVisible(), 'Privacy & retention visible at ' + at);
+  if (!expand) return;
+  const wasOpen = (await toggle.getAttribute('aria-expanded')) === 'true';
+  if (!wasOpen) { await toggle.focus(); await page.keyboard.press('Enter'); }
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'expands by keyboard at ' + at);
+  assert(await toggle.evaluate((el) => document.activeElement === el) || wasOpen, 'focus stays on the control at ' + at);
+  assert.equal(await page.getByRole('dialog').count(), 0, 'no dialog at ' + at);
+  const notice = page.locator('#platform-ai-conversations-disclosure');
+  assert(await notice.isVisible(), 'full notice visible at ' + at);
+  assert.equal(await textOf(notice), OD5, 'OD-5 text identical at ' + at);
+  const scrollers = await notice.evaluate((el) => { const out = []; for (let n = el; n && n !== document.documentElement; n = n.parentElement) { const cs = getComputedStyle(n); if (/(auto|scroll)/.test(cs.overflowY + ' ' + cs.overflowX)) out.push(n.hasAttribute('data-ai-scroll') ? 'log' : n.outerHTML.slice(0, 80)); } return out; });
+  assert(scrollers.every((x) => x === 'log'), 'no scroll box around the notice at ' + at + ' ' + JSON.stringify(scrollers));
+  if (!scrollers.length) {
+    const shell = await page.locator('[data-ai-layout]').boundingBox(); const n = await notice.boundingBox();
+    assert(n.y >= shell.y - 1 && n.y + n.height <= shell.y + shell.height + 1, 'footer notice not clipped at ' + at + ' ' + JSON.stringify({ n, shell }));
+  }
+  if (width === 375) await page.screenshot({ path: `${evidence}/platform-ai-375-notice-${wasOpen ? 'first' : 'expanded'}.png` });
+  if (!wasOpen) { await toggle.click(); assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'collapses at ' + at); assert(!(await notice.isVisible()), 'hidden again at ' + at); }
 }
 /**
  * Scrolled to its end, the reading region shows every starter chip clear of the dock: no
@@ -95,7 +79,7 @@ async function startersClearDock(page, at) {
     return { dock, log, chips };
   });
   const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-  assert.equal(g.chips.length, 4, 'four starter chips at ' + at);
+  assert.equal(g.chips.length, STARTERS, 'six starter chips at ' + at);
   g.chips.forEach((c, i) => assert(!hits(c, g.dock), `starter ${i + 1} intersects the dock at ${at} ` + JSON.stringify({ chip: c, dock: g.dock })));
   const last = g.chips.reduce((m, c) => (c.bottom > m.bottom ? c : m));
   const room = Math.min(g.dock.top, g.log.bottom) - g.log.top;
@@ -127,37 +111,16 @@ try {
     assert(inside(before, width), 'dock inside the viewport at ' + at);
     const box = page.getByRole('textbox', { name: 'Ask Platform AI' });
     assert(await box.isVisible(), 'composer visible at ' + at);
-    assert(await page.locator('#platform-ai-privacy-hint').isVisible(), 'privacy hint always visible at ' + at);
     assert.equal(await box.getAttribute('aria-describedby'), 'platform-ai-privacy-hint platform-ai-conversations-disclosure', 'describedby at ' + at);
-    assert.equal(await page.locator('#platform-ai-conversations-disclosure').count(), 1, 'OD-5 text in the DOM at ' + at);
-    assert.equal(await noScrollAncestor(page), true, 'no scroll container wraps the notice (ongoing) at ' + at);
-    const noticeToggle = page.locator('[data-platform-ai-notice-toggle]');
-    if (width < SM) {
-      // Ongoing: a compact "Privacy & retention" disclosure button reveals the full text inline.
-      assert(await noticeToggle.isVisible(), 'Privacy & retention control visible at ' + at);
-      assert.equal(await noticeToggle.getAttribute('aria-expanded'), 'false');
-      assert.equal(await noticeToggle.getAttribute('aria-controls'), 'platform-ai-notice');
-      assert(!(await page.locator('#platform-ai-notice').isVisible()), 'collapsed below sm at ' + at);
-      await noticeToggle.click();
-      assert.equal(await noticeToggle.getAttribute('aria-expanded'), 'true', 'toggles open at ' + at);
-      if (height >= 560) await noticeFullyVisible(page, width, height, 'ongoing expanded ' + at);
-      else assert(await page.locator('#platform-ai-notice').isVisible(), 'expanded notice visible at ' + at);
-      if (width === 375) await page.screenshot({ path: `${evidence}/platform-ai-375-notice-expanded.png` });
-      await noticeToggle.click();
-      assert.equal(await noticeToggle.getAttribute('aria-expanded'), 'false', 'toggles closed at ' + at);
-      assert(!(await page.locator('#platform-ai-notice').isVisible()), 'collapses again at ' + at);
-    } else {
-      // Room enough at sm+: shown inline, no control needed.
-      assert(!(await noticeToggle.isVisible()), 'no control at sm+ at ' + at);
-      assert(await page.locator('#platform-ai-notice').isVisible(), 'notice inline at sm+ at ' + at);
-      assert.equal(await textOf(page.locator('#platform-ai-conversations-disclosure')), OD5);
-    }
+    await disclosureLine(page, width, height, 'thread ' + at, { expand: height >= 560 });
+    assert.equal(await page.locator('[data-platform-ai-counter]').count(), 0, 'no counter on an empty draft at ' + at);
     assert.equal(await page.getByRole('button', { name: /Stop/ }).count(), 0, 'no Stop at ' + at);
 
-    // Header controls fit; "Conversations" is sr-only below sm.
+    // Header controls fit; "History" is sr-only below sm; exactly one New chat.
     const header = page.locator('[data-platform-ai-conversations] header');
     assert(await header.evaluate((h) => h.scrollWidth <= h.clientWidth + 1), 'header controls fit at ' + at);
-    for (const b of await header.locator('button, [data-tone]').all()) {
+    assert.equal(await page.getByRole('button', { name: 'New chat' }).count(), 1, 'one New chat at ' + at);
+    for (const b of await header.locator('button').all()) {
       if (await b.isVisible()) assert(inside(await b.boundingBox(), width), 'header control inside the viewport at ' + at);
     }
     const toggle = page.locator('[data-platform-ai-sheet-toggle]');
@@ -166,10 +129,10 @@ try {
       assert(await toggle.isVisible(), 'sheet toggle visible below lg at ' + at);
       assert(!(await rail.isVisible()), 'rail hidden below lg at ' + at);
       const label = await toggle.locator('span').last().boundingBox();
-      if (width < SM) assert(label.width <= 1 && label.height <= 1, '"Conversations" label sr-only below sm at ' + at);
-      else assert(label.width > 20, '"Conversations" label visible at sm+ at ' + at);
+      if (width < SM) assert(label.width <= 1 && label.height <= 1, '"History" label sr-only below sm at ' + at);
+      else assert(label.width > 20, '"History" label visible at sm+ at ' + at);
       await toggle.click();
-      const sheet = page.getByRole('dialog', { name: 'Conversations' });
+      const sheet = page.getByRole('dialog', { name: 'Conversation history' });
       await sheet.waitFor();
       await page.waitForTimeout(350);
       const s = await sheet.boundingBox();
@@ -183,6 +146,11 @@ try {
     } else {
       assert(!(await toggle.isVisible()), 'sheet toggle hidden at lg+ at ' + at);
       assert(await rail.isVisible(), 'rail visible at lg+ at ' + at);
+      // Collapsed by default: the toggle only; opening it shows the list.
+      assert.equal(await rail.getAttribute('data-platform-ai-rail'), 'collapsed', 'rail collapsed by default at ' + at);
+      assert(!(await rail.locator('[data-platform-ai-conversation-list]').count()), 'no list while collapsed at ' + at);
+      await page.getByRole('button', { name: 'Show history' }).click();
+      assert(await rail.locator('[data-platform-ai-conversation-list]').isVisible(), 'list in the open rail at ' + at);
       // The composer is centred on the message column, not the full shell width.
       const r = await rail.boundingBox();
       const log = await page.getByRole('log').boundingBox();
@@ -191,11 +159,10 @@ try {
       assert(Math.abs(form.width - log.width) <= 16, 'composer width = message column width (± scrollbar) at ' + at + ' ' + JSON.stringify({ form, log }));
       assert(Math.abs((form.x + form.width / 2) - (log.x + log.width / 2)) <= 10, 'composer centred on the message column at ' + at + ' ' + JSON.stringify({ form, log }));
       // Collapsing the rail keeps the composer on the column.
-      await page.getByRole('button', { name: 'Hide conversations' }).click();
+      await page.getByRole('button', { name: 'Hide history' }).click();
       const log2 = await page.getByRole('log').boundingBox();
       const form2 = await page.locator('[data-ai-dock] form').boundingBox();
       assert(Math.abs((form2.x + form2.width / 2) - (log2.x + log2.width / 2)) <= 10, 'composer centred with the rail collapsed at ' + at);
-      await page.getByRole('button', { name: 'Show conversations' }).click();
     }
     if (shots.includes(width)) await page.screenshot({ path: `${evidence}/platform-ai-${width}.png` });
 
@@ -207,29 +174,38 @@ try {
     assert.equal(await starters.evaluate((el) => getComputedStyle(el).flexWrap), 'wrap', 'starters wrap at ' + at);
     assert(await starters.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'starters fit their row at ' + at);
     const chips = await starters.locator('button').all();
-    assert.equal(chips.length, 4);
+    assert.equal(chips.length, STARTERS);
     const rows = new Set();
     for (const c of chips) { const b = await c.boundingBox(); assert(inside(b, width), 'chip inside the viewport at ' + at); rows.add(Math.round(b.y)); }
     if (width < SM) assert(rows.size > 1, 'chips wrap onto several rows at ' + at);
     const emptyDock = await page.locator('[data-ai-dock]').boundingBox();
     assert(emptyDock.y + emptyDock.height <= height - 40, 'empty: composer above the bottom bar at ' + at);
-    assert.equal(await page.locator('[data-platform-ai-notice-toggle]').count(), 0, 'new conversation: no toggle at ' + at);
-    if (width < NOTICE_IN_LOG_BELOW) await noticeInLog(page, width, height, 'empty ' + at);
-    else if (height >= 440 || width >= SM) await noticeFullyVisible(page, width, height, 'empty ' + at);
+    await disclosureLine(page, width, height, 'empty ' + at);
+    // First visit (no conversations): the full notice is expanded in the empty state's reading region.
+    await page.goto(`${base}/?platform-ai=first`);
+    await page.locator('[data-platform-ai-notice-lead] #platform-ai-notice').waitFor();
+    assert.equal(await page.locator('[data-platform-ai-notice-toggle]').getAttribute('aria-expanded'), 'true', 'first visit expanded at ' + at);
+    await disclosureLine(page, width, height, 'first ' + at, { expand: true });
+    await page.goto(`${base}/?platform-ai=empty`);
+    await page.locator('[data-platform-ai-starters]').waitFor();
     if (shots.includes(width)) await page.screenshot({ path: `${evidence}/platform-ai-empty-${width}.png` });
     const clearDock = await startersClearDock(page, 'empty ' + at);
     if (width === 375 && height === 688) await page.screenshot({ path: `${evidence}/platform-ai-empty-375x688-scrolled.png` });
 
-    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'rail+centred', header: 'pass', starters: 'pass', startersClearDock: clearDock });
+    results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'collapsed rail+centred', header: 'pass', starters: 'pass', disclosure: 'line + inline notice', startersClearDock: clearDock });
   }
 
-  // Input growth and a simulated shorter viewport keep the dock above the bar.
+  // Input growth and a simulated shorter viewport keep the dock above the bar; the counter appears near the limit only.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${base}/?platform-ai`);
-  await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill(Array(12).fill('Multiline fixture draft').join('\n'));
+  const short = Array(12).fill('Multiline fixture draft').join('\n');
+  await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill(short);
   let dock = await page.locator('[data-ai-dock]').boundingBox();
   assert(dock.y >= 0 && dock.y + dock.height <= 844 - 40, 'grown composer above the bar');
-  assert.equal(await page.locator('[data-platform-ai-counter]').textContent(), `${Array(12).fill('Multiline fixture draft').join('\n').length}/500`);
+  assert.equal(await page.locator('[data-platform-ai-counter]').count(), 0, 'no counter below 400 characters');
+  const long = Array(19).fill('Multiline fixture draft').join('\n') + 'x'.repeat(20);
+  await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill(long);
+  assert.equal(await page.locator('[data-platform-ai-counter]').textContent(), `${long.length}/500`);
   await page.setViewportSize({ width: 390, height: 440 });
   await page.waitForTimeout(250);
   dock = await page.locator('[data-ai-dock]').boundingBox();
@@ -238,32 +214,21 @@ try {
   const counter = await page.locator('[data-platform-ai-counter]').boundingBox();
   assert(counter.y >= 0 && counter.y + counter.height <= 440 - 40, 'shorter viewport: counter visible above the bar');
 
-  // New conversation with the keyboard open: the full OD-5 text is unscrolled and fully
-  // visible, the composer stays on screen (the starters give way).
+  // Keyboard open (empty and ongoing): the composer and the one disclosure line stay on screen.
   for (const [width, height] of KEYBOARD_OPEN) {
-    await page.setViewportSize({ width, height });
-    await page.goto(`${base}/?platform-ai=empty`);
-    await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill('Which fixture jobs ran late?');
-    await page.waitForTimeout(150);
-    if (width < NOTICE_IN_LOG_BELOW) await noticeInLog(page, width, height, 'keyboard-open empty ' + width + 'x' + height);
-    else await noticeFullyVisible(page, width, height, 'keyboard-open empty ' + width + 'x' + height);
-    assert(await noOverflow(page), 'keyboard-open empty: no horizontal overflow');
+    for (const scene of ['empty', '']) {
+      await page.setViewportSize({ width, height });
+      await page.goto(`${base}/?platform-ai${scene ? '=' + scene : ''}`);
+      await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill('Which fixture jobs ran late?');
+      await page.waitForTimeout(150);
+      const form = await page.locator('[data-ai-dock] form').boundingBox();
+      assert(form.y >= 0 && form.y + form.height <= height - 40, `keyboard-open ${scene || 'ongoing'}: composer on screen at ${width}x${height}`);
+      await disclosureLine(page, width, height, `keyboard-open ${scene || 'ongoing'} ${width}x${height}`);
+      assert(await noOverflow(page), 'keyboard-open: no horizontal overflow');
+    }
   }
-  // Ongoing, keyboard open: collapsed notice keeps the composer and the control on screen.
-  for (const [width, height] of KEYBOARD_OPEN) {
-    await page.setViewportSize({ width, height });
-    await page.goto(`${base}/?platform-ai`);
-    const form = await page.locator('[data-ai-dock] form').boundingBox();
-    const ctl = await page.locator('[data-platform-ai-notice-toggle]').boundingBox();
-    assert(form.y >= 0 && form.y + form.height <= height - 40 && ctl.y + ctl.height <= height - 40, 'keyboard-open ongoing: composer + control on screen at ' + width + 'x' + height);
-  }
-  // 375 px evidence: the new-conversation notice.
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto(`${base}/?platform-ai=empty`);
-  await page.locator('#platform-ai-notice').waitFor();
-  await page.screenshot({ path: `${evidence}/platform-ai-375-empty-notice.png` });
 
-  // WCAG AA contrast (4.5:1) of the OD-5 text and the privacy hint against their actual
+  // WCAG AA contrast (4.5:1) of the visible short line against its actual
   // (composited) background, in both themes, from computed styles.
   const contrast = {};
   for (const theme of ['dark', 'light']) {
@@ -272,8 +237,8 @@ try {
       await page.goto(`${base}/?platform-ai=${scene}`);
       await page.evaluate((t) => { document.documentElement.setAttribute('data-theme', t); }, theme);
       await page.waitForTimeout(100);
-      for (const id of ['platform-ai-conversations-disclosure', 'platform-ai-privacy-hint']) {
-        const r = await page.locator('#' + id).evaluate((el) => {
+      for (const id of ['line']) {
+        const r = await page.locator('[data-ai-dock] [data-platform-ai-line]').evaluate((el) => {
           const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) throw new Error('unparsed colour ' + c); const v = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 }; };
           const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
           // Background: composite every ancestor's background colour, bottom-up, over white.
@@ -286,7 +251,7 @@ try {
           const [L1, L2] = [lum(fg), lum(bg)].sort((x, y) => y - x);
           return { ratio: Math.round(((L1 + 0.05) / (L2 + 0.05)) * 100) / 100, color: getComputedStyle(el).color, background: `rgb(${Math.round(bg.r)}, ${Math.round(bg.g)}, ${Math.round(bg.b)})` };
         });
-        const key = `${theme}/${id === 'platform-ai-privacy-hint' ? 'privacy-hint' : 'od5'}/${w < NOTICE_IN_LOG_BELOW ? 'log' : 'footer'}`;
+        const key = `${theme}/disclosure-line/${w}`;
         contrast[key] = r;
         console.log('contrast', key, r.ratio, r.color, 'on', r.background);
         assert(r.ratio >= 4.5, 'WCAG AA 4.5:1 for ' + key + ' ' + JSON.stringify(r));
@@ -294,7 +259,7 @@ try {
     }
   }
   fs.writeFileSync(path.join(evidence, 'platform-ai-results.json'), JSON.stringify({ scope: 'Synthetic Platform AI conversation scene (fabricated data, pure view, no API)', results, contrast, softwareKeyboard: 'not verified; requires a device' }, null, 2));
-  console.log('PASS', results.length, 'Platform AI viewport fixtures (thread, sheet/rail, empty starters, OD-5 notice) + input growth + keyboard-open');
+  console.log('PASS', results.length, 'Platform AI viewport fixtures (thread, sheet/collapsed rail, empty starters, short line + inline Privacy & retention + first visit) + input growth + keyboard-open');
 } finally {
   await browser.close();
 }
