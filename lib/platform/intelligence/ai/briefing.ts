@@ -37,7 +37,7 @@ import type { MetricEnvelope, MetricSubject } from "@/lib/platform/intelligence/
 import {
   BRIEFING_DOMAINS, BRIEFING_NOT_YET_COVERED, LINK_LABEL_MAX, envelopeWindowText, quotableWindowPhrase, renderLabel, renderPlaceholder,
   resolvePlaceholders, sanitiseAnswer,
-  type DigitKind, type PlaceholderVerdict, type PlatformAiBinding, type ReasonCounts, type ToolEvidence, type TypedAnswerSegment,
+  type DigitKind, type NumberWordFamily, type PlaceholderVerdict, type PlatformAiBinding, type ReasonCounts, type ToolEvidence, type TypedAnswerSegment,
 } from "./core";
 
 // ── A1: the deterministic classifier ────────────────────────────────────────
@@ -73,13 +73,35 @@ const LIST_REQUEST = /\b(?:list|bullet(?:ed|s)?|bullet\s*points?)\b/;
 /** The operator asked about cost (A2: costs are composed when asked). */
 const COST_REQUEST = /\b(?:costs?|costing|spend(?:ing)?|spent|money|bill(?:ing|ed)?|budget|expensive|pricing|dollars?)\b|\$/;
 
-export interface BriefingClass { briefing: boolean; pattern: string | null; list: boolean; cost: boolean }
+/**
+ * (ii) COST-RANKING class (S2-approved, 2026-11-08 live battery: Question C fell back on a
+ * NUMBER_WORD after a failed retry). Same A1 rule: listed, tested, deterministic. Checked
+ * BEFORE the briefing patterns. Every other cost question stays on the model path (+ retry).
+ */
+export const COST_RANKING_PATTERNS: readonly { id: string; re: RegExp }[] = [
+  /** "What's costing me the most money in the past 30 days?" (Question C, exact owner wording), "What is costing us the most?" */
+  { id: "COSTING_MOST", re: /\bwhat(?:'s|\s+is|\s+are)\s+costing\s+(?:(?:me|us|the\s+platform|the\s+business)\s+)?(?:the\s+)?most\b/ },
+  /** (before LARGEST_COST: "top cost driver" is a driver question) "Top cost driver", "main cost drivers" */
+  { id: "COST_DRIVER", re: /\b(?:top|main|biggest|largest|primary)\s+cost\s+drivers?\b/ },
+  /** "Largest cost", "biggest expense", "highest cost category", "top costs" */
+  { id: "LARGEST_COST", re: /\b(?:largest|biggest|highest|top)\s+(?:operating\s+)?(?:costs?|expenses?|spend(?:ing)?|cost\s+categor(?:y|ies))\b/ },
+  /** "Where is the money going?", "Where's all our money going?" */
+  { id: "MONEY_GOING", re: /\bwhere(?:'s|\s+is|\s+does)\s+(?:all\s+)?(?:the\s+|our\s+|my\s+)?money\s+go(?:ing)?\b/ },
+  /** "What are we spending the most on?" */
+  { id: "SPENDING_MOST", re: /\bwhat\s+(?:are\s+we|am\s+i|do\s+we)\s+spend(?:ing)?\s+(?:the\s+)?most\s+on\b/ },
+];
 
-/** A1 — deterministic: the first matching pattern id, or not a briefing. */
+/** The ONE envelope a cost-ranking answer is composed from (its ranking part is the server's own). */
+export const COST_RANKING_KEY = "economics-operating-cost@1";
+
+export interface BriefingClass { briefing: boolean; costRanking: boolean; pattern: string | null; list: boolean; cost: boolean }
+
+/** A1 — deterministic: a cost-ranking pattern first, then the briefing patterns; else the normal path. */
 export function classifyBriefingQuestion(scrubbedQuestion: string): BriefingClass {
   const q = String(scrubbedQuestion ?? "").toLowerCase().replace(/[‘’]/g, "'");
-  const hit = BRIEFING_PATTERNS.find((p) => p.re.test(q)) ?? null;
-  return { briefing: hit !== null, pattern: hit?.id ?? null, list: LIST_REQUEST.test(q), cost: COST_REQUEST.test(q) };
+  const rank = COST_RANKING_PATTERNS.find((p) => p.re.test(q)) ?? null;
+  const hit = rank ? null : BRIEFING_PATTERNS.find((p) => p.re.test(q)) ?? null;
+  return { briefing: hit !== null, costRanking: rank !== null, pattern: rank?.id ?? hit?.id ?? null, list: LIST_REQUEST.test(q), cost: COST_REQUEST.test(q) };
 }
 
 // ── A2: the server's reads ──────────────────────────────────────────────────
@@ -190,7 +212,7 @@ function tidy(segs: readonly Seg[]): Seg[] {
 // ── A2: per-metric facts ────────────────────────────────────────────────────
 
 /** One composed sentence. `issue` = something is wrong; `topic` = a figure-free server phrase (the model's context). */
-export interface BriefingFact { domain: string; metric: string; issue: boolean; topic: string; segs: Seg[] }
+export interface BriefingFact { domain: string; metric: string; issue: boolean; topic: string; segs: Seg[]; /** S1: customer impact or a FAILED state (selected first for the size cap). */ severe?: boolean }
 
 type Composer = (e: MetricEnvelope, est: boolean) => Omit<BriefingFact, "domain" | "metric">[];
 
@@ -288,7 +310,7 @@ const COMPOSERS: Readonly<Record<string, Composer>> = {
     if (!total) return [];
     const largest = num(e, "largestMeasuredCategory") !== null || (e.value && typeof e.value === "object" && e.value.largestMeasuredCategory) ? fig(e, "largestMeasuredCategory", est) : null;
     const label = largest ? renderLabel(e, "largestMeasuredCategory", null) : null;
-    return [info("operating cost", [t(`${windowLead(e)}the estimated operating cost is `), total,
+    return [info("operating cost", [t(`${windowLead(e)}the operating cost is `), total,
       // S2 FIX 2 analogue: a floor already reads "at least …" — never "at at least".
       ...(largest && label ? [t(`; the largest measured category is ${label}${/^at least\b/.test(largest.text) ? ", " : " at "}`), largest] : []), t(".")])];
   },
@@ -330,6 +352,9 @@ export interface ComposedBriefing {
   domains: { key: string; state: BriefingDomainState }[];
   list: boolean;
   figures: number;
+  /** S1: issue items shown, and how many more the overflow sentence counts. */
+  shown: number;
+  overflow: number;
 }
 
 /**
@@ -339,7 +364,11 @@ export interface ComposedBriefing {
 export function composeBriefing(
   envelopes: readonly MetricEnvelope[],
   binding: Pick<PlatformAiBinding, "describeMetric">,
-  opts: { list: boolean; cost: BriefingCostReason | null; isEstimated?: (key: string) => boolean },
+  opts: {
+    list: boolean; cost: BriefingCostReason | null; isEstimated?: (key: string) => boolean;
+    /** S1: the Operations page link (this turn's resolved href) for the overflow sentence; null ⇒ no link. */
+    moreLink?: { text: string; href: string } | null;
+  },
 ): ComposedBriefing {
   const isEst = opts.isEstimated ?? ((key: string) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
   const lastOf = (k: string) => [...envelopes].reverse().find((e) => e.metric === k) ?? null;
@@ -358,15 +387,22 @@ export function composeBriefing(
       continue;
     }
     const mine: BriefingFact[] = [];
-    for (const e of ok) for (const f of (COMPOSERS[e.metric]?.(e, isEst(e.metric)) ?? [])) if (f.segs.length) mine.push({ ...f, domain: d.key, metric: e.metric });
+    for (const e of ok) for (const f of (COMPOSERS[e.metric]?.(e, isEst(e.metric)) ?? [])) if (f.segs.length) mine.push({ ...f, domain: d.key, metric: e.metric, severe: f.issue && isSevere(e, f.topic, d.key) });
     // A metric of a read domain that could not be read is named (its registry label), never implied fine.
     for (const e of read) if (e.status === "UNAVAILABLE") unreadable.push([t(`${binding.describeMetric(e.metric)?.label ?? e.metric} is unavailable right now.`)]);
     facts.push(...mine);
     domains.push({ key: d.key, state: mine.some((f) => f.issue) ? "ATTENTION" : "OK" });
   }
 
-  const issues = facts.filter((f) => f.issue);
-  const infos = facts.filter((f) => !f.issue);
+  const allIssues = facts.filter((f) => f.issue);
+  // S1 (S2-approved, 2026-11-08 live battery: 17 figures / 12 bullets was too long): at most
+  // BRIEFING_MAX_ISSUES issue items — the severe ones (customer impact, a failed state) first,
+  // each group in protocol order — shown in protocol order; the rest are ONE overflow sentence.
+  const chosen = new Set([...allIssues.filter((f) => f.severe), ...allIssues.filter((f) => !f.severe)].slice(0, BRIEFING_MAX_ISSUES));
+  const issues = allIssues.filter((f) => chosen.has(f));
+  const overflow = allIssues.length - issues.length;
+  // Informational sentences: kept only while they add to a short answer (costs when read; the rest only when nothing is wrong).
+  const infos = facts.filter((f) => !f.issue && (f.domain === "costs" || allIssues.length === 0 || f.topic === "alert sources that could not be read" || f.topic === "customer impact read incompletely"));
   const list = issues.length >= 2 || (opts.list && issues.length >= 1);
   const body: Seg[] = [];
   const sentence = (segs: readonly Seg[]) => { if (body.length) body.push(t(" ")); body.push(...capFirst(segs)); };
@@ -376,6 +412,11 @@ export function composeBriefing(
   } else if (issues.length === 1) sentence(issues[0].segs);
   const fine = domains.filter((d) => d.state === "OK").map((d) => DOMAIN_NAME[d.key].ok);
   const rest: Seg[][] = [];
+  if (overflow > 0) {
+    const more: Seg = { kind: "figure", text: String(overflow), metric: BRIEFING_MORE_KEY, window: null };
+    rest.push([t("…and "), more, t(` more ${overflow === 1 ? "item needs" : "items need"} attention`),
+      ...(opts.moreLink ? [t(" — see "), { kind: "link" as const, text: opts.moreLink.text, href: opts.moreLink.href }, t(".")] : [t(".")])]);
+  }
   if (issues.length === 0 && domains.some((d) => d.state === "OK")) rest.push([t(unreadable.length ? "Nothing needs attention in what could be checked." : "Nothing needs attention right now.")]);
   if (fine.length > 0) rest.push([t(`${cap(joinWords(fine))} ${fine.length === 1 && !/s$/.test(fine[0]) ? "looks" : "look"} fine.`)]);
   for (const f of infos) rest.push(f.segs);
@@ -392,8 +433,59 @@ export function composeBriefing(
   body.push(t(`\n\n${cover.join(" ")}`));
 
   const segments = tidy(body);
-  return { segments, facts, domains, list, figures: segments.filter((s) => s.kind === "figure").length };
+  return { segments, facts, domains, list, figures: segments.filter((s) => s.kind === "figure").length, shown: issues.length, overflow };
 }
+
+/**
+ * (ii) — the composed COST-RANKING answer, from the operating-cost envelope read THIS turn:
+ * the server's ranked category (label + figure, its qualifier when the ranking is incomplete)
+ * and the total, each a typed figure with the envelope's PARTIAL / estimated wording; the
+ * window stated once. Unreadable / not permitted ⇒ said. No model text.
+ */
+export function composeCostRanking(envelopes: readonly MetricEnvelope[], binding: Pick<PlatformAiBinding, "describeMetric">): ComposedBriefing {
+  const est = binding.describeMetric(COST_RANKING_KEY)?.provenance.class === "ESTIMATED";
+  const e = [...envelopes].reverse().find((x) => x.metric === COST_RANKING_KEY) ?? null;
+  const done = (segs: Seg[], state: BriefingDomainState, topic: string): ComposedBriefing => {
+    const segments = tidy(segs);
+    return { segments, facts: [{ domain: "costs", metric: COST_RANKING_KEY, issue: false, topic, segs: segments }], domains: [{ key: "costs", state }],
+      list: false, figures: segments.filter((x) => x.kind === "figure").length, shown: 0, overflow: 0 };
+  };
+  if (binding.describeMetric(COST_RANKING_KEY) === null) return done([t("Operating costs aren't available with your access, so I can't rank them here.")], "NOT_PERMITTED", "operating cost not permitted");
+  if (!e || e.status === "UNAVAILABLE") return done([t("Operating cost couldn't be checked right now — its figures are unavailable.")], "UNAVAILABLE", "operating cost unavailable");
+  const total = fig(e, "totalUsd", est);
+  const ranked = e.value && typeof e.value === "object" ? e.value.largestMeasuredCategory ?? null : null;
+  const largest = ranked ? fig(e, "largestMeasuredCategory", est) : null;
+  const label = ranked ? renderLabel(e, "largestMeasuredCategory", null) : null;
+  const segs: Seg[] = largest && label
+    ? [t(cap(`${windowLead(e)}the largest measured cost is ${label}${/^at least\b/.test(largest.text) ? ", " : " at "}`)), largest, t(".")]
+    : [t(cap(`${windowLead(e)}no cost category could be measured, so there is no ranking.`))];
+  if (total) segs.push(t(" The operating cost is "), total, t("."));
+  return done(segs, "OK", "largest measured operating cost");
+}
+
+/** S1 — at most this many issue items in a composed briefing. */
+export const BRIEFING_MAX_ISSUES = 5;
+/** S1 — the overflow count's figure key: a SERVER count of composed issue items (not a registry metric; masked in history like any figure). */
+export const BRIEFING_MORE_KEY = "briefing-more-items@1";
+
+/** S1 — severe = customer impact, or a FAILED (not merely degraded / overdue) state. */
+function isSevere(e: MetricEnvelope, topic: string, domain: string): boolean {
+  if (domain === "impact") return true;
+  const gt0 = (part: string | null) => (num(e, part) ?? 0) > 0;
+  switch (e.metric) {
+    case "ops-overall-posture@1": return gt0("failed");
+    case "alerts-firing-now@1": return gt0("firingCritical");
+    case "incident-broken-now@1": return true;
+    case "connection-health-summary@1": return topic.startsWith("connections needing") || gt0("error");
+    case "refresh-pipeline@1": return true;
+    case "provider-connection@2": case "provider-outcome@1": return gt0("failing");
+    case "scheduled-job-health@1": return gt0("failing") || gt0("dead");
+    default: return false;
+  }
+}
+
+/** S1 — the composed body's non-empty lines (bullets + paragraphs; framing and next steps are added by the turn). */
+export const composedLineCount = (segs: readonly Seg[]) => segs.map((x) => x.text).join("").split("\n").filter((l) => l.trim()).length;
 
 /** Capitalise a sentence's first text character (a figure-first sentence stays as rendered — "at least …" is server wording). */
 function capFirst(segs: readonly Seg[]): Seg[] {
@@ -462,7 +554,7 @@ export type FramingOutcome = "KEPT" | "DROPPED" | "NONE";
  * NONE), no link / URL / HTML (sanitiseAnswer strips nothing), ≤ 200 characters, never the
  * word "placeholder". Failure DROPS the sentence (never the answer).
  */
-export function checkFraming(framing: string | null, scrubbedQuestion: string): { text: string | null; outcome: FramingOutcome; verdict: PlaceholderVerdict | "LINK" | "TOO_LONG" | null; digitBy: ReasonCounts<DigitKind> } {
+export function checkFraming(framing: string | null, scrubbedQuestion: string): { text: string | null; outcome: FramingOutcome; verdict: PlaceholderVerdict | "LINK" | "TOO_LONG" | null; digitBy: ReasonCounts<DigitKind>; wordFamilyBy?: ReasonCounts<NumberWordFamily> } {
   if (framing === null || !framing.trim()) return { text: null, outcome: "NONE", verdict: null, digitBy: {} };
   const line = framing.trim().split("\n")[0].replace(/\s+/g, " ").trim();
   const one = (/^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line).trim();
@@ -470,7 +562,7 @@ export function checkFraming(framing: string | null, scrubbedQuestion: string): 
   const s = sanitiseAnswer(one, new Set());
   if (s.removed > 0 || /\bplaceholders?\b/i.test(one)) return { text: null, outcome: "DROPPED", verdict: "LINK", digitBy: {} };
   const r = resolvePlaceholders(s.segments, [], new Set(), scrubbedQuestion);
-  if (r.summary.verdict !== "NONE") return { text: null, outcome: "DROPPED", verdict: r.summary.verdict, digitBy: r.digitBy };
+  if (r.summary.verdict !== "NONE") return { text: null, outcome: "DROPPED", verdict: r.summary.verdict, digitBy: r.digitBy, wordFamilyBy: r.wordFamilyBy };
   const text = s.segments.map((x) => x.text).join("").trim();
   return text ? { text, outcome: "KEPT", verdict: "NONE", digitBy: {} } : { text: null, outcome: "NONE", verdict: null, digitBy: {} };
 }

@@ -143,7 +143,8 @@ async function main(): Promise<void> {
 
   // ── 1 + 2. the stored shape, and the owner's follow-up ──────────────────────
   console.log("1–2. the stored shape; the owner's \"what's costing the most\" → \"compare with last month\"");
-  const q1 = "What's costing me the most money?";
+  // The model path's storage / history contract (a cost-RANKING question is now server-composed — see §9 below).
+  const q1 = "What's our AI spend this week?";
   const t1 = await turn(q1, [], [
     { calls: [gm("economics-ai-cost", 7)] },
     { content: `The largest measured cost is AI: {{m:economics-ai-cost@1|part=spendUsd}}. See [Economics](${ECON_PAGE}).` },
@@ -500,6 +501,26 @@ async function main(): Promise<void> {
     const ask = code(src("app/api/platform/ai/ask/route.ts"));
     check("B1(b): the stateless ask route still composes every held area, each behind its own fresh guard",
       /for \(const other of platformAiAreasFor\(rows\)\)/.test(ask) && /await requireFreshPlatformAccess\(other, "READ"/.test(ask) && /composePlatformAiBindings\(parts\)/.test(ask));
+  }
+
+  // ── 9. Question C, composed (S2 (ii), 2026-11-08 live battery: 1/2 fell back on NUMBER_WORD with history) ──
+  console.log("\n9. Question C is server-composed — with and without history");
+  {
+    const QC = "What's costing me the most money in the past 30 days?";
+    // The fake model only frames (and here writes a number word: dropped, never the answer).
+    const frame = [{ content: JSON.stringify({ framing: "There are two big costs this month.", next_actions: [] }) }];
+    const noHist = await turn(QC, [], frame);
+    const withHist = await turn(QC, hist, frame);
+    for (const [name, r] of [["no history", noHist], ["with history", withHist]] as const) {
+      const ans = r.outcome.status === "COMPLETE" ? r.outcome.answer : null;
+      const text = ans ? ans.segments.map((x) => x.text).join(" ") : "";
+      check(`Question C (${name}): COMPLETE, composed (COST_RANKING), never the fallback; leader + total as TYPED figures of economics-operating-cost@1; the window note first`,
+        !!ans && r.result?.briefing?.kind === "COST_RANKING" && !r.result.grounding.replaced && !text.includes(UNVERIFIED_FALLBACK)
+          && ans.segments.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2 && ans.segments[0].kind === "note"
+          && /not the 30 days you asked about/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
+    }
+    check("Question C with history: the composed answer ignores prior turns (the framing call sees no history; facts from THIS turn's read)",
+      !sent(withHist.seen).includes("[figure from") && withHist.result?.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]).join() === "economics-operating-cost@1");
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
