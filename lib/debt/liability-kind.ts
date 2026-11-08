@@ -84,8 +84,142 @@ export interface LiabilityKindInput {
 
 export type LiabilityKind = "revolving" | "installment" | "unknown";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Owner 2026-11-08 — ONE fine-grained debt-type model
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * The liability's kind:
+ * The fine-grained debt type (owner requirement 2026-11-08): mortgages and
+ * installment loans share some accounting behaviour but remain DISTINCT types.
+ * `debtType` is the ONE classifier; `liabilityKind` is DEFINED from it (the
+ * revolving / installment partition below), so the two can never disagree.
+ *
+ * Mortgage-specific behaviour (mortgage rate label, equity, amortization,
+ * escrow) keys on `debtType(a) === "mortgage"` — never on `isInstallmentLoan`
+ * or a raw subtype comparison (pinned by lib/debt/debt-type.test.ts).
+ */
+export type DebtType =
+  | "credit_card"
+  | "personal_installment"
+  | "auto_loan"
+  | "student_loan"
+  | "mortgage"
+  | "heloc"
+  | "personal_line_of_credit"
+  | "overdraft"
+  | "other_revolving"
+  | "other_installment"
+  | "unknown";
+
+/** Every DebtType, in a stable display order. */
+export const DEBT_TYPES: readonly DebtType[] = [
+  "credit_card", "personal_line_of_credit", "heloc", "overdraft", "other_revolving",
+  "mortgage", "auto_loan", "student_loan", "personal_installment", "other_installment",
+  "unknown",
+];
+
+/** The revolving debt types — the ONLY ones that take part in utilization / available credit. */
+export const REVOLVING_DEBT_TYPES: ReadonlySet<DebtType> = new Set<DebtType>([
+  "credit_card", "personal_line_of_credit", "heloc", "overdraft", "other_revolving",
+]);
+/** The installment (amortising) debt types. */
+export const INSTALLMENT_DEBT_TYPES: ReadonlySet<DebtType> = new Set<DebtType>([
+  "mortgage", "auto_loan", "student_loan", "personal_installment", "other_installment",
+]);
+
+/** Human label for a debt type — what the UI and the AI name the liability. */
+export const DEBT_TYPE_LABEL: Readonly<Record<DebtType, string>> = {
+  credit_card:             "Credit card",
+  personal_installment:    "Personal loan",
+  auto_loan:               "Auto loan",
+  student_loan:            "Student loan",
+  mortgage:                "Mortgage",
+  heloc:                   "HELOC",
+  personal_line_of_credit: "Line of credit",
+  overdraft:               "Overdraft line",
+  other_revolving:         "Revolving credit",
+  other_installment:       "Installment loan",
+  unknown:                 "Debt",
+};
+
+/** FM `debtSubtype` (explicit, user-set) → DebtType. Any other non-empty value ⇒ other_installment. */
+const DEBT_SUBTYPE_TO_TYPE: Readonly<Record<string, DebtType>> = {
+  credit_card:    "credit_card",
+  line_of_credit: "personal_line_of_credit",
+  heloc:          "heloc",
+  mortgage:       "mortgage",
+  auto_loan:      "auto_loan",
+  student_loan:   "student_loan",
+  personal_loan:  "personal_installment",
+};
+
+/**
+ * Plaid subtype (lowercased) → DebtType, for every subtype in PLAID_CREDIT_SUBTYPES
+ * ∪ PLAID_LOAN_SUBTYPES except the limit-discriminated "home equity" (handled in
+ * `debtType`). Pinned by test to cover both sets exactly.
+ */
+const PLAID_SUBTYPE_TO_TYPE: Readonly<Record<string, DebtType>> = {
+  "credit card":    "credit_card",
+  "paypal":         "other_revolving",
+  "line of credit": "personal_line_of_credit",
+  "overdraft":      "overdraft",
+  "mortgage":       "mortgage",
+  "auto":           "auto_loan",
+  "student":        "student_loan",
+  "consumer":       "personal_installment",
+  "loan":           "other_installment",
+  "business":       "other_installment",
+  "commercial":     "other_installment",
+  "construction":   "other_installment",
+  "other":          "other_installment",
+};
+
+/**
+ * THE debt type of a liability. Evidence order (unchanged from F2):
+ *
+ *   0. `type` supplied and not "debt" ⇒ unknown.
+ *   1. An explicit FM debtSubtype decides (credit_card, line_of_credit, heloc,
+ *      mortgage, auto_loan, student_loan, personal_loan; any other non-empty
+ *      value ⇒ other_installment).
+ *   2. Otherwise the Plaid subtype decides; "home equity" is a HELOC only with
+ *      a positive creditLimit, else a closed-end home-equity loan
+ *      (other_installment — NOT a mortgage: no mortgage behaviour applies).
+ *   3. No evidence / unrecognised subtype ⇒ unknown (callers keep their legacy
+ *      rules, e.g. a limit-bearing untyped row is treated as a card).
+ */
+export function debtType(a: LiabilityKindInput): DebtType {
+  if (a.type != null && a.type !== "debt") return "unknown";
+  const ds = norm(a.debtSubtype);
+  if (ds !== null) return DEBT_SUBTYPE_TO_TYPE[ds] ?? "other_installment";
+  const sub = norm(a.providerSubtype);
+  if (sub === null) return "unknown";
+  if (PLAID_LIMIT_DISCRIMINATED_SUBTYPES.has(sub)) {
+    return a.creditLimit != null && a.creditLimit > 0 ? "heloc" : "other_installment";
+  }
+  return PLAID_SUBTYPE_TO_TYPE[sub] ?? "unknown";
+}
+
+/** The coarse kind of a debt type. */
+export function kindOfDebtType(t: DebtType): LiabilityKind {
+  if (REVOLVING_DEBT_TYPES.has(t)) return "revolving";
+  if (INSTALLMENT_DEBT_TYPES.has(t)) return "installment";
+  return "unknown";
+}
+
+/** The human label for ONE liability ("Auto loan", "HELOC", "Mortgage", …). */
+export function debtTypeLabel(a: LiabilityKindInput): string {
+  return DEBT_TYPE_LABEL[debtType(a)];
+}
+
+/** True ONLY for a mortgage — the gate for every mortgage-specific behaviour
+ *  (mortgage rate label, equity, amortization schedule, escrow). */
+export function isMortgageDebt(a: LiabilityKindInput): boolean {
+  return debtType(a) === "mortgage";
+}
+
+/**
+ * The liability's kind — DEFINED from `debtType` (owner 2026-11-08), so the two
+ * classifications cannot disagree:
  *
  *   1. An explicit FM debtSubtype decides: credit_card / line_of_credit / heloc
  *      ⇒ revolving; anything else (mortgage, auto_loan, student_loan,
@@ -98,17 +232,7 @@ export type LiabilityKind = "revolving" | "installment" | "unknown";
  *      keep their existing rules (e.g. a limit-bearing untyped row is a card).
  */
 export function liabilityKind(a: LiabilityKindInput): LiabilityKind {
-  if (a.type != null && a.type !== "debt") return "unknown";
-  const ds = norm(a.debtSubtype);
-  if (ds !== null) return REVOLVING_DEBT_SUBTYPES.has(ds) ? "revolving" : "installment";
-  const sub = norm(a.providerSubtype);
-  if (sub === null) return "unknown";
-  if (PLAID_CREDIT_SUBTYPES.has(sub) || PLAID_REVOLVING_LOAN_SUBTYPES.has(sub)) return "revolving";
-  if (PLAID_LIMIT_DISCRIMINATED_SUBTYPES.has(sub)) {
-    return a.creditLimit != null && a.creditLimit > 0 ? "revolving" : "installment";
-  }
-  if (PLAID_LOAN_SUBTYPES.has(sub)) return "installment";
-  return "unknown";
+  return kindOfDebtType(debtType(a));
 }
 
 /** True when the liability is an installment loan, so any creditLimit it carries
