@@ -56,6 +56,7 @@ import { accountTier, type AccountTier } from "@/lib/account-classifier";
 import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestation";
 import { USER_CATEGORY_SOURCES } from "@/lib/transactions/transfer-debt-payment-correction";
 import { EXTERNAL_MATURITIES, type TransferMaturity } from "@/lib/transactions/transfer-maturation";
+import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 
 /** What a row IS, for narration and filtering. */
 export type TransactionNature =
@@ -78,6 +79,15 @@ export type TransactionNature =
   | "TRANSFER_DESTINATION_UNCONFIRMED"
   /** Money changed form (cash withdrawal / deposit). */
   | "CASH_MOVEMENT"
+  /**
+   * Mortgage F10 — a payment to an installment loan that is NOT connected (the
+   * transfer authority's UNTRACKED_LOAN_PAYMENT leaf). Debt service, unsplit;
+   * `reducesDebt` stays FALSE because no TRACKED liability received it — the
+   * invariant below (reducesDebt ∧ CASH ⇔ counted by the debt-payment authority)
+   * is unchanged. Narrated as a debt payment (flow DEBT_PAYMENT), never as a
+   * transfer, spending or an unclassified movement.
+   */
+  | "UNTRACKED_LOAN_PAYMENT"
   /** A movement whose purpose is NOT established. Never narrated as anything more. */
   | "UNCLASSIFIED_MOVEMENT"
   | "SPENDING" | "INCOME" | "REFUND" | "ISSUER_CREDIT"
@@ -134,7 +144,7 @@ export interface ResolvedTransactionNature {
 export const MOVEMENT_NATURES: ReadonlySet<TransactionNature> = new Set<TransactionNature>([
   "LIABILITY_PAYMENT", "INTERNAL_SAVINGS_TRANSFER", "INTERNAL_CHECKING_TRANSFER",
   "BROKERAGE_TRANSFER", "INTERNAL_TRANSFER", "EXTERNAL_TRANSFER", "TRANSFER_DESTINATION_UNCONFIRMED",
-  "CASH_MOVEMENT", "UNCLASSIFIED_MOVEMENT",
+  "CASH_MOVEMENT", "UNCLASSIFIED_MOVEMENT", "UNTRACKED_LOAN_PAYMENT",
 ]);
 
 /** Natures established as between the user's own accounts. */
@@ -156,6 +166,7 @@ export const NATURE_DESCRIPTION: Record<TransactionNature, string> = {
   EXTERNAL_TRANSFER:          "Sent to or received from an account that is not yours — purpose not stated",
   TRANSFER_DESTINATION_UNCONFIRMED: "Moved to or from a bank account not connected here — destination not yet confirmed; not spending, not a debt payment",
   CASH_MOVEMENT:              "Cash withdrawal or deposit",
+  UNTRACKED_LOAN_PAYMENT:     `Payment to a loan that is not connected here — ${UNSPLIT_LOAN_PAYMENT_LABEL}; counted in cash out, not as paydown of a tracked debt, not spending`,
   UNCLASSIFIED_MOVEMENT:      "Money movement whose purpose is not established — do not call it a debt payment, spending or income",
   SPENDING:                   "Spending",
   INCOME:                     "Income",
@@ -228,8 +239,10 @@ function make(
   const amount = e?.amount ?? 0;
   const ownedOtherSide = e?.hasOwnedCounterparty === true || accountTier(e?.counterpartyAccountType) !== "unknown";
   const isPayment = nature === "LIABILITY_PAYMENT";
+  // Mortgage F10 — an untracked-loan payment is still filtered/narrated as a debt
+  // payment; it just reduces no TRACKED debt (reducesDebt below stays false).
   const flow = stored != null && MOVEMENT_FLOWS.has(stored)
-    ? (isPayment ? "DEBT_PAYMENT" : "TRANSFER")
+    ? (isPayment || nature === "UNTRACKED_LOAN_PAYMENT" ? "DEBT_PAYMENT" : "TRANSFER")
     : stored;
   return {
     nature, basis, flow,
@@ -310,6 +323,11 @@ export function resolveTransactionNature(e: NatureEvidence): ResolvedTransaction
     if (isDebtPaymentAttested({ counterpartyTier: cpTier, transferMaturity: e.transferMaturity ?? null })) {
       return make("LIABILITY_PAYMENT", "TRANSFER_EVIDENCE", stored, "CASH", e);
     }
+    // Mortgage F10 — the authority named an installment loan that is not
+    // connected. Same predicate as liquidity.ts (no owned counterparty, outflow).
+    if (e.transferMaturity === "UNTRACKED_LOAN_PAYMENT" && e.hasOwnedCounterparty !== true && e.amount < 0) {
+      return make("UNTRACKED_LOAN_PAYMENT", "TRANSFER_EVIDENCE", stored);
+    }
   } else {
     // A TRANSFER-typed cash leg out of a liquid account into an owned liability IS a
     // payment — the money layer counts it (classifyTransfer → DEBT_PAYMENT).
@@ -344,6 +362,8 @@ export function categoryForNature<C extends string | null | undefined>(
   if (category !== "Payment") return category;
   if (e.categorySource && USER_CATEGORY_SOURCES.has(e.categorySource)) return category;
   return e.flowType === "DEBT_PAYMENT" && !resolved.reducesDebt && resolved.nature !== "LIABILITY_PAYMENT"
+      // Mortgage F10 — an untracked-loan payment keeps its `Payment` label.
+      && resolved.nature !== "UNTRACKED_LOAN_PAYMENT"
     ? "Transfer"
     : category;
 }

@@ -47,6 +47,8 @@
  */
 
 import { liabilityInflowIsCustomerPayment } from "@/lib/transactions/liability-inflow";
+// Mortgage F10 — the ONE list of provider details that name an installment-loan payee.
+import { isInstallmentLoanPaymentDetail, UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 
 /** The classification ladder. Rank rises with evidence; it never falls. */
 export type TransferMaturity =
@@ -112,7 +114,29 @@ export type TransferMaturity =
   | "EXTERNAL_VENUE_TRANSFER"
   /** The provider attests a counterparty class that is not an owned account,
    *  without naming a rail or venue. The honest floor of the external branch. */
-  | "EXTERNAL_UNKNOWN_TRANSFER";
+  | "EXTERNAL_UNKNOWN_TRANSFER"
+  // ── Mortgage F10 (S2 ruling) — a payment to a loan that is NOT connected ───
+  //
+  // A depository OUTFLOW whose provider DETAILED category names an installment-
+  // loan payee (mortgage / student / auto / personal — lib/debt/liability-kind.ts
+  // INSTALLMENT_LOAN_PAYMENT_DETAILS), with NO owned account qualifying as the
+  // destination and no cross-owner candidate. Before F10 such a row matured to
+  // UNRESOLVED_TRANSFER, the debt-payment attestation refused it, and the
+  // liquidity axis left it UNRESOLVED: the payment was in neither spending, nor
+  // debt paydown, nor Cash Out — it vanished.
+  //
+  // The provider's named loan payee IS positive evidence of the destination's
+  // KIND (a liability that is not connected here). It is NOT an attestation of a
+  // TRACKED liability, so it never enters the debt-payment authority's counted
+  // set (isDebtPaymentAttested is unchanged) and never counts as paydown. The
+  // liquidity axis counts it in Cash Out under its own reason
+  // (UNTRACKED_LOAN_PAYMENT), labelled as an unsplit loan payment.
+  //
+  // DERIVED, never stamped, like the external leaves: when the loan is later
+  // connected and its receiving leg pairs, the evidence becomes ACCOUNT_CERTAIN
+  // and the row matures to DEBT_PAYMENT — counted once, as a tracked payment.
+  /** A payment to an installment loan that is not connected here (unsplit). */
+  | "UNTRACKED_LOAN_PAYMENT";
 
 /** The external leaves, in one place, so no consumer re-lists them. */
 export const EXTERNAL_MATURITIES: ReadonlySet<TransferMaturity> = new Set<TransferMaturity>([
@@ -127,6 +151,8 @@ export const EXTERNAL_MATURITIES: ReadonlySet<TransferMaturity> = new Set<Transf
  *  63 cash rows and 8 issuer credits are finished facts, not open questions. */
 export const TERMINAL_MATURITIES: ReadonlySet<TransferMaturity> = new Set<TransferMaturity>([
   "CASH_MOVEMENT", "ISSUER_CREDIT", ...EXTERNAL_MATURITIES,
+  // Mortgage F10 — "this paid a loan that is not connected" is a complete answer.
+  "UNTRACKED_LOAN_PAYMENT",
 ]);
 
 /** Whether the ladder still owes an answer for this row. The ONE predicate the
@@ -1126,7 +1152,13 @@ export function maturityForEvidence(
     case "NO_DESTINATION_EVIDENCE":
       // Phase 4 — nothing owned qualified. That is where an EXTERNAL movement
       // lives, but only where the provider attested something about it.
-      return own ? externalLeafFor(own) : "UNRESOLVED_TRANSFER";
+      if (!own) return "UNRESOLVED_TRANSFER";
+      // Mortgage F10 — the provider named an installment-loan payee and no owned
+      // account (of this owner, or of another) qualifies: an untracked loan.
+      if (e.unresolvedReason !== "CROSS_OWNER_BOUNDARY" && isUntrackedLoanPayment(own)) {
+        return "UNTRACKED_LOAN_PAYMENT";
+      }
+      return externalLeafFor(own);
   }
 }
 
@@ -1165,6 +1197,22 @@ function externalLeafFor(own: OwnSideContext): TransferMaturity {
   return "UNRESOLVED_TRANSFER";
 }
 
+/** Own-account types that are depository — the only cash legs F10 names. Same
+ *  set as the write-time correction's DEPOSITORY_ACCOUNT_TYPES. */
+const F10_DEPOSITORY_TYPES: ReadonlySet<string> = new Set(["checking", "savings"]);
+
+/**
+ * Mortgage F10 — does the row's OWN evidence say it paid an installment loan?
+ * Money OUT of a depository account whose provider detailed category names an
+ * installment-loan payee. Called only once no owned destination qualified.
+ * Reads no descriptor, merchant or institution.
+ */
+export function isUntrackedLoanPayment(own: Pick<OwnSideContext, "accountType" | "amount" | "pfcDetailed">): boolean {
+  return F10_DEPOSITORY_TYPES.has(own.accountType)
+    && own.amount < 0
+    && isInstallmentLoanPaymentDetail(own.pfcDetailed);
+}
+
 /** Provider counterparty classes that cannot be one of the user's own accounts. */
 const EXTERNAL_COUNTERPARTY_CLASSES: ReadonlySet<string> = new Set([
   "MERCHANT", "MARKETPLACE", "INCOME_SOURCE", "PAYMENT_APP", "PAYMENT_TERMINAL",
@@ -1199,6 +1247,14 @@ export interface OwnSideContext {
   venueClass: string | null;
   /** Provider counterparty class (Plaid `counterparties[].type`), when attested. */
   counterpartyClass: string | null;
+  /**
+   * Mortgage F10 — the provider's DETAILED category (Plaid `pfcDetailed`).
+   * REQUIRED and nullable for the Phase 4 reason: a caller that omitted it would
+   * silently send every untracked-loan payment back to UNRESOLVED_TRANSFER.
+   * Read ONLY when no owned leg qualified, and only to ask whether it names an
+   * installment-loan payee (isUntrackedLoanPayment).
+   */
+  pfcDetailed: string | null;
 }
 
 export interface MaturationInput {
@@ -1246,6 +1302,8 @@ export interface MaturationInput {
   ownVenueClass?: string | null;
   /** Phase 4 — the row's own attested provider counterparty class. */
   ownCounterpartyClass?: string | null;
+  /** Mortgage F10 — the row's own provider DETAILED category. */
+  ownPfcDetailed?: string | null;
 }
 
 export interface MaturationResult {
@@ -1290,6 +1348,9 @@ export interface MaturationResult {
  */
 export function impliedFlowType(m: TransferMaturity): "TRANSFER" | "DEBT_PAYMENT" | null {
   if (m === "DEBT_PAYMENT") return "DEBT_PAYMENT";
+  // Mortgage F10 — a payment to an unconnected loan is still a debt payment;
+  // what it lacks is a TRACKED destination, which attestation (not this) decides.
+  if (m === "UNTRACKED_LOAN_PAYMENT") return "DEBT_PAYMENT";
   if (m === "ISSUER_CREDIT" || m === "UNRESOLVED_LIABILITY_INFLOW") return null;
   // Phase 4 — the external leaves imply TRANSFER, unchanged from what these rows
   // already say. An external movement IS a transfer; only its destination is
@@ -1323,6 +1384,7 @@ export function matureClassification(input: MaturationInput): MaturationResult {
             railType: input.ownRailType ?? null,
             venueClass: input.ownVenueClass ?? null,
             counterpartyClass: input.ownCounterpartyClass ?? null,
+            pfcDetailed: input.ownPfcDetailed ?? null,
           }
         : undefined,
     );
@@ -1480,6 +1542,7 @@ const LEAF_REASON: Record<TransferMaturity, string> = {
   EXTERNAL_DEPOSITORY_TRANSFER: "Moved to a bank account that is not connected here — destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "Reached a brokerage or exchange that is not connected here",
   EXTERNAL_UNKNOWN_TRANSFER:    "The provider attests a counterparty that cannot be one of your accounts",
+  UNTRACKED_LOAN_PAYMENT:       `The provider names an installment-loan payee and no connected account qualifies, so this is a ${UNSPLIT_LOAN_PAYMENT_LABEL} to a loan that is not connected here`,
 };
 
 /**
@@ -1503,6 +1566,7 @@ export const MATURITY_LABEL: Record<TransferMaturity, string> = {
   EXTERNAL_DEPOSITORY_TRANSFER: "Destination not yet confirmed",
   EXTERNAL_VENUE_TRANSFER:      "External investment transfer",
   EXTERNAL_UNKNOWN_TRANSFER:    "External transfer",
+  UNTRACKED_LOAN_PAYMENT:       "Untracked loan payment",
 };
 
 /** Presentation wording for a named limitation. One place. */

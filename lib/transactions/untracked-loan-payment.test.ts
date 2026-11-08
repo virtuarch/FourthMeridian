@@ -1,0 +1,214 @@
+/**
+ * lib/transactions/untracked-loan-payment.test.ts
+ *
+ * Mortgage F10 (S2 ruling) — a payment to an installment loan that is NOT
+ * connected stays VISIBLE as unsplit debt service: counted once in Cash Out,
+ * labelled "loan payment (principal + interest + escrow, not split)", never a
+ * tracked debt payment, never paydown, never spending. Connected loans and
+ * card payments keep the existing pairing paths.
+ *
+ * End to end over the pure authorities: transfer matcher → maturity →
+ * liquidity → DayFacts / breakdown → debt service → economic fold → resolved
+ * nature. Fabricated fixtures only. Pure: no DB, no network, no clock.
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/transactions/untracked-loan-payment.test.ts
+ */
+
+import { matchTransferCandidate, type RelationshipTransaction } from "@/lib/transactions/RelationshipResolver";
+import { tierResolver, classifyLiquidity, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { aggregateDayFacts } from "@/lib/transactions/cash-flow-projection";
+import { groupLiquidityByReason, LIQUIDITY_REASON_LABEL, LIQUIDITY_REASON_SIDE } from "@/lib/transactions/liquidity-breakdown";
+import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
+import { computeDebtService, netAfterDebtPaydown } from "@/lib/transactions/debt-service";
+import { economicTotals } from "@/lib/transactions/cash-flow";
+import { resolveTransactionNature, categoryForNature, NATURE_DESCRIPTION } from "@/lib/transactions/resolved-nature";
+import { describeRowNature } from "@/lib/transactions/flow-presentation";
+import {
+  LIABILITY_PAYMENT_DETAILS, decideTransferDebtPaymentCorrection,
+} from "@/lib/transactions/transfer-debt-payment-correction";
+import {
+  INSTALLMENT_LOAN_PAYMENT_DETAILS, UNSPLIT_LOAN_PAYMENT_LABEL, isInstallmentLoanPaymentDetail,
+} from "@/lib/debt/liability-kind";
+import { impliedFlowType, MATURITY_LABEL, TERMINAL_MATURITIES, isUnresolvedMaturity } from "@/lib/transactions/transfer-maturation";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail?: unknown): void {
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ""}`); }
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+const ACCOUNTS = new Map<string, string>([
+  ["chk", "checking"], ["sav", "savings"], ["mtg", "debt"], ["card", "debt"], ["stu", "debt"],
+]);
+const MATCH_CTX = { accountTypeById: ACCOUNTS };
+
+/** A matcher row (the transfer authority's input shape). */
+function rel(o: Partial<RelationshipTransaction> & { id: string; financialAccountId: string; amount: number }): RelationshipTransaction {
+  const date = new Date("2026-05-10");
+  return {
+    plaidTransactionId: null, pendingTransactionRef: null, date, merchant: "Servicer", pending: false,
+    deletedAt: null, ownerUserId: "u1", settlementState: "POSTED", pfcDetailed: null, pfcPrimary: null,
+    persistedCounterpartyAccountId: null, category: "Payment", counterpartyClass: null, institutionId: null,
+    descriptor: null, description: null, transactionEventId: null, flowType: "DEBT_PAYMENT", currency: "USD",
+    economicDate: date,
+    ...o,
+  } as RelationshipTransaction;
+}
+
+/** The read-path DTO a cash-flow surface folds, carrying the authority's verdict. */
+function dto(id: string, own: string, amount: number, flowType: string, maturity: string | null, cp: string | null = null): LiquidityTx {
+  return {
+    id, accountId: own, financialAccountId: own, counterpartyAccountId: cp, amount, flowType,
+    flowDirection: amount < 0 ? "INTERNAL" : "INFLOW",
+    incomeClass: flowType === "INCOME" ? "EARNED_INCOME" : null, incomeSubtype: null,
+    transferMaturity: maturity, currency: "USD", date: "2026-05-10", merchant: "m",
+    category: flowType === "INCOME" ? "Income" : flowType === "DEBT_PAYMENT" ? "Payment" : "Other", pending: false,
+  } as unknown as LiquidityTx;
+}
+const abs = (r: LiquidityTx) => Math.abs(r.amount);
+const ctxChkOnly = tierResolver([{ id: "chk", type: "checking" }]);
+const ctxAll = tierResolver([...ACCOUNTS].map(([id, type]) => ({ id, type })));
+
+/** The whole untracked-loan story for one detailed category. */
+function untrackedCase(label: string, pfcDetailed: string): void {
+  const leg = rel({ id: "pay", financialAccountId: "chk", amount: -2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed });
+  const m = matchTransferCandidate(leg, [], MATCH_CTX);
+  check(`${label}: maturity UNTRACKED_LOAN_PAYMENT, no counterparty, terminal (not unresolved)`,
+    m.maturity === "UNTRACKED_LOAN_PAYMENT" && m.counterpartyAccountId === null
+      && TERMINAL_MATURITIES.has("UNTRACKED_LOAN_PAYMENT") && !isUnresolvedMaturity(m.maturity) && m.unresolvedReason === null, m);
+
+  const rows = [dto("inc", "chk", 8_000, "INCOME", null), dto("pay", "chk", -2_500, "DEBT_PAYMENT", m.maturity)];
+  const facts = aggregateDayFacts(rows, ctxChkOnly);
+  const breakdown = groupLiquidityByReason(facts);
+  const line = breakdown.cashOut.find((l) => l.reason === "UNTRACKED_LOAN_PAYMENT");
+  check(`${label}: Cash Out = 2,500 exactly once, under the unsplit-loan label`,
+    facts.cashOut === 2_500 && breakdown.cashOut.length === 1 && line?.amount === 2_500
+      && line.label === `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}` && facts.unresolved === 0, { facts, breakdown });
+
+  const sel = selectDebtPaymentCashLegs(rows, ctxChkOnly);
+  const svc = computeDebtService(rows, ctxChkOnly, abs);
+  check(`${label}: not a tracked debt payment and not paydown (payments 0, netPaydown 0)`,
+    sel.counted.length === 0 && svc.payments === 0 && svc.netPaydown === 0, svc);
+  check(`${label}: reported as untracked loan debt service (2,500)`, svc.untrackedLoanPayments === 2_500, svc);
+
+  const econ = economicTotals(rows as never);
+  check(`${label}: not in discretionary/economic spending (spend 0)`, econ.spend === 0, econ);
+  check(`${label}: after-debt net = 8,000 − 2,500 = 5,500 (never silently surplus)`,
+    netAfterDebtPaydown(econ.net, svc) === 5_500, { net: econ.net, svc });
+
+  const nature = resolveTransactionNature({
+    flowType: "DEBT_PAYMENT", amount: -2_500, flowAuthority: "CLASSIFIER", transferMaturity: m.maturity,
+    ownAccountType: "checking", hasOwnedCounterparty: false,
+  });
+  check(`${label}: resolved nature UNTRACKED_LOAN_PAYMENT, narrated as a debt payment, reducesDebt false`,
+    nature.nature === "UNTRACKED_LOAN_PAYMENT" && nature.flow === "DEBT_PAYMENT" && nature.reducesDebt === false
+      && NATURE_DESCRIPTION.UNTRACKED_LOAN_PAYMENT.includes(UNSPLIT_LOAN_PAYMENT_LABEL), nature);
+  check(`${label}: category stays 'Payment' (never relabelled Transfer)`,
+    categoryForNature("Payment", { flowType: "DEBT_PAYMENT", amount: -2_500, transferMaturity: m.maturity, hasOwnedCounterparty: false }) === "Payment");
+  const row = describeRowNature({ flowType: "DEBT_PAYMENT", transferMaturity: m.maturity, amount: -2_500 });
+  check(`${label}: row reads as a debt payment, not 'Transfer out'`, row.nature !== "TRANSFER_OUT", row);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-1. Unconnected MORTGAGE payment from checking");
+untrackedCase("mortgage", "LOAN_PAYMENTS_MORTGAGE_PAYMENT");
+
+console.log("F10-2. Unconnected STUDENT LOAN payment behaves the same");
+untrackedCase("student loan", "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT");
+
+console.log("F10-2b. Unconnected AUTO and PERSONAL loan payments behave the same");
+untrackedCase("auto loan", "LOAN_PAYMENTS_CAR_PAYMENT");
+untrackedCase("personal loan", "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT");
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-3. CONNECTED mortgage — the pairing path keeps precedence (no double count)");
+{
+  const cash = rel({ id: "pay", financialAccountId: "chk", amount: -2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" });
+  const recv = rel({ id: "recv", financialAccountId: "mtg", amount: 2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" });
+  const m = matchTransferCandidate(cash, [recv], MATCH_CTX);
+  check("connected: matures DEBT_PAYMENT to the mortgage account", m.maturity === "DEBT_PAYMENT" && m.counterpartyAccountId === "mtg", m);
+  const rows = [
+    dto("inc", "chk", 8_000, "INCOME", null),
+    dto("pay", "chk", -2_500, "DEBT_PAYMENT", m.maturity, m.counterpartyAccountId),
+    dto("recv", "mtg", 2_500, "DEBT_PAYMENT", null, "chk"),
+  ];
+  const facts = aggregateDayFacts(rows, ctxAll);
+  const svc = computeDebtService(rows, ctxAll, abs);
+  check("connected: Cash Out 2,500 once, as DEBT_PAYMENT (no untracked line)",
+    facts.cashOut === 2_500 && facts.byReason.DEBT_PAYMENT === 2_500 && !facts.byReason.UNTRACKED_LOAN_PAYMENT, facts);
+  check("connected: payments = netPaydown = 2,500, untrackedLoanPayments = 0 (unchanged H2a)",
+    svc.payments === 2_500 && svc.netPaydown === 2_500 && svc.untrackedLoanPayments === 0, svc);
+  check("connected: after-debt net = 5,500 — the payment is subtracted once, not twice",
+    netAfterDebtPaydown(economicTotals(rows as never).net, svc) === 5_500);
+  // A stale DTO that still says UNTRACKED but now carries a counterparty is NOT untracked.
+  const stale = dto("pay", "chk", -2_500, "DEBT_PAYMENT", "UNTRACKED_LOAN_PAYMENT", "sav");
+  check("guard: an UNTRACKED maturity beside an owned counterparty is never the untracked reason",
+    classifyLiquidity(stale, ctxAll).reason !== "UNTRACKED_LOAN_PAYMENT", classifyLiquidity(stale, ctxAll));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-4. Card payments are unchanged");
+{
+  const cash = rel({ id: "cc", financialAccountId: "chk", amount: -500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" });
+  const recv = rel({ id: "ccr", financialAccountId: "card", amount: 500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" });
+  const m = matchTransferCandidate(cash, [recv], MATCH_CTX);
+  const rows = [dto("cc", "chk", -500, "DEBT_PAYMENT", m.maturity, m.counterpartyAccountId), dto("ccr", "card", 500, "DEBT_PAYMENT", null, "chk")];
+  const svc = computeDebtService(rows, ctxAll, abs);
+  check("connected card: DEBT_PAYMENT to the card; payments 500, untracked 0",
+    m.maturity === "DEBT_PAYMENT" && m.counterpartyAccountId === "card" && svc.payments === 500 && svc.untrackedLoanPayments === 0, { m, svc });
+
+  // Out of F10's scope (a card is not a loan): an UNCONNECTED card payment keeps
+  // today's answer — unresolved, never relabelled as an unsplit loan payment.
+  const lone = matchTransferCandidate(cash, [], MATCH_CTX);
+  check("unconnected card payment: still UNRESOLVED_TRANSFER (not an untracked loan)", lone.maturity === "UNRESOLVED_TRANSFER", lone);
+  const other = matchTransferCandidate(rel({ id: "o", financialAccountId: "chk", amount: -300, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_OTHER_PAYMENT" }), [], MATCH_CTX);
+  check("LOAN_PAYMENTS_OTHER_PAYMENT (names no loan): still UNRESOLVED_TRANSFER", other.maturity === "UNRESOLVED_TRANSFER", other);
+  const csv = matchTransferCandidate(rel({ id: "csv", financialAccountId: "chk", amount: -300, pfcPrimary: null, pfcDetailed: null }), [], MATCH_CTX);
+  check("Payment category with no provider loan detail: still UNRESOLVED_TRANSFER", csv.maturity === "UNRESOLVED_TRANSFER", csv);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-5. Boundaries");
+{
+  // Money INTO checking tagged as a mortgage payment is not a payment we made.
+  const inflow = matchTransferCandidate(rel({ id: "in", financialAccountId: "chk", amount: 2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" }), [], MATCH_CTX);
+  check("depository INFLOW with a mortgage detail is not an untracked loan payment", inflow.maturity !== "UNTRACKED_LOAN_PAYMENT", inflow);
+  // A matching leg on ANOTHER owner's loan: a named limitation, never claimed untracked.
+  const cash = rel({ id: "x", financialAccountId: "chk", amount: -2_500, pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" });
+  const theirs = rel({ id: "y", financialAccountId: "mtg2", amount: 2_500, ownerUserId: "u2", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_MORTGAGE_PAYMENT" });
+  const xo = matchTransferCandidate(cash, [theirs], { accountTypeById: new Map([...ACCOUNTS, ["mtg2", "debt"]]) });
+  check("cross-owner candidate: stays UNRESOLVED_TRANSFER / CROSS_OWNER_BOUNDARY",
+    xo.maturity === "UNRESOLVED_TRANSFER" && xo.unresolvedReason === "CROSS_OWNER_BOUNDARY", xo);
+
+  check("leaf implies DEBT_PAYMENT (a debt payment, just not a tracked one)", impliedFlowType("UNTRACKED_LOAN_PAYMENT") === "DEBT_PAYMENT");
+  check("presentation label is 'Untracked loan payment'", MATURITY_LABEL.UNTRACKED_LOAN_PAYMENT === "Untracked loan payment");
+  check("liquidity side of UNTRACKED_LOAN_PAYMENT is 'out'", LIQUIDITY_REASON_SIDE.UNTRACKED_LOAN_PAYMENT === "out");
+  check("liquidity label reuses the ONE unsplit constant",
+    LIQUIDITY_REASON_LABEL.UNTRACKED_LOAN_PAYMENT === `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}`);
+  check("isInstallmentLoanPaymentDetail is case-insensitive and refuses card/other",
+    isInstallmentLoanPaymentDetail("loan_payments_mortgage_payment") && !isInstallmentLoanPaymentDetail("LOAN_PAYMENTS_CREDIT_CARD_PAYMENT")
+      && !isInstallmentLoanPaymentDetail("LOAN_PAYMENTS_OTHER_PAYMENT") && !isInstallmentLoanPaymentDetail(null));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("F10-6. Agreement with the write-time transfer correction");
+{
+  check("INSTALLMENT_LOAN_PAYMENT_DETAILS ⊂ LIABILITY_PAYMENT_DETAILS (the correction KEEPs every F10 row)",
+    [...INSTALLMENT_LOAN_PAYMENT_DETAILS].every((d) => LIABILITY_PAYMENT_DETAILS.has(d)));
+  for (const d of INSTALLMENT_LOAN_PAYMENT_DETAILS) {
+    const decision = decideTransferDebtPaymentCorrection({
+      ownAccountType: "checking", flowType: "DEBT_PAYMENT", flowAuthority: "CLASSIFIER", rowCategorySource: null,
+      category: "Payment", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: d, classificationReason: "PLAID_PFC_PRIMARY",
+      classificationConfidence: 0.8, deleted: false, supersededByPosted: false, persistedCounterpartyAccountType: null,
+      assessment: { evidenceLevel: "NO_DESTINATION_EVIDENCE", maturity: "UNTRACKED_LOAN_PAYMENT", unresolvedReason: null },
+    });
+    check(`correction keeps an unpaired ${d} leg as DEBT_PAYMENT (never rewritten to TRANSFER)`,
+      decision.action === "KEEP" && "code" in decision && decision.code === "LIABILITY_EVIDENCE", decision);
+  }
+}
+
+if (failures > 0) {
+  console.error(`\n${failures} check(s) failed`);
+  process.exit(1);
+}
+console.log("\nAll Mortgage F10 untracked-loan-payment checks passed.");

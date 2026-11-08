@@ -122,3 +122,44 @@ export function revolvingCreditLimit(a: LiabilityKindInput): number | null {
   if (isInstallmentLoan(a)) return null;
   return a.creditLimit ?? null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mortgage F10 (S2 ruling) — payments to an installment loan that is NOT connected
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Plaid personal_finance_category DETAILED codes that name an INSTALLMENT-loan
+ * payee: the provider positively says what kind of loan was paid. A strict
+ * subset of the transfer authority's LIABILITY_PAYMENT_DETAILS
+ * (lib/transactions/transfer-debt-payment-correction.ts — the unpaired legs the
+ * write-time correction KEEPS as DEBT_PAYMENT), pinned by test, so the read-time
+ * F10 leaf can never fire on a row the correction would rewrite to TRANSFER.
+ *
+ * Deliberately absent:
+ *   • LOAN_PAYMENTS_CREDIT_CARD_PAYMENT — a card is revolving, not a loan whose
+ *     payment carries principal + interest + escrow; and card-payment tags are
+ *     the family Plaid mislabels by brand (CCPAY-2B).
+ *   • LOAN_PAYMENTS_OTHER_PAYMENT — names no liability (the issuer-pull tag the
+ *     transfer authority rewrites to TRANSFER).
+ */
+export const INSTALLMENT_LOAN_PAYMENT_DETAILS: ReadonlySet<string> = new Set([
+  "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+  "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
+  "LOAN_PAYMENTS_CAR_PAYMENT",
+  "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+]);
+
+/** True when the provider's detailed category names an installment-loan payee. */
+export function isInstallmentLoanPaymentDetail(pfcDetailed: string | null | undefined): boolean {
+  const d = pfcDetailed?.trim().toUpperCase();
+  return d ? INSTALLMENT_LOAN_PAYMENT_DETAILS.has(d) : false;
+}
+
+/**
+ * The F6 INTERIM label for a loan payment whose principal / interest / escrow
+ * split is not known. ONE constant: every surface that names such a payment
+ * (Mortgage F10's untracked-loan Cash Out line, the transfer authority's leaf
+ * wording, the resolved-nature description) builds its words from this, so the
+ * F6 owner decision replaces one string.
+ */
+export const UNSPLIT_LOAN_PAYMENT_LABEL = "loan payment (principal + interest + escrow, not split)";

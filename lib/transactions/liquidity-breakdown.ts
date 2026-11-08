@@ -16,6 +16,7 @@
  */
 
 import { type LiquidityReason } from "@/lib/transactions/liquidity";
+import { UNSPLIT_LOAN_PAYMENT_LABEL } from "@/lib/debt/liability-kind";
 import type { DayFacts } from "@/lib/transactions/cash-flow-projection";
 
 /** User-facing labels — liquidity terminology, not economic (see doctrine). */
@@ -37,6 +38,9 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   // the creditCardPurchases context figure, and as cash only when the card is paid.
   REAL_COST:         "Direct cash spending",
   DEBT_PAYMENT:      "Debt payments",
+  // Mortgage F10 — a payment to a loan that is not connected: visible in Cash Out
+  // as debt service, never as paydown of a tracked debt. F6 interim wording.
+  UNTRACKED_LOAN_PAYMENT: `Untracked ${UNSPLIT_LOAN_PAYMENT_LABEL}`,
   ASSET_DEPLOYMENT:  "Asset deployment",
   // CF-2 — evidence-based investment venue movements (no proven sale).
   INVESTMENT_INFLOW:  "From investments",
@@ -71,6 +75,7 @@ export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "cont
   PAYMENT_APP_INFLOW:  "in",
   REAL_COST:           "out",
   DEBT_PAYMENT:        "out",
+  UNTRACKED_LOAN_PAYMENT: "out",
   ASSET_DEPLOYMENT:    "out",
   INVESTMENT_OUTFLOW:  "out",
   PAYMENT_APP_OUTFLOW: "out",
