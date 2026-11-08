@@ -12,6 +12,13 @@
  * Filters, page and the open incident live in the URL (incidents-url.ts, the
  * AI-budget drawer idiom), so a refresh reopens the same list and drawer.
  *
+ * INCIDENT DETAIL v1 — the drawer leads with a SUMMARY (derived status pill,
+ * impact line, timestamps, ongoing vs historical), then the primary guidance /
+ * action (customer reconnect is guidance text, never a Resync), then DIAGNOSIS
+ * (plain English, confirmed facts vs a labelled probable cause, the verified
+ * code, attempts + recurrence summaries); attempts, timeline, recurrence
+ * history and technical details sit behind disclosures.
+ *
  * Every row opens the detail drawer: verdict + why, the append-only timeline
  * (rendered in stored order, never rewritten), the evidence digest, affected
  * subjects, related / recurring incidents, archive state — and ONLY the
@@ -41,8 +48,10 @@ import type { IncidentNavigationLinkDTO } from "@/lib/platform/incidents/related
 import {
   incidentDetailApiPath, incidentsApiPath, incidentsUrlUpdate, readIncidentsUrl, statusOfView, type IncidentsUrlState,
 } from "./incidents-url";
+import { explainProviderError } from "@/lib/platform/incidents/explanations";
 import {
   FRESHNESS_WORD, LINK_WORD, RECOVERY_LABEL, SEVERITY_WORD, STATE_TONE, STATE_WORD, STATUS_TITLE,
+  DISPLAY_STATUS_TONE, DISPLAY_STATUS_WORD, attemptText, attemptsLine, impactLine, ongoingWord, primaryGuidance, providerCodeLine, recurrenceLine,
   affectedLine, archiveLine, closureText, codeText, incidentLine, incidentTotalText, incidentTitle, pageCount, populationLine, timelineText, whenText, whyLines,
   AUDIT_REASON_OPTIONS, EMPTY_LIFECYCLE_FORM, LIFECYCLE_CONFIRM, LIFECYCLE_LABEL, OPERATOR_NOTE_MAX, RESOLUTION_REASON_OPTIONS,
   lifecycleBody, lifecycleFormValid, lifecyclePath, type LifecycleForm,
@@ -254,7 +263,43 @@ export function IncidentRelatedNavigation({ links, viewId, onOpenInPlace }: {
   );
 }
 
-export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle, viewId, onOpenInPlace }: {
+/**
+ * EXTENSION POINTS (Incident detail v1). Later PRs fill these — AI assessment
+ * (section 3), customer communication (section 5), lifecycle actions (section
+ * 6). Each renders in its fixed place ONLY when passed; nothing passes them
+ * yet, so nothing renders. The existing Acknowledge / Resolve controls stay
+ * until `lifecycle` replaces them.
+ */
+export interface IncidentDetailSlots {
+  aiAssessment?: ReactNode;
+  customerMessage?: ReactNode;
+  lifecycle?: ReactNode;
+}
+
+/** Progressive disclosure: closed by default; the content is in the DOM (and in tests). */
+function Disclosure({ title, hint, children, attr }: { title: string; hint?: string; children: ReactNode; attr: string }) {
+  return (
+    <details className="group min-w-0 border-t border-[var(--border-hairline)] pt-3" data-disclosure={attr}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-xs text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8 [&::-webkit-details-marker]:hidden">
+        <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-faint)] transition-transform group-open:rotate-90" />
+        <span className={H}>{title}</span>
+        {hint && <span className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">{hint}</span>}
+      </summary>
+      <div className="flex min-w-0 flex-col gap-2 pb-1 pt-2">{children}</div>
+    </details>
+  );
+}
+
+function Stamp({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] text-[var(--text-faint)]">{label}</dt>
+      <dd className="truncate text-xs tabular-nums text-[var(--text-secondary)]">{value}</dd>
+    </div>
+  );
+}
+
+export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle, viewId, onOpenInPlace, slots }: {
   d: IncidentDetailDTO;
   canWrite: boolean;
   onSelect: (id: string) => void;
@@ -265,21 +310,74 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
   onRecover: (a: RecoveryActionDTO) => void;
   /** PB-1 S6 — opens the acknowledge / resolve confirmation (Ops tier only; the server decides). */
   onLifecycle?: (a: LifecycleActionDTO) => void;
+  slots?: IncidentDetailSlots;
 }) {
   const r = d.incident;
+  const s = d.summary;
+  const dx = d.diagnosis;
+  const ex = explainProviderError(dx.providerErrorCode);
+  const guidance = primaryGuidance(d, ex.customerAction);
   const closure = closureText(r);
   const lifecycle = d.lifecycleActions ?? [];
-  return (
-    <div className="flex min-w-0 flex-col gap-5" data-incident-detail={r.id}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="font-medium" style={{ color: TONE_COLOR[STATE_TONE[r.state]] }}>{STATE_WORD[r.state]}</span>
-        <span className="text-[var(--text-secondary)]">{SEVERITY_WORD[r.severity]}{r.effectiveSeverity !== r.severity ? ` (ranked ${SEVERITY_WORD[r.effectiveSeverity].toLowerCase()})` : ""}</span>
-        <span className="text-[var(--text-muted)]">{FRESHNESS_WORD[r.freshness]}</span>
-        {closure && <span className="text-[var(--text-muted)]">{closure}</span>}
-      </div>
-      <p className="text-[11px] text-[var(--text-muted)]">{incidentLine(r)}{r.resolvedAt ? ` · resolved ${whenText(r.resolvedAt)}` : ""}</p>
+  const codeLine = providerCodeLine(dx);
+  const tone = DISPLAY_STATUS_TONE[s.displayStatus];
+  // An ACTIVE connection whose code once asked the customer to act: say so, never re-ask.
+  const healedNote = dx.providerErrorCode && ex.customerActionRequired && !s.customerActionRequired && s.displayStatus !== "resolved"
+    ? "The connection is healthy again; the next completed sync confirms recovery."
+    : null;
 
-      {lifecycle.length > 0 && onLifecycle && (
+  const recoveryControls = d.recovery.length > 0 && (
+    canWrite ? (
+      <div className="flex flex-wrap gap-2" data-incident-recovery>
+        {d.recovery.map((a) => (
+          <button key={a.kind} type="button" className={`${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onRecover(a)} aria-haspopup="dialog" data-recovery-action={a.kind}>{RECOVERY_LABEL[a.kind]}</button>
+        ))}
+      </div>
+    ) : (
+      <p className="text-[11px] text-[var(--text-muted)]">{`${d.recovery.map((a) => RECOVERY_LABEL[a.kind]).join(" · ")} — requires write access.`}</p>
+    )
+  );
+
+  return (
+    <div className="flex min-w-0 flex-col gap-5" data-incident-detail={r.id} data-display-status={s.displayStatus}>
+      {/* 1 · SUMMARY — what happened, what it affects, since when. */}
+      <section className="flex min-w-0 flex-col gap-3" data-incident-summary>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
+          <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-medium" style={{ color: TONE_COLOR[tone], borderColor: TONE_COLOR[tone] }} data-status-pill>
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: TONE_COLOR[tone] }} />
+            {DISPLAY_STATUS_WORD[s.displayStatus]}
+          </span>
+          <span className="text-[var(--text-secondary)]">{SEVERITY_WORD[r.severity]}{r.effectiveSeverity !== r.severity ? ` (ranked ${SEVERITY_WORD[r.effectiveSeverity].toLowerCase()})` : ""}</span>
+          <span className="text-[var(--text-muted)]" data-incident-ongoing={s.ongoing ? "ongoing" : "historical"}>{ongoingWord(s, r.state)}</span>
+          {closure && <span className="text-[var(--text-muted)]">{closure}</span>}
+        </div>
+        <p className="break-words text-sm text-[var(--text-primary)]" data-incident-impact>{impactLine(d)}</p>
+        <dl className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+          <Stamp label="First detected" value={whenText(s.firstDetectedAt)} />
+          <Stamp label="Last observed" value={whenText(s.lastObservedAt)} />
+          <Stamp label="Resolved" value={s.resolvedAt ? whenText(s.resolvedAt) : "Not yet"} />
+          <Stamp label="Occurrences" value={`${r.occurrenceCount.toLocaleString("en-US")}`} />
+        </dl>
+        <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-affected>{affectedLine(d.affected)}</p>
+        {"subjectUserId" in r && <p className="break-all font-mono text-[11px] text-[var(--text-muted)]">{r.subjectUserId ? `Customer ${r.subjectUserId}` : "No attributed customer"}</p>}
+      </section>
+
+      {/* Primary action / guidance — guidance TEXT for what only the customer can do; real, audited actions only. */}
+      {(guidance || recoveryControls) && (
+        <section className="flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3" data-incident-guidance={s.remedy ?? "none"}>
+          {guidance && (
+            <>
+              <p className="text-sm font-medium text-[var(--text-primary)]">{guidance.headline}</p>
+              <p className="break-words text-xs text-[var(--text-secondary)]">{guidance.body}</p>
+              {guidance.caveat && <p className="text-[11px] text-[var(--text-muted)]" data-guidance-caveat>{guidance.caveat}</p>}
+            </>
+          )}
+          {healedNote && <p className="text-[11px] text-[var(--text-muted)]">{healedNote}</p>}
+          {recoveryControls}
+        </section>
+      )}
+
+      {slots?.lifecycle ?? (lifecycle.length > 0 && onLifecycle && (
         <Section title="Operator actions">
           {canWrite ? (
             <div className="flex flex-wrap gap-2" data-incident-lifecycle>
@@ -291,107 +389,147 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
             <p className="text-[11px] text-[var(--text-muted)]">{`${lifecycle.map((a) => LIFECYCLE_LABEL[a]).join(" · ")} — requires write access.`}</p>
           )}
         </Section>
-      )}
+      ))}
 
-      <Section title="Why">
-        <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-[var(--text-secondary)]" data-incident-why>
-          {whyLines(d).map((l) => <li key={l}>{l}</li>)}
-        </ul>
+      {slots?.customerMessage}
+
+      {/* 2 · DIAGNOSIS — the verified code, plain English, confirmed vs probable. */}
+      <Section title="Diagnosis">
+        <div className="flex min-w-0 flex-col gap-2 text-xs" data-incident-diagnosis={ex.verified ? "verified" : "unverified"}>
+          <p className="break-words text-[var(--text-primary)]">{ex.plainEnglish}</p>
+          {codeLine && <p className="break-words text-[11px] text-[var(--text-muted)]" data-provider-code>Error code: <span className="font-mono text-[var(--text-secondary)]">{codeLine}</span></p>}
+          {ex.confirmedFacts.length > 0 && (
+            <div className="min-w-0" data-confirmed-facts>
+              <p className="text-[11px] text-[var(--text-faint)]">Confirmed</p>
+              <ul className="flex list-disc flex-col gap-0.5 pl-4 text-[var(--text-secondary)]">{ex.confirmedFacts.map((f) => <li key={f}>{f}</li>)}</ul>
+            </div>
+          )}
+          {ex.probableCause && (
+            <p className="break-words text-[var(--text-secondary)]" data-probable-cause><span className="text-[11px] text-[var(--text-faint)]">Probable cause (not confirmed): </span>{ex.probableCause}</p>
+          )}
+          <p className="break-words text-[var(--text-secondary)]" data-operator-next><span className="text-[11px] text-[var(--text-faint)]">Next step: </span>{ex.operatorNext}</p>
+          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-attempts-summary>{attemptsLine(dx.attempts)}</p>
+          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-recurrence>{recurrenceLine(dx.recurrence)}</p>
+        </div>
       </Section>
 
-      <Section title="Timeline">
-        {d.timeline.events.length === 0 ? (
-          <p className="text-[11px] text-[var(--text-muted)]">No lifecycle events recorded for this incident (rows before the timeline existed have none).</p>
-        ) : (
-          <ol className="flex min-w-0 flex-col" data-incident-timeline={d.timeline.source}>
-            {d.timeline.events.map((e, i) => {
-              const t = timelineText(e);
-              return (
-                <li key={e.id ?? `${e.at}:${i}`} className="flex min-w-0 gap-3 border-l border-[var(--border-hairline)] py-1.5 pl-3" data-event-type={e.type}>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs text-[var(--text-primary)]">{t.title}</span>
-                    <span className="block break-words text-[10px] text-[var(--text-muted)]">{[whenText(e.at), ...t.parts].join(" · ")}</span>
-                  </span>
-                  {e.refreshExecutionId && onExecution ? (
-                    <button type="button" className={`${FIELD} shrink-0`} onClick={() => onExecution(e.refreshExecutionId!)} aria-haspopup="dialog">Execution</button>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ol>
-        )}
-        {d.timeline.truncated && <p className="text-[10px] text-[var(--text-faint)]">{d.timeline.source === "archive" ? "The archive copy keeps the newest events within its size cap; older ones were dropped on archive." : "Showing the newest events only (read cap)."}</p>}
-      </Section>
-
-      <Section title="Evidence">
-        {d.evidence ? (
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3" data-incident-evidence>
-            <dt className="text-[var(--text-muted)]">Rule</dt><dd className="font-mono text-[11px] text-[var(--text-secondary)] sm:col-span-2 break-all">{d.evidence.rule}</dd>
-            <dt className="text-[var(--text-muted)]">Success proofs</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.proofCount}</dd>
-            <dt className="text-[var(--text-muted)]">Non-proof facts</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.nonProofCount}</dd>
-            <dt className="text-[var(--text-muted)]">May advance</dt><dd className="sm:col-span-2">{d.evidence.mayAdvance ? "Yes" : "No"}</dd>
-            {d.evidence.lastProofAt && <><dt className="text-[var(--text-muted)]">Last proof</dt><dd className="sm:col-span-2">{whenText(d.evidence.lastProofAt)}</dd></>}
-            {d.evidence.removedSubjectState && <><dt className="text-[var(--text-muted)]">Removed subject</dt><dd className="sm:col-span-2">{d.evidence.removedSubjectState}</dd></>}
-            <dt className="text-[var(--text-muted)]">Subjects recorded</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.subjectCount}{d.evidence.subjectsTruncated ? "+" : ""}</dd>
-          </dl>
-        ) : (
-          <p className="text-[11px] text-[var(--text-muted)]">{`No resolution evidence recorded. Attempt evidence: last attempt ${whenText(r.recovery.lastAttemptAt)}, last skip ${whenText(r.recovery.lastSkipAt)}${r.recovery.evidenceBasis === "unreadable" ? " (unreadable)" : r.recovery.evidenceBasis === "unsupported" ? " (not tracked for this provider yet)" : r.recovery.evidenceBasis === "not-needed" ? " (not needed: inside its window)" : ""}.`}</p>
-        )}
-      </Section>
-
-      <Section title="Affected">
-        <p className="break-words text-xs text-[var(--text-secondary)]" data-incident-affected>{affectedLine(d.affected)}</p>
-        {"subjectUserId" in r && <p className="break-all font-mono text-[11px] text-[var(--text-muted)]">{r.subjectUserId ? `Customer ${r.subjectUserId}` : "No attributed customer"}</p>}
-      </Section>
+      {slots?.aiAssessment}
 
       <IncidentRelatedNavigation links={d.navigation ?? []} viewId={viewId} onOpenInPlace={onOpenInPlace} />
 
-      <Section title="Related and recurring">
-        {d.related.length === 0 && d.recurrences.length === 0 ? (
-          <p className="text-[11px] text-[var(--text-muted)]">No related or earlier incidents recorded.</p>
-        ) : (
-          <ul className="flex min-w-0 flex-col" data-incident-related>
-            {d.related.map((l) => <LinkedRow key={`${l.kind}:${l.id}`} id={l.id} r={l.incident} prefix={LINK_WORD[l.kind]} onSelect={onSelect} />)}
-            {d.recurrences.filter((x) => !d.related.some((l) => l.id === x.id)).map((x) => <LinkedRow key={`rec:${x.id}`} id={x.id} r={x} prefix={`Episode ${x.generation}`} onSelect={onSelect} />)}
-          </ul>
-        )}
-        {d.recurrencesTruncated && <p className="text-[10px] text-[var(--text-faint)]">More episodes exist than are listed (a capped read).</p>}
-      </Section>
-
-      <Section title="Archive">
-        <p className="text-xs text-[var(--text-secondary)]">{archiveLine(d.archive)}</p>
-      </Section>
-
-      {d.recovery.length > 0 && (
-        <Section title="Recovery">
-          {canWrite ? (
-            <div className="flex flex-wrap gap-2" data-incident-recovery>
-              {d.recovery.map((a) => (
-                <button key={a.kind} type="button" className={`${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onRecover(a)} aria-haspopup="dialog">{RECOVERY_LABEL[a.kind]}</button>
-              ))}
-            </div>
+      {/* Progressive disclosure — the technical record. */}
+      <div className="flex min-w-0 flex-col">
+        <Disclosure title="Recent attempts" hint={dx.attempts?.readable && dx.attempts.recent.length ? `${dx.attempts.recent.length} shown` : undefined} attr="attempts">
+          {!dx.attempts || !dx.attempts.readable || dx.attempts.recent.length === 0 ? (
+            <p className="text-[11px] text-[var(--text-muted)]">{attemptsLine(dx.attempts)}</p>
           ) : (
-            <p className="text-[11px] text-[var(--text-muted)]">{`${d.recovery.map((a) => RECOVERY_LABEL[a.kind]).join(" · ")} — requires write access.`}</p>
+            <ol className="flex min-w-0 flex-col" data-incident-attempts>
+              {dx.attempts.recent.map((a, i) => {
+                const t = attemptText(a);
+                return (
+                  <li key={`${a.at}:${i}`} className="flex min-w-0 flex-col border-l border-[var(--border-hairline)] py-1.5 pl-3" data-attempt-status={a.status}>
+                    <span className="text-xs text-[var(--text-primary)]">{t.title}</span>
+                    <span className="break-words text-[10px] text-[var(--text-muted)]">{t.parts.join(" · ")}</span>
+                  </li>
+                );
+              })}
+            </ol>
           )}
-        </Section>
-      )}
-      <p className="break-all font-mono text-[10px] text-[var(--text-faint)]">{`${r.kind} · ${r.id}`}{r.causeCode ? ` · ${codeText(r.causeCode)}` : ""}</p>
+        </Disclosure>
+
+        <Disclosure title="Timeline" hint={d.timeline.events.length ? `${d.timeline.events.length} event${d.timeline.events.length === 1 ? "" : "s"}` : undefined} attr="timeline">
+          {d.timeline.events.length === 0 ? (
+            <p className="text-[11px] text-[var(--text-muted)]">No lifecycle events recorded for this incident (rows before the timeline existed have none).</p>
+          ) : (
+            <ol className="flex min-w-0 flex-col" data-incident-timeline={d.timeline.source}>
+              {d.timeline.events.map((e, i) => {
+                const t = timelineText(e);
+                return (
+                  <li key={e.id ?? `${e.at}:${i}`} className="flex min-w-0 gap-3 border-l border-[var(--border-hairline)] py-1.5 pl-3" data-event-type={e.type}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-[var(--text-primary)]">{t.title}</span>
+                      <span className="block break-words text-[10px] text-[var(--text-muted)]">{[whenText(e.at), ...t.parts].join(" · ")}</span>
+                    </span>
+                    {e.refreshExecutionId && onExecution ? (
+                      <button type="button" className={`${FIELD} shrink-0`} onClick={() => onExecution(e.refreshExecutionId!)} aria-haspopup="dialog">Execution</button>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {d.timeline.truncated && <p className="text-[10px] text-[var(--text-faint)]">{d.timeline.source === "archive" ? "The archive copy keeps the newest events within its size cap; older ones were dropped on archive." : "Showing the newest events only (read cap)."}</p>}
+        </Disclosure>
+
+        <Disclosure title="Recurrence history" hint={d.related.length + d.recurrences.length ? recurrenceLine(dx.recurrence) : undefined} attr="recurrence">
+          {d.related.length === 0 && d.recurrences.length === 0 ? (
+            <p className="text-[11px] text-[var(--text-muted)]">No related or earlier incidents recorded.</p>
+          ) : (
+            <ul className="flex min-w-0 flex-col" data-incident-related>
+              {d.related.map((l) => <LinkedRow key={`${l.kind}:${l.id}`} id={l.id} r={l.incident} prefix={LINK_WORD[l.kind]} onSelect={onSelect} />)}
+              {d.recurrences.filter((x) => !d.related.some((l) => l.id === x.id)).map((x) => <LinkedRow key={`rec:${x.id}`} id={x.id} r={x} prefix={`Episode ${x.generation}`} onSelect={onSelect} />)}
+            </ul>
+          )}
+          {d.recurrencesTruncated && <p className="text-[10px] text-[var(--text-faint)]">More episodes exist than are listed (a capped read).</p>}
+        </Disclosure>
+
+        <Disclosure title="Technical details" attr="technical">
+          <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-[var(--text-secondary)]" data-incident-why>
+            {whyLines(d).map((l) => <li key={l}>{l}</li>)}
+          </ul>
+          <p className="text-[11px] text-[var(--text-muted)]">{`State ${STATE_WORD[r.state]} · freshness ${FRESHNESS_WORD[r.freshness].toLowerCase()}`}</p>
+          {d.evidence ? (
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3" data-incident-evidence>
+              <dt className="text-[var(--text-muted)]">Rule</dt><dd className="font-mono text-[11px] text-[var(--text-secondary)] sm:col-span-2 break-all">{d.evidence.rule}</dd>
+              <dt className="text-[var(--text-muted)]">Success proofs</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.proofCount}</dd>
+              <dt className="text-[var(--text-muted)]">Non-proof facts</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.nonProofCount}</dd>
+              <dt className="text-[var(--text-muted)]">May advance</dt><dd className="sm:col-span-2">{d.evidence.mayAdvance ? "Yes" : "No"}</dd>
+              {d.evidence.lastProofAt && <><dt className="text-[var(--text-muted)]">Last proof</dt><dd className="sm:col-span-2">{whenText(d.evidence.lastProofAt)}</dd></>}
+              {d.evidence.removedSubjectState && <><dt className="text-[var(--text-muted)]">Removed subject</dt><dd className="sm:col-span-2">{d.evidence.removedSubjectState}</dd></>}
+              <dt className="text-[var(--text-muted)]">Subjects recorded</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.subjectCount}{d.evidence.subjectsTruncated ? "+" : ""}</dd>
+            </dl>
+          ) : (
+            <p className="text-[11px] text-[var(--text-muted)]">{`No resolution evidence recorded. Attempt evidence: last attempt ${whenText(r.recovery.lastAttemptAt)}, last skip ${whenText(r.recovery.lastSkipAt)}${r.recovery.evidenceBasis === "unreadable" ? " (unreadable)" : r.recovery.evidenceBasis === "unsupported" ? " (not tracked for this provider yet)" : r.recovery.evidenceBasis === "not-needed" ? " (not needed: inside its window)" : ""}.`}</p>
+          )}
+          <p className="text-xs text-[var(--text-secondary)]">{archiveLine(d.archive)}</p>
+          <p className="break-all font-mono text-[10px] text-[var(--text-faint)]">{`${r.kind} · ${r.id}`}{r.causeCode ? ` · ${codeText(r.causeCode)}` : ""}</p>
+        </Disclosure>
+      </div>
     </div>
   );
 }
 
-/** The route each existing recovery action posts to (each guarded + audited server-side). */
-export function recoveryPath(a: RecoveryActionDTO): string {
+/**
+ * The route each existing recovery action posts to (each guarded + audited
+ * server-side). From an incident drawer the Ops routes also carry
+ * `?incidentId=` so the audit row names the incident (context only).
+ */
+export function recoveryPath(a: RecoveryActionDTO, incidentId?: string): string {
+  const ctx = incidentId ? `?incidentId=${encodeURIComponent(incidentId)}` : "";
   switch (a.kind) {
-    case "resync": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/resync`;
-    case "request-reauth": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/request-reauth`;
+    case "resync": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/resync${ctx}`;
+    case "request-reauth": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/request-reauth${ctx}`;
     case "refresh-customer": return `/api/platform/customer-success/customers/${encodeURIComponent(a.userId)}/refresh`;
   }
 }
 
-const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; message: string; icon: typeof RefreshCw }>> = {
+/** What a request-reauth actually did, in words (the route reports it; never a bare "done"). */
+export function reauthOutcomeText(body: Record<string, unknown>): string {
+  switch (body.outcome) {
+    case "created": return "Reconnect request sent: the connection is marked as needing reauthorization and the customer was notified.";
+    case "suppressed_duplicate": return "No new notice sent: the customer already has an open reconnect notice for this connection.";
+    case "marked_not_notified": return "The connection is marked as needing reauthorization, but no notice was sent to the customer.";
+    case "no_change": return "Nothing changed: the connection was already marked as needing reauthorization and no notice was sent.";
+    default: return "Request reauthorization: the server did not report an outcome.";
+  }
+}
+
+/** S2 R1 — the request-reauth confirmation says exactly what the customer receives (pinned by test). */
+export const REQUEST_REAUTH_CONFIRM_MESSAGE = "Marks the connection as needing reauthorization and sends the customer an in-app notice and an email asking them to reconnect (unless one is already open). It does NOT remove the connection or any data. Audited as an operator action.";
+
+export const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; message: string; icon: typeof RefreshCw }>> = {
   resync: { title: "Resync this connection now?", message: "Re-runs this connection's sync through the existing per-item path (respects the in-flight lock and manual cooldown). Audited as an operator action.", icon: RefreshCw },
-  "request-reauth": { title: "Ask the customer to reauthorize this connection?", message: "Marks the connection as needing reauthorization and prompts the customer to reconnect. It does NOT remove the connection or any data. Audited as an operator action.", icon: KeyRound },
+  "request-reauth": { title: "Ask the customer to reauthorize this connection?", message: REQUEST_REAUTH_CONFIRM_MESSAGE, icon: KeyRound },
   "refresh-customer": { title: "Refresh all of this customer's connections?", message: "Runs the customer's Refresh all through the one orchestrator with operator authority. Nothing is reported as refreshed that was skipped or refused. Audited as an operator action.", icon: RotateCcw },
 };
 
@@ -445,14 +583,16 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
     setBusy(true);
     setNotice(null);
     try {
-      const r = await fetch(recoveryPath(pending), { method: "POST", credentials: "same-origin" });
+      const r = await fetch(recoveryPath(pending, id), { method: "POST", credentials: "same-origin" });
       const body = await r.json().catch(() => ({} as Record<string, unknown>));
       if (!r.ok) {
         if (r.status === 429 && typeof body.retryAfterSeconds === "number") throw new Error(`On cooldown — try again in ~${Math.ceil(body.retryAfterSeconds / 60)} min.`);
         if (r.status === 403) throw new Error("Not authorized (write access with a fresh sign-in is required).");
         throw new Error(typeof body.error === "string" ? body.error : `${RECOVERY_LABEL[pending.kind]} failed (${r.status})`);
       }
-      setNotice(`${RECOVERY_LABEL[pending.kind]}: done. The incident updates when the lifecycle records the outcome.`);
+      setNotice(pending.kind === "request-reauth"
+        ? reauthOutcomeText(body as Record<string, unknown>)
+        : `${RECOVERY_LABEL[pending.kind]}: done. The incident updates when the lifecycle records the outcome.`);
       setGeneration((g) => g + 1);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Action failed");
