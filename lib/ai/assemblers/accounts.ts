@@ -98,7 +98,7 @@ import type {
 import { aiLiquidNetWorth } from '@/lib/debt/liquid-net-worth';
 import type { SpaceContext } from '@/lib/space';
 import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
-import { aiTotalsCoverage, excludedAccountCounts, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
+import { aiExcludedAccountGroups, aiTotalsCoverage, excludedAccountCounts, isBalanceUnobserved, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -294,7 +294,7 @@ async function assembleAccounts(
   // surfaces use (resolveWalletBalance's balanceObserved branch): a structural 0
   // flagged unvalued, so the totals exclude it AND say so with a direction.
   for (const l of links) {
-    if (l.financialAccount.balanceObserved !== false) continue;
+    if (!isBalanceUnobserved(l.financialAccount)) continue;
     const wb = resolveWalletBalance(l.financialAccount.balance, undefined, l.financialAccount.balanceObserved);
     canonical.set(l.financialAccount.id, wb.balance);
     if (wb.valuationUnknown) unvaluedIds.add(l.financialAccount.id);
@@ -946,6 +946,12 @@ async function assembleAccounts(
     ...((): { totalsCoverage?: AiTotalsCoverage } => {
       const c = aiTotalsCoverage(excludedAccountCounts(classifiableAll));
       return c ? { totalsCoverage: c } : {};
+    })(),
+    // Mortgage F8c — WHICH accounts were excluded, typed (class, reason, "mortgage"),
+    // so no reader attributes the exclusion to the wrong class. OMITTED when none.
+    ...((): { totalsExcluded?: ReturnType<typeof aiExcludedAccountGroups> } => {
+      const g = aiExcludedAccountGroups(classifiableAll);
+      return g.length > 0 ? { totalsExcluded: g } : {};
     })(),
 
     // Mortgage F1 (owner 2026-11-08) — the definition + what was excluded, so

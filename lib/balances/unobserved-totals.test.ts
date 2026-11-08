@@ -194,7 +194,7 @@ console.log("5. Wealth envelope + hero, debt lens, AI tool contract");
     // routed through the FIN-A2 classification, and the coverage is attached.
     const asm = readFileSync(join(process.cwd(), "lib/ai/assemblers/accounts.ts"), "utf8");
     check("assembler selects balanceObserved and excludes never-observed rows via resolveWalletBalance(…, balanceObserved)",
-      asm.includes("balanceObserved: true,") && asm.includes("if (l.financialAccount.balanceObserved !== false) continue;")
+      asm.includes("balanceObserved: true,") && asm.includes("if (!isBalanceUnobserved(l.financialAccount)) continue;")
         && asm.includes("resolveWalletBalance(l.financialAccount.balance, undefined, l.financialAccount.balanceObserved)"));
     check("assembler attaches aiTotalsCoverage(excludedAccountCounts(classifiableAll))",
       asm.includes("aiTotalsCoverage(excludedAccountCounts(classifiableAll))"));

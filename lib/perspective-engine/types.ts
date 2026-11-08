@@ -263,6 +263,12 @@ export interface LensResult {
    */
   totalsCoverage?: UnobservedTotalCoverage;
   /**
+   * Mortgage F8b — the liquidity lens: LIQUID NET WORTH is PARTIAL (an excluded
+   * cash account or revolving / unknown debt; never an installment loan, F1).
+   * Present ONLY when PARTIAL.
+   */
+  liquidNetWorthCoverage?: UnobservedTotalCoverage;
+  /**
    * A5-S1 — the trust envelope. Present whenever `asOf` was supplied (may be
    * present otherwise); absent on every current context-less call, so existing
    * results stay byte-identical (the kill switch). Downstream Perspectives build

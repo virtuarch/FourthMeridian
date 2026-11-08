@@ -138,6 +138,11 @@ export function materialProjection(pkg: BriefPackage) {
       unvaluedPositions: q.unvaluedPositions,
       totalsEstimated: q.totalsEstimated,
       totalsUnconverted: q.totalsUnconverted,
+      // Mortgage F8b — undefined when absent (canonicalJson drops it), so a
+      // complete Space's digest does not move.
+      partialTotals: q.partialTotals
+        ? sorted(q.partialTotals.map((t) => `${t.total}|${t.directions.join(',')}|${t.note}`))
+        : undefined,
     },
   };
 }
