@@ -95,8 +95,11 @@ export const getFinancialSnapshot: ToolDefinition = {
         liabilityState: a2.liabilityState,
         apr: a2.apr, minimumPayment: a2.minimumPayment,
         // Mortgage F3 — the name of `apr` for this account ("Mortgage rate" /
-        // "Loan rate" / "APR" / "Interest rate"), the same label the debt UI shows.
+        // "APR" / "Interest rate"), the same label the debt UI shows.
         ...(a2.rateLabel ? { rateLabel: a2.rateLabel } : {}),
+        // Owner 2026-11-08 — the fine-grained debt type + its name ("Auto loan",
+        // "HELOC", "Mortgage", …). Mortgage-only reasoning applies ONLY to "mortgage".
+        ...(a2.debtType ? { debtType: a2.debtType, debtTypeLabel: a2.debtTypeLabel } : {}),
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
         // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
         // price; the assembler marks it and this row must not drop the mark.

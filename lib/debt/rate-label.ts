@@ -6,9 +6,10 @@
  * Plaid mortgage (debtSubtype null, providerSubtype "mortgage") is never called
  * an "APR":
  *
- *   mortgage (FM debtSubtype "mortgage", or Plaid subtype "mortgage")  ⇒ "Mortgage rate"
- *   any other installment loan                                         ⇒ "Loan rate"
- *   revolving credit (card, line of credit, HELOC with a limit, …)     ⇒ "APR"
+ *   mortgage (debtType "mortgage" — FM "mortgage" or Plaid "mortgage")  ⇒ "Mortgage rate"
+ *   any other installment loan (auto, student, personal, closed-end
+ *     home equity, other)                                              ⇒ "Interest rate"
+ *   revolving credit (card, line of credit, HELOC, overdraft, …)       ⇒ "APR"
  *   no kind evidence, positive creditLimit (legacy untyped card)       ⇒ "APR"
  *   no kind evidence, no limit                                         ⇒ "Interest rate"
  *
@@ -20,30 +21,28 @@
  * The debt UI widgets and the AI tool contract (lib/ai/assemblers/accounts.ts)
  * both read this module — the same account carries the same label everywhere.
  *
+ * Owner 2026-11-08 — the label follows the fine-grained `debtType`
+ * (lib/debt/liability-kind.ts): "Mortgage rate" ONLY for a mortgage; a
+ * non-mortgage installment loan reads "Interest rate" (was "Loan rate").
+ *
  * Pure: no DB, no server-only imports (client components import it).
  */
 
-import { liabilityKind, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { debtType, kindOfDebtType, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
-export type RateLabel = "Mortgage rate" | "Loan rate" | "APR" | "Interest rate";
+export type RateLabel = "Mortgage rate" | "APR" | "Interest rate";
 
-function norm(s: string | null | undefined): string | null {
-  const t = s?.trim().toLowerCase();
-  return t ? t : null;
-}
-
-/** True when the evidence names a mortgage (FM's own subtype wins over Plaid's). */
+/** True ONLY for a mortgage (the shared classifier; FM's own subtype wins over Plaid's). */
 export function isMortgage(a: LiabilityKindInput): boolean {
-  const ds = norm(a.debtSubtype);
-  if (ds !== null) return ds === "mortgage";
-  return norm(a.providerSubtype) === "mortgage";
+  return debtType(a) === "mortgage";
 }
 
 /** The label for ONE liability's rate. */
 export function rateLabel(a: LiabilityKindInput): RateLabel {
-  switch (liabilityKind(a)) {
+  const t = debtType(a);
+  switch (kindOfDebtType(t)) {
     case "revolving":   return "APR";
-    case "installment": return isMortgage(a) ? "Mortgage rate" : "Loan rate";
+    case "installment": return t === "mortgage" ? "Mortgage rate" : "Interest rate";
     default:            return a.creditLimit != null && a.creditLimit > 0 ? "APR" : "Interest rate";
   }
 }

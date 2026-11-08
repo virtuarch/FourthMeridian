@@ -4,7 +4,7 @@
  * Mortgage F3 (S2 ruling) — the debt UI widgets render the rate under the
  * liability KIND's name and surface PARTIAL / rate-unknown states:
  *   • a Plaid mortgage (debtSubtype null, providerSubtype "mortgage") reads
- *     "Mortgage rate", an auto loan "Loan rate", a card "APR";
+ *     "Mortgage rate", an auto loan "Interest rate" (owner 2026-11-08), a card "APR";
  *   • the payoff planner labels the mortgage's projection "Mortgage rate unknown",
  *     shows the "Rate known for 1 of 2 debts (x% of what you owe)" note, shows
  *     "Not enough rate information" when < 50% of the balance is rated, and never calls a blend of
@@ -47,7 +47,7 @@ console.log("1. Interest cost — per-row label follows the kind");
   const t = text(renderToStaticMarkup(createElement(InterestCostWidget, { accounts: [MORTGAGE, CARD, AUTO], onSaved: () => {} })));
   check("Plaid mortgage with no rate: 'no mortgage rate on file', 'Add mortgage rate' — never 'APR'",
     t.includes("Home Loan Interest unknown — no mortgage rate on file") && t.includes("Add mortgage rate"), t);
-  check("card keeps '25.00% APR'; auto loan reads '7.25% Loan rate'", t.includes("25.00% APR") && t.includes("7.25% Loan rate"), t);
+  check("card keeps '25.00% APR'; auto loan reads '7.25% Interest rate'", t.includes("25.00% APR") && t.includes("7.25% Interest rate"), t);
   check("footer: the unknown debt is a mortgage ⇒ 'without a rate', not 'without an APR'",
     t.includes("1 debt without a rate not counted") && !t.includes("without an APR"), t);
   const html = renderToStaticMarkup(createElement(InterestCostWidget, { accounts: [MORTGAGE_RATED], onSaved: () => {} }));
