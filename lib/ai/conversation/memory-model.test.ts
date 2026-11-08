@@ -57,7 +57,7 @@ console.log('1. a rule is the scenario contract\'s own clause');
   }
   check('a liability id is not a remembered target', !ok('RULE', { ...RULE3, target: ['acct_123', 'investments'] })
     && !ok('RULE', { ...RULE3, target: { liability: 'acct_123' } }));
-  check('the two target words are the contract\'s', JSON.stringify(ALLOCATION_TARGET_WORDS) === '["investments","highest_apr"]');
+  check('the three target words are the contract\'s (F4 adds smallest_balance)', JSON.stringify(ALLOCATION_TARGET_WORDS) === '["investments","highest_apr","smallest_balance"]');
   check('the observed wrong key is refused by name, pointing at the right one',
     /`monthsOfExpenses` is not a rule field[\s\S]*liquidFloorMonthsOfExpenses/.test(why('RULE', { monthsOfExpenses: 6 })));
   check('a month count is not a dollar-sized number', !ok('RULE', { liquidFloorMonthsOfExpenses: 19096.50 }));

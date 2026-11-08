@@ -504,6 +504,49 @@ export interface IncidentArchiveState {
   retainedUntil: string | null;
 }
 
+/**
+ * Incident detail v1 — the provider error code behind an incident, ALLOWLISTED
+ * (lib/platform/incidents/explanations.ts allowlistedProviderCode): a known
+ * provider error-code string or null. Never provider message text.
+ *   source  connection  PlaidItem.errorCode (the connection's CURRENT code; open incidents)
+ *           incident    the code recorded on the incident when it opened (detail.errorCode)
+ *   unrecognised  a value was recorded but is not a known code (it is not shown)
+ */
+export interface IncidentProviderError {
+  code: string | null;
+  source: "connection" | "incident" | null;
+  unrecognised: boolean;
+}
+
+/** One refresh attempt of the incident's connection — codes, numbers and times only. */
+export interface IncidentAttempt {
+  at: string;
+  /** RefreshExecution.trigger (fixed vocabulary) or "OTHER". */
+  trigger: string;
+  /** RefreshExecution.overallStatus (fixed vocabulary) or "OTHER". */
+  status: string;
+  /** The newest failing provider call of that attempt, when there was one. */
+  httpStatus: number | null;
+  errorCode: string | null;
+  callStatus: string | null;
+  operation: string | null;
+}
+
+/** The connection's refresh attempts inside the incident's window [from, to]. */
+export interface IncidentAttemptsSummary {
+  /** False ⇒ the read failed: nothing below is "none". */
+  readable: boolean;
+  from: string;
+  to: string;
+  counts: { total: number; succeeded: number; failed: number; partial: number; skipped: number; running: number };
+  /** The read cap was reached: counts are floors. */
+  truncated: boolean;
+  lastSucceededAt: string | null;
+  lastFailedAt: string | null;
+  /** Newest first, capped. */
+  recent: IncidentAttempt[];
+}
+
 /** Everything an incident detail shows, tiered by the token (VerdictForToken). */
 export interface IncidentInvestigation<T extends IncidentVerdict = IncidentVerdict> {
   verdict: T;
@@ -518,6 +561,10 @@ export interface IncidentInvestigation<T extends IncidentVerdict = IncidentVerdi
   recurrences: T[];
   recurrencesTruncated: boolean;
   archive: IncidentArchiveState;
+  /** Incident detail v1 — the allowlisted provider error code (absent on readers that predate it). */
+  providerError?: IncidentProviderError;
+  /** Incident detail v1 — the connection's refresh attempts; null when the incident is not item-scoped. */
+  attempts?: IncidentAttemptsSummary | null;
 }
 
 /** PB-1 Phase 2B accessors (implemented in ./index.ts); token-checked before any read. */

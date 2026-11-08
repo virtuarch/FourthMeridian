@@ -94,6 +94,9 @@ const detail = (r: IncidentRowDTO, tier: "ops" | "cs"): IncidentDetailDTO => ({
   archive: { archived: false, archivedAt: null, archiveDueAt: null, retainedUntil: null },
   recovery: tier === "ops" ? [{ kind: "resync", connectionId: "item_1" }] : [{ kind: "refresh-customer", userId: "u_cust_0000000001" }],
   lifecycleActions: tier === "ops" ? ["acknowledge", "resolve"] : [],
+  summary: { displayStatus: "active", customerActionRequired: false, remedy: "investigate", firstDetectedAt: r.firstSeenAt, lastObservedAt: r.lastSeenAt, resolvedAt: r.resolvedAt, ongoing: true },
+  diagnosis: { providerErrorCode: null, providerErrorSource: null, providerErrorUnrecognised: false, attempts: null,
+    recurrence: { generation: r.generation, previousIncidentId: null, earlierEpisodes: 0, truncated: false, lastRecoveredAt: null } },
   checkedAt: "2026-11-03T12:00:00.000Z",
 });
 

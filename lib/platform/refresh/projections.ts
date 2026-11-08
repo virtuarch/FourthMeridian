@@ -711,3 +711,44 @@ export async function latestStageAttemptsBySubject(args: {
   }
   return [...out.values()];
 }
+
+/**
+ * Incident detail v1 — the refresh attempts of ONE Plaid connection inside an
+ * incident's window [from, to], newest first, capped. Per execution: when, the
+ * trigger, the overall status, and its newest NON-SUCCEEDED provider call's
+ * status / HTTP status / error code / operation. Codes and numbers only — no
+ * errorSummary, no request id, no request or response body. fm_system.
+ * The caller (lib/platform/incidents/attempts-summary.ts) allowlists every
+ * string before it reaches a wire shape. Throws on a failed read — the caller
+ * reports the attempts as unreadable, never as "none".
+ */
+export async function recentItemAttempts(args: {
+  plaidItemId: string;
+  from: Date;
+  to: Date;
+  take: number;
+}): Promise<Array<{
+  startedAt: Date;
+  trigger: string;
+  overallStatus: string;
+  failedCall: { status: string; httpStatus: number | null; errorCode: string | null; operation: string } | null;
+}>> {
+  const rows = await systemDb.refreshExecution.findMany({
+    where: { plaidItemId: args.plaidItemId, startedAt: { gte: args.from, lte: args.to } },
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+    take: args.take,
+    select: {
+      startedAt: true, trigger: true, overallStatus: true,
+      providerCalls: {
+        where: { status: { not: "SUCCEEDED" } },
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+        take: 1,
+        select: { status: true, httpStatus: true, errorCode: true, operation: true },
+      },
+    },
+  });
+  return rows.map((r) => ({
+    startedAt: r.startedAt, trigger: r.trigger, overallStatus: r.overallStatus,
+    failedCall: r.providerCalls[0] ?? null,
+  }));
+}
