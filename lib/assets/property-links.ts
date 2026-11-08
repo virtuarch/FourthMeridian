@@ -160,10 +160,13 @@ export async function applyPropertyLinkAction(tx: TenantClient, args: {
     data = { securedDebtAccountIds: current.includes(a.debtAccountId) ? current : [...current, a.debtAccountId] };
   }
 
+  // The FK appears only in `where` and the create arm, for the property just
+  // authorized; the update arm names the two F9 columns and nothing else
+  // (so audit-account-reparenting sees no re-parenting-capable payload).
   await tx.manualAssetProfile.upsert({
     where:  { financialAccountId: owned.fa.id },
-    create: { financialAccountId: owned.fa.id, ...data },
-    update: data,
+    create: { financialAccountId: owned.fa.id, valueBasis: data.valueBasis, securedDebtAccountIds: data.securedDebtAccountIds },
+    update: { valueBasis: data.valueBasis, securedDebtAccountIds: data.securedDebtAccountIds },
   });
   return { kind: "ok" };
 }

@@ -68,9 +68,11 @@ console.log("0. the batch and the place in history");
 {
   check("the header says \"B11 batch — not part of B10\"", raw.split("\n").slice(0, 3).join("\n").includes("B11 batch — not part of B10"));
   const names = readdirSync(path.join(ROOT, "prisma/migrations")).filter((n) => /^\d{14}_/.test(n)).sort();
-  check("it sorts after every B10 migration (last B10 = 20261103160000_fin_e_restricted_cash), and only B11 migrations follow it",
+  // Later batches (e.g. Mortgage F9, 20261108140000) may follow RETENTION_NAME;
+  // what is pinned is that the B11 run itself is contiguous and in order.
+  check("it sorts after every B10 migration (last B10 = 20261103160000_fin_e_restricted_cash), and the B11 migrations follow it contiguously",
     NAME > "20261103160000_fin_e_restricted_cash"
-      && JSON.stringify(names.slice(names.indexOf(NAME))) === JSON.stringify([NAME, EXPIRY_NAME, RETENTION_NAME]), names.slice(-3).join(", "));
+      && JSON.stringify(names.slice(names.indexOf(NAME), names.indexOf(RETENTION_NAME) + 1)) === JSON.stringify([NAME, EXPIRY_NAME, RETENTION_NAME]), names.slice(-3).join(", "));
   check("lock_timeout bounds the FK lock on \"User\" (transaction-local)", /SET LOCAL lock_timeout = '5s';/.test(sql));
   check("no session-level SET (only SET LOCAL; a function-level search_path is not a session SET)", !/^\s*SET (?!LOCAL|search_path = pg_catalog, public$)/m.test(sql));
 }
