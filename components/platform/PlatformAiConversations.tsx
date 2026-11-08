@@ -343,16 +343,22 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy }
         </button>
       ) : undefined}
       footer={
-        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col gap-0.5 px-1 text-[11px] text-[var(--text-muted)]">
-          <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="min-w-0 break-words text-[var(--text-secondary)]">
-            {PLATFORM_AI_PRIVACY_HINT}
-          </p>
-          <div className="flex min-w-0 items-start justify-between gap-3">
+        // Parity PR5: the privacy hint + OD-5 line are long; on a short (keyboard-shrunk)
+        // viewport they pushed the dock past the shell. They are capped to a share of the
+        // visible viewport (AiShell's --ai-viewport-height) and scroll; the full wording
+        // stays rendered, visible and tied to the textarea. The counter stays outside
+        // the scroller so it is always visible.
+        <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 items-end gap-3 px-1 text-[11px] text-[var(--text-muted)]">
+          <div data-platform-ai-composer-notes="" tabIndex={0} role="group" aria-label="Privacy and retention notice"
+            className="flex max-h-[calc(var(--ai-viewport-height,100dvh)*0.18)] min-w-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
+            <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="min-w-0 break-words text-[var(--text-secondary)]">
+              {PLATFORM_AI_PRIVACY_HINT}
+            </p>
             <p id="platform-ai-conversations-disclosure" data-platform-ai-conversations-disclosure="" className="min-w-0 break-words">
               {PLATFORM_AI_CONVERSATIONS_DISCLOSURE}
             </p>
-            <span data-platform-ai-counter="" className="shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>
           </div>
+          <span data-platform-ai-counter="" className="shrink-0 tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>
         </div>
       }
     />

@@ -527,6 +527,17 @@ console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answ
   check("busy: one disabled send button, never a Stop button",
     (busyComposer.match(/<button/g) ?? []).length === 1 && /<button type="submit" disabled="" aria-label="Send message" aria-busy="true"/.test(busyComposer) && !/Stop/.test(busyComposer));
   check("the counter stays beneath the box", /data-platform-ai-counter=""[^>]*>0(<!-- -->)?\/(<!-- -->)?500</.test(auto) && auto.indexOf("data-platform-ai-counter") > auto.indexOf("<textarea"), auto.match(/data-platform-ai-counter[^<]*<[^<]*/)?.[0]);
+  // Parity PR5: the long hint + OD-5 wording is capped to a share of the visible
+  // viewport and scrolls (a focusable group), so a keyboard-shrunk viewport keeps the
+  // dock inside the shell; both lines stay rendered in full and the counter sits
+  // outside the scroller.
+  const notes = (auto.match(/<div data-platform-ai-composer-notes=""[^>]*>([\s\S]*?)<\/div>/) ?? [])[0] ?? "";
+  check("footer notes: capped to the visible viewport, scrollable, focusable, labelled",
+    /max-h-\[calc\(var\(--ai-viewport-height,100dvh\)\*0\.18\)\]/.test(notes) && /overflow-y-auto/.test(notes) && /tabindex="0"/.test(notes)
+    && /role="group" aria-label="Privacy and retention notice"/.test(notes), notes.slice(0, 300));
+  check("…both lines render in full inside it, and the counter is outside the scroller",
+    notes.includes('id="platform-ai-privacy-hint"') && notes.includes('id="platform-ai-conversations-disclosure"')
+    && textOf(notes).includes(textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)) && !notes.includes("data-platform-ai-counter"));
 
   // Empty state + starter chips.
   const empty = view({ selected: null, conversations: [] });

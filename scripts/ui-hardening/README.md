@@ -19,7 +19,15 @@ python3 -m http.server 4179 --bind 127.0.0.1 --directory /tmp/fm-ui-browser
 node scripts/ui-hardening/browser.mjs
 node scripts/ui-hardening/accessibility.mjs
 node scripts/ui-hardening/visual-viewport.mjs
+node scripts/ui-hardening/platform-ai.mjs
 ```
+
+`platform-ai.mjs` sweeps the Platform AI conversation scene (`?platform-ai`,
+`?platform-ai=empty`; `platform-ai-scene.tsx`): the real pure
+`PlatformAiConversationsView` with fabricated conversations and no API calls.
+It checks horizontal overflow, the docked composer, the rail/sheet switch at `lg`,
+the composer centred on the message column beside the rail, header fit with the
+sr-only "Conversations" label below `sm`, and wrapping starter chips.
 
 Set `FM_UI_BROWSER_TOOLS` to change the external tool directory;
 `FM_UI_BROWSER_OUTPUT` changes the generated fixture directory. The browser runner

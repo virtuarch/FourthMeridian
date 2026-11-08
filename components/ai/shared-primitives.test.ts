@@ -165,10 +165,16 @@ console.log("AiShell: slot defaults are Personal Space AI; given slots render");
   check("contextPrefix replaces the sr-only prefix", custom.includes('<span class="sr-only">Scope: </span>Household</p>'));
   check("headerExtra renders in the header, before the controls",
     custom.indexOf("EXTRA") > custom.indexOf("<header") && custom.indexOf("EXTRA") < custom.indexOf("CTRL") && custom.indexOf("CTRL") < custom.indexOf("</header>"));
-  check("side renders beside the reading region, inside one row",
-    /<div class="flex flex-1 min-h-0 min-w-0"><nav data-x="rail">RAIL<\/nav><div data-ai-scroll="true"/.test(custom));
+  check("side renders beside one column that holds the reading region",
+    /<div class="flex flex-1 min-h-0 min-w-0"><nav data-x="rail">RAIL<\/nav><div data-ai-column="true" class="flex flex-1 min-h-0 min-w-0 flex-col"><div data-ai-scroll="true"/.test(custom));
+  // Parity PR5: the dock shares that column, so the composer (max-w-3xl mx-auto)
+  // centres on the message column rather than the full shell width.
+  check("with a side, the dock follows the reading region inside the same column, after the rail",
+    /<div data-ai-column="true"[^>]*><div data-ai-scroll="true"[\s\S]*<div data-ai-dock="conversation" class="shrink-0 relative pt-1">[\s\S]*>C<\/div><\/div><\/div><\/div><\/div>$/.test(custom)
+    && custom.indexOf("RAIL") < custom.indexOf("data-ai-column"));
   check("the dock and the composer slot are unchanged with a side",
     custom.includes('data-ai-dock="conversation"') && (custom.match(/>C<\/div>/g) ?? []).length === 1);
+  check("without a side there is no column wrapper (Personal DOM unchanged)", !dflt.includes("data-ai-column"));
   check("the reading region is still the only scroll container", (custom.match(/data-ai-scroll/g) ?? []).length === 1);
 }
 
