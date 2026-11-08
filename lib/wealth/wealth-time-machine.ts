@@ -265,7 +265,10 @@ function toChartPoint(s: Snapshot): WealthChartPoint {
     // RWA-2B — only ever carried, never decided here; absent ⇒ byte-identical.
     ...(s.realAssetsModeled && st.isEstimated ? { realAssetsModeled: true as const } : {}),
     // Mortgage F1b — the row's own liquid-NW basis; absent ⇒ current definition.
-    ...(liquidNetWorthRowBasis(storedLiquidRow(s)) === "INSTALLMENTS_SUBTRACTED" ? { liquidBasisPrevious: true as const } : {}),
+    // D2: a legacy row of a Space that never held an installment liability
+    // (`liquidLegacyRowsCurrent`) is presented as the current definition.
+    ...(liquidNetWorthRowBasis(storedLiquidRow(s)) === "INSTALLMENTS_SUBTRACTED" && !s.liquidLegacyRowsCurrent
+      ? { liquidBasisPrevious: true as const } : {}),
   };
 }
 

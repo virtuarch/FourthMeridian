@@ -229,6 +229,13 @@ export interface Snapshot {
    * `liquidNetWorthRowBasis` (lib/debt/liquid-net-worth.ts).
    */
   installmentDebt?: number;
+  /**
+   * Mortgage F1b (S2 D2) — PRESENTATION ONLY, on a legacy row (installmentDebt
+   * absent) of a Space that NEVER held an installment liability: the Liquid NW
+   * chart plots it as the current definition (one joined series). Set by the
+   * snapshots route; never changes a basis, a breakdown or the AI payload.
+   */
+  liquidLegacyRowsCurrent?: true;
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;

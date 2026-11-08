@@ -200,12 +200,15 @@ export function liquidNetWorthBasis(accounts: ReadonlyArray<LiquidNetWorthLiabil
 //                                (EXACT identity, 0 ≤ installmentDebt ≤ debt)
 //   installmentDebt NULL     ⇒ legacy row: the BOUNDED identity
 //                                cash + savings − debt ≤ netLiquid ≤ cash + savings
-//                              and the OLD basis (installments subtracted) — unless
-//                              the row's own identity PROVES it excluded debt
-//                              (netLiquid above cash + savings − debt): only F1 code
-//                              writes that, so such a row (written between F1 and
-//                              this column) is on the new basis with the recovered
-//                              amount. A NULL row that excluded nothing is OLD.
+//                              and the OLD basis (installments subtracted). PURE
+//                              rule (S2 D1): nothing is inferred from the numbers.
+//                              Rows F1 wrote before this column are filled on
+//                              Preview by a reviewed one-off script, not here.
+//
+// Presentation only (D2): a Space that NEVER held an installment liability
+// plots its legacy rows as the current definition (the two are numerically the
+// same there) — `liquidLegacyRowsCurrent` on the Snapshot DTO, set by the
+// snapshots route from `spaceEverHeldInstallmentLiability`.
 
 /** A stored row's liquid-NW basis. */
 export type LiquidNetWorthRowBasis = "INSTALLMENTS_SUBTRACTED" | "INSTALLMENTS_EXCLUDED";
@@ -215,9 +218,6 @@ export interface StoredLiquidRow {
   cash: number; savings: number; debt: number; netLiquid: number;
   installmentDebt?: number | null;
 }
-
-/** Tolerance below which a recovered exclusion is rounding noise, not evidence. */
-const RECOVERY_EPSILON = 0.005;
 
 /** True when the row RECORDED its installment debt (the column is non-null and finite). */
 export function hasRecordedInstallmentDebt(v: { installmentDebt?: number | null }): v is { installmentDebt: number } {
@@ -230,13 +230,22 @@ function recoveredExclusion(v: StoredLiquidRow): number {
 }
 
 /**
- * THE per-row basis. Recorded column ⇒ INSTALLMENTS_EXCLUDED. Legacy NULL ⇒
- * INSTALLMENTS_SUBTRACTED unless the row's identity proves an exclusion (see the
- * section header). Never a date comparison.
+ * THE per-row basis (S2 D1 — pure): installmentDebt recorded ⇒
+ * INSTALLMENTS_EXCLUDED; NULL ⇒ INSTALLMENTS_SUBTRACTED. Never a date
+ * comparison, never inferred from the row's numbers.
  */
-export function liquidNetWorthRowBasis(v: StoredLiquidRow): LiquidNetWorthRowBasis {
-  if (hasRecordedInstallmentDebt(v)) return "INSTALLMENTS_EXCLUDED";
-  return recoveredExclusion(v) > RECOVERY_EPSILON ? "INSTALLMENTS_EXCLUDED" : "INSTALLMENTS_SUBTRACTED";
+export function liquidNetWorthRowBasis(v: Partial<StoredLiquidRow>): LiquidNetWorthRowBasis {
+  return hasRecordedInstallmentDebt(v) ? "INSTALLMENTS_EXCLUDED" : "INSTALLMENTS_SUBTRACTED";
+}
+
+/**
+ * S2 D2 — did a Space EVER hold an installment liability? True when any linked
+ * account — ACTIVE or historical (revoked link, soft-deleted account included)
+ * — is a debt `liquidNetWorthTreatment` excludes. The caller supplies EVERY
+ * link's account; this only classifies.
+ */
+export function everHeldInstallmentLiability(accounts: ReadonlyArray<LiabilityKindInput & { type: string }>): boolean {
+  return accounts.some((a) => a.type === "debt" && isExcludedFromLiquidNetWorth(a));
 }
 
 /**

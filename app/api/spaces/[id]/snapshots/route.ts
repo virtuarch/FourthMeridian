@@ -42,8 +42,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole, ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getRecentSnapshots }        from "@/lib/data/snapshots";
-import { db }                        from "@/lib/db";
+import { db, systemDb }              from "@/lib/db";
 import { withTenantDb }              from "@/lib/db/tenant-context";
+import { spaceEverHeldInstallmentLiability, type InstallmentHistoryClient } from "@/lib/debt/installment-history";
 
 /**
  * How many trailing SpaceSnapshot ROWS the hero reads.
@@ -107,5 +108,20 @@ export async function GET(
     backfillInProgress = busy !== null;
   }
 
-  return NextResponse.json({ snapshots, backfillInProgress });
+  // Mortgage F1b (S2 D2) — presentation of LEGACY rows (installmentDebt NULL)
+  // on the Liquid NW chart. A Space that never held an installment liability
+  // (any link status, soft-deleted accounts included) plots them as the current
+  // definition: stamped per legacy row, so the chart reads one joined series.
+  // Deliberately NOT withTenantDb: revoked links and soft-deleted accounts are
+  // exactly what a tenant read may not see, and missing one would join a series
+  // whose old definition really did subtract a mortgage. systemDb (the role the
+  // snapshot writers read links with), scoped to this authorised Space; returns
+  // only a boolean. A failed read FAILS SAFE: segmented, never joined.
+  const everHeldInstallment = await spaceEverHeldInstallmentLiability(systemDb as unknown as InstallmentHistoryClient, spaceId)
+    .catch(() => true);
+  const out = everHeldInstallment
+    ? snapshots
+    : snapshots.map((s) => (typeof s.installmentDebt === "number" ? s : { ...s, liquidLegacyRowsCurrent: true as const }));
+
+  return NextResponse.json({ snapshots: out, backfillInProgress });
 }

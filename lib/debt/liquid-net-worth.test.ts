@@ -162,7 +162,7 @@ const MANUAL   = { id: "man", type: "debt", balance: 2_000, currency: "USD" }; /
   assert.equal(liquidNetWorthRowBasis(rec), "INSTALLMENTS_EXCLUDED");
   assert.equal(liquidNetWorthRowBasis({ ...row, installmentDebt: 0, netLiquid: -295_000 }), "INSTALLMENTS_EXCLUDED", "a recorded 0 is the new basis");
   assert.equal(liquidNetWorthRowBasis({ ...row, netLiquid: -295_000 }), "INSTALLMENTS_SUBTRACTED", "NULL + nothing excluded ⇒ old basis");
-  assert.equal(liquidNetWorthRowBasis(row), "INSTALLMENTS_EXCLUDED", "NULL but the row's identity proves an exclusion (F1-era row) ⇒ new basis");
+  assert.equal(liquidNetWorthRowBasis(row), "INSTALLMENTS_SUBTRACTED", "S2 D1 — PURE: NULL ⇒ old basis even when the numbers show an exclusion (no inference)");
   ok("F1b: recorded installmentDebt ⇒ exact identity + new basis; legacy NULL rows ⇒ range check, basis from the row");
 }
 

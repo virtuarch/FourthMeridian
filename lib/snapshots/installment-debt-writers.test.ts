@@ -26,6 +26,8 @@ import { projectSnapshotSection } from "@/lib/ai/assemblers/snapshot";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { projectWealthTrendPoints } from "@/components/space/widgets/wealth/wealth-trend-points";
 import { toRuns, toBasisSeams, joinsAcrossSeam, DAY_MS } from "@/components/space/widgets/charts/trend-runs.core";
+import { liquidNetWorthChartMarkers } from "@/lib/debt/liquid-net-worth";
+import { spaceEverHeldInstallmentLiability, type InstallmentHistoryClient } from "@/lib/debt/installment-history";
 
 const checks: string[] = [];
 const ok = (l: string) => checks.push(l);
@@ -152,5 +154,46 @@ const ROWS = [mk("2026-10-01", -295_000), mk("2026-10-02", -295_000), mk("2026-1
   ok("§4 chart: previous-definition points are their own unjoined segment; marker only at the first new-basis point");
 }
 
-for (const c of checks) console.log(`  ✓ ${c}`);
-console.log(`\ninstallment-debt-writers: ${checks.length} checks passed`);
+// ── §5 S2 D2 — segment ONLY in Spaces that ever held an installment liability ─
+async function d2(): Promise<void> {
+  type Acct = { type: string; debtSubtype: string | null; providerSubtype: string | null; creditLimit: number | null };
+  const fake = (accts: Acct[]) => {
+    const calls: unknown[] = [];
+    const client: InstallmentHistoryClient = { spaceAccountLink: { findMany: async (args) => { calls.push(args); return accts.map((a) => ({ financialAccount: a })); } } };
+    return { client, calls };
+  };
+  const chk: Acct = { type: "checking", debtSubtype: null, providerSubtype: null, creditLimit: null };
+  const card: Acct = { type: "debt", debtSubtype: null, providerSubtype: "credit card", creditLimit: 10_000 };
+  const mtg: Acct = { type: "debt", debtSubtype: "mortgage", providerSubtype: null, creditLimit: null };
+
+  // The read applies NO status / deletedAt filter: a REVOKED link to a SOFT-DELETED mortgage still counts.
+  const removed = fake([chk, card, mtg]); // the fake returns every link the query asks for — the query asks for ALL
+  assert.equal(await spaceEverHeldInstallmentLiability(removed.client, "sp"), true, "removed (revoked / soft-deleted) mortgage ⇒ segmented");
+  assert.deepEqual(removed.calls[0], { where: { spaceId: "sp" },
+    select: { financialAccount: { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true } } } },
+    "query is Space-scoped only — no status, no deletedAt filter");
+  assert.equal(await spaceEverHeldInstallmentLiability(fake([chk, mtg]).client, "sp"), true, "current mortgage ⇒ segmented");
+  assert.equal(await spaceEverHeldInstallmentLiability(fake([chk, card]).client, "sp"), false, "never held one ⇒ joined");
+  const routeSrc = src("../../app/api/spaces/[id]/snapshots/route.ts");
+  assert.ok(/spaceEverHeldInstallmentLiability\(systemDb/.test(routeSrc) && /\.catch\(\(\) => true\)/.test(routeSrc), "route: systemDb read, fails safe to segmented");
+  assert.ok(/typeof s\.installmentDebt === "number" \? s : \{ \.\.\.s, liquidLegacyRowsCurrent: true as const \}/.test(routeSrc), "route: stamps legacy rows only, only when never held");
+
+  // No-installment Space: legacy rows stamped ⇒ ONE joined series, no marker.
+  const stamped = [mk("2026-10-01", 5_000), mk("2026-10-02", 5_000), mk("2026-10-03", 5_000, 0), mk("2026-10-04", 5_000, 0)]
+    .map((r) => (typeof r.installmentDebt === "number" ? r : { ...r, liquidLegacyRowsCurrent: true as const }));
+  const rn = computeWealthTimeMachine({ snapshots: stamped, asOf: "2026-10-04", compareTo: "2026-10-01", currency: "USD" } as never);
+  const pn = projectWealthTrendPoints(rn, "liquidNetWorth");
+  assert.ok(pn.every((p) => p.basis !== "previousDefinition"), "no previous-definition points");
+  const gn = pn.map((p) => ({ ...p, t: Date.parse(`${p.date}T00:00:00Z`) }));
+  assert.ok(toBasisSeams(gn, 3).every(joinsAcrossSeam), "every seam is joined ⇒ ONE continuous series");
+  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth", rn.chart.points), [], "no marker");
+  // Space with a mortgage (current or removed): legacy rows are NOT stamped ⇒ segmented + marker.
+  const rs = computeWealthTimeMachine({ snapshots: ROWS, asOf: "2026-10-04", compareTo: "2026-10-01", currency: "USD" } as never);
+  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth", rs.chart.points), [{ date: "2026-10-03", label: "Definition change" }]);
+  ok("§5 D2: never-held Space ⇒ legacy rows plot as current (one series, no marker); removed or current mortgage ⇒ segmented");
+}
+
+d2().then(() => {
+  for (const c of checks) console.log(`  ✓ ${c}`);
+  console.log(`\ninstallment-debt-writers: ${checks.length} checks passed`);
+}).catch((e) => { console.error(e); process.exit(1); });
