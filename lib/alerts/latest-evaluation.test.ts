@@ -10,7 +10,8 @@
  */
 
 import type { AlertRunSummary } from "@/lib/alerts/evaluate";
-import { firingNow, latestAlertEvaluation, undeliveredSentence } from "./latest-evaluation";
+import { alertSourceUnavailableSentence, firingNow, latestAlertEvaluation, unavailableAlertSources, undeliveredSentence } from "./latest-evaluation";
+import { ALERT_AUTHORITY_SOURCES } from "./authority-sources";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -76,6 +77,25 @@ console.log("latest evaluation");
   check("modern row ⇒ its boolean is projected as-is", modern?.destinationConfigured === false);
   const neither = latestAlertEvaluation([{ ...quietNow, destination: undefined }]);
   check("a row with neither field ⇒ null (not recorded), never a claim", neither?.destinationConfigured === null);
+}
+
+// B10 monitoring (S2 ruling) — per-authority gather status.
+{
+  const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const]));
+  const failed = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", authorities: { ...allOk, syncIncidents: "failed" } })]);
+  check("a failed source is projected as failed", failed?.authorities?.syncIncidents === "failed");
+  check("unavailableAlertSources names exactly the failed one", unavailableAlertSources(failed).join() === "syncIncidents");
+  check("the sentence is fixed words", alertSourceUnavailableSentence("syncIncidents") === "Alert source unavailable: sync incidents");
+  const ok = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", authorities: allOk })]);
+  check("all ok ⇒ nothing unavailable", unavailableAlertSources(ok).length === 0 && ALERT_AUTHORITY_SOURCES.every((k) => ok?.authorities?.[k] === "ok"));
+  const legacy = latestAlertEvaluation([quietNow]);
+  check("a row without `authorities` (pre-B10) ⇒ every source `unknown`, never ok", ALERT_AUTHORITY_SOURCES.every((k) => legacy?.authorities?.[k] === "unknown"));
+  check("…and nothing is claimed unavailable", unavailableAlertSources(legacy).length === 0);
+  const junk = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", authorities: { syncIncidents: "boom" as never, jobHealth: "ok", extra: "failed" } as never })]);
+  check("an unreadable entry ⇒ unknown; a foreign key is dropped", junk?.authorities?.syncIncidents === "unknown" && junk.authorities.jobHealth === "ok" && !("extra" in (junk.authorities as object)) && junk.authorities.aiSpend === "unknown");
+  const arr = latestAlertEvaluation([run({ evaluatedAtISO: "2026-10-14T08:00:00.000Z", authorities: [] as never })]);
+  check("a non-object `authorities` ⇒ all unknown, no crash", ALERT_AUTHORITY_SOURCES.every((k) => arr?.authorities?.[k] === "unknown"));
+  check("unavailableAlertSources(null) ⇒ []", unavailableAlertSources(null).length === 0);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

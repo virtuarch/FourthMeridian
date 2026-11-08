@@ -10,6 +10,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/ops/attention-core.test.ts
  */
 
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -187,6 +188,24 @@ console.log("history never becomes a row");
   check("no rule firing in the latest run → no alert rows, whatever was delivered before", !quiet.items.some((i) => i.entity.kind === "alert-rule"));
   const never = buildAttention({ ...full, alerts: { latest: null, titles: {} } }, now);
   check("never evaluated → checked, but no alert rows", never.authorities.checked.includes("alert-evaluation") && !never.items.some((i) => i.entity.kind === "alert-rule"));
+}
+
+console.log("B10 monitoring — a failed alert source is a WARNING row, never silence");
+{
+  const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const])) as Record<(typeof ALERT_AUTHORITY_SOURCES)[number], "ok" | "failed" | "unknown">;
+  const quietRules = alerts.latest!.rules.map((r) => ({ ...r, firing: false }));
+  const blind = buildAttention({ ...full, alerts: { ...alerts, latest: { ...alerts.latest!, rules: quietRules, authorities: { ...allOk, syncIncidents: "failed" } } } }, now);
+  const row = blind.items.find((i) => i.id === "alert-source:syncIncidents");
+  check("failed syncIncidents → one alert-source row", !!row && blind.items.filter((i) => i.entity.kind === "alert-source").length === 1);
+  check("…severity warning", row?.severity === "warning");
+  check("…problem says 'Alert source unavailable: sync incidents'", /^Alert source unavailable: sync incidents/.test(row?.problem ?? ""), row?.problem);
+  check("…no error text: fixed words only", !/Error|exception|stack/i.test(row?.problem ?? ""));
+  const ok = buildAttention({ ...full, alerts: { ...alerts, latest: { ...alerts.latest!, rules: quietRules, authorities: allOk } } }, now);
+  check("all sources ok → no alert-source row", !ok.items.some((i) => i.entity.kind === "alert-source"));
+  const legacy = buildAttention({ ...full, alerts: { ...alerts, latest: { ...alerts.latest!, rules: quietRules } } }, now);
+  check("a pre-B10 latest (no authorities) → no row, no crash", !legacy.items.some((i) => i.entity.kind === "alert-source"));
+  const unknownOnly = buildAttention({ ...full, alerts: { ...alerts, latest: { ...alerts.latest!, rules: quietRules, authorities: Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "unknown" as const])) as typeof allOk } } }, now);
+  check("all `unknown` → no row (unknown is never ok, and never a claimed failure)", !unknownOnly.items.some((i) => i.entity.kind === "alert-source"));
 }
 
 console.log("ops env-aware verdicts — not-scheduled jobs are neutral");

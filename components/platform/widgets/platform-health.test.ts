@@ -51,6 +51,7 @@ import {
   PlatformHealthSurface,
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
 import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView, envView } from "./platform-health-view";
 import { PLATFORM_AREA_WORKSPACES, resolvePlatformDestination } from "@/lib/platform/workspaces";
 
@@ -434,6 +435,20 @@ function main() {
     check("…and a latest-run breach is critical with the rule as a lead row", firing.status === "critical" && firing.lines[0]?.label === "Repeated job failures");
     const olderFiring = alertsView(alerts([HISTORY_ONLY_RUN, FIRING_RUN]), NOW);
     check("an older firing run does not outrank the newest quiet one", olderFiring.status === "nominal");
+  }
+
+  // ── 11b. B10 monitoring — a failed alert source is a warning, never silence ──
+  console.log("11b. an alert source that failed to gather turns Nominal into Caution and is named");
+  {
+    const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const]));
+    const blind = alertsView(alerts([run({ evaluatedAtISO: AGO(30), authorities: { ...allOk, syncIncidents: "failed" } })]), NOW);
+    check("failed source → caution (not nominal)", blind.status === "caution", String(blind.status));
+    check("…a lead row names it: 'Alert source unavailable: sync incidents'", blind.lines.some((l) => l.label === "Alert source unavailable: sync incidents" && l.tone === "bad"), JSON.stringify(blind.lines));
+    check("…the headline says a source is unavailable", /1 alert source unavailable/.test(blind.headline), blind.headline);
+    const clean = alertsView(alerts([run({ evaluatedAtISO: AGO(30), authorities: allOk })]), NOW);
+    check("all sources ok → nominal, no source row", clean.status === "nominal" && !clean.lines.some((l) => /Alert source unavailable/.test(l.label)));
+    const legacy = alertsView(alerts([run({ evaluatedAtISO: AGO(30) })]), NOW);
+    check("a row without `authorities` (pre-B10) → no warning invented, still nominal", legacy.status === "nominal" && ![...legacy.lines, ...legacy.details].some((l) => /Alert source unavailable/.test(l.label)));
   }
 
   // ── 12. UX-P1 — compact: ≤2 lead rows; provenance and notes in <details> ──
