@@ -3,7 +3,7 @@
 // API is called. `?platform-ai` shows a selected thread; `?platform-ai=empty`
 // shows the empty state with the starter chips.
 import React, {useState} from 'react';
-import {PlatformAiConversationsView} from '@/components/platform/PlatformAiConversations';
+import {PlatformAiConversationsView, useNoticeInLog} from '@/components/platform/PlatformAiConversations';
 import type {ClientConversation, ClientMessage} from '@/components/platform/platform-ai-conversations-model';
 
 const NOW = new Date('2026-01-10T12:00:00.000Z');
@@ -39,6 +39,7 @@ export function PlatformAiScene({empty}: {empty: boolean}) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const noticeInLog = useNoticeInLog();
   const noop = () => {};
   return (
     <>
@@ -49,7 +50,7 @@ export function PlatformAiScene({empty}: {empty: boolean}) {
         sheetOpen={sheetOpen} railCollapsed={railCollapsed} confirmDelete={null} deleting={false}
         onDraft={setDraft} onSend={() => setDraft('')} onStarter={noop} onRetrySend={noop} onRetryFailed={noop} onCheckPending={noop}
         onSelect={() => setSheetOpen(false)} onNew={noop} onAskDelete={noop} onConfirmDelete={noop} onCancelDelete={noop}
-        onSheet={setSheetOpen} onRail={setRailCollapsed} noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+        onSheet={setSheetOpen} onRail={setRailCollapsed} noticeOpen={noticeOpen} onNotice={setNoticeOpen} noticeInLog={noticeInLog}
       />
       <nav style={{position: 'fixed', bottom: 0, height: 56, background: 'var(--glass-thick)', left: 0, right: 0}}>Fixture platform bottom bar</nav>
     </>

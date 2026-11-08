@@ -42,7 +42,7 @@ import { ComposerFrame } from "@/components/ai/Composer";
 import { SuggestedPrompt } from "@/components/ai/SuggestedPrompt";
 import { isSendKey } from "@/components/ai/conversation-surface";
 import {
-  AssistantAnswer, ConversationList, PLATFORM_AI_NOTICE_REGION_ID, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
+  AssistantAnswer, ConversationList, PLATFORM_AI_NOTICE_IN_LOG_QUERY, PLATFORM_AI_NOTICE_REGION_ID, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
   type PlatformAiConversationsViewProps,
 } from "./PlatformAiConversations";
 import {
@@ -560,6 +560,27 @@ console.log("\n10. shared shell (parity PR3) — frame, log, thinking dots, answ
   }
   const emptyView = view({ selected: null, conversations: [] });
   const ongoing = view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeOpen: true });
+  // S2 option (b): below 340 px the new-conversation notice sits at the top of the
+  // reading region, above the headline and starters; the footer then has no copy of it.
+  const narrowEmpty = view({ selected: null, conversations: [], noticeInLog: true });
+  check("below 340 px (noticeInLog): the full notice is in the reading region, above the headline, exactly once",
+    /data-platform-ai-notice-lead=""[^>]*><div id="platform-ai-notice" data-platform-ai-notice="log"/.test(narrowEmpty)
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") > narrowEmpty.indexOf("data-ai-scroll")
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") < narrowEmpty.indexOf(PLATFORM_AI_STARTER_HEADLINE)
+    && narrowEmpty.indexOf("data-platform-ai-notice-lead") < narrowEmpty.indexOf("data-ai-dock")
+    && (narrowEmpty.match(/id="platform-ai-conversations-disclosure"/g) ?? []).length === 1
+    && od5Of(narrowEmpty) === textOf(PLATFORM_AI_CONVERSATIONS_DISCLOSURE)
+    && /aria-describedby="platform-ai-privacy-hint platform-ai-conversations-disclosure"/.test(narrowEmpty)
+    && /data-platform-ai-privacy-hint/.test(narrowEmpty));
+  check("…an ongoing conversation ignores it (the toggle stays in the footer)",
+    /data-platform-ai-notice-toggle/.test(view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeInLog: true }))
+    && !/data-platform-ai-notice-lead/.test(view({ selected: { conversation: CONV, messages: [user("u1", "q"), answer("a1")] }, noticeInLog: true })));
+  check("composer 'log' mode: hint + counter, no notice copy", !/data-platform-ai-notice=/.test(mk({ noticeMode: "log" })) && /data-platform-ai-counter/.test(mk({ noticeMode: "log" })));
+  check("contrast: the OD-5 text and the privacy hint use the secondary-text token (muted measured below AA; runner proves 4.5:1)",
+    /data-platform-ai-conversations-disclosure="" class="min-w-0 break-words text-\[var\(--text-secondary\)\]"/.test(auto)
+    && /data-platform-ai-privacy-hint="" class="min-w-0 break-words text-\[var\(--text-secondary\)\]"/.test(auto));
+  check("the switch is a client media query at 340 px, read in the orchestrator (the view stays pure)",
+    PLATFORM_AI_NOTICE_IN_LOG_QUERY === "(max-width: 339.98px)" && /const noticeInLog = useNoticeInLog\(\);/.test(src(COMPONENT)) && /noticeInLog=\{noticeInLog\}/.test(src(COMPONENT)));
   check("the view: empty state ⇒ full notice; ongoing ⇒ toggle (state from props)",
     /data-platform-ai-notice="full"/.test(emptyView) && !/data-platform-ai-notice-toggle/.test(emptyView)
     && /data-platform-ai-notice="open"/.test(ongoing) && /data-platform-ai-notice-toggle="" aria-expanded="true"/.test(ongoing));

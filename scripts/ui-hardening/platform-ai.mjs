@@ -16,7 +16,8 @@ const LG = 1024, SM = 640;
 const OD5 = fs.readFileSync(path.resolve(process.cwd(), 'components/platform/platform-ai-conversations-model.ts'), 'utf8')
   .match(/PLATFORM_AI_CONVERSATIONS_DISCLOSURE =\s*"([^"]+)"/)[1];
 // Keyboard-open geometries (visual viewport ~440-480 px tall on a phone).
-const KEYBOARD_OPEN = [[320,480],[360,440],[375,440],[390,440]];
+const KEYBOARD_OPEN = [[320,440],[320,480],[360,440],[375,440],[390,440]];
+const NOTICE_IN_LOG_BELOW = 340; // S2 option (b): narrower viewports show the new-conversation notice in the reading region
 const textOf = (loc) => loc.evaluate((el) => el.textContent.replace(/\s+/g, ' ').trim());
 /** No ancestor of the notice (nor the notice) is a scroll container. */
 const noScrollAncestor = (page) => page.locator('#platform-ai-notice').evaluate((el) => {
@@ -26,6 +27,38 @@ const noScrollAncestor = (page) => page.locator('#platform-ai-notice').evaluate(
   }
   return true;
 });
+/**
+ * Below 340 px a new conversation's notice sits at the top of the reading region: fully
+ * rendered there, its first line on screen on load (scrollTop 0, no auto-scroll), the
+ * reading region its ONLY scroll ancestor, no copy in the footer, the composer on screen.
+ */
+async function noticeInLog(page, width, height, at) {
+  const notice = page.locator('[data-ai-scroll] [data-platform-ai-notice-lead] #platform-ai-notice');
+  assert.equal(await notice.count(), 1, 'notice in the reading region at ' + at);
+  assert.equal(await notice.getAttribute('data-platform-ai-notice'), 'log');
+  assert.equal(await page.locator('[data-ai-dock] #platform-ai-notice').count(), 0, 'no footer copy at ' + at);
+  assert.equal(await page.locator('#platform-ai-conversations-disclosure').count(), 1, 'one OD-5 element at ' + at);
+  assert(await notice.isVisible(), 'notice rendered at ' + at);
+  assert.equal(await textOf(page.locator('#platform-ai-conversations-disclosure')), OD5, 'OD-5 text identical at ' + at);
+  const scrollers = await notice.evaluate((el) => {
+    const out = [];
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (/(auto|scroll)/.test(cs.overflowY + ' ' + cs.overflowX)) out.push(n.hasAttribute('data-ai-scroll') ? 'log' : n.outerHTML.slice(0, 100));
+    }
+    return out;
+  });
+  assert.deepEqual(scrollers, ['log'], 'the reading region is the only scroll ancestor at ' + at);
+  assert.equal(await page.locator('[data-ai-scroll]').evaluate((el) => el.scrollTop), 0, 'empty thread opens at the top at ' + at);
+  const region = await page.locator('[data-ai-scroll]').boundingBox();
+  const firstLine = await page.locator('#platform-ai-conversations-disclosure').evaluate((el) => {
+    const r = document.createRange(); r.selectNodeContents(el); const b = r.getClientRects()[0]; return { y: b.y, h: b.height };
+  });
+  assert(firstLine.y >= region.y - 1 && firstLine.y + firstLine.h <= Math.min(region.y + region.height, height) + 1, 'first notice line on screen at ' + at + ' ' + JSON.stringify({ firstLine, region }));
+  const form = await page.locator('[data-ai-dock] form').boundingBox();
+  assert(form.y >= 0 && form.y + form.height <= height - 40, 'composer on screen at ' + at);
+  assert(await page.locator('#platform-ai-privacy-hint').isVisible(), 'privacy hint visible at ' + at);
+}
 /** The notice is rendered in full: visible, inside the shell and above the bottom bar, the composer on-screen too. */
 async function noticeFullyVisible(page, width, height, at) {
   const notice = page.locator('#platform-ai-notice');
@@ -148,7 +181,8 @@ try {
     const emptyDock = await page.locator('[data-ai-dock]').boundingBox();
     assert(emptyDock.y + emptyDock.height <= height - 40, 'empty: composer above the bottom bar at ' + at);
     assert.equal(await page.locator('[data-platform-ai-notice-toggle]').count(), 0, 'new conversation: no toggle at ' + at);
-    if (height >= 440 || width >= SM) await noticeFullyVisible(page, width, height, 'empty ' + at);
+    if (width < NOTICE_IN_LOG_BELOW) await noticeInLog(page, width, height, 'empty ' + at);
+    else if (height >= 440 || width >= SM) await noticeFullyVisible(page, width, height, 'empty ' + at);
     if (shots.includes(width)) await page.screenshot({ path: `${evidence}/platform-ai-empty-${width}.png` });
 
     results.push({ width, height, overflow: 'pass', dock: 'pass', rail: width < LG ? 'sheet' : 'rail+centred', header: 'pass', starters: 'pass' });
@@ -176,7 +210,8 @@ try {
     await page.goto(`${base}/?platform-ai=empty`);
     await page.getByRole('textbox', { name: 'Ask Platform AI' }).fill('Which fixture jobs ran late?');
     await page.waitForTimeout(150);
-    await noticeFullyVisible(page, width, height, 'keyboard-open empty ' + width + 'x' + height);
+    if (width < NOTICE_IN_LOG_BELOW) await noticeInLog(page, width, height, 'keyboard-open empty ' + width + 'x' + height);
+    else await noticeFullyVisible(page, width, height, 'keyboard-open empty ' + width + 'x' + height);
     assert(await noOverflow(page), 'keyboard-open empty: no horizontal overflow');
   }
   // Ongoing, keyboard open: collapsed notice keeps the composer and the control on screen.
@@ -193,7 +228,37 @@ try {
   await page.locator('#platform-ai-notice').waitFor();
   await page.screenshot({ path: `${evidence}/platform-ai-375-empty-notice.png` });
 
-  fs.writeFileSync(path.join(evidence, 'platform-ai-results.json'), JSON.stringify({ scope: 'Synthetic Platform AI conversation scene (fabricated data, pure view, no API)', results, softwareKeyboard: 'not verified; requires a device' }, null, 2));
+  // WCAG AA contrast (4.5:1) of the OD-5 text and the privacy hint against their actual
+  // (composited) background, in both themes, from computed styles.
+  const contrast = {};
+  for (const theme of ['dark', 'light']) {
+    for (const [scene, w] of [['empty', 390], ['empty', 320]]) {
+      await page.setViewportSize({ width: w, height: 844 });
+      await page.goto(`${base}/?platform-ai=${scene}`);
+      await page.evaluate((t) => { document.documentElement.setAttribute('data-theme', t); }, theme);
+      await page.waitForTimeout(100);
+      for (const id of ['platform-ai-conversations-disclosure', 'platform-ai-privacy-hint']) {
+        const r = await page.locator('#' + id).evaluate((el) => {
+          const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) throw new Error('unparsed colour ' + c); const v = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] : 1 }; };
+          const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+          // Background: composite every ancestor's background colour, bottom-up, over white.
+          const layers = [];
+          for (let n = el; n; n = n.parentElement) { const bg = parse(getComputedStyle(n).backgroundColor); if (bg.a > 0) layers.push(bg); if (bg.a >= 1) break; }
+          let bg = { r: 255, g: 255, b: 255, a: 1 };
+          for (const l of layers.reverse()) bg = over(l, bg);
+          const fg = over(parse(getComputedStyle(el).color), bg);
+          const lum = ({ r, g, b }) => { const f = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+          const [L1, L2] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+          return { ratio: Math.round(((L1 + 0.05) / (L2 + 0.05)) * 100) / 100, color: getComputedStyle(el).color, background: `rgb(${Math.round(bg.r)}, ${Math.round(bg.g)}, ${Math.round(bg.b)})` };
+        });
+        const key = `${theme}/${id === 'platform-ai-privacy-hint' ? 'privacy-hint' : 'od5'}/${w < NOTICE_IN_LOG_BELOW ? 'log' : 'footer'}`;
+        contrast[key] = r;
+        console.log('contrast', key, r.ratio, r.color, 'on', r.background);
+        assert(r.ratio >= 4.5, 'WCAG AA 4.5:1 for ' + key + ' ' + JSON.stringify(r));
+      }
+    }
+  }
+  fs.writeFileSync(path.join(evidence, 'platform-ai-results.json'), JSON.stringify({ scope: 'Synthetic Platform AI conversation scene (fabricated data, pure view, no API)', results, contrast, softwareKeyboard: 'not verified; requires a device' }, null, 2));
   console.log('PASS', results.length, 'Platform AI viewport fixtures (thread, sheet/rail, empty starters, OD-5 notice) + input growth + keyboard-open');
 } finally {
   await browser.close();
