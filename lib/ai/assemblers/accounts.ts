@@ -49,6 +49,8 @@
 
 import type { ReadClient } from '@/lib/db/tenant-context';
 import { loadHistoriesFor, type ValuationHistory } from '@/lib/assets/valuations';
+import { loadPropertyProfilesFor } from '@/lib/assets/property-links';
+import { aiPropertyFacts, type AiSpaceDebt } from '@/lib/assets/property-equity';
 import {
   accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
 } from '@/lib/accounts/display-identity';
@@ -605,6 +607,35 @@ async function assembleAccounts(
     now.toISOString().slice(0, 10),
   );
 
+  // Mortgage F9 (owner 2026-11-08) — a property's value basis, its linked secured
+  // debts and the DERIVED equity, via the ONE builder (aiPropertyFacts). Linked
+  // debts resolve ONLY against this Space's balance-disclosing rows; if ANY
+  // linked debt is not among them the payload is the flag only (S2 R2). Emitted
+  // only for a manual asset whose profile states something — every pre-F9
+  // asset's context is byte-identical.
+  const propertyProfiles = await loadPropertyProfilesFor(
+    client,
+    disclosingLinks
+      .filter((l) => grantsAccountDetail(l.visibilityLevel) && l.financialAccount.syncStatus === 'manual')
+      .map((l) => l.financialAccount.id),
+  );
+  const spaceDebts = new Map<string, AiSpaceDebt>(disclosingLinks
+    .filter((l) => l.financialAccount.type === 'debt')
+    .map((l) => {
+      const d = l.financialAccount;
+      return [d.id, {
+        id: d.id, name: resolveDisplayName(d), balance: d.balance, currency: d.currency,
+        type: d.type, debtSubtype: d.debtSubtype, providerSubtype: d.providerSubtype, creditLimit: d.creditLimit,
+        visibilityLevel: l.visibilityLevel,
+      }];
+    }));
+  const propertyFacts = (fa: { id: string; balance: number; currency: string }): Pick<AccountSummaryItem, 'property'> => {
+    const property = aiPropertyFacts({
+      value: fa.balance, currency: fa.currency, profile: propertyProfiles.get(fa.id), spaceDebts,
+    });
+    return property ? { property } : {};
+  };
+
   const allItems: AccountSummaryItem[] = (() => {
     // FULL rows pass through individually, exactly as before.
     const fullItems = disclosingLinks
@@ -648,6 +679,7 @@ async function assembleAccounts(
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           ...(fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}),
           ...(fa.syncStatus === 'manual' ? valuationFacts(historyByAccount.get(fa.id)) : {}),
+          ...(fa.syncStatus === 'manual' ? propertyFacts(fa) : {}),
           balanceFreshness:     freshnessFact(fa, now),
           ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,

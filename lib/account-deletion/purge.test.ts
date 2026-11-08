@@ -62,6 +62,8 @@ interface World {
   mergeDecisions: Array<{ id: string; decidedByUserId: string | null }>;
   settings: Array<{ key: string; updatedById: string | null }>;
   merchantRules: Array<{ id: string; ownerUserId: string | null }>;
+  // Mortgage F9 (S2 D1) — other users' property profiles linking secured debts.
+  profiles: Array<{ id: string; securedDebtAccountIds: string[] | null }>;
   // PB-1 Phase 1 — incident data.
   incidents: Array<{ id: string; subjectUserId: string | null; plaidItemId: string | null; financialAccountId: string | null; occAccounts: string[] }>;
   incidentArchives: Array<{ id: string; incidentId: string; subjectUserId: string | null; plaidItemId: string | null; financialAccountId: string | null }>;
@@ -109,6 +111,13 @@ function baseWorld(): World {
     mergeDecisions: [{ id: "m1", decidedByUserId: USER }],
     settings: [{ key: "k", updatedById: USER }],
     merchantRules: [{ id: "r1", ownerUserId: USER }, { id: "r2", ownerUserId: OTHER }],
+    // OTHER's property links the subject's mortgage A1 AND their own A5; a NULL
+    // array row and an unrelated row must be left alone.
+    profiles: [
+      { id: "mp_other", securedDebtAccountIds: ["A1", "A5"] },
+      { id: "mp_null", securedDebtAccountIds: null },
+      { id: "mp_unrelated", securedDebtAccountIds: ["A5"] },
+    ],
     incidents: [
       // Phase-1 row: owner stamped at observation.
       { id: "si_owned", subjectUserId: USER, plaidItemId: null, financialAccountId: "A9", occAccounts: [] },
@@ -208,6 +217,15 @@ function makeFake(world: World, hooks: Hooks = {}) {
         return { count: before - W.accounts.length };
       },
       update: async () => ({}),
+    },
+    manualAssetProfile: {
+      findMany: async ({ where }: { where: { securedDebtAccountIds: { hasSome: string[] } } }) =>
+        W.profiles.filter((p) => (p.securedDebtAccountIds ?? []).some((id) => where.securedDebtAccountIds.hasSome.includes(id)))
+          .map((p) => ({ id: p.id, securedDebtAccountIds: p.securedDebtAccountIds })),
+      update: async ({ where, data }: { where: { id: string }; data: { securedDebtAccountIds: string[] } }) => {
+        const p = W.profiles.find((r) => r.id === where.id); if (!p) throw new Error("P2025");
+        p.securedDebtAccountIds = data.securedDebtAccountIds; return {};
+      },
     },
     space: {
       delete: async ({ where }: { where: { id: string } }) => {
@@ -496,6 +514,12 @@ async function main() {
       world.mergeDecisions[0].decidedByUserId === null && world.settings[0].updatedById === null);
     check("the user's MerchantRules deleted, the other user's kept", world.merchantRules.map((r) => r.id).join() === "r2");
     check("SALs the user added are REVOKED", world.links[0].status === "REVOKED");
+    // Mortgage F9 (S2 D1)
+    check("F9 D1 — the deleted user's account id no longer appears in ANOTHER user's securedDebtAccountIds",
+      JSON.stringify(world.profiles.find((p) => p.id === "mp_other")!.securedDebtAccountIds) === JSON.stringify(["A5"]), JSON.stringify(world.profiles));
+    check("F9 D1 — a NULL link array and an unrelated row are left untouched",
+      world.profiles.find((p) => p.id === "mp_null")!.securedDebtAccountIds === null
+      && JSON.stringify(world.profiles.find((p) => p.id === "mp_unrelated")!.securedDebtAccountIds) === JSON.stringify(["A5"]));
   }
 
   console.log("\n6. provider HOLD releases the claim and destroys nothing");

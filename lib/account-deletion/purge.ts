@@ -62,6 +62,7 @@ import { sendEmail } from "@/lib/email/send";
 import { accountDeletedAlert } from "@/lib/email/security-alerts";
 import { recipientHash } from "@/lib/notifications/delivery/record";
 import { AuditAction } from "@/lib/audit-actions";
+import { scrubSecuredDebtLinks, type SecuredDebtScrubClient } from "@/lib/assets/secured-debt-scrub";
 import { plaidClient } from "@/lib/plaid/client";
 import { resolveIncidentsForRemovedSubjects } from "@/lib/plaid/syncIssues";
 import {
@@ -112,7 +113,7 @@ export interface PurgeResult {
 
 type UserSnapshot = { id: string; email: string; deletionScheduledAt: Date | null; purgeStartedAt: Date | null };
 
-export interface PurgeTxClient extends IncidentPurgeTx {
+export interface PurgeTxClient extends IncidentPurgeTx, SecuredDebtScrubClient {
   user: {
     updateMany(args: { where: Prisma.UserWhereInput; data: Prisma.UserUpdateManyMutationInput }): Promise<{ count: number }>;
     delete(args: { where: { id: string } }): Promise<unknown>;
@@ -498,6 +499,11 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
     //     Deleting a FinancialAccount cascades its transactions, holdings,
     //     connections, debtProfile, provider identities, SALs, goal
     //     contributions and imports.
+    //     Mortgage F9 (S2 D1) — FIRST, in this same transaction, every doomed
+    //     account id leaves every OTHER user's ManualAssetProfile
+    //     .securedDebtAccountIds (no FK can cascade an array element). The
+    //     doomed set is the one captured above with this exact filter.
+    await scrubSecuredDebtLinks(tx, doomedAccountIds);
     const deleted = await tx.financialAccount.deleteMany({
       where: { OR: [{ ownerUserId: userId }, { ownerSpaceId: { in: dyingSpaceIds } }] },
     });

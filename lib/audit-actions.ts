@@ -194,6 +194,13 @@ export const AuditAction = {
   // — never the address, the name, the balance or the purchase price.
   WALLET_ADD:               "WALLET_ADD",
   MANUAL_ASSET_ADD:         "MANUAL_ASSET_ADD",
+  // Mortgage F9 (owner 2026-11-08; S2 R1) — the owner's property actions, written
+  // in the SAME tenant transaction as the profile write by
+  // lib/assets/property-links.ts. metadata = { propertyId, debtAccountId? } /
+  // { propertyId, from, to } — ids and enum values only, never a balance or name.
+  MANUAL_ASSET_SECURED_DEBT_LINKED:   "MANUAL_ASSET_SECURED_DEBT_LINKED",
+  MANUAL_ASSET_SECURED_DEBT_UNLINKED: "MANUAL_ASSET_SECURED_DEBT_UNLINKED",
+  MANUAL_ASSET_VALUE_BASIS_CHANGED:   "MANUAL_ASSET_VALUE_BASIS_CHANGED",
   REGISTER:                 "REGISTER",
 
   // ── Product events (BETA A1–A8, lib/analytics/product-events.ts) ──────────
@@ -890,6 +897,14 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Accounts",
     actions: [AuditAction.ACCOUNT_SHARED, AuditAction.ACCOUNT_REVOKED],
+  },
+  {
+    label: "Property (Mortgage F9)",
+    actions: [
+      AuditAction.MANUAL_ASSET_SECURED_DEBT_LINKED,
+      AuditAction.MANUAL_ASSET_SECURED_DEBT_UNLINKED,
+      AuditAction.MANUAL_ASSET_VALUE_BASIS_CHANGED,
+    ],
   },
   {
     label: "Imports",

@@ -19,7 +19,11 @@
  *   purchaseDate?:  string            // ISO date string, e.g. "2020-04-15"
  *   notes?:         string            // free-text display note
  *   spaceIds?:  string[]          // additional (non-personal) spaces to share into
+ *   valueBasis?:  string             // Mortgage F9, real_estate only: MARKET_VALUE | EQUITY_ENTERED | UNKNOWN
  * }
+ *
+ * Mortgage F9 — `assetKind` (when sent) and `valueBasis` are persisted on
+ * ManualAssetProfile; omitted ⇒ nothing is recorded (no inference).
  *
  * Returns: { accountId: string }
  *
@@ -62,6 +66,7 @@ import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
 import { recordInitialValuation, type AcquisitionInput } from "@/lib/assets/valuations";
+import { isPropertyValueBasis, parseManualAssetKind } from "@/lib/assets/property-equity";
 import { checkAcquisitionDate, checkEffectiveDate, estimateInstant, isoDateOf } from "@/lib/assets/valuation-series.core";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
@@ -82,6 +87,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     acquisitionDate?:              string;
     purchasePriceIsStartingValue?: boolean;
     valuationDate?:                string;
+    // Mortgage F9 — what the value IS for a property (the form sends MARKET_VALUE).
+    valueBasis?:                   string;
   };
 
   const {
@@ -102,9 +109,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (typeof balance !== "number" || isNaN(balance) || balance < 0)
                                return NextResponse.json({ error: "Value must be a non-negative number." }, { status: 400 });
 
-  const VALID_KINDS = ["real_estate", "vehicle", "equipment", "other"];
-  if (!VALID_KINDS.includes(assetKind))
-                               return NextResponse.json({ error: `Invalid assetKind. Use: ${VALID_KINDS.join(", ")}` }, { status: 400 });
+  // S2 D2 — ONE allowlist (MANUAL_ASSET_KINDS), shared with the property endpoint.
+  const kindCheck = parseManualAssetKind(assetKind);
+  if (!kindCheck.ok)           return NextResponse.json({ error: kindCheck.error }, { status: 400 });
 
   // REVIEW-3 B-5 — the currency goes through the SAME allowlist rule the
   // reporting-currency boundary enforces (lib/spaces/reporting-currency.ts →
@@ -119,6 +126,14 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const normalizedCurrency = currency.trim().toUpperCase();
   if (!isSupportedCurrency(normalizedCurrency))
                                return NextResponse.json({ error: `Unsupported currency "${normalizedCurrency}" — must be USD or one of the supported quote currencies.` }, { status: 400 });
+
+  // Mortgage F9 — persisted only when the client stated it (no inference).
+  const assetKindExplicit = body.assetKind !== undefined;
+  if (body.valueBasis !== undefined && !isPropertyValueBasis(body.valueBasis))
+                               return NextResponse.json({ error: "Invalid valueBasis. Use: MARKET_VALUE, EQUITY_ENTERED, UNKNOWN" }, { status: 400 });
+  if (body.valueBasis !== undefined && assetKind !== "real_estate")
+                               return NextResponse.json({ error: "valueBasis applies to real estate only." }, { status: 400 });
+  const valueBasis = body.valueBasis !== undefined && isPropertyValueBasis(body.valueBasis) ? body.valueBasis : null;
 
   // ── RWA-2A — the valuation's date and the optional acquisition facts ────────
   // Validated by the same pure rules the forms use (lib/assets/valuation-series.core.ts).
@@ -244,7 +259,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
     // RWA-2A — the asset's first dated valuation (+ acquisition facts), in the
     // same transaction, after the links its RLS insert predicate needs.
-    await recordInitialValuation(tx, { financialAccountId: created.id, userId, value: balance, currency: normalizedCurrency, effectiveDate: acquisition.valuationDate, acquisition: acquisition.facts });
+    await recordInitialValuation(tx, { financialAccountId: created.id, userId, value: balance, currency: normalizedCurrency, effectiveDate: acquisition.valuationDate, acquisition: acquisition.facts, property: { assetKind: assetKindExplicit ? assetKind : null, valueBasis } });
 
     return created;
   });
