@@ -27,6 +27,7 @@ import {
   PLATFORM_AI_SESSION_LINE, PLATFORM_AI_SESSION_NOT_SAVED, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS,
   answerBlocks, showComposerCounter, type ClientSegment, type InlineSegment,
 } from "./platform-ai-conversations-model";
+import { PLATFORM_AI_MEMORY_LINE } from "./platform-ai-memory-model";
 
 // ── The answer body ─────────────────────────────────────────────────────────
 
@@ -80,6 +81,9 @@ function Inline({ s, chips }: { s: InlineSegment; chips?: ReadonlyMap<number, Ch
     return isSameOriginPath(s.href)
       ? <a href={s.href} className="underline underline-offset-2">{s.text}</a>
       : <span>{s.text}</span>;
+  }
+  if (s.kind === "memory") {
+    return <span data-platform-ai-memory="" className="italic text-[var(--text-secondary)]">{s.text}</span>;
   }
   if (s.kind === "figure") {
     const chip = chips?.get(s.seg);
@@ -222,10 +226,12 @@ export function PlatformAiNotice({ open, saved }: { open: boolean; saved: boolea
  * aria-controls that expands the full notice INLINE (no modal, no scroll box);
  * focus stays on the button.
  */
-export function PlatformAiDisclosureLine({ saved, open, onToggle }: { saved: boolean; open: boolean; onToggle: (open: boolean) => void }) {
+export function PlatformAiDisclosureLine({ saved, open, onToggle, memory = false }: { saved: boolean; open: boolean; onToggle: (open: boolean) => void; memory?: boolean }) {
+  // S2 MEMORY BUILD CHECKLIST: with memory effective "Read-only" is false (Remember writes a row) ⇒ the memory line.
+  const line = !saved ? PLATFORM_AI_SESSION_LINE : memory ? PLATFORM_AI_MEMORY_LINE : PLATFORM_AI_CONVERSATIONS_LINE;
   return (
-    <p data-platform-ai-disclosure={saved ? "conversations" : "session"} className="min-w-0 break-words text-center leading-5">
-      <span data-platform-ai-line="">{saved ? PLATFORM_AI_CONVERSATIONS_LINE : PLATFORM_AI_SESSION_LINE}</span>
+    <p data-platform-ai-disclosure={saved ? (memory ? "memory" : "conversations") : "session"} className="min-w-0 break-words text-center leading-5">
+      <span data-platform-ai-line="">{line}</span>
       <span aria-hidden> · </span>
       <button type="button" data-platform-ai-notice-toggle="" aria-expanded={open} aria-controls={PLATFORM_AI_NOTICE_REGION_ID}
         onClick={() => onToggle(!open)}
@@ -256,6 +262,8 @@ export interface PlatformAiComposerProps {
    * there, so a first visit's expanded notice is never clipped by the dock).
    */
   noticeIn?: "footer" | "lead";
+  /** Platform AI memory is effective (the page decides, server-side): the corrected short line. */
+  memory?: boolean;
 }
 
 /**
@@ -265,7 +273,7 @@ export interface PlatformAiComposerProps {
  * beneath. The counter appears only near the limit. aria-describedby points at
  * the full-text elements (S2 C4).
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer" }: PlatformAiComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer", memory = false }: PlatformAiComposerProps) {
   return (
     <ComposerFrame
       value={value}
@@ -284,7 +292,7 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, 
       ) : undefined}
       footer={
         <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col items-center gap-1.5 px-1 text-[11px] text-[var(--text-secondary)]">
-          <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} />
+          <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} memory={memory} />
           {noticeIn === "footer" ? <PlatformAiNotice open={noticeOpen} saved={saved} /> : null}
           {showComposerCounter(value.length) ? (
             <span data-platform-ai-counter="" className="tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>

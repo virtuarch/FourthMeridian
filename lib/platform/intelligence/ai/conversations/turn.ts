@@ -24,18 +24,19 @@
  */
 
 import {
-  PLATFORM_AI_TURN_TIMEOUT_MS, runPlatformAiTurn, traceLine,
+  PLATFORM_AI_TURN_TIMEOUT_MS, runPlatformAiTurn, segmentsText, traceLine,
   type PlaceholderVerdict, type PlatformAiAnswer, type PlatformAiBinding, type PlatformAiGenerate, type PlatformAiTurnRecord,
 } from "../core";
 import {
   EVIDENCE_REFS_MAX, REF_ID_SHAPE, STORED_ANSWER_VERSION, STORED_CITATIONS_MAX, STORED_NOTES_MAX, STORED_SEGMENTS_MAX, STORED_TEXT_MAX,
-  isStoredAnswer, type EvidenceRef, type StoredAnswerV1, type StoredSegment,
+  MEMORY_SPAN_SHAPE, isStoredAnswer, type EvidenceRef, type StoredAnswerV1, type StoredSegment,
 } from "./answer";
+import type { MemoryProposalCard, MemoryTurn } from "../memory/turn";
 import { assemblePlatformAiHistory, type AssembledHistory, type HistoryMessage, type HistoryScope } from "./history";
 
 /** The settle outcome (store.ts SettleOutcome, restated here so this module stays free of the data module). */
 export type ConversationTurnOutcome =
-  | { status: "COMPLETE"; answer: StoredAnswerV1; evidenceRefs: readonly EvidenceRef[] }
+  | { status: "COMPLETE"; answer: StoredAnswerV1; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null }
   | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH" };
 
 /** What the CURRENT token can see, for history's earlier-evidence filter: the binding's own accessors. */
@@ -73,6 +74,7 @@ export function storedAnswerOf(result: PlatformAiAnswer, record: Pick<PlatformAi
       if (page && REF_ID_SHAPE.test(page.id) && s.text.length <= 200) segs.push({ kind: "link", text: s.text, page: page.id, params: { ...page.params } });
       else pushText(s.text);
     } else if (s.kind === "correction" || s.kind === "note") segs.push({ kind: s.kind, text: clip(s.text, STORED_TEXT_MAX) });
+    else if (s.kind === "memory") { if (MEMORY_SPAN_SHAPE.test(s.text)) segs.push({ kind: "memory", text: s.text }); }
     else pushText(s.text);
   }
   return {
@@ -126,6 +128,10 @@ export interface ConversationTurnInput {
   /** Metadata-only lines (codes, counts, registry ids — never text or values). */
   onTrace?(line: string): void;
   onUngrounded?(verdict: PlaceholderVerdict, unresolved: number): void;
+  /** Platform AI memory (design v2): present ONLY when memory is effective. */
+  memory?: MemoryTurn;
+  /** Memory: proposal refusal codes (audited by the caller, no content). */
+  onMemoryRefusals?(codes: readonly string[]): void;
 }
 
 export interface ConversationTurnRun {
@@ -146,12 +152,20 @@ export async function runConversationTurn(input: ConversationTurnInput): Promise
       question: input.question, questionScrubbed: true, history,
       binding: input.binding, generate: input.generate, model: input.model, reasoningModel: input.reasoningModel,
       signal: input.signal ?? AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
+      ...(input.memory ? { memory: input.memory.hooks } : {}),
     });
     if (result.grounding.replaced) input.onUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     input.onTrace?.(`${traceLine(result)} history=${history.exchangesUsed}/${history.exchangesUsed + history.exchangesDropped}`);
-    const answer = storedAnswerOf(result, record);
+    // S2 C1: a saved note the model echoed never reaches the stored transcript.
+    const answer = input.memory ? input.memory.redactStored(storedAnswerOf(result, record)) : storedAnswerOf(result, record);
     if (!isStoredAnswer(answer)) return { outcome: { status: "FAILED", failureCode: "PROVIDER" }, history, transcript, result };
-    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record) }, history, transcript, result };
+    let memoryProposal: MemoryProposalCard | null = null;
+    if (input.memory) {
+      const fin = input.memory.finalize(segmentsText(result.answer));
+      memoryProposal = fin.card;
+      if (fin.refusals.length > 0) input.onMemoryRefusals?.(fin.refusals);
+    }
+    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record), ...(input.memory ? { memoryProposal } : {}) }, history, transcript, result };
   } catch (err) {
     let code: "KILL_SWITCH" | "TIMEOUT" | "PROVIDER";
     try { code = input.classify(err); } catch { code = "PROVIDER"; }

@@ -72,7 +72,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
-import { MessagesSquare, PanelLeftClose, PanelLeftOpen, SquarePen, Trash2 } from "lucide-react";
+import { Brain, MessagesSquare, PanelLeftClose, PanelLeftOpen, SquarePen, Trash2 } from "lucide-react";
 import { AiShell } from "@/components/ai/AiShell";
 import { AnswerFrame } from "@/components/ai/answer-frame";
 import { ConversationLog, ThinkingIndicator } from "@/components/ai/ConversationView";
@@ -82,6 +82,8 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Panel } from "@/components/atlas/panels/Panel";
 import { PanelContent, PanelHeader } from "@/components/atlas/panels/PanelParts";
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
+import { PlatformAiMemoryConfirmCard, PlatformAiMemoryPanel } from "./PlatformAiMemory";
+import { parseProposal, type ClientMemoryProposal } from "./platform-ai-memory-model";
 import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiNotice, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_PROBLEM,
@@ -313,6 +315,13 @@ export interface PlatformAiConversationsViewProps {
   /** The operator's own toggle of the full notice; null ⇒ the server-derived default (noticeDefaultOpen, S2 C3). */
   noticeOpen?: boolean | null;
   onNotice?: (open: boolean) => void;
+  /** Platform AI memory is effective (the page decides it server-side). Absent / false ⇒ exactly as before. */
+  memory?: boolean;
+  /** The confirm card THIS turn's answer ended with (never stored); null ⇒ none. */
+  memoryProposal?: ClientMemoryProposal | null;
+  onMemoryDone?: (saved: boolean) => void;
+  memoryOpen?: boolean;
+  onMemoryOpen?: (open: boolean) => void;
 }
 
 /** Header action: the same quiet "New chat" control Personal Space AI shows. */
@@ -353,6 +362,13 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
         <button type="button" data-platform-ai-new-chat="" onClick={p.onNew} disabled={busy} className={NEW_CHAT_CLASS}>
           <SquarePen size={14} aria-hidden />
           <span className="max-sm:sr-only">New chat</span>
+        </button>
+      ) : null}
+      {p.memory ? (
+        <button type="button" data-platform-ai-memory-toggle="" onClick={() => p.onMemoryOpen?.(true)} aria-haspopup="dialog" aria-expanded={p.memoryOpen === true}
+          aria-label="Memory" className={NEW_CHAT_CLASS}>
+          <Brain size={14} aria-hidden />
+          <span className="max-sm:sr-only" aria-hidden>Memory</span>
         </button>
       ) : null}
       <button type="button" data-platform-ai-sheet-toggle="" onClick={() => p.onSheet(true)} aria-haspopup="dialog" aria-expanded={p.sheetOpen}
@@ -407,8 +423,11 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {atLimit ? (
             <p data-platform-ai-limit="" role="status" className="mx-auto mb-2 w-full min-w-0 max-w-3xl break-words rounded-xl border border-[var(--border-hairline)] p-3 text-sm text-[var(--text-secondary)]">{CONVERSATION_LIMIT_COPY}</p>
           ) : null}
+          {p.memory && p.memoryProposal ? (
+            <PlatformAiMemoryConfirmCard key={p.memoryProposal.token} proposal={p.memoryProposal} onDone={(saved) => p.onMemoryDone?.(saved)} />
+          ) : null}
           <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
-            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} />
+            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} memory={p.memory === true} />
         </>
       )}
     </>
@@ -442,6 +461,13 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
         <PanelHeader title="History" />
         <PanelContent>{list}</PanelContent>
       </Panel>
+
+      {p.memory ? (
+        <Panel open={p.memoryOpen === true} onClose={() => p.onMemoryOpen?.(false)} side="right" size="sm" ariaLabel="Platform AI memory">
+          <PanelHeader title="Memory" />
+          <PanelContent>{p.memoryOpen ? <PlatformAiMemoryPanel /> : null}</PanelContent>
+        </Panel>
+      ) : null}
 
       <ConfirmDialog open={p.confirmDelete !== null} onClose={p.onCancelDelete} onConfirm={p.onConfirmDelete}
         title="Delete this conversation?" message={DELETE_CONFIRM_COPY} confirmLabel="Delete" busy={p.deleting} />
@@ -493,6 +519,8 @@ function writeConversationParam(id: string | null, intent: HistoryIntent): void 
 
 export interface PlatformAiConversationsProps {
   areaLabel: string;
+  /** Platform AI memory is effective (decided by the page, server-side, after every gate). */
+  memory?: boolean;
   /**
    * Test seam only (the page never passes it): the presentation the state is
    * handed to. Defaults to PlatformAiConversationsView; the history test passes
@@ -501,7 +529,9 @@ export interface PlatformAiConversationsProps {
   View?: ComponentType<PlatformAiConversationsViewProps>;
 }
 
-export function PlatformAiConversations({ areaLabel, View = PlatformAiConversationsView }: PlatformAiConversationsProps) {
+export function PlatformAiConversations({ areaLabel, memory = false, View = PlatformAiConversationsView }: PlatformAiConversationsProps) {
+  const [memoryProposal, setMemoryProposal] = useState<ClientMemoryProposal | null>(null);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [conversations, setConversations] = useState<ClientConversation[] | null>(null);
   const [limits, setLimits] = useState<ClientLimits | null>(null);
@@ -590,7 +620,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
   }, [applyParam]);
 
   async function send(s: PendingSend) {
-    setSending(s); setProblem(null); setRetry(null);
+    setSending(s); setProblem(null); setRetry(null); setMemoryProposal(null);
     const r = s.conversationId
       ? await postJson(conversationMessagesUrl(s.conversationId), { clientRequestId: s.clientRequestId, question: s.question })
       : await postJson(PLATFORM_AI_CONVERSATIONS_URL, { clientRequestId: s.clientRequestId, question: s.question });
@@ -603,6 +633,7 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
     const pair = r.status === 200 || r.status === 201 ? parsePair(r.body) : null;
     if (pair) {
       setNow(new Date());
+      if (memory) setMemoryProposal(parseProposal((r.body as { memoryProposal?: unknown } | null)?.memoryProposal));
       if (!s.conversationId) setNoticeOpen(null); // a new conversation exists: back to the default (collapsed)
       setSelected((cur) => {
         if (!s.conversationId) {
@@ -686,6 +717,8 @@ export function PlatformAiConversations({ areaLabel, View = PlatformAiConversati
       onSheet={setSheetOpen}
       onRail={(v) => { setRailCollapsed(v); writeRailCollapsed(v); }}
       noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+      memory={memory} memoryProposal={memoryProposal} onMemoryDone={() => setMemoryProposal(null)}
+      memoryOpen={memoryOpen} onMemoryOpen={setMemoryOpen}
     />
   );
 }
