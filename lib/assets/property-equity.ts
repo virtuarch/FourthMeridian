@@ -292,6 +292,25 @@ export function linkedDebtVisibility(args: {
   return { visible: true, nameVisible: shared.some((l) => l.visibilityLevel === "FULL") };
 }
 
+/**
+ * S2 R3 — the property READ scope. The owner keeps every ACTIVE link of the
+ * property (unchanged). A NON-owner's links are first filtered EXPLICITLY to
+ * Spaces where the viewer holds an ACTIVE SpaceMember membership (not relying
+ * on the RLS shape); BOTH the FULL-visibility gate AND the Space ids used to
+ * load debts and compute equity come from that filtered set. null = 404.
+ */
+export function propertyReadScope(args: {
+  isOwner: boolean;
+  links: readonly { spaceId: string; visibilityLevel: string }[];
+  viewerActiveSpaceIds: readonly string[];
+}): { spaceIds: string[] } | null {
+  if (args.isOwner) return { spaceIds: [...new Set(args.links.map((l) => l.spaceId))] };
+  const member = new Set(args.viewerActiveSpaceIds);
+  const mine = args.links.filter((l) => member.has(l.spaceId));
+  if (!mine.some((l) => l.visibilityLevel === "FULL")) return null;
+  return { spaceIds: [...new Set(mine.map((l) => l.spaceId))] };
+}
+
 /** One debt row as the property endpoint loads it (link evidence + balance). */
 export interface ViewerDebtRow extends LinkCandidateDebt {
   name: string; balance: number; currency: string;

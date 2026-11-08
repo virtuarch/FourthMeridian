@@ -20,13 +20,13 @@
  * written only on the user's explicit action; nothing is auto-linked.
  */
 
-import { AccountType, ShareStatus } from "@prisma/client";
+import { AccountType, ShareStatus, SpaceMemberStatus } from "@prisma/client";
 import type { TenantClient } from "@/lib/db/tenant-context";
 import { AuditAction } from "@/lib/audit-actions";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import {
   canCarrySecuredDebt, checkSecuredDebtLink, isManualAssetKind, normalizeSecuredDebtIds, securedDebtKind,
-  suggestSecuredDebt, viewerPropertyEquity, MANUAL_ASSET_KINDS,
+  propertyReadScope, suggestSecuredDebt, viewerPropertyEquity, MANUAL_ASSET_KINDS,
   type LinkCandidateDebt, type PropertyEquity, type PropertyLinkAction, type PropertyValueBasis, type SecuredDebtKind,
 } from "./property-equity";
 
@@ -62,12 +62,19 @@ async function loadProperty(tx: TenantClient, propertyId: string, viewerUserId: 
   });
   if (!fa || fa.deletedAt || fa.syncStatus !== "manual" || fa.type !== AccountType.other) return null;
   const isOwner = fa.ownerUserId === viewerUserId;
-  if (!isOwner && !fa.spaceAccountLinks.some((l) => l.visibilityLevel === "FULL")) return null;
+  // S2 R3 — a non-owner's scope is filtered to Spaces they are an ACTIVE member
+  // of, explicitly; the FULL gate and the equity Spaces both come from it.
+  const viewerActiveSpaceIds = isOwner ? [] : (await tx.spaceMember.findMany({
+    where:  { userId: viewerUserId, status: SpaceMemberStatus.ACTIVE, spaceId: { in: fa.spaceAccountLinks.map((l) => l.spaceId) } },
+    select: { spaceId: true },
+  })).map((m) => m.spaceId);
+  const scope = propertyReadScope({ isOwner, links: fa.spaceAccountLinks, viewerActiveSpaceIds });
+  if (!scope) return null;
   const p = fa.manualAssetProfile;
   return {
     fa: { id: fa.id, balance: fa.balance, currency: fa.currency },
     isOwner,
-    spaceIds: fa.spaceAccountLinks.map((l) => l.spaceId),
+    spaceIds: scope.spaceIds,
     // NULL-safe: the array column is nullable at the DB level.
     profile: p ? { assetKind: p.assetKind, valueBasis: p.valueBasis, securedDebtAccountIds: normalizeSecuredDebtIds(p.securedDebtAccountIds) } : null,
   };

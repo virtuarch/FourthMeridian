@@ -31,7 +31,7 @@ import { AuditAction, AUDIT_ACTION_GROUPS } from "@/lib/audit-actions";
 import { propertyAuditRow } from "./property-links";
 import {
   checkSecuredDebtLink, computePropertyEquity, parsePropertyAction, securedDebtKind, suggestSecuredDebt,
-  canCarrySecuredDebt, viewerPropertyEquity, aiPropertyFacts, normalizeSecuredDebtIds, parseManualAssetKind,
+  canCarrySecuredDebt, viewerPropertyEquity, propertyReadScope, aiPropertyFacts, normalizeSecuredDebtIds, parseManualAssetKind,
   EQUITY_HIDDEN_MESSAGE, MANUAL_ASSET_KINDS,
   type AiSpaceDebt, type LinkCandidateDebt, type LinkedDebtInput, type ViewerDebtRow,
 } from "./property-equity";
@@ -269,6 +269,32 @@ console.log("11. S2 R1 — audit rows (ids and enum values only)");
   const fn = links.slice(links.indexOf("export async function applyPropertyLinkAction"));
   check("the audit row is written on the SAME tx, after the profile upsert",
     fn.indexOf("tx.manualAssetProfile.upsert(") > 0 && fn.indexOf("await tx.auditLog.create(") > fn.indexOf("tx.manualAssetProfile.upsert("));
+}
+
+console.log("12. S2 R3 — the viewer READ scope is filtered to the viewer's ACTIVE Spaces");
+{
+  const links = [{ spaceId: "shared", visibilityLevel: "FULL" }, { spaceId: "theirs", visibilityLevel: "FULL" }];
+  const a = propertyReadScope({ isOwner: false, links, viewerActiveSpaceIds: ["shared"] });
+  check("(a) viewer with FULL in the shared Space ⇒ read OK, scope = that Space only", JSON.stringify(a) === JSON.stringify({ spaceIds: ["shared"] }));
+  const b = propertyReadScope({ isOwner: false,
+    links: [{ spaceId: "mine", visibilityLevel: "BALANCE_ONLY" }, { spaceId: "notMine", visibilityLevel: "FULL" }],
+    viewerActiveSpaceIds: ["mine"] });
+  check("(b) BALANCE_ONLY in the viewer's Space, FULL only in a Space they're not in ⇒ 404 (null)", b === null);
+  check("…no ACTIVE membership at all ⇒ 404", propertyReadScope({ isOwner: false, links, viewerActiveSpaceIds: [] }) === null);
+  check("owner path unchanged: every ACTIVE link", JSON.stringify(propertyReadScope({ isOwner: true, links, viewerActiveSpaceIds: [] })) === JSON.stringify({ spaceIds: ["shared", "theirs"] }));
+  // (c) equity for (a) considers only debts in the viewer's Spaces.
+  const debt = (id: string, spaceId: string): ViewerDebtRow => ({ id, ownerUserId: "owner", deletedAt: null, type: "debt", providerSubtype: "mortgage",
+    links: [{ spaceId, visibilityLevel: "FULL" }], name: id, balance: 100_000, currency: "USD" });
+  const inScope = viewerPropertyEquity({ viewerUserId: "co", propertySpaceIds: a!.spaceIds, value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE",
+    linkedIds: ["dShared"], debts: [debt("dShared", "shared")] });
+  check("(c) a linked debt in the viewer's Space counts", inScope.equity === 400_000, String(inScope.equity));
+  const outOfScope = viewerPropertyEquity({ viewerUserId: "co", propertySpaceIds: a!.spaceIds, value: 500_000, currency: "USD", valueBasis: "MARKET_VALUE",
+    linkedIds: ["dShared", "dTheirs"], debts: [debt("dShared", "shared"), debt("dTheirs", "theirs")] });
+  check("(c) a linked debt visible only in a Space the viewer is NOT in never counts ⇒ equity withheld",
+    outOfScope.equity === null && outOfScope.equityUnavailableReason === "LINKED_DEBT_NOT_VISIBLE");
+  const links2 = readFileSync(path.join(process.cwd(), "lib/assets/property-links.ts"), "utf8");
+  check("loadProperty derives the scope from ACTIVE SpaceMember rows via propertyReadScope",
+    links2.includes("tx.spaceMember.findMany(") && links2.includes("SpaceMemberStatus.ACTIVE") && links2.includes("spaceIds: scope.spaceIds"));
 }
 
 if (failures > 0) { console.error(`\n✗ ${failures} failure(s)`); process.exit(1); }
