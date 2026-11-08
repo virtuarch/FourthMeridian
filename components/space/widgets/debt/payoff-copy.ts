@@ -9,6 +9,7 @@
  */
 
 import { MAX_PAYOFF_PAYMENTS, type PayoffBasis, type PayoffPlan } from "@/lib/debt/payoff";
+import { formatOwedShare } from "@/lib/debt/aggregates";
 
 /** The basis of a plan that ran a schedule, or null for one that never did. */
 export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
@@ -19,12 +20,32 @@ export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
  * The qualification an estimate must carry, or null for an interest-aware plan.
  * `headline` is the badge; `detail` says what was and was not counted.
  */
-export function payoffEstimateNotice(plan: PayoffPlan): { headline: string; detail: string } | null {
+export function payoffEstimateNotice(
+  plan: PayoffPlan,
+  /** Mortgage F3 — "APR" only when every debt in the plan is revolving credit
+   *  (lib/debt/rate-label.ts blendedRateLabel); otherwise the neutral "rate". */
+  rateWord: "APR" | "rate" = "APR",
+): { headline: string; detail: string } | null {
   const basis = payoffBasisOf(plan);
   if (!basis || basis.interest === "INTEREST_AWARE") return null;
   return basis.interest === "PRINCIPAL_ONLY"
-    ? { headline: "Estimated without interest", detail: "No APR is on file, so this counts payments against the balance only." }
-    : { headline: "Estimated without some interest", detail: "Interest is counted only on the debts with an APR on file." };
+    ? { headline: "Estimated without interest", detail: `No ${rateWord} is on file, so this counts payments against the balance only.` }
+    : { headline: "Estimated without some interest", detail: `Interest is counted only on the debts with ${rateWord === "APR" ? "an APR" : "a rate"} on file.` };
+}
+
+/**
+ * Mortgage F3 (S2 ruling, item 3) — the payoff never assumes 0% SILENTLY: the
+ * rate-unknown note, stating how many debts AND what SHARE of the balance the
+ * known rates cover (S2), from the engine's own counts and balances. Null when
+ * every owing debt has a rate on file.
+ */
+export function payoffUnknownRateNote(plan: PayoffPlan): string | null {
+  const basis = payoffBasisOf(plan);
+  if (!basis || basis.unknownAprCount === 0) return null;
+  const { unknownAprCount: u, owingCount: n, knownAprBalance: k, unknownAprBalance: x } = basis;
+  const share = k + x > 0 ? k / (k + x) : 0;
+  return `Rate known for ${n - u} of ${n} debt${n === 1 ? "" : "s"} (${formatOwedShare(share)} of what you owe) — `
+    + `debts without a rate are projected without interest and left out of the interest total.`;
 }
 
 /** The one call to action — it points at the Interest cost widget, never at a second APR input. */

@@ -8,6 +8,8 @@
  * god-module (byte-identical bodies). Public surface re-exported via ./index.
  */
 
+import type { AiRateCoverage } from '@/lib/debt/aggregates';
+
 export type CompletenessLevel  = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type ConfidenceLevel    = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -542,9 +544,17 @@ export interface DebtStrategySection {
   /** Lowest REPORTING-balance debt account — the snowball strategy target (ranked in
    *  the Space reporting currency, not native magnitudes). null if no accounts available. */
   snowballCandidate:          DebtCandidate | null;
-  /** Weighted average APR across accounts where APR is known — weighted by REPORTING
-   *  balance. null if none known. */
+  /** Weighted average rate across ALL owing debt, weighted by REPORTING balance —
+   *  present ONLY when every owing debt has a rate on file (coverage COMPLETE).
+   *  Mortgage F3 / S2: null when any rate is unknown (see `ratedDebtsAvgRate`)
+   *  and null — never 0 — when none is known. */
   weightedAvgApr:             number | null;
+  /** F3 / S2 — what the weighted rate covers: status, rated/unrated counts, the
+   *  share of what is owed with no rate, and a reading the model can quote. */
+  weightedAvgAprCoverage:     AiRateCoverage;
+  /** F3 / S2 — when coverage is PARTIAL: the weighted rate of the RATED debts
+   *  only, with its meaning. Never the blended rate of all debt. Omitted otherwise. */
+  ratedDebtsAvgRate?:         { ratePct: number; meaning: string };
   knownMonthlyInterestBurden: number | null;
   missingAprAccountNames:     string[];
   hasBalanceOnlyDebt:         boolean;
@@ -574,8 +584,11 @@ export type AllocationEvidenceDomain = 'cashFlow' | 'debt' | 'liquidity' | 'inve
  */
 
 export interface CapitalAllocationEvidence {
-  /** Weighted average APR across FULL-visibility debt accounts with known APR. null if none known. */
+  /** Weighted average rate across ALL owing debt — null unless every owing debt
+   *  has a rate on file (F3 / S2; never 0 for unknown). */
   weightedDebtApr:           number | null;
+  /** F3 / S2 — what `weightedDebtApr` covers (same object as DebtStrategySection's). */
+  weightedDebtRateCoverage:  AiRateCoverage;
   /** Passive-index annual return reference used as the investing comparison baseline. */
   expectedMarketReturn:      number;
   /**

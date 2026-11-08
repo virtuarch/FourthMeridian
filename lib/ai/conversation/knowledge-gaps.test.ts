@@ -33,8 +33,10 @@ const APR: AiKnowledgeGap = { accountId: 'a1', accountName: 'Example Card Platin
   field: 'apr', label: 'APR', debtSubtype: 'credit_card' };
 const MIN: AiKnowledgeGap = { accountId: 'a1', accountName: 'Example Card Platinum',
   field: 'minimumPayment', label: 'Minimum Payment', debtSubtype: 'credit_card' };
+// Mortgage F3 — fixture label follows lib/debt/rate-label.ts ("Mortgage rate";
+// was the retired resolver's "Mortgage Rate"). Pass-through only; no assertion keys on the case.
 const MORTGAGE: AiKnowledgeGap = { accountId: 'a2', accountName: 'Home Loan',
-  field: 'apr', label: 'Mortgage Rate', debtSubtype: 'mortgage' };
+  field: 'apr', label: 'Mortgage rate', debtSubtype: 'mortgage' };
 
 const snapshot = (gaps: unknown) => ({
   name: 'get_financial_snapshot',

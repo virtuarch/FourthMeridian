@@ -168,6 +168,7 @@ export function computeCapitalAllocation(
 
   const evidence: CapitalAllocationEvidence = {
     weightedDebtApr:           debtStrategy.weightedAvgApr,
+    weightedDebtRateCoverage:  debtStrategy.weightedAvgAprCoverage,
     expectedMarketReturn:      MARKET_RETURN_THRESHOLD,
     guaranteedReturnAdvantage,
     aprCompleteness:           debt.aprCompleteness,
@@ -316,7 +317,7 @@ export function computeRiskOpportunities(
   // HIGH_INTEREST_DEBT — debt classification flags elevated/critical APR.
   if (debt.classification === 'CRITICAL' || debt.classification === 'WARNING') {
     const apr = debtStrategy.weightedAvgApr !== null
-      ? `weighted APR ${debtStrategy.weightedAvgApr.toFixed(2)}%`
+      ? `weighted rate ${debtStrategy.weightedAvgApr.toFixed(2)}% (all owed debt)`
       : 'elevated APR';
     const burden = debt.monthlyInterestBurden !== null
       ? `, ~${money(debt.monthlyInterestBurden)}/mo interest`
@@ -426,7 +427,7 @@ export function computeRiskOpportunities(
       ? `; highest-APR target ${debtStrategy.avalancheCandidate.accountName} (${debtStrategy.avalancheCandidate.apr!.toFixed(2)}%)`
       : '';
     const apr = debtStrategy.weightedAvgApr !== null
-      ? `weighted APR ${debtStrategy.weightedAvgApr.toFixed(2)}%`
+      ? `weighted rate ${debtStrategy.weightedAvgApr.toFixed(2)}% (all owed debt)`
       : 'elevated APR';
     opportunities.push({
       code:             'PAY_HIGH_APR_DEBT',
