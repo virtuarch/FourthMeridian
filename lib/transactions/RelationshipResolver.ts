@@ -482,6 +482,8 @@ export function matchTransferCandidate(
     railType: evidence.railType ?? null,
     venueClass: evidence.venueClass ?? null,
     counterpartyClass: tx.counterpartyClass,
+    // Mortgage F10 — the row's own provider detail (an installment-loan payee).
+    pfcDetailed: tx.pfcDetailed ?? null,
   });
   const unresolved = isUnresolvedMaturity(maturity)
     ? (e.unresolvedReason ?? (maturity === 'UNRESOLVED_LIABILITY_INFLOW'

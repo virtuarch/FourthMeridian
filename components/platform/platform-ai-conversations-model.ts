@@ -24,10 +24,11 @@
  * in-page wording on 2026-11-07, after S2 verified each claim against develop
  * 3451c3a (the claim table is kept privately). It is in-app only; the public
  * pages are unchanged. Change it only with a new owner approval and a fresh S2
- * claim check — the test pins the exact string.
+ * claim check — the test pins the exact string. 2026-11-08: the owner cut
+ * retention to 7 days; ONLY the duration words changed ("90 days" → "7 days").
  */
 export const PLATFORM_AI_CONVERSATIONS_DISCLOSURE =
-  "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 90 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.";
+  "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 7 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.";
 
 /**
  * The v0 privacy hint, UNCHANGED (components/platform/PlatformAiAsk.tsx renders
@@ -245,7 +246,7 @@ export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime
  * DUPLICATED because this module has no imports; pinned equal in
  * platform-ai-conversations.test.ts (the migration-pin pattern). Change both together.
  */
-export const PLATFORM_AI_RETENTION_DAYS_CLIENT = 90;
+export const PLATFORM_AI_RETENTION_DAYS_CLIENT = 7;
 const RETENTION_MS = PLATFORM_AI_RETENTION_DAYS_CLIENT * 24 * 60 * 60 * 1000;
 
 /**
@@ -253,7 +254,7 @@ const RETENTION_MS = PLATFORM_AI_RETENTION_DAYS_CLIENT * 24 * 60 * 60 * 1000;
  * oldest exchanges. Retention is the ONLY way a message disappears, and it can't
  * act before PLATFORM_AI_RETENTION_DAYS (S2 on #434). So the note shows only when
  * BOTH hold:
- *   - the conversation is at least the retention window old (now − createdAt ≥ 90 d);
+ *   - the conversation is at least the retention window old (now − createdAt ≥ 7 d);
  *   - its first remaining message was written well after the conversation was
  *     created. The conversation and its first pair share ONE transaction (same
  *     `now()`); a minute of slack absorbs clock rounding.

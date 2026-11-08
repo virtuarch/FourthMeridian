@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       return s.size;
     };
 
-    const own = { accountType: leg.accountType, amount: t.amount, railType: leg.railType ?? null, venueClass: null, counterpartyClass: null };
+    const own = { accountType: leg.accountType, amount: t.amount, railType: leg.railType ?? null, venueClass: null, counterpartyClass: null, pfcDetailed: t.pfcDetailed ?? null };
     const before = resolveDestinationEvidence(mk(forward), { movementForm: leg.movementForm ?? null, competingSourceCount: union(forward) });
 
     // THE RUNG — via the authority's OWN helper, never a second copy of the

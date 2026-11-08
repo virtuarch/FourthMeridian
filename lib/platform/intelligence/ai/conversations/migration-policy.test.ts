@@ -18,7 +18,11 @@
  *     locked + counted in the same window, EXECUTE to fm_system alone;
  *   · the column grants exclude every timestamp and retention column (S2 REQUIRED 1),
  *     fm_app has no DELETE, no statement grants fm_system / fm_auth a table;
- *   · the header says B11 and the timestamp sorts after every B10 migration.
+ *   · the header says B11 and the timestamp sorts after every B10 migration;
+ *   · 20261108120000_platform_ai_retention_7_days (owner 2026-11-08): the
+ *     retention window moved to PLATFORM_AI_RETENTION_DAYS (7) — default, bound
+ *     and the clamp of existing rows (§10). The original file keeps its
+ *     historical '90 days', which that migration supersedes.
  *
  *   npx tsx lib/platform/intelligence/ai/conversations/migration-policy.test.ts
  */
@@ -44,6 +48,11 @@ const EXPIRY_NAME = "20261105120000_platform_ai_message_expiry_on_read";
 const expiryRaw = readFileSync(path.join(ROOT, "prisma/migrations", EXPIRY_NAME, "migration.sql"), "utf8");
 const expiry = expiryRaw.replace(/--[^\n]*/g, "").replace(/\s+/g, " ");
 const flat = sql.replace(/\s+/g, " ");
+const RETENTION_NAME = "20261108120000_platform_ai_retention_7_days";
+const retentionRaw = readFileSync(path.join(ROOT, "prisma/migrations", RETENTION_NAME, "migration.sql"), "utf8");
+const retentionSql = retentionRaw.replace(/--[^\n]*/g, "").replace(/\s+/g, " ");
+/** The original window, superseded by RETENTION_NAME (owner 2026-11-08). Historical; never the live value. */
+const HISTORICAL_RETENTION_DAYS = 90;
 
 /** The full CREATE FUNCTION … END $$; statement for `name`. */
 function fn(name: string): string {
@@ -61,7 +70,7 @@ console.log("0. the batch and the place in history");
   const names = readdirSync(path.join(ROOT, "prisma/migrations")).filter((n) => /^\d{14}_/.test(n)).sort();
   check("it sorts after every B10 migration (last B10 = 20261103160000_fin_e_restricted_cash), and only B11 migrations follow it",
     NAME > "20261103160000_fin_e_restricted_cash"
-      && JSON.stringify(names.slice(names.indexOf(NAME))) === JSON.stringify([NAME, EXPIRY_NAME]), names.slice(-3).join(", "));
+      && JSON.stringify(names.slice(names.indexOf(NAME))) === JSON.stringify([NAME, EXPIRY_NAME, RETENTION_NAME]), names.slice(-3).join(", "));
   check("lock_timeout bounds the FK lock on \"User\" (transaction-local)", /SET LOCAL lock_timeout = '5s';/.test(sql));
   check("no session-level SET (only SET LOCAL; a function-level search_path is not a session SET)", !/^\s*SET (?!LOCAL|search_path = pg_catalog, public$)/m.test(sql));
 }
@@ -76,9 +85,10 @@ console.log("1. S2 REQUIRED 2 — the migration principal must bypass RLS");
 console.log("2. the intervals and bounds equal the code constants");
 {
   const days = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
-  const retention = `'${days(PLATFORM_AI_RETENTION_DAYS)}'`;
-  check(`purgeAfter DEFAULT = createdAt + ${retention}`, flat.includes(`"purgeAfter" TIMESTAMP(3) NOT NULL DEFAULT ((now() AT TIME ZONE 'UTC'::text) + ${retention}::interval)`));
-  check(`the CHECK bounds purgeAfter by createdAt + interval ${retention}`, flat.includes(`CHECK ("purgeAfter" <= "createdAt" + interval ${retention})`));
+  // The ORIGINAL window (historical; 20261108120000 moves it to PLATFORM_AI_RETENTION_DAYS — §10).
+  const historical = `'${days(HISTORICAL_RETENTION_DAYS)}'`;
+  check(`(historical) purgeAfter DEFAULT = createdAt + ${historical}, superseded by ${RETENTION_NAME}`, flat.includes(`"purgeAfter" TIMESTAMP(3) NOT NULL DEFAULT ((now() AT TIME ZONE 'UTC'::text) + ${historical}::interval)`));
+  check(`(historical) the CHECK bounds purgeAfter by createdAt + interval ${historical}, superseded by ${RETENTION_NAME}`, flat.includes(`CHECK ("purgeAfter" <= "createdAt" + interval ${historical})`));
   const purge = fn("fm_purge_platform_ai_conversations");
   check(`the delete grace = interval '${days(PLATFORM_AI_DELETE_GRACE_DAYS)}' (PLATFORM_AI_DELETE_GRACE_DAYS, OD-10)`,
     purge.replace(/\s+/g, " ").includes(`c."deletedAt" < v_now - interval '${days(PLATFORM_AI_DELETE_GRACE_DAYS)}'`));
@@ -87,7 +97,7 @@ console.log("2. the intervals and bounds equal the code constants");
   check(`p_limit is bounded 1..${PLATFORM_AI_PURGE_BATCH}`, body(purge).includes(`IF p_limit IS NULL OR p_limit < 1 OR p_limit > ${PLATFORM_AI_PURGE_BATCH} THEN RAISE EXCEPTION`));
   check(`expired exchanges per call = p_limit * ${PLATFORM_AI_PURGE_EXCHANGE_FACTOR}`, body(purge).includes(`LIMIT p_limit * ${PLATFORM_AI_PURGE_EXCHANGE_FACTOR} FOR UPDATE SKIP LOCKED`));
   check("every interval in the file is one of the pinned ones", [...flat.matchAll(/'(\d+ days?)'/g)].every((m) =>
-    [days(PLATFORM_AI_RETENTION_DAYS), days(PLATFORM_AI_DELETE_GRACE_DAYS), days(PLATFORM_AI_SHELL_MIN_AGE_DAYS)].includes(m[1])),
+    [days(HISTORICAL_RETENTION_DAYS), days(PLATFORM_AI_DELETE_GRACE_DAYS), days(PLATFORM_AI_SHELL_MIN_AGE_DAYS)].includes(m[1])),
     [...flat.matchAll(/'(\d+ days?)'/g)].map((m) => m[1]).join(", "));
   check("every comparison is UTC-to-UTC (no bare now() comparison)", !/[<>]=?\s*now\(\)/.test(flat));
 }
@@ -208,6 +218,37 @@ console.log("9. expiry on read (20261105120000, OD-7 + S2 C1)");
     (expiry.match(/DROP POLICY/g) ?? []).length === 2 && (expiry.match(/CREATE POLICY/g) ?? []).length === 2
       && !/PlatformAiConversation" FOR|GRANT|REVOKE|ALTER TABLE|CREATE FUNCTION|DELETE/.test(expiry.replace(/FROM public\."PlatformAiConversation" c/g, "")));
   check("the INSERT policy is not changed (a new row's default purgeAfter passes SELECT for RETURNING)", !/fm_app_ins/.test(expiry));
+}
+
+console.log("10. retention 7 days (20261108120000, owner 2026-11-08): default, bound, clamp");
+{
+  const days = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+  const r = `'${days(PLATFORM_AI_RETENTION_DAYS)}'`;
+  check("PLATFORM_AI_RETENTION_DAYS is 7 (owner 2026-11-08)", PLATFORM_AI_RETENTION_DAYS === 7, String(PLATFORM_AI_RETENTION_DAYS));
+  check("the header says \"B11 batch — not part of B10\"", retentionRaw.split("\n").slice(0, 3).join("\n").includes("B11 batch — not part of B10"));
+  check("SET LOCAL lock_timeout, and no session-level SET", /SET LOCAL lock_timeout = '5s';/.test(retentionSql) && !/(^|; )SET (?!LOCAL|DEFAULT)/.test(retentionSql));
+  check("the BYPASSRLS assertion runs first (FORCE RLS would make the clamp a silent no-op)",
+    /DO \$\$ BEGIN IF NOT \(SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname = current_user\) THEN RAISE EXCEPTION '[^']*BYPASSRLS/.test(retentionSql)
+      && retentionSql.indexOf("rolbypassrls") < retentionSql.indexOf("LOCK TABLE") && retentionSql.indexOf("LOCK TABLE") < retentionSql.indexOf("DISABLE TRIGGER"));
+  check("one ACCESS EXCLUSIVE lock, taken before the trigger is touched", (retentionSql.match(/LOCK TABLE public\."PlatformAiMessage" IN ACCESS EXCLUSIVE MODE;/g) ?? []).length === 1);
+  check(`the default = now() UTC + ${r} (= PLATFORM_AI_RETENTION_DAYS)`,
+    retentionSql.includes(`ALTER COLUMN "purgeAfter" SET DEFAULT ((now() AT TIME ZONE 'UTC'::text) + ${r}::interval);`));
+  check(`the bound is replaced: CHECK ("purgeAfter" <= "createdAt" + interval ${r})`,
+    retentionSql.includes(`DROP CONSTRAINT IF EXISTS "PlatformAiMessage_purgeAfter_bounded";`) && retentionSql.includes(`ADD CONSTRAINT "PlatformAiMessage_purgeAfter_bounded" CHECK ("purgeAfter" <= "createdAt" + interval ${r});`));
+  check("…and the bound is re-added AFTER the clamp (it validates clamped rows)", retentionSql.indexOf("ADD CONSTRAINT") > retentionSql.indexOf("ENABLE TRIGGER"));
+  check("every interval in the file is the 7-day one", [...retentionSql.matchAll(/'(\d+ days?)'/g)].every((m) => m[1] === days(PLATFORM_AI_RETENTION_DAYS)) && (retentionSql.match(/'\d+ days?'/g) ?? []).length === 5);
+  const block = /DO \$\$ BEGIN ALTER TABLE public\."PlatformAiMessage" DISABLE TRIGGER platform_ai_message_settle;([\s\S]*?)ALTER TABLE public\."PlatformAiMessage" ENABLE TRIGGER platform_ai_message_settle;([\s\S]*?)END \$\$;/.exec(retentionSql);
+  check("the settle trigger is disabled and re-enabled in ONE DO block, around the clamp only", !!block && /^\s*WITH cap AS \(/.test(block[1]) && (block[1].match(/;/g) ?? []).length === 1, block?.[1] ?? "no block");
+  check("…and the block RAISEs unless the trigger is enabled ('O') afterwards", !!block && /tgname = 'platform_ai_message_settle'\) IS DISTINCT FROM 'O' THEN RAISE EXCEPTION/.test(block[2]));
+  check("only that trigger, only once each way; no DISABLE TRIGGER ALL / USER", (retentionSql.match(/DISABLE TRIGGER/g) ?? []).length === 1 && (retentionSql.match(/ENABLE TRIGGER/g) ?? []).length === 1 && !/TRIGGER (ALL|USER)\b/.test(retentionSql));
+  const clamp = block?.[1] ?? "";
+  check("USER rows: LEAST(purgeAfter, createdAt + 7 d) — never lengthens", clamp.includes(`WHEN m.role = 'USER' THEN LEAST(m."purgeAfter", m."createdAt" + interval ${r})`));
+  check("ASSISTANT rows: also capped by their question's purgeAfter and createdAt + 7 d (pairs together)",
+    clamp.includes(`ELSE LEAST(m."purgeAfter", m."createdAt" + interval ${r}, q."purgeAfter", q."createdAt" + interval ${r}) END`)
+      && clamp.includes(`LEFT JOIN public."PlatformAiMessage" q ON q."conversationId" = m."conversationId" AND q.id = m."replyToId"`));
+  check("only rows ABOVE their cap are written (idempotent; never lengthens)", clamp.includes(`WHERE t.id = cap.id AND t."purgeAfter" > cap."purgeAfter";`));
+  check("no DELETE, no function or trigger (re)definition, no grant or policy change",
+    !/\bDELETE\b|CREATE (OR REPLACE )?FUNCTION|CREATE TRIGGER|DROP TRIGGER|GRANT|REVOKE|POLICY|SECURITY DEFINER/.test(retentionSql));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

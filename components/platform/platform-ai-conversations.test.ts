@@ -202,19 +202,20 @@ console.log("\n2. client model — defensive parsing, copy, time");
     && relativeTime(H3, NOW) === "3 h ago" && relativeTime("2026-01-09T12:00:00Z", NOW) === "1 day ago" && relativeTime("2026-01-07T12:00:00Z", NOW) === "3 days ago" && relativeTime("nope", NOW) === "earlier");
   check("UTC stamp", utcStamp(H3) === "2026-01-10 09:00 UTC" && utcStamp("nope") === "");
   check("the client's retention constant = the server's PLATFORM_AI_RETENTION_DAYS (duplicated; the migration-pin pattern)",
-    PLATFORM_AI_RETENTION_DAYS_CLIENT === PLATFORM_AI_RETENTION_DAYS && PLATFORM_AI_RETENTION_DAYS === 90, [PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_RETENTION_DAYS]);
+    PLATFORM_AI_RETENTION_DAYS_CLIENT === PLATFORM_AI_RETENTION_DAYS && PLATFORM_AI_RETENTION_DAYS === 7, [PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_RETENTION_DAYS]);
   const DAY = 24 * 60 * 60 * 1000;
   const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
   const gapAfter = (createdAt: string) => [{ createdAt: new Date(Date.parse(createdAt) + 2 * DAY).toISOString() }];
-  const twoDays = ago(2 * DAY), ninetyOne = ago(91 * DAY), exactly = ago(90 * DAY), justUnder = ago(90 * DAY - 1);
+  const R = PLATFORM_AI_RETENTION_DAYS_CLIENT * DAY;
+  const twoDays = ago(2 * DAY), pastLine = ago(R + DAY), exactly = ago(R), justUnder = ago(R - 1);
   check("S2 on #434: a 2-day-old conversation WITH a gap ⇒ no 'expired' copy (retention cannot have acted yet)",
     !earlierMessagesExpired({ createdAt: twoDays }, [{ createdAt: ago(60 * 60 * 1000) }], NOW));
-  check("a 91-day-old conversation with a gap ⇒ the copy", earlierMessagesExpired({ createdAt: ninetyOne }, gapAfter(ninetyOne), NOW));
-  check("boundary: exactly 90 days old ⇒ the copy (≥); 90 days − 1 ms ⇒ none",
+  check("an 8-day-old conversation with a gap ⇒ the copy", earlierMessagesExpired({ createdAt: pastLine }, gapAfter(pastLine), NOW));
+  check("boundary: exactly 7 days old ⇒ the copy (≥); 7 days − 1 ms ⇒ none",
     earlierMessagesExpired({ createdAt: exactly }, gapAfter(exactly), NOW) && !earlierMessagesExpired({ createdAt: justUnder }, gapAfter(justUnder), NOW));
   check("old enough but no gap (same transaction), or no messages ⇒ no copy",
-    !earlierMessagesExpired({ createdAt: ninetyOne }, [{ createdAt: ninetyOne }], NOW) && !earlierMessagesExpired({ createdAt: ninetyOne }, [], NOW)
-    && !earlierMessagesExpired({ createdAt: "nope" }, gapAfter(ninetyOne), NOW));
+    !earlierMessagesExpired({ createdAt: pastLine }, [{ createdAt: pastLine }], NOW) && !earlierMessagesExpired({ createdAt: pastLine }, [], NOW)
+    && !earlierMessagesExpired({ createdAt: "nope" }, gapAfter(pastLine), NOW));
   check("the view passes the render clock (p.now) to the age condition",
     /earlierMessagesExpired\(p\.selected\.conversation, messages, p\.now\)/.test(code(COMPONENT)));
   check("pending + retry question helpers",
@@ -320,14 +321,14 @@ console.log("\n4b. the period CORRECTION segment — its own quiet note ABOVE th
 console.log("\n5. ONE disclosure line; the OD-5 notice and the v0 privacy hint behind 'About' and as describedby targets");
 {
   check("the disclosure is the owner-approved OD-5 wording (2026-11-07), exactly — changing it needs a new owner approval and S2 claim check",
-    PLATFORM_AI_CONVERSATIONS_DISCLOSURE === `The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.`);
+    PLATFORM_AI_CONVERSATIONS_DISCLOSURE === "The text of your questions and answers is saved encrypted to your operator account. No one else can open your conversations in Fourth Meridian, and you can open them only while you have access to this area. A question and its answer are hidden 7 days after the question was asked, and a conversation you delete is hidden at once; both are then removed from our database at the next retention purge. Copies in database backups, and what was sent to OpenAI to answer you, follow their own retention terms.");
   check("…and no longer claims anything is pending", !/pending/i.test(PLATFORM_AI_CONVERSATIONS_DISCLOSURE) && !/PENDING OWNER|DISCLOSURE_PENDING/.test(src(MODEL)));
   const literalUses: string[] = [];
   for (const rel of [COMPONENT, PAGE, V0, PRESENTATION]) if (src(rel).includes("saved encrypted to your operator account")) literalUses.push(rel);
   check("the wording lives only in the model constant (no second copy)", literalUses.length === 0, literalUses);
   check("the one line: Read-only · the retention days FROM the retention constant · don't enter personal details; 'hidden', never 'deleted'",
     PLATFORM_AI_CONVERSATIONS_LINE === `Read-only · Chats hidden after ${PLATFORM_AI_RETENTION_DAYS_CLIENT} days · Don’t enter personal details`
-    && /\$\{PLATFORM_AI_RETENTION_DAYS_CLIENT\}/.test(src(MODEL)) && !/delet|remov|purg/i.test(PLATFORM_AI_CONVERSATIONS_LINE + PLATFORM_AI_SESSION_LINE));
+    && PLATFORM_AI_CONVERSATIONS_LINE.includes("Chats hidden after 7 days") && /\$\{PLATFORM_AI_RETENTION_DAYS_CLIENT\}/.test(src(MODEL)) && !/delet|remov|purg/i.test(PLATFORM_AI_CONVERSATIONS_LINE + PLATFORM_AI_SESSION_LINE));
   const composer = renderToStaticMarkup(createElement(PlatformAiComposer, { value: "", onChange: noop, onSubmit: noop, disabled: false, busy: false }));
   const footer = (composer.match(/<div data-platform-ai-composer-footer=""[\s\S]*$/) ?? [""])[0];
   const visible = textOf(footer.replace(/<p [^>]*class="sr-only"[^>]*>[\s\S]*?<\/p>/g, ""));
