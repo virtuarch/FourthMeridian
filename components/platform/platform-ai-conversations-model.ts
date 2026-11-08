@@ -58,6 +58,8 @@ export type ClientSegment =
   | { kind: "link"; text: string; href: string }
   /** S2 F-C1 (ii): the server's period correction — rendered prominently ABOVE the answer. */
   | { kind: "correction"; text: string }
+  /** F-1 (S2 2026-11-08): the server's window note — its own quiet note ABOVE the answer, never in the body. */
+  | { kind: "note"; text: string }
   /** Platform AI memory: a server-rendered "noted <date>" span (never the note). */
   | { kind: "memory"; text: string };
 
@@ -103,7 +105,7 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 function parseSegment(s: unknown): ClientSegment | null {
   if (!isObj(s) || typeof s.text !== "string") return null;
   if (s.kind === "text") return { kind: "text", text: s.text };
-  if (s.kind === "correction") return { kind: "correction", text: s.text };
+  if (s.kind === "correction" || s.kind === "note") return { kind: s.kind, text: s.text };
   if (s.kind === "memory") return { kind: "memory", text: s.text };
   if (s.kind === "figure" && typeof s.metric === "string") {
     const w = s.window;
@@ -388,13 +390,21 @@ export function staleChips(message: Pick<ClientMessage, "content" | "createdAt" 
 // ── Answer blocks (paragraphs and lists inside typed segments) ──────────────
 
 /** An inline piece of an answer: the typed segment kinds, never markup. A figure carries its index in the segment list (`seg`). */
-export type InlineSegment = Exclude<ClientSegment, { kind: "correction" | "figure" }> | (Extract<ClientSegment, { kind: "figure" }> & { seg: number });
+export type InlineSegment = Exclude<ClientSegment, { kind: "correction" | "note" | "figure" }> | (Extract<ClientSegment, { kind: "figure" }> & { seg: number });
+export type AnswerList = { kind: "ul" | "ol"; items: InlineSegment[][] };
 export type AnswerBlock =
   | { kind: "p"; lines: InlineSegment[][] }
-  | { kind: "ul" | "ol"; items: InlineSegment[][] };
+  /** F-2: a section label ("Incidents:") — a short heading line, never a bullet. */
+  | { kind: "label"; line: InlineSegment[] }
+  /** `sub[j]`: the ONE nested list under item j (an indented list item), or null. Present only when some item has one. */
+  | (AnswerList & { sub?: (AnswerList | null)[] });
 
 const BULLET = /^[ \t]*(?:[-*•])[ \t]+/;
 const NUMBERED = /^[ \t]*\d{1,2}[.)][ \t]+/;
+/** An indented list line (≥ 2 spaces or a tab before the marker): one nesting level. */
+const INDENTED = /^(?: {2,}|\t)/;
+/** A section label: short model text ending in ":" and nothing else (no figure, no link). */
+const SECTION_LABEL = /^[^:\n]{1,60}:$/;
 
 /**
  * Lay the typed segments out as paragraphs and simple lists — STRUCTURE ONLY.
@@ -402,12 +412,15 @@ const NUMBERED = /^[ \t]*\d{1,2}[.)][ \t]+/;
  * "1. " is a list item (the marker is dropped). Nothing else is interpreted:
  * `**x**`, `<b>`, `[a](b)` stay literal text, a link is still only a server
  * `link` segment, and every piece is still rendered as React text. Correction
- * segments are not part of the body (they render above it).
+ * and note segments are not part of the body (they render above it).
+ * F-2 (2026-11-08): a line that is only a short label ending in ":" ("Incidents:",
+ * "- Incidents:") directly before list items is a `label` block, never a bullet; an
+ * indented list line (≥ 2 spaces / a tab) nests ONE level under the previous item.
  */
 export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] {
   const lines: InlineSegment[][] = [[]];
   segments.forEach((s, seg) => {
-    if (s.kind === "correction") return;
+    if (s.kind === "correction" || s.kind === "note") return;
     // A figure ({{m:}}) and a link are typed server segments: never split, never read as a list marker.
     if (s.kind === "figure") { lines[lines.length - 1].push({ ...s, seg }); return; }
     if (s.kind === "link" || s.kind === "memory") { lines[lines.length - 1].push(s); return; }
@@ -419,17 +432,38 @@ export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] 
   const blocks: AnswerBlock[] = [];
   let para: InlineSegment[][] | null = null;
   const lineText = (l: InlineSegment[]) => l.map((x) => x.text).join("");
-  for (const line of lines) {
+  const markerOf = (l: InlineSegment[]) => (l[0]?.kind === "text" ? (BULLET.exec(l[0].text) ?? NUMBERED.exec(l[0].text)) : null);
+  // F-2: a line that is ONLY a section label — model text, no figure / link, ending in ":".
+  const labelOf = (l: InlineSegment[], marker: RegExpExecArray | null): InlineSegment[] | null => {
+    if (l.length !== 1 || l[0].kind !== "text") return null;
+    const t = l[0].text.slice(marker ? marker[0].length : 0).trim();
+    return SECTION_LABEL.test(t) ? [{ kind: "text", text: t }] : null;
+  };
+  const isListLine = (l: InlineSegment[] | undefined) => !!l && markerOf(l) !== null;
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     if (lineText(line).trim() === "") { para = null; continue; }
     const first = line[0];
-    const marker = first?.kind === "text" ? (BULLET.exec(first.text) ?? NUMBERED.exec(first.text)) : null;
+    const marker = markerOf(line);
+    // F-2: "Incidents:" / "- Incidents:" directly followed by list items is a section LABEL — never a bullet.
+    const label = isListLine(lines[li + 1]) ? labelOf(line, marker) : null;
+    if (label) { blocks.push({ kind: "label", line: label }); para = null; continue; }
     if (marker && first.kind === "text") {
       const kind = BULLET.test(first.text) ? "ul" : "ol";
       const rest = first.text.slice(marker[0].length);
       const item: InlineSegment[] = [...(rest ? [{ kind: "text" as const, text: rest }] : []), ...line.slice(1)];
       const prev = blocks[blocks.length - 1];
-      if (para === null && prev && prev.kind === kind) prev.items.push(item);
-      else blocks.push({ kind, items: [item] });
+      const list = para === null && prev && (prev.kind === "ul" || prev.kind === "ol") ? prev : null;
+      // F-2: ONE nesting level — an indented item under the previous item of a list.
+      if (list && INDENTED.test(first.text) && list.items.length > 0) {
+        const at = list.items.length - 1;
+        const sub = list.sub ?? (list.sub = list.items.map(() => null));
+        const own = sub[at];
+        if (own) own.items.push(item); else sub[at] = { kind, items: [item] };
+      } else if (list && list.kind === kind) {
+        list.items.push(item);
+        if (list.sub) list.sub.push(null);
+      } else blocks.push({ kind, items: [item] });
       para = null;
       continue;
     }

@@ -179,6 +179,7 @@ function script(steps: Step[] | ((i: number) => Step)): Script {
   };
   return { generate, seen };
 }
+const toolResultsOf = (r: { transcript: unknown[] }) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
 const run = (question: string, binding: PlatformAiBinding, sc: Script) =>
   runPlatformAiTurn({ question, binding, generate: sc.generate, model: "gpt-4o-mini" });
 
@@ -1405,9 +1406,10 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
   const CORR_C = "Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-11-01), not the past 30 days you asked about; that period cannot be measured for them.";
   const plainLead = await turnWith(["economics-operating-cost"], (ph, lph) => `The largest cost category is ${lph(OP, "largestMeasuredCategory")} with a figure of ${ph(OP, "largestMeasuredCategory")}.`, Q_C);
   const plT = segmentsText(plainLead.result.answer);
-  check("F-C1 (b): the window note comes FIRST — answer[0] and typed[0] are the server note, then the model's prose unchanged",
+  check("F-C1 (b) + F-1: the window note comes FIRST as its OWN \"note\" segment (answer[0] and typed[0]), then the model's prose unchanged",
     plainLead.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !plainLead.result.grounding.replaced
-    && plainLead.result.answer[0]?.kind === "text" && plainLead.result.answer[0].text === `${NOTE_C} ` && plainLead.record.typed[0]?.kind === "text" && (plainLead.record.typed[0] as { text: string }).text === `${NOTE_C} `
+    && plainLead.result.answer[0]?.kind === "note" && plainLead.result.answer[0].text === NOTE_C && plainLead.record.typed[0]?.kind === "note" && (plainLead.record.typed[0] as { text: string }).text === NOTE_C
+    && plainLead.result.answer[1]?.kind === "text" && !plainLead.result.answer.slice(1).some((x) => x.text.includes("you asked about"))
     && plT.startsWith(`${NOTE_C} The largest cost category is Providers (Plaid) with a figure of at least $`), plT);
 
   // F-C2: no duplicated label in the simulated Q-C answer.
@@ -1450,7 +1452,7 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
     C.result.grounding.correction === 1 && C.result.grounding.periodMismatch === 1 && (hC.body.grounding as { correction?: number }).correction === 1
     && Array.isArray(hC.body.answer) && (hC.body.answer as { kind: string }[])[0]?.kind === "correction", hC.body.grounding);
   check("…note fires with period_mismatch = 0 ⇒ the PLAIN note, no correction segment, no correction flag",
-    cleanC.result.grounding.periodMismatch === 0 && cleanC.result.grounding.correction === undefined && cleanC.result.answer[0]?.kind === "text"
+    cleanC.result.grounding.periodMismatch === 0 && cleanC.result.grounding.correction === undefined && cleanC.result.answer[0]?.kind === "note"
     && segmentsText(cleanC.result.answer).startsWith(`${NOTE_C} `) && !cleanC.result.answer.some((x) => x.kind === "correction") && !/correction=/.test(traceLine(cleanC.result)), traceLine(cleanC.result));
   check("…no note (30-day window asked, 30-day figure) ⇒ never a correction, even though the prose says \"In the past 30 days\"",
     noNote.result.grounding.correction === undefined && !noNote.result.answer.some((x) => x.kind === "correction") && !noNote.record.typed.some((x) => x.kind === "correction") && !/correction=/.test(traceLine(noNote.result)), traceLine(noNote.result));
@@ -2051,6 +2053,103 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   check("briefing step 7: next actions must each be a find_page / open_page (or drill.page) link (coverage block)", /Next actions \(step 7\): each one is a Markdown link to an href find_page \/ open_page returned/.test(sys));
   const nextBare = await run("How are we looking today?", b, script([{ calls: [gm("ops-overall-posture")] }, { content: "Next: open https://evil.test/x and [connections](/dashboard/platform/PLATFORM_OPS?view=nope)." }]));
   check("step 7: a next action whose link was not returned this turn is stripped (no URL, no unreturned href renders)", nextBare.result.answer.every((x) => x.kind !== "link") && !/https?:|evil/.test(txt(nextBare)), txt(nextBare));
+}
+
+// ── 4r. Briefing as a list (C), window-note segment (F-1), exact counts (F-3), 2026-11-08 ──
+console.log("\n4r. briefing list fallback (C) · window note is its own segment (F-1) · exact counts never 'at least' (F-3)");
+{
+  const b = opsBinding(OPS);
+  const QL = "How are we looking today? Please give me the issues as a short bulleted list."; // the Preview question, verbatim
+  const READS = ["ops-overall-posture", "alerts-firing-now", "customer-impact-24h", "incident-broken-now", "incident-needs-verification", "connection-health-summary", "scheduled-job-health"]
+    .map((id) => ({ name: "get_metric", args: { id } }));
+  const brief = (content: string, binding = b, q = QL) => run(q, binding, script([{ calls: READS }, { content }]));
+  const txt = (r: Awaited<ReturnType<typeof run>>) => segmentsText(r.result.answer);
+
+  // (C) root cause: the model numbered its list items; each "1." marker was a leftover digit (UNGROUNDED_DIGIT, digitBy OTHER) ⇒ the fallback.
+  const numbered = await brief("1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections).\n2. {{m:incident-broken-now@1}} incidents are active.\n3. {{m:scheduled-job-health@1|part=overdue}} job is overdue (evaluate-alerts).");
+  check("(C) the Preview question with a NUMBERED list ⇒ an answer, not the verify fallback (ordered-list markers are structure)",
+    !numbered.result.grounding.replaced && numbered.result.grounding.verdict === "RESOLVED" && !txt(numbered).includes(UNVERIFIED_FALLBACK) && /^1\. 1 domain is degraded/.test(txt(numbered)), { g: numbered.result.grounding, t: txt(numbered) });
+  const { stripListMarkers } = await import("./core");
+  check("(C) stripListMarkers: ONLY a 1–2 digit '.'/')' marker at a line start goes; every other digit stays (the figure rule is unchanged)",
+    stripListMarkers("1. a\n  2) b\n3. c") === "  a\n    b\n  c" && stripListMarkers("1. a\n  2) b\n10. c") === "  a\n    b\n10. c" && stripListMarkers("- 2 failed") === "- 2 failed" && stripListMarkers("(1) Health") === "(1) Health"
+    && stripListMarkers("1.5 hours") === "1.5 hours" && stripListMarkers("see 2. x") === "see 2. x" && stripListMarkers("2 failed.") === "2 failed." && stripListMarkers("1. a", false) === "1. a" && stripListMarkers("x\n1. a", false) === "x\n  a"
+    && stripListMarkers("123. a") === "123. a" && stripListMarkers("1.") === "1.");
+  check("L1: markers only in sequence from 1 — '7.' alone and '1. … 3.' keep their digit; a list may restart at 1",
+    stripListMarkers("7. incidents are open") === "7. incidents are open" && stripListMarkers("1. a\n3. b") === "  a\n3. b" && stripListMarkers("1. a\n2. b\n\n1. c") === "  a\n  b\n\n  c"
+    && stripListMarkers("2. a") === "2. a");
+  const seven = await brief("7. {{m:incident-broken-now@1}} incidents are open.");
+  const gap = await brief("1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded.\n3. {{m:incident-broken-now@1}} incidents are active.");
+  const seq = await brief("1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded.\n2. {{m:incident-broken-now@1}} incidents are active.");
+  check("L1 turns: '7. …' alone ⇒ refused; '1. … 3. …' ⇒ refused; '1. … 2. …' ⇒ answered",
+    seven.result.grounding.verdict === "UNGROUNDED_DIGIT" && gap.result.grounding.verdict === "UNGROUNDED_DIGIT" && seq.result.grounding.verdict === "RESOLVED" && !seq.result.grounding.replaced,
+    [seven.result.grounding.verdict, gap.result.grounding.verdict, seq.result.grounding.verdict]);
+  // A marker that continues the list in a LATER segment (after a link) is still in sequence.
+  const acrossLink = await run(QL, b, script([{ calls: [...READS, { name: "find_page", args: { query: "connections" } }] }, { content: "1. Review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline).\n2. {{m:incident-broken-now@1}} incidents are active." }]));
+  check("L1: the sequence carries across segments (a link in item 1, then '2.')", !acrossLink.result.grounding.replaced, acrossLink.result.grounding);
+  const stillDigits = await brief("1. 2 incidents are active.\n2. Jobs: 3 overdue.");
+  check("(C) …a count typed after a marker is still a leftover digit (refused)", stillDigits.result.grounding.replaced && stillDigits.result.grounding.verdict === "UNGROUNDED_DIGIT");
+  const words = await brief("- One incident needs verification.\n- Two connections need reconnection.");
+  check("(C) …number words in list items are still refused (NUMBER_WORD unchanged)", words.result.grounding.replaced && words.result.grounding.digitBy.NUMBER_WORD === 2);
+  const win = await brief("- Customer impact (last 24 hours): {{m:customer-impact-24h@1|part=refreshFailed}} refresh failures.");
+  check("(C) the server window phrase quoted without 'in the' (\"last 24 hours\" of a 24-hour metric read this turn) is window text, not a figure",
+    !win.result.grounding.replaced && win.result.grounding.verdict === "RESOLVED", win.result.grounding);
+  const winNotRead = await brief("- Jobs over the last 7 days: {{m:scheduled-job-health@1|part=overdue}} overdue.");
+  check("(C) …a window phrase no metric of this turn carries is still a leftover digit", winNotRead.result.grounding.replaced && winNotRead.result.grounding.verdict === "UNGROUNDED_DIGIT");
+
+  // The fixed battery (S2): ten scripted briefing variants. Before this PR 4/10 fell back (3 wrongly); after, only the true refusal does.
+  const BATTERY: [string, string, boolean][] = [
+    ["prose sentences", "Mostly healthy: {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections). There are {{m:incident-broken-now@1}} active incidents and {{m:incident-needs-verification@1}} needing verification.", false],
+    ["dash bullets", "- Connections are degraded: {{m:ops-overall-posture@1|part=degraded}} degraded domain.\n- {{m:incident-broken-now@1}} incidents are active.\n- {{m:connection-health-summary@1|part=reconnectNeeded}} connections need the customer to reconnect.", false],
+    ["star bullets", "* {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections).\n* {{m:scheduled-job-health@1|part=overdue}} job is overdue (evaluate-alerts).", false],
+    ["ordered 1.", "1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections).\n2. {{m:incident-broken-now@1}} incidents are active.\n3. {{m:scheduled-job-health@1|part=overdue}} job is overdue.", false],
+    ["ordered 1)", "1) Connections are degraded.\n2) {{m:incident-broken-now@1}} incidents are active.", false],
+    ["section labels + nested", "Overall health:\n  - {{m:ops-overall-posture@1|part=degraded}} domain is degraded (Connections).\nIncidents:\n  - {{m:incident-broken-now@1}} active, {{m:incident-needs-verification@1}} needing verification.", false],
+    ["bulleted section labels", "- Overall health:\n  - {{m:ops-overall-posture@1|part=degraded}} domain degraded.\n- Incidents:\n  - {{m:incident-broken-now@1}} active.", false],
+    ["window phrase in item", "- Customers affected (last 24 hours): {{m:customer-impact-24h@1|part=refreshFailed}} refresh failures.\n- {{m:incident-broken-now@1}} incidents are active.", false],
+    ["intro + bullets + next steps", "Here are today's issues:\n- {{m:ops-overall-posture@1|part=degraded}} domain is degraded.\n- {{m:connection-health-summary@1|part=reconnectNeeded}} connections need reconnection.\nNext: review the connections page.", false],
+    ["number words in items (a TRUE refusal)", "- One incident needs verification.\n- Two connections need reconnection.", true],
+  ];
+  const outcomes: string[] = [];
+  for (const [name, content, refuse] of BATTERY) {
+    const r = await brief(content);
+    outcomes.push(`${name}:${r.result.grounding.verdict}`);
+    check(`battery "${name}" ⇒ ${refuse ? "refused (fallback)" : "answered"}`, r.result.grounding.replaced === refuse && txt(r).startsWith(UNVERIFIED_FALLBACK) === refuse, r.result.grounding);
+  }
+  check("battery: fallback rate 1/10 (only the number-word answer)", outcomes.filter((o) => !/:(RESOLVED|RESOLVED_WITH_WINDOW_NOTE|NONE)$/.test(o)).length === 1, outcomes);
+  check("F-2 prompt: briefing format — 3–6 short sentences, a list only for several distinct issues, '- ' bullets with sentence items, never numbered / 'Label: value' / section headers as bullets",
+    (() => { const sys = (numbered.transcript[0] as { content: string }).content; return /3–6 short plain sentences in the order above/.test(sys) && /never number items, never "Label: value" pairs, never a section header as a bullet/.test(sys); })());
+
+  // F-1: the window note is its OWN segment — stored, replayed, exported; never inside model text.
+  const QC = "What's costing me the most money in the past 30 days?";
+  const c = await run(QC, b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
+  const kinds = c.result.answer.map((x) => x.kind);
+  check("F-1 Question C: the content starts with the note segment; no model text segment contains the note wording",
+    kinds[0] === "note" && /^Note: .* covers .*, not the 30 days you asked about\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/you asked about|^Note:/.test(x.text)), c.result.answer);
+  const stored = storedAnswerOf(c.result, c.record);
+  check("F-1: stored typed as { kind: \"note\" } (valid StoredAnswerV1), replayed and exported as its own block",
+    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => /you asked about/.test(x.text))
+    && /^Note: .*you asked about\. The largest/.test(replayAnswer(stored, NOW)) && /^Note: .*you asked about\. The largest/.test(renderAnswerText(stored)), stored.segments);
+  check("F-1: a note segment with an extra key is not a valid stored answer", !isStoredAnswer({ ...stored, segments: [{ kind: "note", text: "x", href: "/y" }] }));
+
+  // F-3: exact counts render without "at least"; a capped scan keeps it.
+  const unknownDomain = readers({ operationsOverview: async () => ({ checkedAt: NOW.toISOString(), worst: "DEGRADED",
+    domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key, state: key === "sources" ? "DEGRADED" : key === "brief" ? "UNKNOWN" : "HEALTHY", title: key, headline: "", facts: [] })), latestFailures: [] }) as never });
+  const posture = await brief("{{m:ops-overall-posture@1|part=degraded}} degraded, {{m:ops-overall-posture@1|part=unknown}} unknown.", opsBinding(OPS, unknownDomain), "How are we looking today?");
+  const pc = posture.result.citations.find((x) => x.metric === "ops-overall-posture@1");
+  check("F-3: posture with an UNKNOWN domain is PARTIAL, but its domain counts are exact ⇒ no 'at least'; the note says incomplete, not a lower bound",
+    pc?.status === "PARTIAL" && txt(posture) === "1 degraded, 1 unknown." && posture.result.notes.some((n) => /^Platform operating posture is incomplete: 1 domain had nothing to judge/.test(n)) && !posture.result.notes.some((n) => /posture.*lower bound/i.test(n)),
+    { t: txt(posture), n: posture.result.notes });
+  const capped = readers({ attention: async () => ({ checkedAt: NOW.toISOString(), items: [],
+    userImpact: { windowHours: 24, rows: [], counts: { "refresh-failed": 4, "refresh-partial": 0, "ai-failure": 2, "brief-failed": 0, "needs-reauth": 1 },
+      usersAffected: { count: null, reason: "no user reference" }, sourcesAffected: 3, authorities: { checked: ["refresh-executions", "ai-failures", "brief-ops", "connection-health"], failed: [] },
+      floors: ["Refresh: 4 FAILED/PARTIAL executions shown — the seam had a further page (a floor, not a total)."] } }) as never });
+  const impact = await brief("Refresh failures {{m:customer-impact-24h@1|part=refreshFailed}}; AI failures {{m:customer-impact-24h@1|part=aiFailures}}; reauth {{m:customer-impact-24h@1|part=needsReauth}}; sources {{m:customer-impact-24h@1|part=sourcesAffected}}.", opsBinding(OPS, capped), "How are we looking today?");
+  check("F-3: customer impact with a CAPPED refresh scan: refresh failures keep 'at least' (a floor) and so do sources; AI failures and reauth (read in full) do not",
+    /^Refresh failures at least 4 \(in the last 24 hours\); AI failures 2 \(in the last 24 hours\); reauth 1 \(in the last 24 hours\); sources at least 3 \(in the last 24 hours\)\.$/.test(txt(impact)), txt(impact));
+  const env = toolResultsOf(impact).find((x) => x.metric === "customer-impact-24h@1");
+  check("F-3: the envelope lists exactParts (server data) — refresh parts and the customer count are not in it", JSON.stringify(env?.exactParts) === JSON.stringify(["aiFailures", "briefFailed", "needsReauth"]), env?.exactParts);
+  check("F-3: renderPlaceholder — PARTIAL + an exact part ⇒ plain; PARTIAL + a part not listed ⇒ 'at least'",
+    renderPlaceholder({ ...env, status: "PARTIAL" } as MetricEnvelope, "aiFailures") === "2 (in the last 24 hours)" && renderPlaceholder({ ...env, status: "PARTIAL" } as MetricEnvelope, "refreshFailed") === "at least 4 (in the last 24 hours)");
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

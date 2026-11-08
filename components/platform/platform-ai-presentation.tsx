@@ -53,6 +53,26 @@ export function PeriodCorrections({ segments }: { segments: readonly { kind: str
   );
 }
 
+/**
+ * F-1 (S2, 2026-11-08): the server's WINDOW NOTE segments ("Note: <metric> covers <its
+ * window>, not the <asked> you asked about.") — code-written, never model text. Their own
+ * QUIET note above the answer (role="note", aria-label "Note"): a hairline callout in
+ * secondary text, quieter than the correction, never inline in the prose.
+ */
+export function WindowNotes({ segments }: { segments: readonly { kind: string; text: string }[] }) {
+  const notes = segments.filter((s) => s.kind === "note");
+  if (notes.length === 0) return null;
+  return (
+    <div role="note" aria-label="Note" data-platform-ai-window-note=""
+      className="mb-3 flex min-w-0 gap-2 rounded-lg border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-3 py-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+      <Info size={15} aria-hidden className="mt-[3px] shrink-0 text-[var(--text-muted)]" />
+      <div className="min-w-0">
+        {notes.map((c, i) => <p key={i} className="min-w-0 break-words">{c.text}</p>)}
+      </div>
+    </div>
+  );
+}
+
 /** A stale chip: the relative time, the UTC stamp as its title. */
 export interface ChipText { chip: string; title: string }
 
@@ -95,6 +115,7 @@ export function TypedAnswerSegments({ segments, chips }: { segments: readonly Cl
   return (
     <>
       <PeriodCorrections segments={segments} />
+      <WindowNotes segments={segments} />
       <div data-platform-ai-body="" className="min-w-0 space-y-3 break-words leading-relaxed text-[var(--text-primary)]">
         {blocks.map((b, i) => {
           if (b.kind === "p") {
@@ -104,10 +125,23 @@ export function TypedAnswerSegments({ segments, chips }: { segments: readonly Cl
               </p>
             );
           }
+          if (b.kind === "label") {
+            return <p key={i} data-platform-ai-section="" className="min-w-0 text-sm font-semibold text-[var(--text-primary)]"><Line line={b.line} chips={chips} /></p>;
+          }
           const List = b.kind === "ul" ? "ul" : "ol";
           return (
             <List key={i} className={`min-w-0 space-y-1 pl-5 ${b.kind === "ul" ? "list-disc" : "list-decimal"}`}>
-              {b.items.map((item, j) => <li key={j} className="min-w-0"><Line line={item} chips={chips} /></li>)}
+              {b.items.map((item, j) => {
+                const sub = b.sub?.[j] ?? null;
+                const SubList = sub?.kind === "ol" ? "ol" : "ul";
+                return (
+                  <li key={j} className="min-w-0"><Line line={item} chips={chips} />{sub ? (
+                    <SubList data-platform-ai-nested="" className={`mt-1 min-w-0 space-y-1 pl-5 ${sub.kind === "ul" ? "list-[circle]" : "list-decimal"}`}>
+                      {sub.items.map((x, k) => <li key={k} className="min-w-0"><Line line={x} chips={chips} /></li>)}
+                    </SubList>
+                  ) : null}</li>
+                );
+              })}
             </List>
           );
         })}

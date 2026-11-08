@@ -261,6 +261,7 @@ export function briefingCoverageText(binding: Pick<PlatformAiBinding, "describeM
     `BRIEFING COVERAGE (server-computed; you may read these areas: ${binding.surfaceLabel}; read Costs only when the operator asks about cost or a step-1–5 figure is anomalous):`,
     ...lines,
     `- Not yet covered by Platform AI: ${BRIEFING_NOT_YET_COVERED.join(", ")}.`,
+    "- Format (briefing): 3–6 short plain sentences in the order above — natural chat, not a report. Use a list ONLY when there are several distinct issues or the operator asks for one: \"- \" bullets, one full sentence per item; never number items, never \"Label: value\" pairs, never a section header as a bullet.",
     "- Next actions (step 7): each one is a Markdown link to an href find_page / open_page returned, or a drill.page; call find_page for it, and give no next action without its link.",
   ].join("\n");
 }
@@ -536,6 +537,8 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const period = periodContract(e, binding.describeMetric(e.metric), asked);
       // The phrase is server text handed to the model to quote: it joins the leftover-digit allowlist like a registry label.
       ev.labels.add(period.window_phrase);
+      // …and its form without "in the " ("last 24 hours"): the same server window text, quoted in a list item's parenthesis.
+      if (period.window_phrase.startsWith("in the ")) ev.labels.add(period.window_phrase.slice("in the ".length));
       // Multi-area: the area this figure was read from (server label). Named subjects are registry names (retrieve-core isSubjectLabel).
       const area = binding.areaOf?.(e.metric) ?? PLATFORM_AREAS[e.surface]?.label ?? null;
       if (area) ev.labels.add(area);
@@ -624,8 +627,18 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
  * segment the renderers show prominently ABOVE the answer, and stored typed (B11).
  */
 export type CorrectionSegment = { kind: "correction"; text: string };
+/**
+ * F-1 (S2, 2026-11-08) — the code-written WINDOW NOTE (RESOLVED_WITH_WINDOW_NOTE with no
+ * period restated: "Note: <metric> covers <its window>, not the <asked> you asked about.").
+ * Its OWN segment (it used to be merged into the first text segment, so it read as model
+ * prose): stored typed (B11), replayed as its own segment, rendered in a quiet role="note"
+ * callout ABOVE the answer. Never model text.
+ */
+export type NoteSegment = { kind: "note"; text: string };
+/** The server-written segments that render ABOVE the answer, never in its body. */
+export type ServerNoteSegment = CorrectionSegment | NoteSegment;
 
-export type AnswerSegment = { kind: "text"; text: string } | { kind: "link"; text: string; href: string } | CorrectionSegment;
+export type AnswerSegment = { kind: "text"; text: string } | { kind: "link"; text: string; href: string } | ServerNoteSegment;
 
 export const LINK_REMOVED = "[link removed]";
 const SENTINEL = "\u0000";
@@ -731,7 +744,8 @@ export function sanitiseAnswer(raw: string, allowed: ReadonlySet<string>): { seg
   return { segments, removed, kinds };
 }
 
-export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => x.text).join("");
+/** The answer as one string; a server note / correction (its own block on screen) is followed by a separating space. */
+export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => (x.kind === "note" ? `${x.text} ` : x.text)).join("");
 
 /**
  * DIAGNOSIS ONLY (2026-11-04, Preview finding: every turn logs removed=1(link:1)):
@@ -960,6 +974,34 @@ export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
 const NUMBER_WORD = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|billions?|dozens?|twice|thrice)\b|\ba\s+single\b/gi;
 const NUMBER_WORD_IDIOM = /\b(?:no\s+one|one\s+another|(?:this|that|which)\s+one)\b/gi;
 const NUMBER_WORD_TIME_UNIT = /^[\s-]+(?:hours?|days?|weeks?|months?|years?)\b/i;
+
+/**
+ * ORDERED-LIST MARKERS (Question-style briefing "…as a short bulleted list", 2026-11-08):
+ * the model numbered its items ("1. …", "2) …") and the leftover-digit rule read each
+ * marker as a figure ⇒ UNGROUNDED_DIGIT ⇒ the fallback. A marker is STRUCTURE: the
+ * client's answerBlocks (NUMBERED) reads exactly this shape at a line start as an
+ * ordered-list item and drops it — the operator never sees it as a number. Removed here
+ * ONLY at a line start (the segment's start when `lineStart`, else after a newline),
+ * 1–2 digits then "." or ")" then whitespace. A digit anywhere else — "2 failed", "(1)",
+ * "- 2 failed", "1.5" — is still a leftover digit.
+ */
+export const LIST_MARKER = /(^|\n)([ \t]*)(\d{1,2})[.)](?=[ \t]+\S)/g;
+/**
+ * S2 L1 (#496): a marker is allowed ONLY in sequence — "1" starts a list, and each next
+ * marker must be the previous + 1 ("1. 2. 3."), each followed by text. "7. incidents are
+ * open", or "1. … 3. …", keeps its digit (refused as a leftover digit, as before): the
+ * renderer would renumber it, but the stored text and the export would carry the "7".
+ * `seq` carries the expected next marker across the answer's segments (one answer, in order).
+ */
+export function stripListMarkers(prose: string, lineStart = true, seq: { next: number } = { next: 1 }): string {
+  return prose.replace(LIST_MARKER, (m, nl: string, ws: string, n: string, offset: number) => {
+    if (offset === 0 && nl === "" && !lineStart) return m;
+    const k = Number(n);
+    if (k !== 1 && k !== seq.next) return m;
+    seq.next = k + 1;
+    return `${nl}${ws} `;
+  });
+}
 
 /** PURE — how many number words the model's own prose states (idioms and the operator's own time window excepted). */
 export function numberWordCount(prose: string, scrubbedQuestion = ""): number {
@@ -1217,7 +1259,9 @@ export function renderPlaceholder(e: MetricEnvelope, part: string | null, estima
   const win = part !== null && (e.unwindowedParts ?? []).includes(part) ? null : envelopeWindowText(e);
   const notes = [...(win !== null ? [win] : []), ...(isEstimate ? ["estimated"] : [])];
   const fig = `${fmtNumber(n, unit)}${notes.length ? ` (${notes.join(", ")})` : ""}`;
-  const worded = e.status === "PARTIAL" ? `at least ${fig}` : isEstimate ? `about ${fig}` : fig;
+  // F-3 (S2 2026-11-08): "at least" ONLY for a part that is truly a lower bound — a PARTIAL part the envelope does not list as exact.
+  const floor = e.status === "PARTIAL" && !(part !== null && (e.exactParts ?? []).includes(part));
+  const worded = floor ? `at least ${fig}` : isEstimate ? `about ${fig}` : fig;
   return ranked ? `${worded}${ranked.qualifier ? `; ${ranked.qualifier}` : ""}` : worded;
 }
 
@@ -1327,7 +1371,7 @@ export type TypedAnswerSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: number | string | null }
   | { kind: "link"; text: string; href: string }
-  | CorrectionSegment
+  | ServerNoteSegment
   /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
   | { kind: "memory"; text: string };
 
@@ -1381,13 +1425,15 @@ export function resolvePlaceholders(
   const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
   const labelList = [...labels].filter((l) => /\d/.test(l) || numberWordCount(l) > 0).sort((a, b) => b.length - a.length);
   // The day-windows the operator asked about (the Question C rule, fixedWindowOption).
+  // S2 L1: ordered-list markers must run 1, 2, 3, … across the whole answer (stripListMarkers).
+  const markerSeq = { next: 1 };
   const askedDays = requestedWindows(scrubbedQuestion).filter((a) => a.hours % 24 === 0).map((a) => a.hours / 24);
   const modelProse: string[] = [];
   // The rendered answer as one stream (segments in order) with every server span marked —
   // for the counts-only labelRepeat / windowRepeat diagnoses. Never traced, stored or returned.
   const stream = { text: "", spans: [] as RenderedSpan[] };
 
-  const resolveParts = (text: string): { text: string; parts: TypedAnswerSegment[] } => {
+  const resolveParts = (text: string, lineStart = true): { text: string; parts: TypedAnswerSegment[] } => {
     const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null } | { kind: "label" })[] = [];
     const out = text.replace(PLACEHOLDER, (m, kind: "m" | "l", written: string, rawOpts: string, offset: number) => {
       claims++;
@@ -1425,6 +1471,9 @@ export function resolvePlaceholders(
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
     let prose = out.replace(new RegExp(`${SENTINEL}[^${SENTINEL}]*${SENTINEL}`, "g"), " ");
+    // Briefing list (2026-11-08): an ordered-list MARKER is structure, not a figure — exactly what
+    // answerBlocks reads as one ("1. " / "2) " at the start of a line; the renderer drops it).
+    prose = stripListMarkers(prose, lineStart, markerSeq);
     modelProse.push(prose);
     if (/\{\{|\}\}/.test(prose)) {
       malformed = true;
@@ -1469,12 +1518,14 @@ export function resolvePlaceholders(
     });
     return { text: pieces.join(""), parts };
   };
-  const resolveText = (text: string): string => resolveParts(text).text;
+  // A link label never starts a line (answerBlocks never reads a marker in a link): no marker allowance.
+  const resolveText = (text: string): string => resolveParts(text, false).text;
 
   const typed: TypedAnswerSegment[] = [];
-  const out: AnswerSegment[] = segments.map((x) => {
+  const out: AnswerSegment[] = segments.map((x, i) => {
     if (x.kind === "link") { const t = resolveText(x.text); typed.push({ kind: "link", text: t, href: x.href }); return { ...x, text: t }; }
-    const r = resolveParts(x.text);
+    // A text segment starts a line when it is the first, or the segment before it ended one.
+    const r = resolveParts(x.text, i === 0 || /\n[ \t]*$/.test(segments[i - 1].text));
     typed.push(...r.parts);
     return { kind: "text", text: r.text };
   });
@@ -1803,7 +1854,10 @@ export async function runPlatformAiTurn(input: {
 
   const notes: string[] = [];
   for (const c of citations) if (c.status === "UNAVAILABLE") notes.push(`${c.label} is unavailable${c.reason ? `: ${c.reason}` : ""}.`);
-  for (const c of citations) if (c.status === "PARTIAL") notes.push(`${c.label} is a lower bound${c.reason ? `: ${c.reason}` : ""}.`);
+  // F-3: a PARTIAL envelope whose every part is exact is INCOMPLETE (e.g. a domain had nothing to judge), not a lower bound.
+  const allExact = (metric: string) => ev.envelopes.some((e) => e.metric === metric && e.status === "PARTIAL" && e.value !== null && typeof e.value === "object"
+    && Object.keys(e.value).length > 0 && Object.keys(e.value).every((k) => (e.exactParts ?? []).includes(k)));
+  for (const c of citations) if (c.status === "PARTIAL") notes.push(`${c.label} ${allExact(c.metric) ? "is incomplete" : "is a lower bound"}${c.reason ? `: ${c.reason}` : ""}.`);
   // Briefing coverage (2026-11-08): what this turn had data for, per briefing domain — and, for a briefing, ONE code-written note naming the gaps.
   const coverage = briefingCoverage(binding, ev.envelopes);
   const coverageNote = briefingCoverageNote(coverage);
@@ -1863,8 +1917,9 @@ export async function runPlatformAiTurn(input: {
         const def = binding.describeMetric(e.metric);
         return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
       });
-      answer = [{ kind: "text", text: `${lines.join(" ")} ` }, ...answer];
-      typed = [{ kind: "text", text: `${lines.join(" ")} ` }, ...typed];
+      // F-1: its own typed segment (never merged into the model's first text segment).
+      answer = [{ kind: "note", text: lines.join(" ") }, ...answer];
+      typed = [{ kind: "note", text: lines.join(" ") }, ...typed];
     }
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;

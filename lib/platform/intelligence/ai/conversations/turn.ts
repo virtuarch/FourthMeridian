@@ -73,7 +73,7 @@ export function storedAnswerOf(result: PlatformAiAnswer, record: Pick<PlatformAi
       const page = record.pages.get(s.href);
       if (page && REF_ID_SHAPE.test(page.id) && s.text.length <= 200) segs.push({ kind: "link", text: s.text, page: page.id, params: { ...page.params } });
       else pushText(s.text);
-    } else if (s.kind === "correction") segs.push({ kind: "correction", text: clip(s.text, STORED_TEXT_MAX) });
+    } else if (s.kind === "correction" || s.kind === "note") segs.push({ kind: s.kind, text: clip(s.text, STORED_TEXT_MAX) });
     else if (s.kind === "memory") { if (MEMORY_SPAN_SHAPE.test(s.text)) segs.push({ kind: "memory", text: s.text }); }
     else pushText(s.text);
   }
