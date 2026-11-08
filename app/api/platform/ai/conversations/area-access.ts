@@ -43,17 +43,19 @@ import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/ha
 export async function conversationAreaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null> {
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err || !auth.grant || auth.grant.area !== area || auth.user.id !== operatorId) return null;
-  const bound = bindArea(auth);
+  // The incident token is minted HERE, from the guard result destructured above (audience.test.ts provenance pin).
+  const incidentToken = incidentAudienceFor(auth);
+  const bound = bindArea(auth, incidentToken);
   if (!bound) return null;
   // Platform AI memory (design v2 §2): the authorized readers come from THIS fresh guard result.
-  return { ...bound, area, memoryReaders: buildMemoryReaders(auth, area, bound.binding) };
+  return { ...bound, area, memoryReaders: buildMemoryReaders(incidentToken, area, bound.binding) };
 }
 
-function bindArea(auth: PlatformAuth): Pick<AreaAccess, "resolvePage" | "binding"> | null {
+function bindArea(auth: PlatformAuth, incidentToken: ReturnType<typeof incidentAudienceFor>): Pick<AreaAccess, "resolvePage" | "binding"> | null {
   if (!auth.grant) return null;
   const t = metricAccessFor(auth);
   if (!t) return null;
-  const ctx: RetrievalContext = { metricToken: t, incidentToken: incidentAudienceFor(auth) };
+  const ctx: RetrievalContext = { metricToken: t, incidentToken };
   const common = (label: string) => ({ surfaceLabel: label, describeMetric: (id: string) => describeMetric(t, id) });
   switch (auth.grant.area) {
     case "PLATFORM_OPS": {

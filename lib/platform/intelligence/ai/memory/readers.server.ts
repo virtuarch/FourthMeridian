@@ -3,12 +3,12 @@
  *
  * Design v2 §2 "Revalidate": every ref is re-read through the CURRENT binding
  * or an authorized reader — never from stored text. Built by the route from the
- * operator's FRESH guard result on ONE area (`auth`, `binding`); nothing here
+ * operator's FRESH guard result on ONE area (its incident token, `binding`); nothing here
  * re-decides authority:
  *
  *   METRIC    binding.readMetric (the area's metric token; null ⇒ not visible)
  *   PAGE      binding.listPages + binding.resolvePage (the area's navigation token)
- *   INCIDENT  incidentAccessors.investigate with incidentAudienceFor(auth) — the
+ *   INCIDENT  incidentAccessors.investigate with the caller's incident token — the
  *             verdict's operator wording, never a customer identity (the label
  *             is the same identity-free `label` at every tier)
  *   JOB       the scheduled-job health report (Platform Ops only)
@@ -21,13 +21,15 @@
 import "server-only";
 
 import type { PlatformArea } from "@prisma/client";
-import type { PlatformAuth } from "@/lib/platform/authorize";
-import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import type { PlatformAiBinding } from "../core";
 import { incidentRead, jobRead, metricRead, providerRead, type MemoryReaders, type RecordRead } from "./revalidate";
 
-export function buildMemoryReaders(auth: PlatformAuth, area: PlatformArea, binding: PlatformAiBinding): MemoryReaders {
+/** `incidentToken` = incidentAudienceFor(auth), minted by the caller from ITS OWN fresh guard result. */
+/** The incident audience token type, as the accessor takes it (this module never imports the minter). */
+type IncidentToken = Parameters<typeof incidentAccessors.investigate>[0];
+
+export function buildMemoryReaders(incidentToken: IncidentToken | null, area: PlatformArea, binding: PlatformAiBinding): MemoryReaders {
   let jobs: Promise<Array<{ job: string; lastRunStatus: string | null; lastStartedAt: Date | null }>> | null = null;
   let providers: Promise<Array<{ key: string; label: string; trust: string }>> | null = null;
   const ops = area === "PLATFORM_OPS";
@@ -43,9 +45,8 @@ export function buildMemoryReaders(auth: PlatformAuth, area: PlatformArea, bindi
       return { state: "OK", label: t.label, updatedAt: null };
     },
     async incident(id) {
-      const token = incidentAudienceFor(auth);
-      if (!token) return null;
-      const inv = await incidentAccessors.investigate(token, id, { now: new Date() });
+      if (!incidentToken) return null;
+      const inv = await incidentAccessors.investigate(incidentToken, id, { now: new Date() });
       return inv ? incidentRead({ state: inv.verdict.state, label: inv.verdict.label, lastSeenAt: inv.verdict.lastSeenAt }) : null;
     },
     async job(name) {
