@@ -131,7 +131,7 @@ console.log("1. flag gating — decided server-side by the page; OFF by default;
   const page = code(PAGE);
   const iV0Flag = page.indexOf("if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;");
   const iArea = page.indexOf("const area = platformAiAreaFor(spaces);");
-  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} />;");
+  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} />;");
   const iAsk = page.indexOf("return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;");
   const iTotp = page.indexOf("redirect(OPERATOR_TOTP_ENROLMENT_PATH)");
   check("page order: gates → v0 flag (placeholder) → area → conversations flag → v0 PlatformAiAsk (the fallthrough)",
@@ -536,14 +536,14 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
   const cmp = code(COMPONENT), pres = code(PRESENTATION);
   const importsOf = (c: string) => [...c.matchAll(/^import\s+(?:type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => m[1]).sort();
   check("conversations imports: exactly these modules", importsOf(cmp).join() === [
-    "./PlatformAiPlaceholder", "./platform-ai-conversations-model", "./platform-ai-presentation",
+    "./PlatformAiMemory", "./PlatformAiPlaceholder", "./platform-ai-conversations-model", "./platform-ai-memory-model", "./platform-ai-presentation",
     "@/components/ai/AiShell", "@/components/ai/ConversationView", "@/components/ai/answer-frame",
     "@/components/ai/FailedTurn", "@/components/ai/MessageCard",
     "@/components/atlas/ConfirmDialog", "@/components/atlas/panels/Panel", "@/components/atlas/panels/PanelParts",
     "lucide-react", "react",
   ].sort().join(), importsOf(cmp));
   check("shared presentation imports: exactly these modules (the shared AI primitives + the model)", importsOf(pres).join() === [
-    "./platform-ai-conversations-model", "@/components/ai/Composer", "@/components/ai/Markdown",
+    "./platform-ai-conversations-model", "./platform-ai-memory-model", "@/components/ai/Composer", "@/components/ai/Markdown",
     "@/components/ai/StarterLine", "@/components/ai/SuggestedPrompt", "lucide-react", "react",
   ].sort().join(), importsOf(pres));
   const named = (c: string, mod: string) => (c.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
@@ -817,7 +817,7 @@ console.log("\n11. history (parity PR4) — ?c= deep link, grouping, delete-next
 
   // The view seam is the page's default.
   check("the page passes no View (the seam is for the history test only)", !/View=/.test(code(PAGE))
-    && /export function PlatformAiConversations\(\{ areaLabel, View = PlatformAiConversationsView \}/.test(cmp));
+    && /export function PlatformAiConversations\(\{ areaLabel, memory = false, View = PlatformAiConversationsView \}/.test(cmp));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

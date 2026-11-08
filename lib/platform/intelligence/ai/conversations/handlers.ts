@@ -40,6 +40,8 @@ import {
 import type { HistoryMessage } from "./history";
 import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutcome, CreateReplayLookup, MessageRecord, SettleOutcome, TurnPair } from "./store";
 import type { ConversationTurnOutcome } from "./turn";
+import type { MemoryProposalCard } from "../memory/turn";
+import type { MemoryReaders } from "../memory/revalidate";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -61,6 +63,10 @@ export interface AreaAccess {
    * per area). The ONLY scope a conversation turn can read.
    */
   binding: PlatformAiBinding;
+  /** The area this access was granted for (the guard's own area). */
+  area?: PlatformArea;
+  /** Platform AI memory (design v2 §2): the authorized readers built from THE SAME fresh guard result. */
+  memoryReaders?: MemoryReaders;
 }
 
 export interface ConversationStoreSeam {
@@ -147,7 +153,8 @@ export type RenderedSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: string | number | null }
   | { kind: "link"; text: string; href: string }
-  | { kind: "correction"; text: string };
+  | { kind: "correction"; text: string }
+  | { kind: "memory"; text: string };
 
 /** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text. */
 export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null): RenderedSegment[] {
@@ -157,6 +164,7 @@ export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null)
       return r ? { kind: "link", text: s.text, href: r.href } : { kind: "text", text: s.text };
     }
     if (s.kind === "correction") return { kind: "correction", text: s.text };
+    if (s.kind === "memory") return { kind: "memory", text: s.text };
     return s.kind === "figure" ? { kind: "figure", text: s.text, metric: s.metric, window: s.window } : { kind: "text", text: s.text };
   });
 }
@@ -184,7 +192,7 @@ const conversationDto = (c: ConversationRecord) => ({
 });
 
 /** A replay (§5.1): COMPLETE / FAILED ⇒ 200 with the stored pair; PENDING ⇒ 409 TURN_IN_FLIGHT. */
-function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null): ConversationHttp {
+function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): ConversationHttp {
   if (pair.assistant.status === "PENDING" && status === 200) {
     return { status: 409, body: { error: "This question is still being answered.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
   }
@@ -194,6 +202,8 @@ function pairResponse(status: number, conversation: ConversationRecord | null, p
       ...(conversation ? { conversation: conversationDto(conversation) } : {}),
       userMessage: messageDto(pair.user, access, false),
       assistantMessage: messageDto(pair.assistant, access, false),
+      // Memory (design v2 §3): the confirm card of THIS turn only — never stored, never on a replay.
+      ...(memoryProposal && pair.assistant.status === "COMPLETE" ? { memoryProposal } : {}),
     },
   };
 }
@@ -258,12 +268,13 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
 async function runAndSettle(
   v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
   deps: { store: ConversationTurnStoreSeam } & TurnRunDeps,
-): Promise<TurnPair> {
+): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null }> {
   let outcome: ConversationTurnOutcome;
   try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access }); }
   catch { outcome = { status: "FAILED", failureCode: "PROVIDER" }; }
   try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
-  return (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
+  const settled = (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
+  return { pair: settled, memoryProposal: outcome.status === "COMPLETE" ? outcome.memoryProposal ?? null : null };
 }
 
 /** v0's pre-provider gates (§5.3): kill switch → global freeze → daily cap. null = admitted. */
@@ -342,8 +353,8 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
       return pairResponse(200, out.conversation, out.pair, a);
     }
     case "CREATED": {
-      const pair = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(201, out.conversation, pair, access);
+      const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+      return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
     }
   }
 }
@@ -392,8 +403,8 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
     case "REPLAY":
       return pairResponse(200, null, out.pair, access);
     case "APPENDED": {
-      const pair = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(200, null, pair, access);
+      const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+      return pairResponse(200, null, r.pair, access, r.memoryProposal);
     }
   }
 }

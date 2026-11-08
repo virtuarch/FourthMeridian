@@ -104,6 +104,9 @@
     "rls:accept:ai-conversations": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-acceptance.ts",
     "report:platform-ai-conversations-precheck": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-precheck.ts",
     "ops:platform-ai-conversations-purge": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-purge-dispatch.ts",
+    "rls:accept:ai-memory": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-memory-acceptance.ts",
+    "report:platform-ai-memory-precheck": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-memory-precheck.ts",
+    "ops:platform-ai-memory-purge": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-memory-purge-dispatch.ts",
     "ops:synthetic-operator": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/synthetic-operator.ts",
     "rls:accept:synthetic-operator": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/synthetic-operator-acceptance.ts"
   },

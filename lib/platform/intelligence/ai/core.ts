@@ -283,7 +283,7 @@ const DOMAINS = [...new Set(METRICS.map((m) => m.domain))] as MetricDomain[];
 /** Every day-window any registered metric offers (the get_metric schema's enum); each metric still accepts only its own. */
 const WINDOW_DAYS: number[] = [...new Set(METRICS.flatMap((m) => [...(m.window.days ?? [])]))].sort((a, b) => a - b);
 
-export function platformAiToolSchemas(paramKeys: readonly string[]): unknown[] {
+export function platformAiToolSchemas(paramKeys: readonly string[], opts: { memory?: boolean } = {}): unknown[] {
   const fn = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []) => ({
     type: "function",
     function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false } },
@@ -307,6 +307,17 @@ export function platformAiToolSchemas(paramKeys: readonly string[]): unknown[] {
         additionalProperties: false,
       },
     }, ["id"]),
+    ...(opts.memory ? [
+      fn("recall_memory", "Read OPERATOR MEMORY: with no id, the index of remembered items injected in this turn; with an id, that one item. Each has its type, the live subject label, concern, the operator's note, a {{mem:<id>}} placeholder for when it was noted, and the live check (UNCHANGED, CHANGED, UPDATED or UNVERIFIED). It never returns a value: for current state, read the live metric or page.", {
+        id: { type: "string", maxLength: 40 },
+      }),
+      fn("propose_memory", "Propose ONE item for the operator to remember (they confirm it; nothing is saved by you). subjectRef must be a metric key or page id you read in THIS turn. At most one per turn; end your answer normally — the server shows the confirm card.", {
+        factType: { type: "string", enum: ["WATCHING_ISSUE", "OPERATIONAL_STATE", "FOLLOW_UP"] },
+        concern: { type: "string", enum: ["RECURRING_FAILURE", "DEGRADATION", "COST_SPIKE", "CUSTOMER_IMPACT", "AWAITING_FIX", "MONITOR_ONLY"] },
+        subjectRef: { type: "string", maxLength: 120 },
+        note: { type: "string", maxLength: 140, description: "A short note in your own words (no numbers, amounts, names, emails or ids, and never a sentence copied from the conversation)." },
+      }, ["factType", "subjectRef"]),
+    ] : []),
   ];
 }
 
@@ -340,6 +351,34 @@ export interface ToolEvidence {
 }
 
 export const PLATFORM_AI_TOOLS = ["list_metrics", "get_metric", "find_page", "open_page"] as const;
+/** Platform AI operational memory (design v2 §3) — offered ONLY when the memory flag is effective. */
+export const PLATFORM_AI_MEMORY_TOOLS = ["recall_memory", "propose_memory"] as const;
+
+/**
+ * Platform AI operational memory (design v2 §3–§4) — the turn's memory seam,
+ * built by lib/platform/intelligence/ai/memory/turn.ts ONLY when memory is
+ * effective; absent ⇒ the turn is exactly as before (no tools, no injection).
+ * core.ts never imports the memory modules: it only calls these hooks.
+ */
+export interface PlatformAiMemoryHooks {
+  /** The server-written OPERATOR MEMORY system message (after the system prompt, before history); null = nothing injected. */
+  contextMessage: string | null;
+  /** recall_memory {id?}: the index or one fact — never a value. */
+  recall(args: Record<string, unknown>): unknown;
+  /** propose_memory {factType, concern, subjectRef, note}: validated against THIS turn's evidence; writes nothing. */
+  propose(args: Record<string, unknown>, ev: ToolEvidence): unknown;
+  /** {{mem:<id>}} → server text ("noted 8 Nov 2026 — now changed"); null for an id NOT injected this turn. */
+  renderPlaceholder(id: string): string | null;
+  /** The injected facts' subjects, for the D10 live-check correction. */
+  subjects(): readonly { id: string; label: string | null; liveRead(ev: ToolEvidence): boolean }[];
+}
+
+/** D10 — the server's line when an answer cites memory without a live read of that subject this turn. */
+export const MEMORY_LIVE_NOT_CHECKED = "Live state not checked in this answer.";
+/** {{mem:<id>}} as the model writes it (the id is a fact id the injected block named). */
+const MEM_PLACEHOLDER = /\{\{\s*mem:([a-z0-9]{1,40})\s*\}\}/gi;
+const MEM_OPEN = "\uE000", MEM_CLOSE = "\uE001";
+const MEM_SENTINEL = /\uE000([a-j])\uE001/g;
 
 /**
  * One tool call, as METADATA: the tool (a known name, else "unknown"), an
@@ -350,7 +389,7 @@ export const PLATFORM_AI_TOOLS = ["list_metrics", "get_metric", "find_page", "op
  * refusal is the same NOT_FOUND the model sees.
  */
 export interface PlatformAiTraceStep {
-  tool: (typeof PLATFORM_AI_TOOLS)[number] | "unknown";
+  tool: (typeof PLATFORM_AI_TOOLS)[number] | (typeof PLATFORM_AI_MEMORY_TOOLS)[number] | "unknown";
   outcome: MetricEnvelope["status"] | "OK" | "NOT_FOUND" | "INVALID_ARGS" | "BUDGET";
   /** Server-returned registry ids: the metric key (get_metric), page ids (find_page / open_page). */
   refs: string[];
@@ -464,8 +503,11 @@ export function periodContract(e: MetricEnvelope, def: MetricDefinition | null, 
 
 export async function executePlatformAiTool(name: string, rawArgs: string, binding: PlatformAiBinding, ev: ToolEvidence, paramKeys: readonly string[],
   /** The periods the operator's (scrubbed) question names (requestedWindows); [] = none. */
-  asked: readonly { hours: number }[] = []): Promise<unknown> {
-  const tool = (PLATFORM_AI_TOOLS as readonly string[]).includes(name) ? name as PlatformAiTraceStep["tool"] : "unknown";
+  asked: readonly { hours: number }[] = [],
+  /** Platform AI memory (design v2 §3): present ONLY when memory is effective; absent ⇒ the memory tools do not exist. */
+  memory?: PlatformAiMemoryHooks): Promise<unknown> {
+  const known = (PLATFORM_AI_TOOLS as readonly string[]).includes(name) || (!!memory && (PLATFORM_AI_MEMORY_TOOLS as readonly string[]).includes(name));
+  const tool = known ? name as PlatformAiTraceStep["tool"] : "unknown";
   const step = (outcome: PlatformAiTraceStep["outcome"], extra: Partial<PlatformAiTraceStep> = {}) => { ev.trace.push({ tool, outcome, refs: [], ...extra }); };
   const invalid = () => { step("INVALID_ARGS"); return NOT_FOUND; };
   switch (name) {
@@ -551,6 +593,21 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       // The id resolved, so it IS a registry id (not free model text).
       step("OK", { refs: [a.id] });
       return { href: r.href };
+    }
+    case "recall_memory": {
+      if (!memory) { step("NOT_FOUND"); return NOT_FOUND; }
+      const a = plainArgs(rawArgs, ["id"]);
+      if (!a || (given(a.id) && (typeof a.id !== "string" || !/^[a-z0-9]{1,40}$/i.test(a.id)))) return invalid();
+      step("OK");
+      return memory.recall(a);
+    }
+    case "propose_memory": {
+      if (!memory) { step("NOT_FOUND"); return NOT_FOUND; }
+      const a = plainArgs(rawArgs, ["factType", "concern", "subjectRef", "note"]);
+      if (!a) return invalid();
+      const r = memory.propose(a, ev);
+      step(r === NOT_FOUND ? "NOT_FOUND" : "OK");
+      return r;
     }
     default:
       step("NOT_FOUND");
@@ -1270,7 +1327,9 @@ export type TypedAnswerSegment =
   | { kind: "text"; text: string }
   | { kind: "figure"; text: string; metric: string; window: number | string | null }
   | { kind: "link"; text: string; href: string }
-  | CorrectionSegment;
+  | CorrectionSegment
+  /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
+  | { kind: "memory"; text: string };
 
 export interface PlaceholderOutcome {
   segments: AnswerSegment[];
@@ -1681,11 +1740,14 @@ export async function runPlatformAiTurn(input: {
   history?: AssembledHistory;
   /** B11 — the question is ALREADY scrubbed (the stored string IS the sent string; one scrub for both sinks). */
   questionScrubbed?: boolean;
+  /** Platform AI operational memory (design v2 §3–§4): present ONLY when memory is effective. */
+  memory?: PlatformAiMemoryHooks;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
   const paramKeys = modelParamKeys(binding);
-  const tools = platformAiToolSchemas(paramKeys);
+  const memory = input.memory;
+  const tools = platformAiToolSchemas(paramKeys, { memory: !!memory });
   // The fixed rules + THIS operator's briefing coverage (server data: which briefing metrics the binding can read).
   const systemPrompt = `${PLATFORM_AI_SYSTEM_PROMPT}\n${briefingCoverageText(binding)}`;
   const messages: unknown[] = input.history
@@ -1694,6 +1756,8 @@ export async function runPlatformAiTurn(input: {
         { role: "system", content: systemPrompt },
         { role: "user", content: question },
       ];
+  // Memory (design v2 §4): ONE server-written system message after the system prompt, before history.
+  if (memory?.contextMessage) messages.splice(1, 0, { role: "system", content: memory.contextMessage });
   const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [], pages: new Map() };
   // The period(s) the operator asked about (server-parsed from the scrubbed question): the tool contract (periodContract) and the window note.
   const asked = requestedWindows(question);
@@ -1713,9 +1777,9 @@ export async function runPlatformAiTurn(input: {
       let result: unknown;
       if (toolCalls >= PLATFORM_AI_MAX_TOOL_CALLS) {
         result = { error: `tool budget spent (${PLATFORM_AI_MAX_TOOL_CALLS} calls); answer from the results you have` };
-        ev.trace.push({ tool: (PLATFORM_AI_TOOLS as readonly string[]).includes(call.name) ? call.name as PlatformAiTraceStep["tool"] : "unknown", outcome: "BUDGET", refs: [] });
+        ev.trace.push({ tool: (PLATFORM_AI_TOOLS as readonly string[]).includes(call.name) || (!!memory && (PLATFORM_AI_MEMORY_TOOLS as readonly string[]).includes(call.name)) ? call.name as PlatformAiTraceStep["tool"] : "unknown", outcome: "BUDGET", refs: [] });
       }
-      else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys, asked); }
+      else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys, asked, memory); }
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
     if (tokens >= PLATFORM_AI_TURN_TOKEN_CEILING) { stop = "TOKEN_CEILING"; break; }
@@ -1745,7 +1809,22 @@ export async function runPlatformAiTurn(input: {
   const coverageNote = briefingCoverageNote(coverage);
   if (coverageNote) notes.push(coverageNote);
 
-  const { segments: sanitised, removed, kinds } = sanitiseAnswer(raw ?? BUDGET_FALLBACK, ev.hrefs);
+  // Memory (design v2 §4): {{mem:<id>}} resolves ONLY against facts injected this turn, to a private
+  // sentinel the sanitiser and the figure resolver pass through untouched; it is expanded to the
+  // server text AFTER placement (its date is server text, never a model digit). Unknown ids vanish.
+  const memText: string[] = [];
+  const memIds: string[] = [];
+  let modelRaw = (raw ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "");
+  if (memory) {
+    modelRaw = modelRaw.replace(MEM_PLACEHOLDER, (_m, id: string) => {
+      const text = memory.renderPlaceholder(id.toLowerCase());
+      if (text === null || memText.length >= 10) return "";
+      memIds.push(id.toLowerCase());
+      memText.push(text);
+      return `${MEM_OPEN}${String.fromCharCode(97 + memText.length - 1)}${MEM_CLOSE}`;
+    });
+  }
+  const { segments: sanitised, removed, kinds } = sanitiseAnswer(modelRaw, ev.hrefs);
   const placed = resolvePlaceholders(sanitised, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
   let answer = placed.segments;
   let typed: TypedAnswerSegment[] = placed.typed;
@@ -1793,6 +1872,34 @@ export async function runPlatformAiTurn(input: {
       ? [{ kind: "text", text: `${UNVERIFIED_FALLBACK} — open ` }, { kind: "link", text: "the page it comes from", href }, { kind: "text", text: "." }]
       : [{ kind: "text", text: `${UNVERIFIED_FALLBACK}. Open the Platform page it comes from.` }];
     typed = answer.map((x) => ({ ...x }));
+  }
+  // Memory: expand the sentinels — plain text in the display answer, a typed `memory` span in the stored one.
+  if (memText.length > 0) {
+    const plain = (t: string) => t.replace(MEM_SENTINEL, (_m, l: string) => memText[l.charCodeAt(0) - 97] ?? "");
+    answer = answer.map((x) => (x.kind === "text" || x.kind === "correction" ? { ...x, text: plain(x.text) } : x.kind === "link" ? { ...x, text: plain(x.text) } : x));
+    typed = typed.flatMap((x): TypedAnswerSegment[] => {
+      if (x.kind !== "text") return [x.kind === "link" || x.kind === "correction" ? { ...x, text: plain(x.text) } : x];
+      const out: TypedAnswerSegment[] = [];
+      let last = 0;
+      for (const m of x.text.matchAll(MEM_SENTINEL)) {
+        if (m.index! > last) out.push({ kind: "text", text: x.text.slice(last, m.index) });
+        const t = memText[m[1].charCodeAt(0) - 97];
+        if (t) out.push({ kind: "memory", text: t });
+        last = m.index! + m[0].length;
+      }
+      if (last < x.text.length) out.push({ kind: "text", text: x.text.slice(last) });
+      return out;
+    });
+  }
+  // D10: the answer cites memory — a {{mem}} placeholder, or an injected subject's label in its text —
+  // with no live tool read of that subject this turn ⇒ the server appends the not-checked line.
+  if (memory && !replaced) {
+    const prose = (raw ?? "").toLowerCase();
+    const cited = memory.subjects().filter((sub) => memIds.includes(sub.id) || (sub.label !== null && sub.label.length >= 3 && prose.includes(sub.label.toLowerCase())));
+    if (cited.some((sub) => !sub.liveRead(ev))) {
+      answer = [...answer, { kind: "text", text: ` ${MEMORY_LIVE_NOT_CHECKED}` }];
+      typed = [...typed, { kind: "text", text: ` ${MEMORY_LIVE_NOT_CHECKED}` }];
+    }
   }
   // An UNAVAILABLE metric is SAID as unavailable, whatever the model wrote.
   const unavailable = citations.filter((c) => c.status === "UNAVAILABLE");

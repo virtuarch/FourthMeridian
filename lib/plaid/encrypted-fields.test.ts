@@ -56,6 +56,10 @@ const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof Encrypti
   { file: "lib/ai/conversation/runtime-state.ts",     purpose: "AI_RUNTIME_STATE",      count: 1, field: "NON_STORED" },
   // B11 — the ONE Platform AI conversation data module: the USER question (insertPair) and the ASSISTANT completion (settleTurn).
   { file: "lib/platform/intelligence/ai/conversations/store.ts", purpose: "PLATFORM_AI_MESSAGE", count: 2, field: "PlatformAiMessage.contentEncrypted" },
+  // Platform AI operational memory (design v2, D2) — the ONE memory data module: the operator's note at insert.
+  { file: "lib/platform/intelligence/ai/memory/store.ts", purpose: "PLATFORM_AI_MEMORY", count: 1, field: "PlatformAiMemoryFact.noteEncrypted" },
+  // Platform AI memory (design v2 B5): the proposal token — sealed, handed to the confirm card and taken back; never stored.
+  { file: "lib/platform/intelligence/ai/memory/token.ts", purpose: "PLATFORM_AI_MEMORY_TOKEN", count: 1, field: "NON_STORED" },
 ];
 
 /**
@@ -159,8 +163,8 @@ for (const p of Object.values(EncryptionPurpose)) {
   const carrier = NON_STORED_PURPOSES.includes(p);
   check(`purpose ${p} is exactly one of: a registered field, a non-stored carrier`, stored !== carrier);
 }
-check("the registry is the six known columns",
-  labels.slice().sort().join() === ["BetaAbuseEvidence.sealedPayload", "Connection.credential", "PlaidItem.encryptedToken", "PlatformAiMessage.contentEncrypted", "User.dateOfBirthEncrypted", "User.totpSecret"].join(),
+check("the registry is the seven known columns",
+  labels.slice().sort().join() === ["BetaAbuseEvidence.sealedPayload", "Connection.credential", "PlaidItem.encryptedToken", "PlatformAiMemoryFact.noteEncrypted", "PlatformAiMessage.contentEncrypted", "User.dateOfBirthEncrypted", "User.totpSecret"].join(),
   labels.join(", "));
 
 // ── 3b. the format census honours the registry's scope ──────────────────────

@@ -57,7 +57,9 @@ export type ClientSegment =
   | { kind: "figure"; text: string; metric: string; window: string | number | null; observedAt?: string }
   | { kind: "link"; text: string; href: string }
   /** S2 F-C1 (ii): the server's period correction — rendered prominently ABOVE the answer. */
-  | { kind: "correction"; text: string };
+  | { kind: "correction"; text: string }
+  /** Platform AI memory: a server-rendered "noted <date>" span (never the note). */
+  | { kind: "memory"; text: string };
 
 export interface ClientCitation { metric: string; label: string; window: string }
 
@@ -102,6 +104,7 @@ function parseSegment(s: unknown): ClientSegment | null {
   if (!isObj(s) || typeof s.text !== "string") return null;
   if (s.kind === "text") return { kind: "text", text: s.text };
   if (s.kind === "correction") return { kind: "correction", text: s.text };
+  if (s.kind === "memory") return { kind: "memory", text: s.text };
   if (s.kind === "figure" && typeof s.metric === "string") {
     const w = s.window;
     return {
@@ -407,7 +410,7 @@ export function answerBlocks(segments: readonly ClientSegment[]): AnswerBlock[] 
     if (s.kind === "correction") return;
     // A figure ({{m:}}) and a link are typed server segments: never split, never read as a list marker.
     if (s.kind === "figure") { lines[lines.length - 1].push({ ...s, seg }); return; }
-    if (s.kind === "link") { lines[lines.length - 1].push(s); return; }
+    if (s.kind === "link" || s.kind === "memory") { lines[lines.length - 1].push(s); return; }
     s.text.split("\n").forEach((part, i) => {
       if (i > 0) lines.push([]);
       if (part) lines[lines.length - 1].push({ kind: "text", text: part });

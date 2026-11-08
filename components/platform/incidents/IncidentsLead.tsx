@@ -37,6 +37,7 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Surface } from "@/components/atlas/Surface";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { DetailDrawer } from "../ui";
+import { RememberButton } from "../RememberButton";
 import { ChartMessage } from "../leads/visual-kit";
 import { TONE_COLOR } from "../platform-surface";
 import { ExecutionTimelinePanel } from "../widgets/ExecutionTimelinePanel";
@@ -274,6 +275,8 @@ export interface IncidentDetailSlots {
   aiAssessment?: ReactNode;
   customerMessage?: ReactNode;
   lifecycle?: ReactNode;
+  /** Platform AI memory (design v2 §5): the "Remember" control; renders nothing unless memory is effective. */
+  remember?: ReactNode;
 }
 
 /** Progressive disclosure: closed by default; the content is in the DOM (and in tests). */
@@ -392,6 +395,8 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
       ))}
 
       {slots?.customerMessage}
+
+      {slots?.remember ? <div className="min-w-0" data-incident-remember="">{slots.remember}</div> : null}
 
       {/* 2 · DIAGNOSIS — the verified code, plain English, confirmed vs probable. */}
       <Section title="Diagnosis">
@@ -642,7 +647,8 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
     <>
       {notice && <p role="status" className="mb-3 text-xs text-[var(--text-secondary)]">{notice}</p>}
       <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
-        onLifecycle={tier === "ops" ? openLifecycle : undefined} />
+        onLifecycle={tier === "ops" ? openLifecycle : undefined}
+        slots={{ remember: <RememberButton area={tier === "ops" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS"} kind="INCIDENT" id={data.incident.id} /> }} />
       {lifecyclePending && (
         <ConfirmDialog icon={lifecyclePending === "resolve" ? CheckCircle2 : UserCheck} title={LIFECYCLE_CONFIRM[lifecyclePending].title}
           message={<>{LIFECYCLE_CONFIRM[lifecyclePending].message}<LifecycleFormFields action={lifecyclePending} form={form} onChange={setForm} disabled={busy} /></>}
