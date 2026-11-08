@@ -52,7 +52,7 @@ import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { planPayoff, DEFAULT_PAYOFF_PAYMENT, DEFAULT_PAYOFF_STRATEGY, PAYOFF_STRATEGIES, type PayoffLiabilityInput, type PayoffStrategy } from "@/lib/debt/payoff";
-import { debtLabelAccess, isInstallmentLoan } from "@/lib/debt/liability-kind";
+import { debtLabelAccess, isInstallmentLoan, type DebtType } from "@/lib/debt/liability-kind";
 import { viewerRateLabel, viewerRateLabelInline, blendedRateLabel } from "@/lib/debt/rate-label";
 import { todayUTCISO } from "@/lib/time/clock";
 import {
@@ -88,6 +88,10 @@ export type DebtPayoffAccount = {
   creditLimit?:     number | null;
   /** S2 PRIVACY P1 — the row's tier; non-FULL ⇒ the rate label never says "Mortgage". */
   visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: DebtType | null;
+
   /** Mortgage F4 — the required monthly payment (minimum / scheduled installment);
    *  undefined/null = UNKNOWN — never invented. A mortgage's may include escrow. */
   minimumPayment?:  number | null;
@@ -228,7 +232,8 @@ export function DebtPayoffSection({
   const liabilities: PayoffLiabilityInput[] = filteredConv.map(({ a, bal }) => ({
     id: a.id, label: a.name, balance: bal.amount, aprPct: a.interestRate ?? null,
     requiredPayment: a.minimumPayment != null ? inDisp(a.minimumPayment, a.currency).amount : null,
-    kind: { type: a.type, debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null },
+    // S2 P1-R1 — the server-classified debtType (coarse on non-FULL rows) wins.
+    kind: { type: a.type, debtSubtype: a.debtSubtype ?? null, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null, debtType: a.debtType ?? null },
   }));
   const hasInstallment = filtered.some((a) => isInstallmentLoan(a));
   const unratedNames = filteredConv

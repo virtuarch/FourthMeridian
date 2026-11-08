@@ -93,6 +93,10 @@ export interface Account {
   /** S2 PRIVACY P1 — SpaceAccountLink tier this row was disclosed at. Read only
    *  by the viewer debt-label helpers (lib/debt/liability-kind.ts debtLabelAccess). */
   visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: import("@/lib/debt/liability-kind").DebtType | null;
+
   /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
    *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
   providerSubtype?: string | null;

@@ -173,7 +173,7 @@ console.log("\n4. Product sources: balance-only rows carry the tier; names are k
     (data.match(/visibilityLevel: link\.visibilityLevel,/g) ?? []).length === 2 && /visibilityLevel: "FULL",/.test(data));
   const asm = readFileSync(join(root, "lib/ai/assemblers/accounts.ts"), "utf8");
   check("AI classifiableAll carries the tier", /visibilityLevel: l\.visibilityLevel,/.test(asm));
-  check("AI balance-only debt rows carry coarse provider evidence + pinned kind", /coarseDebtEvidence\(liabilityKind\(/.test(asm));
+  check("AI balance-only debt rows carry the server's coarse debtType + kind", /debtType: row\.debtType, debtTypeLabel: viewerDebtLabel/.test(asm));
 }
 
 console.log("\n5. Source scan — the fine label is reached only through the helper");

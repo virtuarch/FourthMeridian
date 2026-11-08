@@ -80,6 +80,15 @@ export interface LiabilityKindInput {
   providerSubtype?: string | null;
   /** FinancialAccount.creditLimit — discriminates Plaid "home equity" only. */
   creditLimit?: number | null;
+  /**
+   * S2 PRIVACY P1-R1 — the debt type the SERVER classified from full evidence
+   * and disclosed for this row. On a row the viewer neither owns nor holds at
+   * FULL it is the kind-preserving coarse type (other_installment /
+   * other_revolving / unknown) and the raw subtypes are absent. When present it
+   * WINS over every other field: client math reads the server's kind, never a
+   * raw subtype.
+   */
+  debtType?: DebtType | null;
 }
 
 export type LiabilityKind = "revolving" | "installment" | "unknown";
@@ -189,6 +198,8 @@ const PLAID_SUBTYPE_TO_TYPE: Readonly<Record<string, DebtType>> = {
  */
 export function debtType(a: LiabilityKindInput): DebtType {
   if (a.type != null && a.type !== "debt") return "unknown";
+  // S2 PRIVACY P1-R1 — the server's classification wins (see LiabilityKindInput.debtType).
+  if (a.debtType) return a.debtType;
   const ds = norm(a.debtSubtype);
   if (ds !== null) return DEBT_SUBTYPE_TO_TYPE[ds] ?? "other_installment";
   const sub = norm(a.providerSubtype);
@@ -269,6 +280,24 @@ const COARSE_DEBT_TYPE: Readonly<Record<LiabilityKind, DebtType>> = {
 export function viewerDebtType(a: LiabilityKindInput, access: DebtLabelAccess): DebtType {
   const t = debtType(a);
   return access === "FINE" ? t : COARSE_DEBT_TYPE[kindOfDebtType(t)];
+}
+
+/**
+ * S2 PRIVACY P1-R1 — THE server-side shaping of a debt row's TYPE evidence for
+ * a viewer. FINE ⇒ nothing changes (raw evidence stays). COARSE ⇒ the server
+ * classifies from the FULL evidence (subtypes + creditLimit) and the row carries
+ * only `debtType` = the coarse type of that kind; `debtSubtype` and
+ * `providerSubtype` are removed. Every classifier (`debtType`, `liabilityKind`,
+ * liquid-NW treatment, utilization, payoff kind) then reads the server's kind,
+ * so the math is identical to the FULL view.
+ */
+export function coarsenDebtEvidence<T extends LiabilityKindInput>(
+  row: T,
+  access: DebtLabelAccess,
+): T | (Omit<T, "debtSubtype" | "providerSubtype"> & { debtType: DebtType; providerSubtype: null }) {
+  if (access === "FINE" || (row.type != null && row.type !== "debt")) return row;
+  const { debtSubtype: _ds, providerSubtype: _ps, ...rest } = row;
+  return { ...rest, debtType: viewerDebtType(row, "COARSE"), providerSubtype: null };
 }
 
 /** THE debt-type label a viewer sees ("Mortgage" at FINE; "Loan" at COARSE). */

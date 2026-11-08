@@ -75,6 +75,8 @@ async function liquidityLens(
     // a category, not an identity, so the lens privacy contract holds.
     providerSubtype: account.providerSubtype ?? null,
     debtSubtype:     account.debtSubtype ?? null,
+    // S2 P1-R1 — the server's classification (coarse, raw subtypes withheld, on non-FULL rows).
+    debtType:        account.debtType ?? null,
     balance:         account.balance,
     // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
     // privacy contract of this boundary is about names/institutions).

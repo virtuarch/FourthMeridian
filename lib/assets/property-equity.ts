@@ -39,7 +39,7 @@
  * the app excludes nothing automatically.
  */
 
-import { debtType, DEBT_TYPE_LABEL, type DebtType, type LiabilityKindInput } from "@/lib/debt/liability-kind";
+import { debtType, DEBT_TYPE_LABEL, viewerDebtLabel, viewerDebtType, type DebtType, type LiabilityKindInput } from "@/lib/debt/liability-kind";
 
 export const PROPERTY_VALUE_BASES = ["MARKET_VALUE", "EQUITY_ENTERED", "UNKNOWN"] as const;
 export type PropertyValueBasis = (typeof PROPERTY_VALUE_BASES)[number];
@@ -176,6 +176,9 @@ export interface LinkedDebtInput extends SecuredDebtEvidence {
   /** Raw signed liability balance (positive = owed). */
   balance:  number;
   currency: string;
+  /** S2 PRIVACY P1-R1 — the viewer neither owns nor holds this debt at FULL:
+   *  its output kind + name are the coarse kind only (never mortgage / HELOC). */
+  coarse?:  boolean;
 }
 
 export interface PropertyEquityInput {
@@ -202,7 +205,9 @@ export interface PropertyEquity {
   currency:   string;
   valueBasis: PropertyValueBasis;
   /** Linked debts that ARE secured-by-property kinds and count toward equity. */
-  securedDebts: { id: string; name: string; kind: SecuredDebtKind; amountOwed: number; currency: string }[];
+  /** `kind` is the viewer-visible type: the SecuredDebtKind for owner / FULL, the
+   *  coarse kind-preserving type otherwise (S2 P1-R1); `label` names it. */
+  securedDebts: { id: string; name: string; kind: DebtType; label: string; amountOwed: number; currency: string }[];
   /** Linked ids that do NOT reduce equity, and why. */
   ignoredLinks: { id: string; reason: "NOT_SECURED_KIND" | "CURRENCY_MISMATCH" }[];
   /** Null when a linked debt is hidden from this viewer (S2 R2). */
@@ -237,7 +242,9 @@ export function computePropertyEquity(input: PropertyEquityInput): PropertyEquit
     const kind = securedDebtKind(d);
     if (kind === null) { ignoredLinks.push({ id: d.id, reason: "NOT_SECURED_KIND" }); continue; }
     if (d.currency !== input.currency) { ignoredLinks.push({ id: d.id, reason: "CURRENCY_MISMATCH" }); continue; }
-    securedDebts.push({ id: d.id, name: d.name, kind, amountOwed: Math.max(d.balance, 0), currency: d.currency });
+    // S2 P1-R1 — membership/arithmetic read the full kind; the OUTPUT kind is the viewer's.
+    const access = d.coarse ? "COARSE" : "FINE";
+    securedDebts.push({ id: d.id, name: d.name, kind: viewerDebtType(d, access), label: viewerDebtLabel(d, access), amountOwed: Math.max(d.balance, 0), currency: d.currency });
   }
   const securedDebtTotal = round2(securedDebts.reduce((s, d) => s + d.amountOwed, 0));
   const hasLinked = securedDebts.length > 0;
@@ -334,9 +341,9 @@ export function viewerPropertyEquity(args: {
     const d = byId.get(id);
     const v = linkedDebtVisibility({ viewerUserId: args.viewerUserId, propertySpaceIds: args.propertySpaceIds, debt: d });
     if (!v.visible || !d) { hidden = true; continue; }
-    const kind = securedDebtKind(d);
     linked.push({
-      id: d.id, name: v.nameVisible ? d.name : (kind ? SECURED_DEBT_KIND_LABEL[kind] : "Linked loan"),
+      // S2 P1-R1 — not owner / FULL ⇒ coarse kind + coarse name ("Loan").
+      id: d.id, name: v.nameVisible ? d.name : viewerDebtLabel(d, "COARSE"), coarse: !v.nameVisible,
       balance: d.balance, currency: d.currency,
       type: d.type, debtSubtype: d.debtSubtype, providerSubtype: d.providerSubtype, creditLimit: d.creditLimit,
     });
@@ -400,7 +407,7 @@ export interface AiSpaceDebt extends LinkedDebtInput {
 export type AiPropertyFacts = {
   value:            number;
   valueBasis:       PropertyValueBasis;
-  securedDebts:     { id: string; name: string; kind: SecuredDebtKind; amountOwed: number }[];
+  securedDebts:     { id: string; name: string; kind: DebtType; amountOwed: number }[];
   securedDebtTotal: number | null;
   derivedEquity:    number | null;
   equityUnavailableReason?: EquityUnavailableReason;
@@ -432,8 +439,8 @@ export function aiPropertyFacts(args: {
   for (const id of ids) {
     const d = args.spaceDebts.get(id);
     if (!d || !BALANCE_DISCLOSING_LEVELS.has(d.visibilityLevel)) { hidden = true; continue; }
-    const kind = securedDebtKind(d);
-    linked.push({ ...d, name: d.visibilityLevel === "FULL" ? d.name : (kind ? SECURED_DEBT_KIND_LABEL[kind] : "Linked loan") });
+    const coarse = d.visibilityLevel !== "FULL"; // S2 P1-R1
+    linked.push({ ...d, name: coarse ? viewerDebtLabel(d, "COARSE") : d.name, coarse });
   }
   const eq = computePropertyEquity({
     value: args.value, currency: args.currency, valueBasis: p.valueBasis, linkedDebts: linked, someLinkedDebtHidden: hidden,
