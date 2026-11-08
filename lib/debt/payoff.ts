@@ -81,6 +81,12 @@
  * UNKNOWN IS NOT 0%: a known 0% is `KNOWN_APR` with `aprPct: 0`. Nothing here
  * writes, returns, or implies a rate for an account.
  *
+ * Mortgage F3 (S2 ruling, item 3) — never SILENTLY. Each liability carries
+ * `rateStatus: "RATE_UNKNOWN"` (the label every surface renders), the plan says
+ * `interestTotalScope: "KNOWN_RATE_ONLY"` (its interest total leaves those
+ * liabilities out — their projection is "rate unknown", not "$0 interest"), and
+ * `basis.unknownAprCount` / `basis.owingCount` give the "1 of 2 debts" note.
+ *
  * ── What this is NOT ────────────────────────────────────────────────────────
  * Not an issuer payoff quote. The model has no evidence of grace-period
  * eligibility, statement-cycle balance method, cash-advance terms or residual
@@ -156,6 +162,12 @@ export type PayoffInterestBasis = "INTEREST_AWARE" | "PARTIAL_INTEREST" | "PRINC
 /** One liability's interest evidence. */
 export type LiabilityInterestBasis = "KNOWN_APR" | "ASSUMED_ZERO_UNKNOWN_APR";
 
+/** F3 — the label a surface renders for one liability's projection. */
+export type LiabilityRateStatus = "KNOWN" | "RATE_UNKNOWN";
+
+/** F3 — which liabilities a plan's `totalInterest` covers. */
+export type PayoffInterestTotalScope = "ALL_DEBTS" | "KNOWN_RATE_ONLY";
+
 /**
  * The evidence a schedule stands on. Carried by every status that ran one, so a
  * consumer never infers "was this an estimate?" from copy or from a 0.
@@ -168,6 +180,10 @@ export interface PayoffBasis {
   unknownAprBalance: number;
   /** Ids of the owing liabilities with no APR on file. */
   unknownAprLiabilityIds: string[];
+  /** F3 — owing liabilities with no rate on file (= unknownAprLiabilityIds.length). */
+  unknownAprCount: number;
+  /** F3 — owing liabilities in the schedule. */
+  owingCount: number;
   /**
    * What an unknown-APR liability was computed at, and that it is an ASSUMPTION.
    * Null when nothing was unknown. Never the account's APR — that stays unknown.
@@ -213,8 +229,12 @@ export interface LiabilityPayoff {
   /** null = UNKNOWN. */
   aprPct:            number | null;
   interestBasis:     LiabilityInterestBasis;
+  /** F3 — "RATE_UNKNOWN" ⇔ no rate on file: render "rate unknown", never "0% / $0 interest". */
+  rateStatus:        LiabilityRateStatus;
   principalPaid:     number;
-  /** Modelled interest accrued on — and paid by — this liability. 0 under the unknown-APR assumption. */
+  /** Modelled interest accrued on — and paid by — this liability. 0 under the
+   *  unknown-APR assumption, which `rateStatus: "RATE_UNKNOWN"` labels — it is
+   *  "not modelled", not "no interest". */
   interestPaid:      number;
   /** `principalPaid + interestPaid`. */
   totalPaid:         number;
@@ -255,8 +275,11 @@ export interface PaidOffPlan {
   elapsed:       PayoffElapsed;
   /** Σ liabilities' startingPrincipal (= Σ principalPaid on a paid-off schedule). */
   principal:     number;
-  /** Σ liabilities' interestPaid. */
+  /** Σ liabilities' interestPaid — over KNOWN-rate liabilities only when
+   *  `interestTotalScope` is "KNOWN_RATE_ONLY" (unknown-rate ones are left out, not costed at 0). */
   totalInterest: number;
+  /** F3 — "KNOWN_RATE_ONLY" whenever any owing liability has no rate on file. */
+  interestTotalScope: PayoffInterestTotalScope;
   /** Σ liabilities' totalPaid = principal + totalInterest. */
   totalPaid:     number;
   /** Every liability's own summary. The aggregates above are sums of these. */
@@ -366,6 +389,8 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
     knownAprBalance,
     unknownAprBalance,
     unknownAprLiabilityIds: unknown.map((s) => s.id),
+    unknownAprCount: unknown.length,
+    owingCount: states.length,
     unknownAprAssumption: unknown.length > 0 ? { aprPct: 0, provenance: "ESTIMATION_ASSUMPTION" } : null,
     avgKnownAprPct: knownAprBalance > 0
       ? known.reduce((t, s) => t + (s.aprPct as number) * s.startingPrincipal, 0) / knownAprBalance
@@ -418,6 +443,7 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
       const liabilities: LiabilityPayoff[] = states.map((s) => ({
         id: s.id, label: s.label, startingPrincipal: s.startingPrincipal, aprPct: s.aprPct,
         interestBasis: s.aprPct === null ? "ASSUMED_ZERO_UNKNOWN_APR" : "KNOWN_APR",
+        rateStatus: s.aprPct === null ? "RATE_UNKNOWN" : "KNOWN",
         principalPaid: s.principalPaid, interestPaid: s.interestPaid,
         totalPaid: round2(s.principalPaid + s.interestPaid),
         remainingBalance: balanceOf(s), paymentCount: s.paymentCount,
@@ -442,7 +468,10 @@ export function planPayoff(input: PayoffInput): PayoffPlan {
         elapsed: elapsedOf(startISO, payoffISO, onBoundary ? k + 1 : k, onBoundary ? 0 : d),
         // Aggregates are SUMS of the liability schedules — nothing is computed twice.
         principal:     round2(liabilities.reduce((t, l) => t + l.startingPrincipal, 0)),
-        totalInterest: round2(liabilities.reduce((t, l) => t + l.interestPaid, 0)),
+        // F3 — unknown-rate liabilities are LEFT OUT of the interest total (their
+        // interestPaid is the unmodelled 0), and the scope says so.
+        totalInterest: round2(liabilities.filter((l) => l.rateStatus === "KNOWN").reduce((t, l) => t + l.interestPaid, 0)),
+        interestTotalScope: unknown.length > 0 ? "KNOWN_RATE_ONLY" : "ALL_DEBTS",
         totalPaid:     round2(liabilities.reduce((t, l) => t + l.totalPaid, 0)),
         liabilities,
         payments,

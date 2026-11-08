@@ -37,7 +37,7 @@ import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-cl
 // applies the same clamp the headline netCashFlow and the workspace use.
 import { clampEconomicSpend, meanMonthlyEconomicSpend, type MonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
-import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
+import { computeDebtAggregate, aiRateCoverage, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
 export function getTxnData(ctx: SpaceContext_AI): TransactionsSummaryData | null {
   const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
@@ -489,6 +489,7 @@ export function computeDebtStrategy(
       avalancheCandidate:         null,
       snowballCandidate:          null,
       weightedAvgApr:             null,
+      weightedAvgAprCoverage:     aiRateCoverage(computeDebtAggregate([]).rateCoverage),
       knownMonthlyInterestBurden: null,
       missingAprAccountNames:     [],
       hasBalanceOnlyDebt:         false,
@@ -552,15 +553,26 @@ export function computeDebtStrategy(
   //     same population and did not round, so the assessment carried one figure
   //     at two precisions. Rounding is presentation — every consumer already
   //     calls `.toFixed(2)`.
-  const weightedAvgApr: number | null = computeDebtAggregate(
-    valuedDebt
-      .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null)
-      .map((a): DebtAggregateRow => ({
-        balance:        a.reportingBalance,
-        apr:            a.apr ?? null,
-        minimumPayment: null,   // the strategy does not state a monthly obligation
-      })),
-  ).weightedApr;
+  //
+  // Mortgage F3 / S2 — the population is now EVERY owing debt, with an unknown
+  // rate (no APR on file, or a BALANCE_ONLY row whose rate is withheld) as null,
+  // so the aggregate can say what the rate COVERS. The blend itself is unchanged
+  // (unknowns are excluded from both sides), but it is exposed as
+  // `weightedAvgApr` ONLY when every owing debt is rated (COMPLETE). A PARTIAL
+  // blend is the rate of the RATED debts only and travels as
+  // `ratedDebtsAvgRate`, labelled so; NONE ⇒ null, never 0.
+  const rateAgg = computeDebtAggregate(
+    valuedDebt.map((a): DebtAggregateRow => ({
+      balance:        a.reportingBalance,
+      apr:            a.visibilityLevel === 'FULL' && a.apr != null ? a.apr : null,
+      minimumPayment: null,   // the strategy does not state a monthly obligation
+    })),
+  );
+  const weightedAvgAprCoverage = aiRateCoverage(rateAgg.rateCoverage);
+  const weightedAvgApr: number | null = rateAgg.rateCoverage.status === 'COMPLETE' ? rateAgg.weightedApr : null;
+  const ratedDebtsAvgRate = rateAgg.rateCoverage.status === 'PARTIAL' && rateAgg.weightedApr !== null
+    ? { ratePct: rateAgg.weightedApr, meaning: weightedAvgAprCoverage.meaning }
+    : null;
 
   // P2-7D honesty: taint the strategy when any driving debt account had an
   // estimated reporting balance (missing/walked-back FX) — the ranking/weighting is
@@ -581,6 +593,8 @@ export function computeDebtStrategy(
     avalancheCandidate,
     snowballCandidate,
     weightedAvgApr,
+    weightedAvgAprCoverage,
+    ...(ratedDebtsAvgRate ? { ratedDebtsAvgRate } : {}),
     knownMonthlyInterestBurden: debt.monthlyInterestBurden,
     missingAprAccountNames:     debt.aprGapAccountNames,
     hasBalanceOnlyDebt:         debt.hasBalanceOnlyDebt,

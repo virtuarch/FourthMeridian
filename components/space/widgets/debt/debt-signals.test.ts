@@ -61,7 +61,13 @@ console.log("2. Utilization level (landed thresholds)");
 
 console.log("3. APR on file (unknown stays unknown) — minimum payments are NOT a signal");
 {
-  const gaps = buildDebtSignals({ accounts: [debt({ balance: 900 })] }); // no APR
+  // Mortgage F3 — pin updated intentionally: the fixture is now an explicit
+  // credit card. "APR" is the label of revolving credit only; an UNTYPED row with
+  // no limit reads "no rate" (lib/debt/rate-label.ts), asserted just below.
+  const gaps = buildDebtSignals({ accounts: [debt({ balance: 900, debtSubtype: "credit_card" })] }); // no APR
+  const untyped = buildDebtSignals({ accounts: [debt({ balance: 900 })] });
+  check("untyped owing debt with no rate ⇒ 'no rate', never 'no APR'",
+    byId(untyped, "gaps")!.text.includes("with no rate") && !byId(untyped, "gaps")!.text.includes("APR"), byId(untyped, "gaps")?.text);
   check("owing debt with no APR ⇒ gaps warn", byId(gaps, "gaps")?.tone === "warn");
   check("gaps text names the APR and says the cost is unknown",
     byId(gaps, "gaps")!.text.includes("APR") && byId(gaps, "gaps")!.text.includes("unknown"), byId(gaps, "gaps")?.text);

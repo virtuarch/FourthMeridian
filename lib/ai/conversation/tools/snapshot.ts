@@ -86,6 +86,9 @@ export const getFinancialSnapshot: ToolDefinition = {
         amountOwed: a2.amountOwed, creditBalance: a2.creditBalance,
         liabilityState: a2.liabilityState,
         apr: a2.apr, minimumPayment: a2.minimumPayment,
+        // Mortgage F3 — the name of `apr` for this account ("Mortgage rate" /
+        // "Loan rate" / "APR" / "Interest rate"), the same label the debt UI shows.
+        ...(a2.rateLabel ? { rateLabel: a2.rateLabel } : {}),
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
         // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
         // price; the assembler marks it and this row must not drop the mark.

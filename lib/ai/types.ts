@@ -22,6 +22,7 @@
 
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
+import type { RateLabel } from '@/lib/debt/rate-label';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
@@ -457,7 +458,11 @@ export interface AccountSummaryItem {
   // ── Debt metadata (FULL visibility, debt-type accounts only) ──────────────
   // Resolved from DebtProfile (preferred) → FinancialAccount flat fields (fallback).
   // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
-  apr?:                   number | null; // effective APR; null = known missing
+  apr?:                   number | null; // effective rate (percent); null = known missing
+  /** Mortgage F3 — the name of `apr` for THIS account (lib/debt/rate-label.ts):
+   *  'Mortgage rate' | 'Loan rate' | 'APR' (revolving credit only) | 'Interest rate'
+   *  (no kind evidence). The same label the debt UI renders. */
+  rateLabel?:             RateLabel;
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
   rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)
@@ -496,7 +501,7 @@ export interface KnowledgeGap {
   accountId:    string;
   accountName:  string;  // display-safe name (resolveDisplayName output)
   field:        'apr' | 'minimumPayment';
-  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage Rate"
+  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage rate", "Loan rate" (F3: lib/debt/rate-label.ts)
   debtSubtype?: string | null; // FinancialAccount.debtSubtype when present
 }
 

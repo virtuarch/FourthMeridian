@@ -76,6 +76,7 @@ import {
 import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
+import { rateLabel } from '@/lib/debt/rate-label';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -530,7 +531,10 @@ async function assembleAccounts(
         accountId:   fa.id,
         accountName: displayName,
         field:       'apr',
-        label:       resolveRateLabel(fa.debtSubtype),
+        // Mortgage F3 — the SAME label the debt UI renders (lib/debt/rate-label.ts):
+        // keyed on the liability KIND, so a Plaid mortgage (debtSubtype null,
+        // providerSubtype "mortgage") is a "Mortgage rate", never an "APR".
+        label:       rateLabel(fa),
         debtSubtype: fa.debtSubtype,
       });
     }
@@ -647,6 +651,10 @@ async function assembleAccounts(
             null;
 
           base.apr                  = effectiveApr;
+          // Mortgage F3 — what `apr` IS for this account: "Mortgage rate" /
+          // "Loan rate" / "APR" (revolving credit only) / "Interest rate"
+          // (untyped). The model must use this name, never "APR" by default.
+          base.rateLabel            = rateLabel(fa);
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;
@@ -905,24 +913,6 @@ function resolveDisplayName(fa: AccountNameEvidence): string {
   return accountDisplayName(fa);
 }
 
-/**
- * Resolve the human-readable label for the APR/rate field based on
- * the account's debtSubtype. Produces contextual labels so that the AI
- * (and future UI) can say "Mortgage Rate" instead of "APR" for a mortgage,
- * "Auto Loan Rate" for an auto loan, etc.
- */
-function resolveRateLabel(debtSubtype: string | null | undefined): string {
-  switch (debtSubtype) {
-    case 'mortgage':       return 'Mortgage Rate';
-    case 'auto_loan':      return 'Auto Loan Rate';
-    case 'student_loan':   return 'Student Loan Rate';
-    case 'personal_loan':  return 'Personal Loan Rate';
-    case 'heloc':          return 'HELOC Rate';
-    case 'credit_card':
-    case 'line_of_credit':
-    default:               return 'APR';
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Self-registration
