@@ -78,6 +78,23 @@ console.log("2. History replay — isReconstructableCard");
   check("explicit credit_card walks", isReconstructableCard(CASES.explicitCard) === true);
   check("Plaid credit card WITHOUT a limit still walks (PB-8)", isReconstructableCard({ ...CASES.card, creditLimit: null }) === true);
   for (const k of LOANS) check(`${k} with a limit is NOT walked (held flat)`, isReconstructableCard(CASES[k]) === false);
+  // Mortgage F7 — every revolving kind walks, limit or no limit.
+  for (const k of REVOLVING) {
+    check(`F7 ${k} walks`, isReconstructableCard(CASES[k]) === true);
+    if (k !== "legacyCard") check(`F7 ${k} walks WITHOUT a limit`, isReconstructableCard({ ...CASES[k], creditLimit: null }) === true);
+  }
+  for (const debtSubtype of ["heloc", "line_of_credit"]) {
+    check(`F7 debtSubtype ${debtSubtype}, no limit, no provider subtype ⇒ walked`,
+      isReconstructableCard({ type: "debt", debtSubtype, providerSubtype: null, creditLimit: null }) === true);
+  }
+  check("F7 legacy untyped row WITHOUT a limit stays held flat (no kind evidence)",
+    isReconstructableCard({ ...CASES.legacyCard, creditLimit: null }) === false);
+  check("F7 non-debt never walks", isReconstructableCard({ type: "checking", debtSubtype: null, providerSubtype: "credit card", creditLimit: 1 }) === false);
+  // One classification: the predicate asks liabilityKind and keeps no subtype logic of its own.
+  const core = readFileSync(join(process.cwd(), "lib/snapshots/backfill-core.ts"), "utf8");
+  const body = core.slice(core.indexOf("export function isReconstructableCard"), core.indexOf("export { PLAID_CREDIT_SUBTYPES }"));
+  check("F7 isReconstructableCard decides via liabilityKind only (no ad-hoc subtype checks)",
+    body.includes("switch (liabilityKind(a))") && !/debtSubtype\s*===|providerSubtype\?*\.|SUBTYPES\.has/.test(body), body.length);
 }
 
 console.log("3. Utilization — isRevolvingLine / creditUtilization");
@@ -207,6 +224,7 @@ console.log("8. S2 HELOC ruling — home equity / line of credit / overdraft, an
   // line of credit / overdraft WITHOUT a limit ⇒ revolving; utilization unknown (never ÷0 / ÷null)
   for (const [label, c] of [["line of credit", locNoLimit], ["overdraft", odNoLimit]] as const) {
     check(`${label}, no limit ⇒ revolving`, liabilityKind({ type: "debt", ...c }) === "revolving" && !isInstallmentLoan(c));
+    check(`${label}, no limit: history walked (F7)`, isReconstructableCard({ type: "debt", ...c }) === true);
     const u = creditUtilization([{ id: "x", name: "x", type: "debt", balance: 900, ...c }]);
     check(`${label}, no limit: no utilization row (unknown, not a number)`, u.rows.length === 0, u);
     check(`${label}, no limit: offered 'add a credit limit' (it IS revolving)`, u.missingLimit.length === 1, u);

@@ -303,14 +303,15 @@ console.log(`F7. Revolving lines WITHOUT a limit — history replay — ${LABEL}
   }
   check("F7 Plaid credit card, no limit ⇒ walked (PB-8)", isReconstructableCard(REVOLVING_NO_LIMIT[0][1]) === true);
   check("F7 debtSubtype credit_card, no limit ⇒ walked", isReconstructableCard(REVOLVING_NO_LIMIT[1][1]) === true);
-  // SUSPECTED DEFECT (S2 F7): a HELOC / line of credit / overdraft is revolving
-  // and transaction-driven, yet without a limit (or with an explicit FM
-  // revolving debtSubtype) its history is held flat at today's balance.
+  // FIXED by F7 — desired behaviour: every revolving kind (liabilityKind) is
+  // replayed from its posted ledger, limit or no limit. (Was: HELOC / line of
+  // credit / overdraft without a limit, or with an explicit FM revolving
+  // debtSubtype, held flat at today's balance.)
   for (const [label, a] of REVOLVING_NO_LIMIT.slice(2)) {
-    check(`F7 ${label}, no limit ⇒ NOT walked (held flat)`, isReconstructableCard(a) === false);
+    check(`F7 ${label}, no limit ⇒ walked — FIXED by F7`, isReconstructableCard(a) === true);
   }
-  check("F7 debtSubtype heloc WITH a limit ⇒ NOT walked (explicit non-card subtype stays flat)",
-    isReconstructableCard({ type: "debt", debtSubtype: "heloc", providerSubtype: null, creditLimit: 50_000 }) === false);
+  check("F7 debtSubtype heloc WITH a limit ⇒ walked — FIXED by F7",
+    isReconstructableCard({ type: "debt", debtSubtype: "heloc", providerSubtype: null, creditLimit: 50_000 }) === true);
 
   // Installment kinds with a limit stay out of the walk and utilization.
   for (const sub of ["mortgage", "auto", "student"]) {
@@ -327,13 +328,14 @@ console.log(`F7. Revolving lines WITHOUT a limit — history replay — ${LABEL}
     isReconstructableCard({ type: "debt", debtSubtype: null, providerSubtype: null, creditLimit: 5_000 }) === true
       && isReconstructableCard({ type: "debt", debtSubtype: null, providerSubtype: null, creditLimit: null }) === false);
 
-  // A HELOC (no limit) with a +1,000 draw 10 days ago: the walk population.
+  // A HELOC (no limit) with a +1,000 payment (FM sign: into the liability) 10 days ago.
   const today = new Date("2026-06-30T00:00:00.000Z");
   const heloc = { id: "heloc", balance: 21_000, ...REVOLVING_NO_LIMIT[2][1] };
   const walked = [heloc].filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
   const walk = reconstructDailyLiabilityBalances(walked, new Map([["heloc", new Map([[isoDate(addDaysUTC(today, -10)), 1_000]])]]), today, addDaysUTC(today, -30));
   const d20 = walk.get(isoDate(addDaysUTC(today, -20)))?.get("heloc");
-  check("F7 HELOC (no limit) history: NOT replayed — day −20 not reconstructed (held at 21,000)", walked.length === 0 && d20 === undefined, d20);
+  // FIXED by F7 — the payment is reversed: day −20 owed = 21,000 + 1,000.
+  check("F7 HELOC (no limit) history replayed — day −20 owed 22,000 — FIXED by F7", walked.length === 1 && d20 === 22_000, d20);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -503,7 +505,8 @@ console.log(`H7. History: past mortgage balances — ${LABEL}`);
       floorISO: writerAlignedFloorISO(cov, cls, isoDate(connected), isoDate(connected), false) }]);
     check("H7a coverage class HELD_FLAT; listed in estimatedLiabilityFloors", cls === "HELD_FLAT" && bc?.estimatedLiabilityFloors.length === 1, { cls, bc });
     const label = estimatedCoverageLabel(bc, ["liability"], isoDate(d364));
-    const [pt] = markPartialBalanceCoverage([{ date: isoDate(d364), estimated: true, value: 300_000 }], bc, ["liability"]);
+    const [pt] = markPartialBalanceCoverage<{ date: string; estimated?: boolean; basis?: string; coverageLabel?: string | null; value: number }>(
+      [{ date: isoDate(d364), estimated: true, value: 300_000 }], bc, ["liability"]);
     check("H7a aggregate point flagged estimated: basis 'carried' + 'Estimated' coverage line, value unchanged",
       label !== null && label.startsWith("Estimated:") && pt.basis === "carried" && pt.coverageLabel === label && pt.value === 300_000, { label, pt });
     check("H7a AI history tool: the day is flagged `estimated: true`", isEstimatedOn(bc, isoDate(d364), true) === true);
