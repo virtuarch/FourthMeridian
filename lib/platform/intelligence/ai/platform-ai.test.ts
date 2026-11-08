@@ -1838,7 +1838,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
 // ── 11. UI ───────────────────────────────────────────────────────────────────
 console.log("\n11. UI — the question box, citations with status chips, 375 px");
 {
-  const { PlatformAiAsk, AnswerCitations, answeringFrom } = await import("@/components/platform/PlatformAiAsk");
+  const { PlatformAiAsk, AnswerCitations } = await import("@/components/platform/PlatformAiAsk");
   const html = renderToStaticMarkup(createElement(PlatformAiAsk, { areaLabel: platformAiAreaLabel("PLATFORM_OPS") }));
 
   // The single area (v0), STATED: the same function picks it for the route and the page.
@@ -1851,14 +1851,15 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
     && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
   check("the label is the registry's display label (PLATFORM_AREAS), the same one the route's binding reports",
     platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("app/api/platform/ai/ask/route.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("app/api/platform/ai/ask/route.ts")));
-  check("the page STATES the area before any question: 'Answering from Platform Operations data'",
-    html.includes(answeringFrom("Platform Operations")) && html.includes("Answering from Platform Operations data") && /data-platform-ai-area/.test(html), html.slice(0, 600));
+  // Personal parity PR6 (owner 2026-11-08): the area is the shell header's context label, announced "Answering from: <label>".
+  check("the page STATES the area before any question: the header context 'Answering from: Platform Operations'",
+    /<span class="sr-only">Answering from: <\/span>Platform Operations/.test(html), html.slice(0, 900));
   const answered = renderToStaticMarkup(createElement(PlatformAiAsk, { areaLabel: "Customer Success" }));
-  check("…and states whichever area it is given (no hard-coded label)", answered.includes("Answering from Customer Success data") && !answered.includes("Platform Operations"));
-  check("the page tells the OPERATOR not to enter personal details (D4), tied to the question box",
+  check("…and states whichever area it is given (no hard-coded label)", /Answering from: <\/span>Customer Success/.test(answered) && !answered.includes("Platform Operations"));
+  check("the page tells the OPERATOR not to enter personal details (D4), tied to the question box (visible line + the full hint as its describedby target)",
     /data-platform-ai-privacy-hint/.test(html) && /Don&#x27;t enter customer names, emails, account numbers or other personal details|Don’t enter customer names, emails, account numbers or other personal details/.test(html)
-    && /aria-describedby="platform-ai-privacy-hint"/.test(html) && /Questions are sent to our AI provider/.test(html), html.slice(0, 900));
-  check("a question box capped at 500 characters and an Ask button", /<textarea[^>]*maxLength="500"/i.test(html) && /<button[^>]*type="submit"/.test(html));
+    && /aria-describedby="platform-ai-privacy-hint"/.test(html) && /Questions are sent to our AI provider/.test(html) && /Don’t enter personal details|Don&#x27;t enter personal details/.test(html), html.slice(0, 900));
+  check("a question box capped at 500 characters and a send button", /<textarea[^>]*maxLength="500"/i.test(html) && /<button[^>]*type="submit"[^>]*aria-label="Send message"/.test(html));
   check("375 px: no fixed width wider than the screen, min-w-0 on the columns", !/\b(?:w|min-w)-\[(?:3[8-9]\d|[4-9]\d\d|\d{4,})px\]/.test(html) && (html.match(/min-w-0/g) ?? []).length >= 3);
   const cites = renderToStaticMarkup(createElement(AnswerCitations, { citations: [
     { metric: "a@1", label: "Alpha", status: "MEASURED", reason: null, window: "w", href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers", figures: ["1,234"] },

@@ -1,9 +1,10 @@
 // Platform AI conversation scene (parity PR5). Synthetic, fabricated data only:
 // the real pure `PlatformAiConversationsView` is rendered with local state, and no
 // API is called. `?platform-ai` shows a selected thread; `?platform-ai=empty`
-// shows the empty state with the starter chips.
+// shows the empty state with the starter chips; `?platform-ai=first` is a first visit (no
+// conversations: the full notice expanded). The rail starts collapsed (the default).
 import React, {useState} from 'react';
-import {PlatformAiConversationsView, useNoticeInLog} from '@/components/platform/PlatformAiConversations';
+import {PlatformAiConversationsView} from '@/components/platform/PlatformAiConversations';
 import type {ClientConversation, ClientMessage} from '@/components/platform/platform-ai-conversations-model';
 
 const NOW = new Date('2026-01-10T12:00:00.000Z');
@@ -34,23 +35,22 @@ const MESSAGES: ClientMessage[] = Array.from({length: 8}, (_, i) => [
   answer(`a${i}`, i % 3 === 0),
 ]).flat();
 
-export function PlatformAiScene({empty}: {empty: boolean}) {
+export function PlatformAiScene({empty, first = false}: {empty: boolean; first?: boolean}) {
   const [draft, setDraft] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [railCollapsed, setRailCollapsed] = useState(false);
-  const [noticeOpen, setNoticeOpen] = useState(false);
-  const noticeInLog = useNoticeInLog();
+  const [railCollapsed, setRailCollapsed] = useState(true);
+  const [noticeOpen, setNoticeOpen] = useState<boolean | null>(null);
   const noop = () => {};
   return (
     <>
       <PlatformAiConversationsView
-        areaLabel="Platform Operations" now={NOW} conversations={CONVERSATIONS} limits={{used: 4, max: 50}} listError={null}
+        areaLabel="Platform Operations" now={NOW} conversations={first ? [] : CONVERSATIONS} limits={{used: first ? 0 : 4, max: 50}} listError={null}
         selected={empty ? null : {conversation: CONVERSATIONS[0], messages: MESSAGES}} threadLoading={false}
         draft={draft} sendingQuestion={null} problem={null} canRetrySend={false}
         sheetOpen={sheetOpen} railCollapsed={railCollapsed} confirmDelete={null} deleting={false}
         onDraft={setDraft} onSend={() => setDraft('')} onStarter={noop} onRetrySend={noop} onRetryFailed={noop} onCheckPending={noop}
         onSelect={() => setSheetOpen(false)} onNew={noop} onAskDelete={noop} onConfirmDelete={noop} onCancelDelete={noop}
-        onSheet={setSheetOpen} onRail={setRailCollapsed} noticeOpen={noticeOpen} onNotice={setNoticeOpen} noticeInLog={noticeInLog}
+        onSheet={setSheetOpen} onRail={setRailCollapsed} noticeOpen={noticeOpen} onNotice={setNoticeOpen}
       />
       <nav style={{position: 'fixed', bottom: 0, height: 56, background: 'var(--glass-thick)', left: 0, right: 0}}>Fixture platform bottom bar</nav>
     </>
