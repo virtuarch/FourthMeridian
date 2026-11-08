@@ -84,7 +84,7 @@ export function PropertyEquityPanel({ accountId }: { accountId: string }) {
       <Facts rows={[
         ["Market value", money(eq.value)],
         ...eq.securedDebts.map((d): [string, ReactNode] => [
-          `${SECURED_DEBT_KIND_LABEL[d.kind]} · ${d.name}`,
+          `${d.label} · ${d.name}`,
           <span key={d.id} className="flex items-center gap-2">
             {money(-d.amountOwed)}
             {edit && <button type="button" className={BTN} disabled={busy} onClick={() => act({ unlink: d.id })}>Unlink</button>}

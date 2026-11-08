@@ -104,6 +104,10 @@ export interface LiquidityAccountRow {
   /** FinancialAccount.debtSubtype (a category, not an identity). With
    *  providerSubtype, decides Mortgage F2's installment-loan rule. */
   debtSubtype?: string | null;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: import("@/lib/debt/liability-kind").DebtType | null;
+
   balance: number;
   /**
    * MC1 Phase 3 Slice 5 — native currency of `balance`/`creditLimit` (Phase 0
@@ -113,7 +117,7 @@ export interface LiquidityAccountRow {
    */
   currency?: string | null;
   /** Present only on FULL rows (withheld otherwise by the data layer). */
-  creditLimit?: number;
+  creditLimit?: number | null; // S2 P1-R1: null = known-absent; undefined = withheld
   /** ISO timestamp of last balance write (Account.lastUpdated) — OUR clock. */
   lastUpdated: string;
   /** v2.6-L2 — the INSTITUTION's own balance clock, or null when it reports none.

@@ -19,6 +19,7 @@ export type DashboardSection = {
   config:      Record<string, unknown> | null;
 };
 
+import type { DebtType } from "@/lib/debt/liability-kind";
 import type { AdjustedBalanceBasis } from "@/lib/balances/account-balances";
 import type { PriceProvenance } from "@/lib/prices/current-quote.core";
 
@@ -27,6 +28,10 @@ export type SpaceAccount = {
   /** S2 PRIVACY P1 — FULL / BALANCE_ONLY (normalizeSharedAccounts). Read only by
    *  the viewer debt-label helpers: a non-FULL row's type is named coarsely. */
   visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: DebtType | null;
+
   name:           string;
   type:           string;
   institution:    string;

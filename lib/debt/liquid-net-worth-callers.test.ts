@@ -112,14 +112,14 @@ const callers = ["lib", "app", "components", "jobs"].flatMap((d) => { try { retu
 
 {
   // Documented, deliberate partial-evidence rows (counted, never excluded wrongly):
-  //  • BALANCE_ONLY rows (lib/data/accounts.ts) withhold creditLimit — a "home
-  //    equity" row without it is COUNTED (liquidNetWorthTreatment: absent limit
-  //    evidence ⇒ unknown).
-  //  • privacy debt AGGREGATES (lib/account-privacy.ts) drop the subtype when
-  //    members disagree on treatment ⇒ unknown ⇒ counted.
+  //  • a row carrying a "home equity" subtype WITHOUT its creditLimit is COUNTED
+  //    (liquidNetWorthTreatment: absent limit evidence ⇒ unknown).
+  //  • S2 P1-R1 — non-FULL rows carry no subtype: the SERVER classifies from full
+  //    evidence (limit included) and sends the coarse debtType; a privacy debt
+  //    AGGREGATE whose members disagree reads "unknown" ⇒ counted.
   assert.ok(/creditLimit === undefined\) return "COUNTED"/.test(code("lib/debt/liquid-net-worth.ts")));
-  assert.ok(/g\.type === "debt" && !g\.liquidTreatmentUniform \? null : g\.providerSubtype/.test(code("lib/account-privacy.ts")));
-  ok("exceptions with partial evidence fall to COUNTED (BALANCE_ONLY limit withheld; mixed-kind privacy aggregates)");
+  assert.ok(/g\.liquidTreatmentUniform && g\.coarseDebtType !== null \? g\.coarseDebtType : \("unknown" as DebtType\)/.test(code("lib/account-privacy.ts")));
+  ok("exceptions with partial evidence fall to COUNTED (absent limit; mixed-kind privacy aggregates)");
 }
 
 // ── R1. Live writer == regenerated row, same day, mortgage present ───────────
