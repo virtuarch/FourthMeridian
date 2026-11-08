@@ -11,7 +11,9 @@
  * "available credit", and had its history replayed like a card. A limit-less
  * mortgage was listed under "add a credit limit".
  *
- * RULING: Plaid loan types are NEVER revolving. For an installment loan the
+ * RULING (F2 + S2 HELOC follow-up): Plaid installment loan types are never
+ * revolving; Plaid "line of credit"/"overdraft" are, and "home equity" is
+ * revolving only with a positive limit. For an installment loan the
  * creditLimit is ignored by credit utilization, available credit, history
  * replay, and the "add a credit limit" prompt. Revolving lines and credit cards
  * are unchanged.
@@ -41,22 +43,28 @@ export const INSTALLMENT_DEBT_SUBTYPES: ReadonlySet<string> = new Set(["mortgage
 export const PLAID_CREDIT_SUBTYPES: ReadonlySet<string> = new Set(["credit card", "paypal"]);
 
 /**
- * Plaid `loan` account subtypes (lowercased, as stored in providerSubtype).
- * Source: plaid-node `LoanAccountSubtype` enum (node_modules/plaid/dist/api.d.ts
- * — auto, business, commercial, construction, consumer, home equity, loan,
- * mortgage, overdraft, line of credit, student, other), minus the `all` filter
- * value, which is never an account's subtype. Plaid's own Account Types table
- * lists the same loan subtypes.
+ * Plaid `loan` account subtypes (lowercased, as stored in providerSubtype) — the
+ * full set. Source: plaid-node `LoanAccountSubtype` enum
+ * (node_modules/plaid/dist/api.d.ts — auto, business, commercial, construction,
+ * consumer, home equity, loan, mortgage, overdraft, line of credit, student,
+ * other), minus the `all` filter value, which is never an account's subtype.
  *
- * `home equity` and `line of credit` are Plaid LOAN subtypes too, so per the
- * ruling they are not revolving when they arrive from Plaid with no FM
- * debtSubtype. A user who sets debtSubtype "heloc" / "line_of_credit" (an
- * explicit FM classification) still gets the revolving treatment.
+ * S2 HELOC ruling — not every Plaid loan subtype is installment:
+ *   • "line of credit", "overdraft" ⇒ REVOLVING always
+ *     (PLAID_REVOLVING_LOAN_SUBTYPES);
+ *   • "home equity" ⇒ REVOLVING only with a positive creditLimit, else
+ *     INSTALLMENT — Plaid uses it for both HELOCs and closed-end home-equity
+ *     loans, and the limit is the discriminator (PLAID_LIMIT_DISCRIMINATED_SUBTYPES);
+ *   • every other loan subtype ⇒ INSTALLMENT, even with a limit (H5).
  */
 export const PLAID_LOAN_SUBTYPES: ReadonlySet<string> = new Set([
   "auto", "business", "commercial", "construction", "consumer", "home equity",
   "loan", "mortgage", "overdraft", "line of credit", "student", "other",
 ]);
+/** Plaid loan subtypes that are revolving lines regardless of limit. */
+export const PLAID_REVOLVING_LOAN_SUBTYPES: ReadonlySet<string> = new Set(["line of credit", "overdraft"]);
+/** Plaid loan subtypes whose kind is decided by the presence of a positive limit. */
+export const PLAID_LIMIT_DISCRIMINATED_SUBTYPES: ReadonlySet<string> = new Set(["home equity"]);
 
 function norm(s: string | null | undefined): string | null {
   const t = s?.trim().toLowerCase();
@@ -64,35 +72,53 @@ function norm(s: string | null | undefined): string | null {
 }
 
 export interface LiabilityKindInput {
-  /** FinancialAccount.type. When supplied and not "debt", the answer is false. */
+  /** FinancialAccount.type. When supplied and not "debt", the kind is "unknown". */
   type?: string | null;
   /** FinancialAccount.debtSubtype — FM's own (user-set) classification. */
   debtSubtype?: string | null;
   /** FinancialAccount.providerSubtype — Plaid `subtype` (lowercased evidence). */
   providerSubtype?: string | null;
+  /** FinancialAccount.creditLimit — discriminates Plaid "home equity" only. */
+  creditLimit?: number | null;
 }
 
+export type LiabilityKind = "revolving" | "installment" | "unknown";
+
 /**
- * True when the liability is an installment loan, so any creditLimit it carries
- * is NOT revolving-credit evidence.
+ * The liability's kind:
  *
- *   1. An explicit FM debtSubtype decides: revolving (credit_card,
- *      line_of_credit, heloc) ⇒ false; anything else (mortgage, auto_loan,
- *      student_loan, personal_loan, or an unknown loan kind) ⇒ true.
- *   2. Otherwise the Plaid subtype decides: a Plaid `loan` subtype ⇒ true.
- *   3. No evidence either way (legacy untyped row, Plaid credit subtype) ⇒ false
- *      — callers keep their existing revolving rules for those rows.
+ *   1. An explicit FM debtSubtype decides: credit_card / line_of_credit / heloc
+ *      ⇒ revolving; anything else (mortgage, auto_loan, student_loan,
+ *      personal_loan, an unknown loan kind) ⇒ installment.
+ *   2. Otherwise the Plaid subtype decides:
+ *        credit card, paypal, line of credit, overdraft ⇒ revolving;
+ *        home equity ⇒ revolving with a positive creditLimit, else installment;
+ *        any other Plaid loan subtype ⇒ installment (limit ignored).
+ *   3. No evidence (legacy untyped row, unknown subtype) ⇒ "unknown" — callers
+ *      keep their existing rules (e.g. a limit-bearing untyped row is a card).
  */
-export function isInstallmentLoan(a: LiabilityKindInput): boolean {
-  if (a.type != null && a.type !== "debt") return false;
+export function liabilityKind(a: LiabilityKindInput): LiabilityKind {
+  if (a.type != null && a.type !== "debt") return "unknown";
   const ds = norm(a.debtSubtype);
-  if (ds !== null) return !REVOLVING_DEBT_SUBTYPES.has(ds);
+  if (ds !== null) return REVOLVING_DEBT_SUBTYPES.has(ds) ? "revolving" : "installment";
   const sub = norm(a.providerSubtype);
-  return sub !== null && PLAID_LOAN_SUBTYPES.has(sub);
+  if (sub === null) return "unknown";
+  if (PLAID_CREDIT_SUBTYPES.has(sub) || PLAID_REVOLVING_LOAN_SUBTYPES.has(sub)) return "revolving";
+  if (PLAID_LIMIT_DISCRIMINATED_SUBTYPES.has(sub)) {
+    return a.creditLimit != null && a.creditLimit > 0 ? "revolving" : "installment";
+  }
+  if (PLAID_LOAN_SUBTYPES.has(sub)) return "installment";
+  return "unknown";
+}
+
+/** True when the liability is an installment loan, so any creditLimit it carries
+ *  is NOT revolving-credit evidence. */
+export function isInstallmentLoan(a: LiabilityKindInput): boolean {
+  return liabilityKind(a) === "installment";
 }
 
 /** The creditLimit a revolving-credit consumer may use: null for an installment loan. */
-export function revolvingCreditLimit(a: LiabilityKindInput & { creditLimit?: number | null }): number | null {
+export function revolvingCreditLimit(a: LiabilityKindInput): number | null {
   if (isInstallmentLoan(a)) return null;
   return a.creditLimit ?? null;
 }

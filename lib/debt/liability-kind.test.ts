@@ -1,7 +1,9 @@
 /**
  * lib/debt/liability-kind.test.ts
  *
- * Mortgage F2 (S2 ruling) — Plaid loan types are never revolving credit. Pins the
+ * Mortgage F2 (S2 ruling + HELOC follow-up) — Plaid installment loans are never
+ * revolving credit; line of credit / overdraft are; home equity is revolving only
+ * with a positive limit. Pins the
  * shared helper and EVERY site that consumes it: history replay
  * (isReconstructableCard), utilization (isRevolvingLine / creditUtilization /
  * debt KPIs / ledger row utilization), available credit (account balances +
@@ -16,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  isInstallmentLoan, revolvingCreditLimit, PLAID_LOAN_SUBTYPES, PLAID_CREDIT_SUBTYPES, REVOLVING_DEBT_SUBTYPES,
+  isInstallmentLoan, liabilityKind, revolvingCreditLimit, PLAID_REVOLVING_LOAN_SUBTYPES, PLAID_LIMIT_DISCRIMINATED_SUBTYPES, PLAID_LOAN_SUBTYPES, PLAID_CREDIT_SUBTYPES, REVOLVING_DEBT_SUBTYPES,
 } from "@/lib/debt/liability-kind";
 import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 import { isRevolvingLine, creditUtilization } from "@/lib/accounts/credit-utilization";
@@ -168,6 +170,70 @@ console.log("7. One authority — no duplicated subtype lists at the affected si
     check(`${p} imports lib/debt/liability-kind`, s.includes(`from "@/lib/debt/liability-kind"`));
     check(`${p} declares no local subtype Set`, !/new Set\(\s*\[\s*"(credit_card|mortgage|credit card|auto|student)"/.test(s));
   }
+}
+
+console.log("8. S2 HELOC ruling — home equity / line of credit / overdraft, and debtSubtype overrides");
+{
+  const NOW = new Date("2026-06-30T12:00:00.000Z");
+  const fresh = resolveAccountFreshness({ accountId: "x", ingestedAt: new Date(NOW.getTime() - 3_600_000).toISOString(), providerBalanceAt: null }, NOW);
+  type C = { debtSubtype: string | null; providerSubtype: string | null; creditLimit: number | null };
+  const heWithLimit:  C = { debtSubtype: null, providerSubtype: "home equity",    creditLimit: 50_000 };
+  const heNoLimit:    C = { debtSubtype: null, providerSubtype: "home equity",    creditLimit: null };
+  const heZeroLimit:  C = { debtSubtype: null, providerSubtype: "home equity",    creditLimit: 0 };
+  const locNoLimit:   C = { debtSubtype: null, providerSubtype: "line of credit", creditLimit: null };
+  const odNoLimit:    C = { debtSubtype: null, providerSubtype: "overdraft",      creditLimit: null };
+  const locWithLimit: C = { debtSubtype: null, providerSubtype: "line of credit", creditLimit: 5_000 };
+  const mtgWithLimit: C = { debtSubtype: null, providerSubtype: "mortgage",       creditLimit: 400_000 };
+
+  // home equity WITH a positive limit ⇒ revolving, utilization computed
+  check("home equity + limit ⇒ revolving", liabilityKind({ type: "debt", ...heWithLimit }) === "revolving");
+  check("home equity + limit is a revolving line", isRevolvingLine(heWithLimit) === true);
+  const uHe = creditUtilization([{ id: "he", name: "he", type: "debt", balance: 12_500, ...heWithLimit }]);
+  check("home equity + limit: utilization row 25%", uHe.rows.length === 1 && uHe.rows[0].pct === 25, uHe);
+  check("home equity + limit: walked like a revolving line", isReconstructableCard({ type: "debt", ...heWithLimit }) === true);
+  const bHe = resolveAccountBalances({ accountId: "he", accountType: "debt", currency: "USD", balance: 12_500, availableBalance: 37_500, freshness: fresh, ...heWithLimit });
+  check("home equity + limit: available is AVAILABLE_CREDIT", bHe.available.status === "AVAILABLE" && bHe.available.quantity === "AVAILABLE_CREDIT", bHe.available);
+
+  // home equity WITHOUT a (positive) limit ⇒ installment
+  for (const [label, c] of [["no limit", heNoLimit], ["zero limit", heZeroLimit]] as const) {
+    check(`home equity, ${label} ⇒ installment`, isInstallmentLoan({ type: "debt", ...c }) === true);
+    check(`home equity, ${label}: not prompted for a limit`,
+      creditUtilization([{ id: "he", name: "he", type: "debt", balance: 12_500, ...c }]).missingLimit.length === 0);
+    check(`home equity, ${label}: not walked`, isReconstructableCard({ type: "debt", ...c }) === false);
+    const b = resolveAccountBalances({ accountId: "he", accountType: "debt", currency: "USD", balance: 12_500, availableBalance: 1_000, freshness: fresh, ...c });
+    check(`home equity, ${label}: available NOT_APPLICABLE`, JSON.stringify(b.available).includes("NOT_APPLICABLE"), b.available);
+  }
+
+  // line of credit / overdraft WITHOUT a limit ⇒ revolving; utilization unknown (never ÷0 / ÷null)
+  for (const [label, c] of [["line of credit", locNoLimit], ["overdraft", odNoLimit]] as const) {
+    check(`${label}, no limit ⇒ revolving`, liabilityKind({ type: "debt", ...c }) === "revolving" && !isInstallmentLoan(c));
+    const u = creditUtilization([{ id: "x", name: "x", type: "debt", balance: 900, ...c }]);
+    check(`${label}, no limit: no utilization row (unknown, not a number)`, u.rows.length === 0, u);
+    check(`${label}, no limit: offered 'add a credit limit' (it IS revolving)`, u.missingLimit.length === 1, u);
+    const util = accountUtilization({ id: "x", name: "x", type: "debt", institution: "B", balance: 900, currency: "USD", providerSubtype: c.providerSubtype });
+    check(`${label}, no limit: ledger utilization is null (never NaN/Infinity)`, util === null, util);
+    check(`${label}, no limit: KPI utilization null`, computeDebtKpis([{ id: "x", name: "x", type: "debt", institution: "B", balance: 900, currency: "USD", providerSubtype: c.providerSubtype }]).utilizationPct === null);
+    check(`${label}, no limit: credit health can carry a limit`,
+      canCarryLimit({ id: "x", name: "x", type: "debt", institution: "B", balance: 900, currency: "USD", providerSubtype: c.providerSubtype }) === true);
+    const b = resolveAccountBalances({ accountId: "x", accountType: "debt", currency: "USD", balance: 900, availableBalance: 4_100, freshness: fresh, ...c });
+    check(`${label}, no limit: provider available read as AVAILABLE_CREDIT`, b.available.status === "AVAILABLE" && b.available.quantity === "AVAILABLE_CREDIT", b.available);
+  }
+  const uLoc = creditUtilization([{ id: "loc", name: "loc", type: "debt", balance: 1_000, ...locWithLimit }]);
+  check("line of credit + limit: utilization 20%", uLoc.rows.length === 1 && uLoc.rows[0].pct === 20, uLoc);
+
+  // mortgage WITH a limit stays installment (H5)
+  check("mortgage + limit ⇒ installment", isInstallmentLoan({ type: "debt", ...mtgWithLimit }) === true && isRevolvingLine(mtgWithLimit) === false);
+
+  // debtSubtype overrides both ways
+  check("override → revolving: Plaid mortgage + debtSubtype heloc", liabilityKind({ ...mtgWithLimit, debtSubtype: "heloc" }) === "revolving" && isRevolvingLine({ ...mtgWithLimit, debtSubtype: "heloc" }));
+  check("override → revolving: home equity w/o limit + debtSubtype line_of_credit", liabilityKind({ ...heNoLimit, debtSubtype: "line_of_credit" }) === "revolving");
+  check("override → installment: home equity + limit + debtSubtype mortgage", isInstallmentLoan({ ...heWithLimit, debtSubtype: "mortgage" }) && !isRevolvingLine({ ...heWithLimit, debtSubtype: "mortgage" }));
+  check("override → installment: line of credit + debtSubtype personal_loan", isInstallmentLoan({ ...locWithLimit, debtSubtype: "personal_loan" }));
+  check("override → installment: Plaid credit card + debtSubtype auto_loan", isInstallmentLoan({ ...CASES.card, debtSubtype: "auto_loan" }));
+
+  // sub-lists stay inside the enum-parity list
+  check("revolving/limit-discriminated Plaid loan subtypes are members of PLAID_LOAN_SUBTYPES",
+    [...PLAID_REVOLVING_LOAN_SUBTYPES, ...PLAID_LIMIT_DISCRIMINATED_SUBTYPES].every((x) => PLAID_LOAN_SUBTYPES.has(x)));
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }

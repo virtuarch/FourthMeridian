@@ -74,7 +74,7 @@ import {
 } from "./quantities";
 import { NO_PENDING, type PendingContribution } from "./pending-evidence";
 
-import { isInstallmentLoan, REVOLVING_DEBT_SUBTYPES } from "@/lib/debt/liability-kind";
+import { liabilityKind } from "@/lib/debt/liability-kind";
 
 /** Everything the authority needs, in provider-neutral terms. */
 export interface AccountBalanceInput {
@@ -195,12 +195,13 @@ function resolveAvailable(input: AccountBalanceInput): AvailableClaim {
       // Mortgage F2 — an amortising loan (explicit installment debtSubtype, or a
       // Plaid `loan` providerSubtype such as "mortgage") has no available
       // quantity, whatever arrived — including a Plaid `balances.limit`.
-      if (isInstallmentLoan({ debtSubtype: subtype, providerSubtype: input.providerSubtype })) {
+      const kind = liabilityKind({ debtSubtype: subtype, providerSubtype: input.providerSubtype, creditLimit: input.creditLimit });
+      if (kind === "installment") {
         return unavailable("NOT_APPLICABLE");
       }
-      const revolving =
-        (subtype !== null && REVOLVING_DEBT_SUBTYPES.has(subtype)) ||
-        input.creditLimit != null;
+      // Revolving evidence: the shared kind (FM revolving subtype, or a Plaid
+      // revolving subtype such as "line of credit" / "overdraft"), or a limit.
+      const revolving = kind === "revolving" || input.creditLimit != null;
       if (raw === null) return unavailable("PROVIDER_DID_NOT_REPORT");
       // A figure with no evidence of what kind of liability this is: refuse
       // rather than assume it is credit headroom.

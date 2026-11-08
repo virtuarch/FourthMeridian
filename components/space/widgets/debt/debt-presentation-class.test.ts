@@ -134,8 +134,9 @@ const PREVIEW: DebtPerspectiveAccount[] = [
 
 console.log("\n6. totals do not depend on classification; utilization follows the F2 installment rule, not the display class");
 {
-  // Mortgage F2 (S2 ruling) — a Plaid `loan` providerSubtype (mortgage, student,
-  // auto, home equity, …) is never revolving, so providerSubtype now feeds
+  // Mortgage F2 (S2 ruling + HELOC follow-up) — a Plaid installment
+  // providerSubtype (mortgage, student, auto, …; home equity only without a
+  // limit) is never revolving, so providerSubtype now feeds
   // utilization THROUGH lib/debt/liability-kind.ts isInstallmentLoan. It still
   // never feeds totals, and the DISPLAY class (presentationDebtClass) is not
   // what decides utilization.
@@ -150,8 +151,8 @@ console.log("\n6. totals do not depend on classification; utilization follows th
   check("debt totals identical with providerSubtype stripped", k0 === totals(stripped));
   check("debt totals identical when every row is re-classed (providerSubtype permuted)", k0 === totals(asStored));
   const u0 = PREVIEW.map(accountUtilization);
-  check("utilization: cards + legacy limit rows only; Plaid loans (incl. home equity) have none",
-    JSON.stringify(u0) === JSON.stringify([12, 6, 0, 0, null, null, null, null, null, null, null, null, 20, 2.5]), JSON.stringify(u0));
+  check("utilization: cards, limit-bearing home equity (S2 HELOC ruling) and legacy rows; installment loans have none",
+    JSON.stringify(u0) === JSON.stringify([12, 6, 0, 0, null, null, null, null, null, null, 24, 0, 20, 2.5]), JSON.stringify(u0));
   check("utilization with providerSubtype stripped: limit-bearing rows read their limit again (no loan evidence)",
     JSON.stringify(stripped.map(accountUtilization)) === JSON.stringify([12, 6, 0, 0, null, null, null, null, null, null, 24, 0, 20, 2.5]),
     JSON.stringify(stripped.map(accountUtilization)));
@@ -161,8 +162,8 @@ console.log("\n6. totals do not depend on classification; utilization follows th
   check("re-classed rows: utilization is null exactly for Plaid loan subtypes",
     asStored.every((a) => (accountUtilization(a) === null) === (isInstallmentLoan(a) || !(a.creditLimit! > 0))));
   const k = computeDebtKpis(PREVIEW);
-  check("aggregate utilization excludes the home-equity loans: (1,200+300+800+150) / (10k+5k+8k+2k+4k+6k) = 7%",
-    k.utilizationPct !== null && Math.abs(k.utilizationPct - (2450 / 35000) * 100) < 1e-9, String(k.utilizationPct));
+  check("aggregate utilization includes limit-bearing home equity, excludes installment loans: 14,450 / 115,000",
+    k.utilizationPct !== null && Math.abs(k.utilizationPct - (14450 / 115000) * 100) < 1e-9, String(k.utilizationPct));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
