@@ -86,6 +86,8 @@ async function debtLens(
     minimumPayment:            account.minimumPayment ?? undefined,
     minimumPaymentIsEstimated: account.minimumPaymentIsEstimated ?? undefined,
     promoAprEndDate:           account.debtProfile?.promoAprEndDate ?? undefined,
+    // Mortgage F8 — the data layer excluded this balance (FIN-A2); OMITTED otherwise.
+    ...(account.valuationUnknown === true ? { valuationUnknown: true } : {}),
   }));
 
   // MC1 QA Q2 — real space context (same seam as the liquidity lens flip);

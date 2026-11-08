@@ -92,7 +92,8 @@ import type {
   TrackedAccountLite,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
-import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
+import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
+import { aiTotalsCoverage, excludedAccountCounts, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -128,6 +129,8 @@ type AccountLinkRow = {
     debtSubtype:     string | null;
     /** 2026-10-07 — provider subtype evidence; read only by liquidityAccess. */
     providerSubtype: string | null;
+    /** FIN-A2 — false ONLY when the provider balance was never observed (the column is a structural 0). */
+    balanceObserved?: boolean | null;
     // Flat fallback debt fields (provider-sourced or legacy)
     interestRate:    number | null;   // FinancialAccount.interestRate — provider APR fallback
     minimumPayment:  number | null;   // FinancialAccount.minimumPayment — provider min-payment fallback
@@ -211,6 +214,10 @@ async function assembleAccounts(
           // in totalLiquid, which is what runway, the Brief and the scenario
           // opening cash read.
           providerSubtype: true,
+          // FIN-A2 / Mortgage F8 — a never-observed balance is EXCLUDED from the
+          // totals (same classification as every product surface) and the
+          // totals carry PARTIAL + direction to the model.
+          balanceObserved: true,
           // Flat fallback debt fields — provider-sourced or legacy
           interestRate:   true,
           minimumPayment: true,
@@ -277,6 +284,16 @@ async function assembleAccounts(
   // FM-AUDIT-022 — wallets with NO value, excluded from every total below and
   // disclosed as `totalsUnvaluedCount`. Never valued at 0 or a stored column.
   const unvaluedIds = new Set(canonicalRows.filter((r) => r.valuationUnknown === true).map((r) => r.id));
+  // FIN-A2 / Mortgage F8 — an account whose balance was never observed (any
+  // type: a Plaid mortgage too) goes through THE same classification the product
+  // surfaces use (resolveWalletBalance's balanceObserved branch): a structural 0
+  // flagged unvalued, so the totals exclude it AND say so with a direction.
+  for (const l of links) {
+    if (l.financialAccount.balanceObserved !== false) continue;
+    const wb = resolveWalletBalance(l.financialAccount.balance, undefined, l.financialAccount.balanceObserved);
+    canonical.set(l.financialAccount.id, wb.balance);
+    if (wb.valuationUnknown) unvaluedIds.add(l.financialAccount.id);
+  }
   for (const l of links) {
     const b = canonical.get(l.financialAccount.id);
     if (b !== undefined) l.financialAccount.balance = b;
@@ -876,6 +893,12 @@ async function assembleAccounts(
     // FM-AUDIT-022 — wallets excluded for having no value. OMITTED when 0, so
     // a fully-valued Space's context is byte-identical.
     ...(classification.unvaluedCount > 0 ? { totalsUnvaluedCount: classification.unvaluedCount } : {}),
+    // Mortgage F8 (S2) — PARTIAL + DIRECTION beside each total when an account
+    // of unknown balance was excluded. OMITTED when every total is COMPLETE.
+    ...((): { totalsCoverage?: AiTotalsCoverage } => {
+      const c = aiTotalsCoverage(excludedAccountCounts(classifiableAll));
+      return c ? { totalsCoverage: c } : {};
+    })(),
 
     counts: {
       liquid:        classification.liquid.length,

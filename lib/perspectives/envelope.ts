@@ -32,6 +32,7 @@ import { formatCurrency } from "@/lib/currency";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 import { buildInvestmentsTrustSummary } from "@/lib/investments/investments-trust";
+import { exclusionBadge, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 
 export type EnvelopeTone = "neutral" | "positive" | "warning";
 
@@ -67,7 +68,14 @@ export type EnvelopeWarningKind =
    * completeness, exactly like `fx`'s unconverted case: the figure shown is an
    * honest partial, never one that counted them at $0.
    */
-  | "unvalued";
+  | "unvalued"
+  /**
+   * Mortgage F8 (S2) — the total excludes an account of UNKNOWN balance (never
+   * observed, FIN-A2; or not yet valued), so it is PARTIAL — and the warning
+   * states the DIRECTION: an excluded debt ⇒ "the true total is lower"; an
+   * excluded asset ⇒ "the true total may be higher". One warning per direction.
+   */
+  | "partial-total";
 
 export interface EnvelopeWarning {
   kind:    EnvelopeWarningKind;
@@ -163,6 +171,21 @@ export function unvaluedWarning(unvaluedCount?: number): EnvelopeWarning[] {
         `${n} crypto wallet${n === 1 ? " has" : "s have"} no value yet — no price is available, or ${n === 1 ? "it has" : "they have"} not been observed yet — so ${n === 1 ? "it is" : "they are"} excluded from this total. The figure shown is a partial total of the accounts that could be valued.`,
     },
   ];
+}
+
+/**
+ * Mortgage F8 (S2) — the direction-stating caveat(s) for a PARTIAL total, from
+ * lib/balances/unobserved-totals.ts. COMPLETE (or absent) ⇒ none, so a fully
+ * observed Space renders no badge.
+ */
+export function partialTotalWarnings(coverage?: UnobservedTotalCoverage | null): EnvelopeWarning[] {
+  if (!coverage || coverage.status !== "PARTIAL") return [];
+  return coverage.directions.map((d, i) => ({
+    kind:   "partial-total" as const,
+    label:  exclusionBadge(d),
+    tone:   "warning" as const,
+    detail: `${coverage.notes[i]}. Its balance is left out of the figure shown — never counted as $0, and never estimated.`,
+  }));
 }
 
 function syncIncompleteWarning(syncIncomplete?: boolean): EnvelopeWarning[] {
@@ -448,9 +471,20 @@ export function resolvePerspectiveEnvelope(args: {
    * byte-identical envelope.
    */
   unvaluedCount?: number;
+  /**
+   * Mortgage F8 (S2) — the coverage of the WEALTH headline total (the caller
+   * picks the total for its metric: net worth, liquid net worth, assets, debt).
+   * When supplied it REPLACES the wallet-worded `unvaluedCount` caveat with the
+   * direction-stating one (an excluded account is no longer only a wallet).
+   * Lens perspectives read `lensResult.totalsCoverage` instead. Absent ⇒
+   * byte-identical envelope.
+   */
+  totalsCoverage?: UnobservedTotalCoverage | null;
 }): PerspectiveEnvelope {
   const base = resolveBase(args);
-  const unvalued = args.perspectiveId === "wealth" && args.wealthResult ? unvaluedWarning(args.unvaluedCount) : [];
+  const unvalued = args.perspectiveId === "wealth" && args.wealthResult
+    ? (args.totalsCoverage !== undefined ? partialTotalWarnings(args.totalsCoverage) : unvaluedWarning(args.unvaluedCount))
+    : args.lensResult ? partialTotalWarnings(args.lensResult.totalsCoverage) : [];
   const env = unvalued.length > 0 ? { ...base, warnings: mergeWarnings(base.warnings, unvalued) } : base;
   // Applied uniformly AFTER the per-perspective resolution: partial convergence
   // is a property of the Space's connections, not of any one lens's math, so it

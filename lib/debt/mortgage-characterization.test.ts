@@ -42,6 +42,7 @@ import { isRevolvingLine, creditUtilization } from "@/lib/accounts/credit-utiliz
 import { resolveAccountBalances } from "@/lib/balances/account-balances";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import { resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
+import { excludedAccountCounts, unobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -372,10 +373,21 @@ console.log(`H8. Property + mortgage; unobserved mortgage balance — ${LABEL}`)
   const unobserved = { ...MORTGAGE, balance: wb.balance, valuationUnknown: wb.valuationUnknown };
   const cu = classifyAccounts([CHECKING, property, unobserved]);
   check("H8 balanceObserved=false mortgage ⇒ valuationUnknown, balance 0", wb.valuationUnknown === true && wb.balance === 0, wb);
-  // Disclosed (unvaluedCount + "Balance unavailable") but NW is overstated by the
-  // whole mortgage. Expected: keep exclusion, but surface it prominently as
-  // "net worth excludes an unvalued liability" on every NW surface.
-  check("H8 unobserved mortgage drops out: totalLiabilities 0, netWorth 510,000", cu.totalLiabilities === 0 && cu.netWorth === 510_000, { l: cu.totalLiabilities, nw: cu.netWorth });
+  // FIXED by F8 — desired behaviour. The exclusion stays (no balance is
+  // invented: totalLiabilities 0, netWorth 510,000 are the figures over the
+  // OBSERVED accounts), but every total that drops the mortgage is PARTIAL AT
+  // THE TOTAL with its direction — never a clean, higher net worth.
+  const f8 = excludedAccountCounts([CHECKING, property, unobserved]);
+  const nwCov = unobservedTotalCoverage("NET_WORTH", f8);
+  const debtCov = unobservedTotalCoverage("TOTAL_DEBT", f8);
+  const liqCov = unobservedTotalCoverage("LIQUID_NET_WORTH", f8);
+  check("H8 unobserved mortgage stays excluded (no invented balance) but net worth / debt / liquid NW are PARTIAL with direction — FIXED by F8",
+    cu.totalLiabilities === 0 && cu.netWorth === 510_000
+      && nwCov.status === "PARTIAL" && nwCov.directions.join() === "TRUE_TOTAL_LOWER"
+      && nwCov.notes[0] === "Excludes a debt of unknown balance — the true total is lower"
+      && debtCov.status === "PARTIAL" && debtCov.directions.join() === "TRUE_TOTAL_HIGHER"
+      && liqCov.status === "PARTIAL" && liqCov.directions.join() === "TRUE_TOTAL_LOWER",
+    { l: cu.totalLiabilities, nw: cu.netWorth, nwCov, debtCov, liqCov });
   check("H8 ... disclosed: unvaluedCount = 1, label 'Balance unavailable'", cu.unvaluedCount === 1 && unvaluedBalanceLabel(unobserved) === "Balance unavailable", cu.unvaluedCount);
 }
 

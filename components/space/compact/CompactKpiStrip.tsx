@@ -19,6 +19,8 @@ export interface CompactKpiItem {
   value: string;
   /** The change, already formatted (or null when there is no comparison). */
   change?: ReactNode;
+  /** Mortgage F8 — a qualifier on the figure (e.g. "partial"), or null. */
+  note?: ReactNode;
 }
 
 export function CompactKpiStrip({ items, ariaLabel }: { items: CompactKpiItem[]; ariaLabel: string }) {
@@ -40,6 +42,9 @@ export function CompactKpiStrip({ items, ariaLabel }: { items: CompactKpiItem[];
           <dd className="mt-1 text-[13px] font-semibold leading-tight tabular-nums text-[var(--text-primary)] [overflow-wrap:anywhere]">{item.value}</dd>
           {item.change ? (
             <dd className="mt-0.5 text-[11px] leading-tight tabular-nums [overflow-wrap:anywhere]">{item.change}</dd>
+          ) : null}
+          {item.note ? (
+            <dd className="mt-0.5 text-[11px] leading-tight">{item.note}</dd>
           ) : null}
         </div>
       ))}

@@ -81,7 +81,8 @@ import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/Liquidi
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { RealAssetsSection } from "./RealAssetsSection";
-import { WealthHero, wealthSecondaryRows, SecondaryChange, gatedDelta } from "./WealthHero";
+import { WealthHero, wealthSecondaryRows, SecondaryChange, gatedDelta, PartialMark, wealthTotalsCoverage, wealthHeadlineCoverage } from "./WealthHero";
+import { excludedAccountCounts } from "@/lib/balances/unobserved-totals";
 import { wealthChangeGate } from "./wealth-change-gate";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
@@ -326,9 +327,22 @@ export function WealthWorkspace({
     }),
     [result, convertedSnapshots, metric],
   );
+  // Mortgage F8 (S2) — the same excluded rows, by kind, so each total states
+  // PARTIAL with its DIRECTION (excluded debt ⇒ true net worth is lower;
+  // excluded asset ⇒ may be higher) instead of reading clean.
+  const exclusionCounts = useMemo(() => excludedAccountCounts(accounts ?? []), [accounts]);
+  const totalsCoverage = useMemo(() => wealthTotalsCoverage(exclusionCounts), [exclusionCounts]);
+  const headlineCoverage = useMemo(
+    () => wealthHeadlineCoverage(totalsCoverage, metric, exclusionCounts),
+    [totalsCoverage, metric, exclusionCounts],
+  );
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier, unvaluedCount }),
-    [result, displayCurrency, fxUnconverted, chipTier, unvaluedCount],
+    () => resolvePerspectiveEnvelope({
+      perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier, unvaluedCount,
+      // Mortgage F8 — present for every metric with an F8 total (COMPLETE ⇒ no caveat).
+      ...(headlineCoverage ? { totalsCoverage: headlineCoverage } : {}),
+    }),
+    [result, displayCurrency, fxUnconverted, chipTier, unvaluedCount, headlineCoverage],
   );
   useEffect(() => {
     if (mode === "debt") return; // DebtWorkspace emits its own
@@ -607,6 +621,8 @@ export function WealthWorkspace({
         label: row.label,
         value: formatCurrency(result.asOfState[row.key], displayCurrency),
         change: <SecondaryChange delta={gatedDelta(result, changeGate, row.key)} goodDirection={row.goodDirection} currency={displayCurrency} className="" />,
+        // Mortgage F8 — a partial stat says so (direction in the title / sr text).
+        note: totalsCoverage[row.key] ? <PartialMark coverage={totalsCoverage[row.key]} /> : null,
       }))
     : [];
 
@@ -623,7 +639,7 @@ export function WealthWorkspace({
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
           <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
-            cryptoPriceNote={cryptoPriceNote} changeGate={changeGate} />
+            cryptoPriceNote={cryptoPriceNote} changeGate={changeGate} totalsCoverage={totalsCoverage} />
         </div>
 
         {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
