@@ -957,7 +957,14 @@ await (async () => {
   const resolved1 = await get("PLATFORM_OPS", OPS, "incident-resolved-window", { window: 1 });
   check("incident-needs-verification: the needs-verification preset's total", verify?.value === 3 && queries[0]?.status === "needs-verification");
   check("incident-resolved-window: the history preset over the window's UTC days (7 default: from = today − 6; 1 = today only)",
-    resolved?.value === 3 && queries[1]?.status === "history" && queries[1].from === "2026-10-29" && queries[1].to === "2026-11-04" && queries[2].from === "2026-11-04" && resolved1?.window.label === "in the last 1 day", JSON.stringify(queries));
+    resolved?.value === 3 && queries[1]?.status === "history" && queries[1].from === "2026-10-29" && queries[1].to === "2026-11-04" && queries[2].from === "2026-11-04" && resolved1?.window.label === "last seen in the last 1 day", JSON.stringify(queries));
+  check("R1 (S2 #483): resolved-window is labelled by LAST SEEN (its filter), never as 'resolved in the last N days' — label, window label and registry agree",
+    resolved?.window.label === "last seen in the last 7 days" && METRICS.find((m) => m.id === "incident-resolved-window")!.label.startsWith("Resolved incidents last seen in the last")
+    && METRICS.find((m) => m.id === "incident-resolved-window")!.window.label === "last seen in the last 7 days" && !/resolved in the last/i.test(JSON.stringify(resolved)));
+  // A resolved incident last seen 10 d ago and resolved yesterday: the search filters on last seen, so the
+  // 7-day window does NOT ask for it — which is exactly why the label says "last seen", not "resolved".
+  check("R1: the 7-day read bounds LAST SEEN to the window (a row last seen 10 d ago is outside it, whatever its resolvedAt)",
+    queries[1].from === "2026-10-29" && "2026-10-25" < queries[1].from!);
   const capped = await get("PLATFORM_OPS", OPS, "incident-needs-verification", {}, readers(newRec(), { incidentSearch: async () => searchFx(true) }));
   check("incident counts: a capped scan ⇒ PARTIAL (a floor — say 'at least')", capped?.status === "PARTIAL" && /floor/.test(capped.reason ?? ""));
   const csVerify = await get("CUSTOMER_SUCCESS", CS, "incident-needs-verification");

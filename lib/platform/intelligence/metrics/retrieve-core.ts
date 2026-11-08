@@ -348,6 +348,11 @@ interface Projected {
   hours?: number | null;
   /** An EXPLICIT window start the reader itself holds (ISO date, YYYY-MM-DD) — never inferred. */
   start?: string | null;
+  /**
+   * A server phrase that REPLACES the generic day / hour label (S2 #483 R1: "last seen in the last
+   * N days"); built only from module text and the read's own days — never payload text.
+   */
+  windowLabel?: string;
   /** Named subjects (MetricSubject) — registry / module names only; envelope() drops any label that is not one. */
   subjects?: readonly MetricSubject[];
 }
@@ -739,6 +744,8 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "incident-resolved-window@1": {
     // The Incidents "History" view's list total over the window's UTC days (from / to on lastSeenAt).
+    // S2 #483 R1 (fallback): the search contract filters on LAST SEEN, not resolvedAt, so the window
+    // is LABELLED as such ("last seen in the last N days") — never "resolved in the last N days".
     kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [7, 1, 30], incidentScoped: "ANY",
     valueUnits: "count",
     async read({ readers, incident, now, window }) {
@@ -746,7 +753,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       const to = now.toISOString().slice(0, 10);
       const from = new Date(now.getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
       const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "history", from, to }, { now });
-      const base = { asOf: now.toISOString(), days };
+      const base = { asOf: now.toISOString(), days, windowLabel: `last seen ${daysWindowLabel(days)}` };
       return r.truncated
         ? { ...base, value: r.total, status: "PARTIAL", reason: "a floor — the read was capped", missing: [`only ${plural(r.scanned, "row")} scanned`] }
         : { ...base, value: r.total };
@@ -1075,7 +1082,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
   let reason = p.reason ?? null;
   const days = p.days ?? null;
   const hours = p.hours ?? null;
-  const windowLabel = days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null;
+  const windowLabel = p.windowLabel ?? (days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null);
   const entry = RETRIEVAL[metricKey(m)];
   const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
   const parts = entry?.kind === "RETRIEVABLE" ? entry.parts : undefined;

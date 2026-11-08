@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
   if (primary) {
     for (const other of platformAiAreasFor(rows)) {
       if (other === area) continue;
-      const [otherAuth, otherErr] = await requireFreshPlatformAccess(other, "READ");
+      const [otherAuth, otherErr] = await requireFreshPlatformAccess(other, "READ", { probe: true });
       if (otherErr || !otherAuth.grant || otherAuth.grant.area !== other || otherAuth.user.id !== auth.user.id) continue;
       const otherToken = metricAccessFor(otherAuth);
       const otherBinding = otherToken ? bindingFor(otherAuth.grant.area, { metricToken: otherToken, incidentToken: incidentAudienceFor(otherAuth) }) : null;

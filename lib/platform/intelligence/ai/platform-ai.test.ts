@@ -813,8 +813,9 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
   }
   check("windowLabel: non-empty for every non-POINT_IN_TIME metric (null for point in time), consistent with days / hours, no inferred start date — every retrievable metric, window and surface",
     labelProblems.length === 0 && retrievable.every((k) => labelsSeen.has(k)), { labelProblems, missing: retrievable.filter((k) => !labelsSeen.has(k)) });
-  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days",
-    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0])), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
+  // S2 #483 R1: a qualifier may PRECEDE the day phrase ("last seen in the last 7 days"); the phrase itself is the default read's.
+  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days (optionally qualified, e.g. 'last seen …')",
+    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0]) || m.window.label === `last seen ${daysWindowLabel(m.window.days![0])}`), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
   for (const k of retrievable) {
     const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
     if (!e.unwindowedParts) continue;
@@ -1899,12 +1900,12 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
   // The routes build one binding per held area, each behind ITS OWN fresh guard (static).
   const route = code(src("app/api/platform/ai/ask/route.ts"));
   check("ask route: every OTHER held area is fresh-guarded on its own and bound from that guard (revoked ⇒ skipped), then composed",
-    /for \(const other of platformAiAreasFor\(rows\)\)/.test(route) && /await requireFreshPlatformAccess\(other, "READ"\)/.test(route)
+    /for \(const other of platformAiAreasFor\(rows\)\)/.test(route) && /await requireFreshPlatformAccess\(other, "READ", \{ probe: true \}\)/.test(route)
     && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route) && /bindingFor\(otherAuth\.grant\.area,/.test(route) && /composePlatformAiBindings\(/.test(route));
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
-  check("conversations: the conversation's own area gates (unchanged); other held areas are each fresh-guarded and composed",
+  check("conversations stay single-area (S2 #483 B1(b)): the access helper binds only the conversation's own area — no composition",
     /if \(err \|\| !auth\.grant \|\| auth\.grant\.area !== area \|\| auth\.user\.id !== operatorId\) return null;/.test(access)
-    && /await requireFreshPlatformAccess\(other, "READ"\)/.test(access) && /composePlatformAiBindings\(/.test(access));
+    && !/composePlatformAiBindings|platformAiAreasFor/.test(access));
 
   // Prompt: the briefing protocol, in the owner's order.
   const order = ["(1) overall health", "(2) customer-impacting failures", "(3) incidents", "(4) sync and connection problems", "(5) job and provider reliability", "(6) costs or unusual activity, ONLY if", "(7) at most three recommended next actions"];
@@ -1968,6 +1969,16 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
   const opsCov = await run("How are we looking today?", opsOnly, script([{ calls: [{ name: "get_metric", args: { id: "ops-overall-posture" } }, { name: "get_metric", args: { id: "customer-impact-24h" } }] }, { content: "Fine." }]));
   check("an Ops-only operator: the CS-only metric is listed as not available, and the domain read through Ops stays read",
     (opsCov.result.coverage ?? []).find((d) => d.key === "impact")?.status === "read" && !/cs-needs-help@1/.test((opsCov.transcript[0] as { content: string }).content));
+  // S2 #483 R2: refresh-pipeline's window is the server's "since yesterday (UTC)", verbatim — never "the last 24 h".
+  const rp = await executePlatformAiTool("get_metric", JSON.stringify({ id: "refresh-pipeline" }), opsBinding(OPS), ev(), []) as { window_phrase: string; window: { label: string } };
+  const rpTurn = await run("x", opsBinding(OPS), script([{ calls: [{ name: "get_metric", args: { id: "refresh-pipeline" } }] }, { content: "Refresh failures: {{m:refresh-pipeline@1|part=failed}}." }]));
+  check("R2: refresh-pipeline's window_phrase / label is the server's 'since yesterday (UTC)' and the rendered figure carries it verbatim",
+    rp.window_phrase === "since yesterday (UTC)" && rp.window.label === "since yesterday (UTC)" && segmentsText(rpTurn.result.answer).includes("since yesterday (UTC)") && !/24/.test(segmentsText(rpTurn.result.answer)),
+    { p: rp.window_phrase, a: segmentsText(rpTurn.result.answer) });
+  const rpDef = METRICS.find((m) => m.id === "refresh-pipeline")!;
+  const texts = [PLATFORM_AI_SYSTEM_PROMPT, JSON.stringify(platformAiToolSchemas([])), rpDef.label, rpDef.summary, rpDef.window.description, rpDef.window.label ?? ""];
+  check("R2: neither the prompt, the tool descriptions nor refresh-pipeline's definition describes the pipeline window as the last 24 h",
+    texts.every((t) => !/pipeline[^.\n]*\b24\s*(?:h\b|hours?)|\b24\s*(?:h\b|hours?)[^.\n]*pipeline/i.test(t)) && ![rpDef.label, rpDef.summary, rpDef.window.label ?? ""].some((t) => /24/.test(t)));
   check("a narrow question (one domain) gets no coverage note", briefingCoverageNote([{ label: "A", status: "read" }, { label: "B", status: "not_read" }]) === null);
   check("trace + answer carry no identity from the briefing readers' payloads", identityHits(JSON.stringify([b.result.answer, b.result.citations, b.result.trace, b.result.notes])).length === 0);
 }

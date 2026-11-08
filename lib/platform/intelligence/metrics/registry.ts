@@ -735,10 +735,10 @@ export const METRICS: readonly MetricDefinition[] = [
   },
   {
     id: "incident-resolved-window", version: 1, domain: "incidents",
-    label: "Resolved incidents (1 / 7 / 30 d)",
-    summary: "Resolved or archived incidents last seen in the window (the History preset filtered to the window's UTC days) — recent incidents that are no longer broken.",
+    label: "Resolved incidents last seen in the last 1 / 7 / 30 days",
+    summary: "Resolved or archived incidents whose LAST OCCURRENCE falls in the window (the History preset filtered to the window's UTC days on last seen) — NOT incidents resolved in the window: one last seen earlier and resolved inside the window is not counted.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "UTC days from (today − (N − 1)) through today, on lastSeenAt (window=7 default, or 1 or 30).", label: "in the last 7 days", days: [7, 1, 30] },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "UTC days from (today − (N − 1)) through today, on lastSeenAt — not on resolvedAt (window=7 default, or 1 or 30).", label: "last seen in the last 7 days", days: [7, 1, 30] },
     numerator: { description: "Incident-class verdicts in state resolved or archived whose lastSeenAt falls in the window.", source: { module: "lib/platform/incidents/intelligence/search-core.ts", symbol: "matchesStatus" } },
     denominator: null,
     compute: { module: "lib/platform/incidents/intelligence/core.ts", symbol: "deriveIncidentVerdicts" },
