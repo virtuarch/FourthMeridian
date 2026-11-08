@@ -2071,9 +2071,21 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
     !numbered.result.grounding.replaced && numbered.result.grounding.verdict === "RESOLVED" && !txt(numbered).includes(UNVERIFIED_FALLBACK) && /^1\. 1 domain is degraded/.test(txt(numbered)), { g: numbered.result.grounding, t: txt(numbered) });
   const { stripListMarkers } = await import("./core");
   check("(C) stripListMarkers: ONLY a 1–2 digit '.'/')' marker at a line start goes; every other digit stays (the figure rule is unchanged)",
-    stripListMarkers("1. a\n  2) b\n10. c") === "  a\n    b\n  c" && stripListMarkers("- 2 failed") === "- 2 failed" && stripListMarkers("(1) Health") === "(1) Health"
+    stripListMarkers("1. a\n  2) b\n3. c") === "  a\n    b\n  c" && stripListMarkers("1. a\n  2) b\n10. c") === "  a\n    b\n10. c" && stripListMarkers("- 2 failed") === "- 2 failed" && stripListMarkers("(1) Health") === "(1) Health"
     && stripListMarkers("1.5 hours") === "1.5 hours" && stripListMarkers("see 2. x") === "see 2. x" && stripListMarkers("2 failed.") === "2 failed." && stripListMarkers("1. a", false) === "1. a" && stripListMarkers("x\n1. a", false) === "x\n  a"
     && stripListMarkers("123. a") === "123. a" && stripListMarkers("1.") === "1.");
+  check("L1: markers only in sequence from 1 — '7.' alone and '1. … 3.' keep their digit; a list may restart at 1",
+    stripListMarkers("7. incidents are open") === "7. incidents are open" && stripListMarkers("1. a\n3. b") === "  a\n3. b" && stripListMarkers("1. a\n2. b\n\n1. c") === "  a\n  b\n\n  c"
+    && stripListMarkers("2. a") === "2. a");
+  const seven = await brief("7. {{m:incident-broken-now@1}} incidents are open.");
+  const gap = await brief("1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded.\n3. {{m:incident-broken-now@1}} incidents are active.");
+  const seq = await brief("1. {{m:ops-overall-posture@1|part=degraded}} domain is degraded.\n2. {{m:incident-broken-now@1}} incidents are active.");
+  check("L1 turns: '7. …' alone ⇒ refused; '1. … 3. …' ⇒ refused; '1. … 2. …' ⇒ answered",
+    seven.result.grounding.verdict === "UNGROUNDED_DIGIT" && gap.result.grounding.verdict === "UNGROUNDED_DIGIT" && seq.result.grounding.verdict === "RESOLVED" && !seq.result.grounding.replaced,
+    [seven.result.grounding.verdict, gap.result.grounding.verdict, seq.result.grounding.verdict]);
+  // A marker that continues the list in a LATER segment (after a link) is still in sequence.
+  const acrossLink = await run(QL, b, script([{ calls: [...READS, { name: "find_page", args: { query: "connections" } }] }, { content: "1. Review [connections](/dashboard/platform/PLATFORM_OPS?view=pipeline).\n2. {{m:incident-broken-now@1}} incidents are active." }]));
+  check("L1: the sequence carries across segments (a link in item 1, then '2.')", !acrossLink.result.grounding.replaced, acrossLink.result.grounding);
   const stillDigits = await brief("1. 2 incidents are active.\n2. Jobs: 3 overdue.");
   check("(C) …a count typed after a marker is still a leftover digit (refused)", stillDigits.result.grounding.replaced && stillDigits.result.grounding.verdict === "UNGROUNDED_DIGIT");
   const words = await brief("- One incident needs verification.\n- Two connections need reconnection.");

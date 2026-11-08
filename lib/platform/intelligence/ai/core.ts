@@ -928,9 +928,22 @@ const NUMBER_WORD_TIME_UNIT = /^[\s-]+(?:hours?|days?|weeks?|months?|years?)\b/i
  * 1–2 digits then "." or ")" then whitespace. A digit anywhere else — "2 failed", "(1)",
  * "- 2 failed", "1.5" — is still a leftover digit.
  */
-export const LIST_MARKER = /(^|\n)([ \t]*)\d{1,2}[.)](?=[ \t]+\S)/g;
-export function stripListMarkers(prose: string, lineStart = true): string {
-  return prose.replace(LIST_MARKER, (m, nl: string, ws: string, offset: number) => (offset === 0 && nl === "" && !lineStart ? m : `${nl}${ws} `));
+export const LIST_MARKER = /(^|\n)([ \t]*)(\d{1,2})[.)](?=[ \t]+\S)/g;
+/**
+ * S2 L1 (#496): a marker is allowed ONLY in sequence — "1" starts a list, and each next
+ * marker must be the previous + 1 ("1. 2. 3."), each followed by text. "7. incidents are
+ * open", or "1. … 3. …", keeps its digit (refused as a leftover digit, as before): the
+ * renderer would renumber it, but the stored text and the export would carry the "7".
+ * `seq` carries the expected next marker across the answer's segments (one answer, in order).
+ */
+export function stripListMarkers(prose: string, lineStart = true, seq: { next: number } = { next: 1 }): string {
+  return prose.replace(LIST_MARKER, (m, nl: string, ws: string, n: string, offset: number) => {
+    if (offset === 0 && nl === "" && !lineStart) return m;
+    const k = Number(n);
+    if (k !== 1 && k !== seq.next) return m;
+    seq.next = k + 1;
+    return `${nl}${ws} `;
+  });
 }
 
 /** PURE — how many number words the model's own prose states (idioms and the operator's own time window excepted). */
@@ -1353,6 +1366,8 @@ export function resolvePlaceholders(
   const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
   const labelList = [...labels].filter((l) => /\d/.test(l) || numberWordCount(l) > 0).sort((a, b) => b.length - a.length);
   // The day-windows the operator asked about (the Question C rule, fixedWindowOption).
+  // S2 L1: ordered-list markers must run 1, 2, 3, … across the whole answer (stripListMarkers).
+  const markerSeq = { next: 1 };
   const askedDays = requestedWindows(scrubbedQuestion).filter((a) => a.hours % 24 === 0).map((a) => a.hours / 24);
   const modelProse: string[] = [];
   // The rendered answer as one stream (segments in order) with every server span marked —
@@ -1399,7 +1414,7 @@ export function resolvePlaceholders(
     let prose = out.replace(new RegExp(`${SENTINEL}[^${SENTINEL}]*${SENTINEL}`, "g"), " ");
     // Briefing list (2026-11-08): an ordered-list MARKER is structure, not a figure — exactly what
     // answerBlocks reads as one ("1. " / "2) " at the start of a line; the renderer drops it).
-    prose = stripListMarkers(prose, lineStart);
+    prose = stripListMarkers(prose, lineStart, markerSeq);
     modelProse.push(prose);
     if (/\{\{|\}\}/.test(prose)) {
       malformed = true;
