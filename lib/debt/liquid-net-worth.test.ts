@@ -20,7 +20,7 @@ import {
   LIQUID_NET_WORTH_DEFINITION, LIQUID_NET_WORTH_NOT_DEBT_FREE, NET_LIQUID_HISTORY_AI_NOTE,
   LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthChartMarkers,
   aiLiquidNetWorth, inSentence, isExcludedFromLiquidNetWorth, liquidNetWorthBasis, liquidNetWorthNoteText,
-  netLiquidIdentityViolation, storedExcludedInstallmentDebt,
+  netLiquidIdentityViolation, storedExcludedInstallmentDebt, liquidNetWorthRowBasis, liquidNetWorthDefinitionChange,
 } from "@/lib/debt/liquid-net-worth";
 import { excludedAccountCounts, unobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 import { aggregateIdentityViolations } from "@/lib/snapshots/series-integrity.core";
@@ -141,6 +141,31 @@ const MANUAL   = { id: "man", type: "debt", visibilityLevel: "FULL", balance: 2_
   ok("netLiquid identity bounded: cash + savings − debt ≤ netLiquid ≤ cash + savings; F1 and pre-F1 rows authorise EXACT");
 }
 
+// ── 6b. F1b — a RECORDED installmentDebt makes the identity EXACT ────────────
+{
+  const row = { stocks: 0, crypto: 0, total: 0, cash: 10_000, savings: 0, debt: 305_000, netWorth: -295_000, totalAssets: 10_000, netLiquid: 5_000 };
+  const rec = { ...row, installmentDebt: 300_000 };
+  assert.deepEqual(aggregateIdentityViolations(rec), [], "exact: netLiquid = cash + savings − debt + installmentDebt");
+  assert.equal(netLiquidIdentityViolation(rec, 0.01), null);
+  assert.ok(netLiquidIdentityViolation({ ...rec, installmentDebt: 299_000 }, 0.01), "inside the old range but ≠ recorded ⇒ contradiction");
+  assert.ok(netLiquidIdentityViolation({ ...rec, installmentDebt: 400_000, netLiquid: 105_000 }, 0.01), "installmentDebt > debt ⇒ contradiction");
+  assert.ok(netLiquidIdentityViolation({ ...rec, installmentDebt: -1, netLiquid: -295_001 }, 0.01), "negative ⇒ contradiction");
+  assert.equal(storedExcludedInstallmentDebt(rec), 300_000, "recorded column wins");
+  const auth = authoriseAggregates({ values: { ...rec, cashOnHand: 10_000 }, componentAssertable: {}, isEstimated: true });
+  assert.equal(auth.netLiquid.state, "EXACT");
+  const bad = authoriseAggregates({ values: { ...rec, installmentDebt: 299_000, cashOnHand: 10_000 }, componentAssertable: {}, isEstimated: true });
+  assert.notEqual(bad.netLiquid.state, "EXACT", "a recorded mismatch is not authorised EXACT");
+  // Legacy NULL rows keep the range check (both ends of it).
+  assert.equal(netLiquidIdentityViolation({ ...row, installmentDebt: null, netLiquid: -295_000 }, 0.01), null, "legacy old-basis row passes");
+  assert.equal(netLiquidIdentityViolation({ ...row, installmentDebt: null }, 0.01), null, "legacy F1-era row passes");
+  // Basis per row.
+  assert.equal(liquidNetWorthRowBasis(rec), "INSTALLMENTS_EXCLUDED");
+  assert.equal(liquidNetWorthRowBasis({ ...row, installmentDebt: 0, netLiquid: -295_000 }), "INSTALLMENTS_EXCLUDED", "a recorded 0 is the new basis");
+  assert.equal(liquidNetWorthRowBasis({ ...row, netLiquid: -295_000 }), "INSTALLMENTS_SUBTRACTED", "NULL + nothing excluded ⇒ old basis");
+  assert.equal(liquidNetWorthRowBasis(row), "INSTALLMENTS_SUBTRACTED", "S2 D1 — PURE: NULL ⇒ old basis even when the numbers show an exclusion (no inference)");
+  ok("F1b: recorded installmentDebt ⇒ exact identity + new basis; legacy NULL rows ⇒ range check, basis from the row");
+}
+
 // ── 7. Lens root reconciles and names the exclusion ──────────────────────────
 {
   const snap = {
@@ -177,40 +202,66 @@ const MANUAL   = { id: "man", type: "debt", visibilityLevel: "FULL", balance: 2_
   ok("Liquid NW drivers = cash + liquidDebt and reconcile; a mortgage paydown moves cash only");
 }
 
-// ── 8b. S2 B1 — a change across the F1 date is a DEFINITION change ─────────
+// ── 8b. F1b — the definition change is decided by the rows' BASES, not dates ─
 {
-  const mk = (date: string, debt: number, netLiquid: number, cash: number, isEstimated = false): Snapshot => ({
+  const mk = (date: string, debt: number, netLiquid: number, cash: number, isEstimated = false, installmentDebt?: number): Snapshot => ({
     date, totalInvestments: 0, totalCrypto: 0, totalCash: cash, totalSavings: 0, totalDebt: debt,
     totalAssets: cash, netWorth: cash - debt, netLiquid, cashOnHand: cash, isEstimated,
+    ...(installmentDebt !== undefined ? { installmentDebt } : {}),
   } as unknown as Snapshot);
-  // Pre-F1 OBSERVED row (old basis): mortgage 300,000 + card 5,000 subtracted.
-  // Post-F1 row: card paid down to 3,000, cash 10,000 → 11,000, mortgage unchanged.
-  const pre  = mk("2026-10-01", 305_000, 10_000 - 305_000, 10_000);
-  const post = mk("2026-11-09", 303_000, 11_000 - 3_000, 11_000);
-  const r = computeWealthTimeMachine({ snapshots: [pre, post], asOf: "2026-11-09", compareTo: "2026-10-01", currency: "USD" } as never);
+  // OLD-basis OBSERVED row (NULL column, mortgage 300,000 + card 5,000 subtracted)
+  // vs a NEW-basis ESTIMATED row (recorded 300,000) — BOTH dated before
+  // 2026-11-08, so a date rule would see no definition change at all.
+  // Card paid down to 3,000, cash 10,000 → 11,000, mortgage unchanged.
+  const oldObs = mk("2026-10-01", 305_000, 10_000 - 305_000, 10_000);
+  const newEst = mk("2026-10-20", 303_000, 11_000 - 3_000, 11_000, true, 300_000);
+  assert.ok(newEst.date < LIQUID_NW_INSTALLMENT_EXCLUSION_FROM && oldObs.date < LIQUID_NW_INSTALLMENT_EXCLUSION_FROM);
+  const r = computeWealthTimeMachine({ snapshots: [oldObs, newEst], asOf: "2026-10-20", compareTo: "2026-10-01", currency: "USD" } as never);
   const comp = r.deltas!.composition;
-  assert.equal(comp.liquidDefinitionChange, 300_000, "definition change = the mortgage balance");
-  assert.equal(comp.liquidDebt, -2_000, "liquid-debt movement = the real card paydown only (mortgage movement 0)");
+  assert.equal(comp.liquidDefinitionChange, 300_000, "definition change = the new-basis row's installmentDebt");
+  assert.equal(comp.liquidDebt, -2_000, "liquid-debt movement = the real card paydown only");
   assert.equal(comp.cash, 1_000);
   assert.equal(comp.cash - comp.liquidDebt + comp.liquidDefinitionChange, r.deltas!.liquidNetWorth.abs, "parts reconcile to Δ liquid NW");
   const def = r.drivers!.find((d) => d.id === "liquidDefinitionChange")!;
   assert.equal(def.label, LIQUID_NW_DEFINITION_CHANGE_LABEL);
-  assert.match(def.label, /Definition change — installment loans no longer subtracted \(from 2026-11-08\)/);
-  // A window entirely on one side of the date has no definition part.
-  const r2 = computeWealthTimeMachine({ snapshots: [mk("2026-11-09", 303_000, 8_000, 11_000), mk("2026-11-20", 302_000, 9_000, 12_000)],
-    asOf: "2026-11-20", compareTo: "2026-11-09", currency: "USD" } as never);
-  assert.equal(r2.deltas!.composition.liquidDefinitionChange, 0);
-  // A compare row already regenerated onto the new basis is not double-counted.
-  const r3 = computeWealthTimeMachine({ snapshots: [mk("2026-10-01", 305_000, 5_000, 10_000, true), post],
-    asOf: "2026-11-09", compareTo: "2026-10-01", currency: "USD" } as never);
-  assert.equal(r3.deltas!.composition.liquidDefinitionChange, 0);
-  // Chart annotation at the date, liquid NW series only; AI note cites the same constant.
-  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth"), [{ date: LIQUID_NW_INSTALLMENT_EXCLUSION_FROM, label: "Definition change" }]);
-  assert.deepEqual(liquidNetWorthChartMarkers("netWorth"), []);
-  assert.ok(readFileSync(join(process.cwd(), "components/space/widgets/wealth/WealthTrendChart.tsx"), "utf8").includes("markers={liquidNetWorthChartMarkers(metric)}"));
+  assert.match(def.label, /Definition change — installment loans no longer subtracted/);
+  // Reverse direction (new-basis compare → old-basis as-of): the part is negative.
+  const newFirst = mk("2026-09-01", 305_000, 10_000 - 5_000, 10_000, true, 300_000);
+  const oldLater = mk("2026-12-01", 303_000, 11_000 - 303_000, 11_000);
+  const rr = computeWealthTimeMachine({ snapshots: [newFirst, oldLater], asOf: "2026-12-01", compareTo: "2026-09-01", currency: "USD" } as never);
+  assert.equal(rr.deltas!.composition.liquidDefinitionChange, -300_000, "new → old ⇒ −(new-basis row's installmentDebt)");
+  assert.equal(rr.deltas!.composition.liquidDebt, -2_000, "still only the card's movement");
+  // Same basis (both recorded), across the date: EXACT, no definition part.
+  const a = mk("2026-11-01", 305_000, 5_000, 10_000, true, 300_000);
+  const b = mk("2026-11-20", 302_000, 9_000, 12_000, false, 299_000);
+  const r2 = computeWealthTimeMachine({ snapshots: [a, b], asOf: "2026-11-20", compareTo: "2026-11-01", currency: "USD" } as never);
+  assert.equal(r2.deltas!.composition.liquidDefinitionChange, 0, "same basis across 2026-11-08 ⇒ no definition part");
+  assert.equal(r2.deltas!.composition.liquidDebt, -2_000, "card 5,000 → 3,000: exact movement; the 1,000 mortgage paydown is not liquid debt");
+  // Same OLD basis on both sides: exact too (pure movement).
+  const o1 = mk("2026-10-01", 305_000, -295_000, 10_000);
+  const o2 = mk("2026-11-20", 303_000, -292_000, 11_000);
+  assert.equal(liquidNetWorthDefinitionChange(
+    { cash: 10_000, savings: 0, debt: 305_000, netLiquid: -295_000 }, { cash: 11_000, savings: 0, debt: 303_000, netLiquid: -292_000 }), 0);
+  const r3 = computeWealthTimeMachine({ snapshots: [o1, o2], asOf: "2026-11-20", compareTo: "2026-10-01", currency: "USD" } as never);
+  assert.equal(r3.deltas!.composition.liquidDefinitionChange, 0, "old → old across the date ⇒ no definition part");
+  // Chart: the marker sits at the FIRST new-basis point after an old one; liquid NW only.
+  const rc = computeWealthTimeMachine({ snapshots: [o1, mk("2026-10-15", 305_000, -295_000, 10_000), newEst, b], asOf: "2026-11-20", compareTo: "2026-10-01", currency: "USD" } as never);
+  const pts = rc.chart.points;
+  assert.deepEqual(pts.map((p) => p.liquidBasisPrevious === true), [true, true, false, false], "per-point basis flag");
+  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth", pts), [{ date: "2026-10-20", label: "Definition change" }]);
+  assert.deepEqual(liquidNetWorthChartMarkers("netWorth", pts), []);
+  assert.deepEqual(liquidNetWorthChartMarkers("liquidNetWorth", pts.slice(2)), [], "no old-basis point in view ⇒ no marker");
+  assert.ok(readFileSync(join(process.cwd(), "components/space/widgets/wealth/WealthTrendChart.tsx"), "utf8").includes("markers={liquidNetWorthChartMarkers(metric, result.chart.points)}"));
   assert.ok(readFileSync(join(process.cwd(), "components/space/widgets/charts/TrendChart.tsx"), "utf8").includes("data-chart-marker={m.date}"));
-  assert.ok(NET_LIQUID_HISTORY_AI_NOTE.includes(`across ${LIQUID_NW_INSTALLMENT_EXCLUSION_FROM}`));
-  ok("B1: change across 2026-11-08 ⇒ definition change = mortgage, liquidDebt = card movement only; chart annotated; AI note cites the date");
+  // No date-constant basis detection left anywhere it used to live.
+  for (const f of ["lib/wealth/wealth-time-machine.ts", "lib/ai/assemblers/snapshot.ts", "components/space/widgets/wealth/WealthTrendChart.tsx"]) {
+    assert.ok(!readFileSync(join(process.cwd(), f), "utf8").includes("LIQUID_NW_INSTALLMENT_EXCLUSION_FROM"), `${f}: no date-constant detection`);
+  }
+  const lnw = readFileSync(join(process.cwd(), "lib/debt/liquid-net-worth.ts"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  assert.ok(!/[<>]=?\s*LIQUID_NW_INSTALLMENT_EXCLUSION_FROM/.test(lnw), "no date comparison against the constant");
+  assert.match(NET_LIQUID_HISTORY_AI_NOTE, /netLiquidBasis/);
+  assert.match(NET_LIQUID_HISTORY_AI_NOTE, /INSTALLMENTS_SUBTRACTED is the previous definition/);
+  ok("F1b: definition change by per-row basis (old obs vs new est, both pre-date ⇒ 300k; reverse ⇒ −300k; same basis ⇒ exact); chart marker at the first new-basis point");
 }
 
 // ── 9. Unobserved installment loan leaves liquid NW COMPLETE ─────────────────

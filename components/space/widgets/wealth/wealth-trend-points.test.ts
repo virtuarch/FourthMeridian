@@ -139,7 +139,8 @@ console.log("7. RWA-2B — a modeled real-asset day is drawn MODELED on the seri
   check("an observed day is never relabelled, even if a DTO carried the flag", nw[2].basis === undefined && nw[2].estimated === false);
   for (const metric of ["cash", "liquidNetWorth", "totalLiabilities"] as const) {
     const pts = projectWealthTrendPoints(r, metric);
-    check(`${metric} never includes real assets ⇒ never 'modeled'`, pts.every((p) => p.basis === undefined));
+    // Mortgage F1b — legacy rows plot liquid NW as "previousDefinition"; never 'modeled'.
+    check(`${metric} never includes real assets ⇒ never 'modeled'`, pts.every((p) => p.basis === undefined || (metric === "liquidNetWorth" && p.basis === "previousDefinition")));
   }
   check("values are untouched by the label", nw[1].value === r.chart.points[1].netWorth && ta[1].value === 1_000 + 4_000 + 10_000 + 2_000 + 105_000);
   check("the read model carries the flag only on an estimated point",

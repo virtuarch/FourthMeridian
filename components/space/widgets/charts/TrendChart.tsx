@@ -43,7 +43,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { formatCompactCurrency } from "@/lib/currency";
 import {
   medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
-  basisOf,
+  basisOf, joinsAcrossSeam,
   type TrendGeomPoint, type TrendRun, type TrendBasis,
 } from "./trend-runs.core";
 
@@ -130,6 +130,10 @@ const RUN_STYLE: Record<TrendBasis, { fill: string | null; opacity: number; dash
   recorded:      { fill: "url(#tc-fill)",       opacity: 1 },
   modeled:       { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
   carried:       { fill: null,                  opacity: 0.6,  dash: "8 4" },
+  // Mortgage F1b — Liquid NW on the PREVIOUS definition (installments
+  // subtracted): faint, short-dotted, no fill, and never joined to the current
+  // line (joinsAcrossSeam), so the two definitions are never read as one series.
+  previousDefinition: { fill: null,             opacity: 0.4,  dash: "2 3" },
 };
 
 /** The tooltip's one-word provenance suffix. Text, not logic. */
@@ -140,6 +144,7 @@ const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
   recorded:      "your estimate",
   modeled:       "modeled — not a market price",
   carried:       "latest estimate, carried forward",
+  previousDefinition: "previous definition — installment loans subtracted",
 };
 
 export function TrendChart({
@@ -225,7 +230,8 @@ export function TrendChart({
     // v2.7 — JOIN across a basis change: a run that begins at a basis seam (adjacent
     // points, no date hole) starts its path at the previous run's last point, so the
     // line flows on in the new run's style. Date holes are untouched (no seam there).
-    const joinFrom = new Map<Pt, Pt>(toBasisSeams(pts, gapDays).map((s) => [pts[s.toIndex], pts[s.fromIndex]]));
+    // Mortgage F1b — never across a liquid-NW definition change (joinsAcrossSeam).
+    const joinFrom = new Map<Pt, Pt>(toBasisSeams(pts, gapDays).filter(joinsAcrossSeam).map((s) => [pts[s.toIndex], pts[s.fromIndex]]));
     const runs = toRuns(pts, gapDays).map((run) => {
       const prev = joinFrom.get(run.points[0]);
       return prev && run.points[0] !== prev ? { ...run, points: [prev, ...run.points] } : run;

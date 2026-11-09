@@ -67,6 +67,8 @@ export interface RawSnapshotRow {
   totalAssets: number;
   netLiquid:   number;
   cashOnHand:  number;
+  /** Mortgage F1b — the recorded installment share of netLiquid's exclusion; null = legacy row. */
+  installmentDebt?:            number | null;
   isEstimated?:                boolean | null;
   reportingCurrency?:          string | null;
   cryptoValuationStatus?:      string | null;
@@ -116,6 +118,7 @@ export function resolveSnapshotRowProvenance(r: RawSnapshotRow): SnapshotRowProv
       stocks: r.stocks, crypto: r.crypto, cash: r.cash, savings: r.savings, debt: r.debt,
       total: r.total, totalAssets: r.totalAssets, netWorth: r.netWorth,
       netLiquid: r.netLiquid, cashOnHand: r.cashOnHand,
+      installmentDebt: r.installmentDebt ?? null,
     },
     componentAssertable: { crypto: isCryptoAssertable(cryptoState) },
     isEstimated: r.isEstimated ?? false,
