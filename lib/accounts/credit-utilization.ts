@@ -47,13 +47,21 @@ export interface UtilizationRow {
 }
 
 /**
- * The utilization % exactly as every surface shows it: a whole percent
- * (`toFixed(0)` — DebtHero, the utilization rows, CreditHealthInputs, debt
- * signals). The level is graded on THIS value so the word can never contradict
- * the number beside it (29.9% used to read "30% · Low").
+ * THE one source of truth for the utilization % a user sees: a whole percent.
+ * Every surface renders the number through `formatUtilizationPct` (DebtHero,
+ * the utilization rows, CreditHealthInputs, LiabilitiesLedger,
+ * DebtAccountDetail, debt signals), and `utilizationLevel` grades THIS value,
+ * so the band word / colour can never contradict the number beside it (29.9%
+ * used to read "30% · Low"). Defined AS the `toFixed(0)` rendering, so there is
+ * no second rounding rule to drift at a .5 boundary (pinned by a parity test).
  */
 export function displayedUtilizationPct(pct: number): number {
-  return Math.round(pct);
+  return Number(pct.toFixed(0)) + 0; // `+ 0` normalises −0 to 0
+}
+
+/** The utilization % text: "30%". Same value `utilizationLevel` grades. */
+export function formatUtilizationPct(pct: number): string {
+  return `${displayedUtilizationPct(pct)}%`;
 }
 
 /**

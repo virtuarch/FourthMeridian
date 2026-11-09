@@ -6,7 +6,9 @@
  * Auto-discovered by scripts/run-tests.ts. Pure module.
  */
 
-import { creditUtilization, utilizationLevel, type UtilizationInputAccount } from "@/lib/accounts/credit-utilization";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { creditUtilization, displayedUtilizationPct, formatUtilizationPct, utilizationLevel, type UtilizationInputAccount } from "@/lib/accounts/credit-utilization";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -36,6 +38,43 @@ for (const p of [0, 12.5, 29.49, 29.5, 29.9, 30, 69.49, 69.5, 99.6, 100.4, 100.5
   const shown = Number(p.toFixed(0));
   const want = shown > 100 ? "over" : shown >= 70 ? "high" : shown >= 30 ? "moderate" : "low";
   check(`label matches shown ${p.toFixed(0)}% for ${p}`, utilizationLevel(p) === want);
+}
+
+// ── ONE source of truth: parity over p = 0..120 in 0.01 steps (incl. every .5) ──
+{
+  let parityMiss = 0, bandMiss = 0, textMiss = 0;
+  const band = (shown: number) => shown > 100 ? "over" : shown >= 70 ? "high" : shown >= 30 ? "moderate" : "low";
+  for (let i = 0; i <= 12_000; i++) {
+    for (const p of [i / 100, i * 0.01]) {           // both float constructions of the step
+      const shown = displayedUtilizationPct(p);
+      if (shown !== Number(p.toFixed(0))) parityMiss++;
+      if (utilizationLevel(p) !== band(shown)) bandMiss++;
+      if (formatUtilizationPct(p) !== `${shown}%`) textMiss++;
+    }
+  }
+  check("displayedUtilizationPct(p) === Number(p.toFixed(0)) for every p in 0..120 step 0.01", parityMiss === 0, `${parityMiss} misses`);
+  check("the band is decided on that same displayed value for every p", bandMiss === 0, `${bandMiss} misses`);
+  check("formatUtilizationPct renders that same displayed value for every p", textMiss === 0, `${textMiss} misses`);
+  check("−0 never renders as \"-0%\"", formatUtilizationPct(-0.3) === "0%");
+}
+
+// ── Every surface that shows a utilization % uses the helper (no private rounding / band copy) ──
+{
+  const SURFACES = [
+    "components/space/widgets/debt/DebtHero.tsx",
+    "components/space/widgets/debt/CreditHealthInputs.tsx",
+    "components/space/widgets/debt-perspective-adapters.tsx",
+    "components/space/widgets/debt/LiabilitiesLedger.tsx",
+    "components/space/widgets/debt/DebtAccountDetail.tsx",
+    "components/space/widgets/debt/debt-signals.ts",
+  ];
+  for (const f of SURFACES) {
+    const src = readFileSync(join(process.cwd(), f), "utf8");
+    check(`${f}: renders utilization through the shared helper`, /formatUtilizationPct\(|displayedUtilizationPct\(/.test(src));
+    check(`${f}: no private toFixed / Math.round of a utilization %`,
+      !/(utilizationPct|util\.pct|r\.pct|\butil)\.toFixed\(|Math\.round\(kpis\.utilizationPct/.test(src));
+    check(`${f}: no private band thresholds`, !/pct >= 70|pct >= 30/.test(src));
+  }
 }
 
 // ── Normalization: 0.35 ratio → 35%, not 3500% ──────────────────────────────────
