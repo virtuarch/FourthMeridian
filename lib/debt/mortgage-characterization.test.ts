@@ -143,6 +143,16 @@ console.log(`H2. Mortgage payment from checking: paydown vs spending — ${LABEL
   check("H2a economic spending = 0 (no part of the payment reaches spending)", econ.spend === 0, econ);
   check("H2a economic net = 8,000; after-paydown net = 5,500", econ.net === 8_000 && netAfterDebtPaydown(econ.net, s) === 5_500,
     { net: econ.net, after: netAfterDebtPaydown(econ.net, s) });
+  // FIXED by F6 — with the debt-type model supplied (as the AI assembler does),
+  // the connected mortgage payment is an UNSPLIT loan payment, never netPaydown;
+  // the after-debt net is unchanged (attribution only).
+  const sF6 = computeDebtService(rows, ctx, abs, {
+    liabilityOf: (id) => (id === "mtg" ? { type: "debt", debtSubtype: "mortgage", labelAccess: "FINE" } : undefined),
+    hasNonRevolvingLiability: true,
+  });
+  check("H2a FIXED by F6 — netPaydown 0, unsplitLoanPayments 2,500 (P + I + escrow, not split), after-debt net still 5,500",
+    sF6.netPaydown === 0 && sF6.unsplitLoanPayments === 2_500 && sF6.unsplitLoanKind === "mortgage"
+    && netAfterDebtPaydown(econ.net, sF6) === 5_500, sF6);
 
   // (b) Lender DOES post a 1,500 interest row on the mortgage account.
   const rowsI = [...rows, tx({ own: "mtg", amount: -1_500, flowType: "INTEREST" })];

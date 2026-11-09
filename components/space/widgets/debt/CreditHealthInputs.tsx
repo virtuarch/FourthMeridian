@@ -30,7 +30,7 @@
 import { useState } from "react";
 import { Check, Loader2, Pencil, Plus, X } from "lucide-react";
 import { FicoCard } from "@/components/dashboard/FicoCard";
-import { creditUtilization } from "@/lib/accounts/credit-utilization";
+import { creditUtilization, formatUtilizationPct } from "@/lib/accounts/credit-utilization";
 import { isInstallmentLoan } from "@/lib/debt/liability-kind";
 import {
   parseCreditLimitInput,
@@ -232,7 +232,7 @@ export function CreditLimitInputs({
                 <div className="min-w-0">
                   <p className="truncate text-[12px] text-[var(--text-secondary)]">{a.name}</p>
                   <p className="text-[10px] text-[var(--text-faint)]">
-                    {util ? `${util.pct.toFixed(0)}% used · calculated from balance ÷ limit` : "Utilization unknown — no limit on file"}
+                    {util ? `${formatUtilizationPct(util.pct)} used · calculated from balance ÷ limit` : "Utilization unknown — no limit on file"}
                   </p>
                 </div>
                 {editing ? (

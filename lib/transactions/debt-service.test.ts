@@ -15,7 +15,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { computeDebtService, netAfterDebtPaydown, type DebtService } from "./debt-service";
+import { computeDebtService, debtServiceBucket, debtServiceForAi, netAfterDebtPaydown, type DebtService, type DebtServiceLiability, type DebtServiceOptions } from "./debt-service";
+import { UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND, UNSPLIT_LOAN_PAYMENT_AI_NOTE } from "@/lib/debt/liability-kind";
 import { tierResolver, type LiquidityTx } from "./liquidity";
 import { totalDebtPaid } from "./debt-payment-authority";
 import { economicTotals } from "./cash-flow";
@@ -66,7 +67,7 @@ const after   = (rows: LiquidityTx[]) => netAfterDebtPaydown(econNet(rows), serv
 /** The relations that hold for EVERY household, asserted on every fixture below. */
 function universal(name: string, rows: LiquidityTx[]): DebtService {
   const s = service(rows);
-  check(`${name}: every component is ≥ 0`, Object.values(s).every((v) => v >= 0), s);
+  check(`${name}: every component is ≥ 0`, Object.values(s).every((v) => typeof v !== "number" || v >= 0), s);
   check(`${name}: paydown and new borrowing are never both non-zero`, s.netPaydown === 0 || s.netNewBorrowing === 0, s);
   check(`${name}: payments − new charges − proceeds = paydown − new borrowing`,
     near(s.payments - s.newChargesOnLiabilities - s.debtProceeds, s.netPaydown - s.netNewBorrowing), s);
@@ -218,8 +219,8 @@ console.log("\n11. NO DEBT PAYMENTS, AND EVIDENCE MUST BE POSITIVE");
 {
   const none = [income(4_000), buy("chk", 1_000)];
   const s = universal("no debt", none);
-  check("nothing paid ⇒ every component 0 and the two nets are equal", Object.values(s).every((v) => v === 0) && near(after(none), econNet(none)));
-  check("an empty window is all zeros", Object.values(service([])).every((v) => v === 0));
+  check("nothing paid ⇒ every component 0 and the two nets are equal", Object.values(s).every((v) => typeof v !== "number" || v === 0) && near(after(none), econNet(none)));
+  check("an empty window is all zeros", Object.values(service([])).every((v) => typeof v !== "number" || v === 0));
 
   const unknownTier = [income(4_000), buy("ghost", 2_000), ...pay("cardA", 2_000)];
   const u = universal("unknown-tier charges", unknownTier);
@@ -251,6 +252,140 @@ console.log("\n13. SOURCE — the module adds no predicate of its own");
   check("the AI assembler derives the after-paydown net from this module", /netAfterDebtPaydown\(netCashFlow, debtService\)/.test(assembler));
   check("the retired subtraction (economic net − payment total) is gone from the assembler",
     !/netCashFlow\s*-\s*debtPaymentTotal/.test(assembler));
+}
+
+console.log("\n14. OWNER F6 — installment-loan payments are unsplit loan payments, never paydown");
+{
+  // The Space's liabilities, by the canonical debt-type model (lib/debt/liability-kind.ts).
+  const LIAB: Record<string, DebtServiceLiability> = {
+    cardA: { type: "debt", providerSubtype: "credit card", creditLimit: 5_000, labelAccess: "FINE" },
+    cardB: { type: "debt", creditLimit: 3_000, labelAccess: "FINE" },            // legacy untyped card (limit-bearing)
+    loan:  { type: "debt", debtSubtype: "mortgage", labelAccess: "FINE" },
+  };
+  const opts = (liab: Record<string, DebtServiceLiability>): DebtServiceOptions => ({
+    liabilityOf: (id) => liab[id],
+    hasNonRevolvingLiability: Object.values(liab).some((l) => debtServiceBucket(l) !== "revolving"),
+  });
+  const cardsOnly = { cardA: LIAB.cardA, cardB: LIAB.cardB };
+  const f6 = (rows: LiquidityTx[], liab = LIAB) => computeDebtService(rows, TIERS, abs, opts(liab));
+  const untrackedLeg = (amount: number, detail: string): LiquidityTx => ({
+    ...row({ own: "chk", amount: -amount, flowType: "DEBT_PAYMENT", cp: null, transferMaturity: "UNTRACKED_LOAN_PAYMENT" }),
+    loanPaymentDetail: detail,
+  } as unknown as LiquidityTx);
+  /** The cash truth: the total subtracted is the pre-F6 figure, whatever the attribution. */
+  const sameCash = (name: string, rows: LiquidityTx[], liab = LIAB) => {
+    const legacy = service(rows), now = f6(rows, liab);
+    check(`${name}: net-after is IDENTICAL to the pre-F6 figure`, near(netAfterDebtPaydown(econNet(rows), now), netAfterDebtPaydown(econNet(rows), legacy)), { legacy, now });
+    check(`${name}: revolving paydown + unsplit = pre-F6 paydown + untracked`,
+      near(now.netPaydown + now.unsplitLoanPayments, legacy.netPaydown + legacy.untrackedLoanPayments), { legacy, now });
+    check(`${name}: payments / charges / proceeds / new borrowing unchanged`,
+      now.payments === legacy.payments && now.newChargesOnLiabilities === legacy.newChargesOnLiabilities
+      && now.debtProceeds === legacy.debtProceeds && now.netNewBorrowing === legacy.netNewBorrowing, { legacy, now });
+    return now;
+  };
+
+  // (a) Regression guard — a cards-only household reads exactly as before.
+  const cardFixtures: [string, LiquidityTx[]][] = [
+    ["full payer",         [income(10_000), buy("cardA", 6_000), ...pay("cardA", 6_000)]],
+    ["revolver paydown",   [income(10_000), buy("cardA", 1_000), ...pay("cardA", 3_000), interest("cardA", 50)]],
+    ["two cards + refund", [income(8_000), buy("cardA", 2_000), refund("cardA", 300), buy("cardB", 900), ...pay("cardA", 2_500), ...pay("cardB", 400)]],
+    ["financed overspend", [income(3_000), buy("cardB", 4_000), ...pay("cardB", 500), fee("cardB", 35)]],
+  ];
+  for (const [name, rows] of cardFixtures) {
+    const legacy = service(rows), now = f6(rows, cardsOnly);
+    check(`cards only — ${name}: every figure identical to before`,
+      now.payments === legacy.payments && now.netPaydown === legacy.netPaydown && now.netNewBorrowing === legacy.netNewBorrowing
+      && now.newChargesOnLiabilities === legacy.newChargesOnLiabilities && now.unsplitLoanPayments === 0
+      && netAfterDebtPaydown(econNet(rows), now) === netAfterDebtPaydown(econNet(rows), legacy), { legacy, now });
+    sameCash(`cards only — ${name}`, rows, cardsOnly);
+  }
+
+  // (b) Mortgage + card household.
+  const mix = [income(10_000), buy("cardA", 3_000), ...pay("cardA", 3_500), ...pay("loan", 2_500)];
+  const m = sameCash("mortgage + card", mix);
+  check("mortgage + card: card paydown (500) is netPaydown", m.netPaydown === 500, m);
+  check("mortgage + card: the mortgage payment (2,500) is an unsplit loan payment, not paydown", m.unsplitLoanPayments === 2_500, m);
+  check("mortgage + card: labelled principal + interest + escrow, not split",
+    m.unsplitLoanKind === "mortgage" && m.unsplitLoanPaymentLabel === UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.mortgage, m);
+  check("mortgage + card: net-after = 10,000 − 3,000 − 500 − 2,500 = 4,000", netAfterDebtPaydown(econNet(mix), m) === 4_000);
+
+  // (c) A lender-posted interest row on the mortgage is already in spending — netted, never twice.
+  const wi = sameCash("mortgage + lender interest row", [income(10_000), ...pay("loan", 2_500), interest("loan", 1_000)]);
+  check("mortgage + lender interest row: unsplit 1,500, netPaydown 0", wi.unsplitLoanPayments === 1_500 && wi.netPaydown === 0, wi);
+
+  // (d) S2 condition 2 — connected mortgage AND an untracked (F10) auto loan: ONE figure, no double count.
+  const both = [income(10_000), ...pay("loan", 2_500), untrackedLeg(400, "LOAN_PAYMENTS_CAR_PAYMENT")];
+  const b = sameCash("connected mortgage + untracked auto loan", both);
+  check("both: unsplit = 2,500 connected + 400 untracked = 2,900, counted once",
+    b.unsplitLoanPayments === 2_900 && b.untrackedLoanPayments === 400 && b.netPaydown === 0, b);
+  check("both: mixed loan types ⇒ the neutral label (no escrow claim on an auto loan)",
+    b.unsplitLoanKind === "unknown" && b.unsplitLoanPaymentLabel === UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.unknown, b);
+  check("both: net-after = 10,000 − 2,900", netAfterDebtPaydown(econNet(both), b) === 7_100);
+  const ai = debtServiceForAi(b) as unknown as Record<string, unknown>;
+  check("both: the AI view carries ONE unsplit figure and its label, not the subset",
+    ai.unsplitLoanPayments === 2_900 && ai.unsplitLoanPaymentLabel === b.unsplitLoanPaymentLabel
+    && !("untrackedLoanPayments" in ai) && !("unsplitLoanKind" in ai), ai);
+
+  // (e) S2 PRIVACY P1-R1 — a non-FULL viewer's label comes from the COARSE type: no escrow, no "mortgage".
+  const coarse = f6(mix, { ...LIAB, loan: { ...LIAB.loan, labelAccess: "COARSE" } });
+  check("COARSE viewer: same figures, P+I label only (no escrow disclosure)",
+    coarse.unsplitLoanPayments === 2_500 && coarse.unsplitLoanKind === "installment"
+    && !/escrow/i.test(coarse.unsplitLoanPaymentLabel), coarse);
+
+  // (f) New borrowing still offsets: card charges outrun card payments ⇒ nothing is paid down or claimed.
+  const fi = sameCash("borrowing funded the loan payment", [income(10_000), buy("cardA", 5_000), ...pay("cardA", 1_000), ...pay("loan", 2_500)]);
+  check("borrowing edge: net = 3,500 − 5,000 < 0 ⇒ unsplit 0, netPaydown 0, new borrowing 1,500",
+    fi.unsplitLoanPayments === 0 && fi.netPaydown === 0 && fi.netNewBorrowing === 1_500, fi);
+  const pa = sameCash("borrowing funded part of the loan payment", [income(10_000), buy("cardA", 2_000), ...pay("cardA", 1_000), ...pay("loan", 2_500)]);
+  check("borrowing edge: the loan share is capped at the window's positive net (1,500)", pa.unsplitLoanPayments === 1_500 && pa.netPaydown === 0, pa);
+
+  // (g) Unknown-type liability (no subtype, no limit) — conservative: unsplit, neutral label.
+  const unk = f6([income(5_000), ...pay("loan", 800)], { loan: { type: "debt", labelAccess: "FINE" } });
+  check("unknown-type liability: payment is an unsplit loan payment, never paydown",
+    unk.netPaydown === 0 && unk.unsplitLoanPayments === 800 && unk.unsplitLoanPaymentLabel === UNSPLIT_LOAN_PAYMENT_LABEL_BY_KIND.unknown, unk);
+
+  // (h) HELOC is revolving (same definition as utilization): its paydown stays netPaydown.
+  const heloc = f6([income(5_000), ...pay("loan", 800)], { loan: { type: "debt", debtSubtype: "heloc", labelAccess: "FINE" } });
+  check("HELOC: revolving ⇒ netPaydown 800, unsplit 0", heloc.netPaydown === 800 && heloc.unsplitLoanPayments === 0, heloc);
+
+  // (i) Randomised: the cash truth holds for every attribution.
+  let rnd = 7;
+  const r = () => { rnd = (rnd * 48271) % 2147483647; return rnd / 2147483647; };
+  let randomFailures = 0;
+  for (let i = 0; i < 200; i++) {
+    const rows: LiquidityTx[] = [income(Math.round(r() * 10_000))];
+    for (let k = 0; k < 6; k++) {
+      const acct = ["cardA", "cardB", "loan"][Math.floor(r() * 3)];
+      const amt = Math.round(r() * 3_000) + 1;
+      const pick = r();
+      if (pick < 0.35) rows.push(...pay(acct, amt));
+      else if (pick < 0.65) rows.push(buy(acct, amt));
+      else if (pick < 0.75) rows.push(interest(acct, Math.round(amt / 10)));
+      else if (pick < 0.85) rows.push(refund(acct, Math.round(amt / 5)));
+      else rows.push(untrackedLeg(amt, "LOAN_PAYMENTS_MORTGAGE_PAYMENT"));
+    }
+    const legacy = service(rows), now = f6(rows);
+    if (!near(netAfterDebtPaydown(econNet(rows), now), netAfterDebtPaydown(econNet(rows), legacy))
+        || !near(now.netPaydown + now.unsplitLoanPayments, legacy.netPaydown + legacy.untrackedLoanPayments)
+        || now.netPaydown < 0 || now.unsplitLoanPayments < 0) {
+      randomFailures++;
+      check(`random household ${i}: cash truth preserved`, false, { legacy, now });
+    }
+  }
+  check("200 random households: net-after and total debt cash identical under F6 attribution", randomFailures === 0);
+}
+
+console.log("\n15. SOURCE — the AI assembler wires F6");
+{
+  const assembler = readFileSync(join(process.cwd(), "lib/ai/assemblers/transactions.ts"), "utf8")
+    .split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  check("the assembler passes the liability resolver (debt-type model) to the decomposition", /\}, debtServiceOpts\);/.test(assembler));
+  check("the assembler's label tier comes from debtLabelAccess (P1-R1)", /labelAccess:\s+debtLabelAccess\(\{ visibilityLevel: l\.visibilityLevel \}\)/.test(assembler));
+  check("the AI note fires on ANY unsplit loan payment (tracked OR untracked)",
+    assembler.includes("debtService.unsplitLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}"));
+  check("the AI receives the AI view (one unsplit figure)", /debtService: debtServiceForAi\(debtService\)/.test(assembler));
+  check("the AI note forbids principal amounts and payoff progress",
+    /principal reduction/.test(UNSPLIT_LOAN_PAYMENT_AI_NOTE) && /payoff progress/.test(UNSPLIT_LOAN_PAYMENT_AI_NOTE));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }

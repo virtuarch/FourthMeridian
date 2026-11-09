@@ -22,6 +22,7 @@ import type { LiabilityRow } from "./debt-ledger-util";
 import { debtSubtypeLabel } from "./debt-ledger-util";
 import { viewerRateLabel } from "@/lib/debt/rate-label";
 import { debtLabelAccess } from "@/lib/debt/liability-kind";
+import { formatUtilizationPct, utilizationLevel } from "@/lib/accounts/credit-utilization";
 
 const UTIL_COLOR: Record<string, string> = {
   low:      "var(--accent-positive)",
@@ -30,12 +31,8 @@ const UTIL_COLOR: Record<string, string> = {
   over:     "var(--accent-negative)",
 };
 
-function utilLevel(pct: number): keyof typeof UTIL_COLOR {
-  if (pct > 100) return "over";
-  if (pct >= 70) return "high";
-  if (pct >= 30) return "moderate";
-  return "low";
-}
+/** The ONE band rule (graded on the displayed whole percent) — no local copy. */
+const utilLevel = (pct: number): keyof typeof UTIL_COLOR => utilizationLevel(pct);
 
 function Row({ label, value, valueColor }: { label: string; value: ReactNode; valueColor?: string }) {
   return (
@@ -85,7 +82,7 @@ export function DebtAccountDetail({ row, currency }: { row: LiabilityRow; curren
         <div className="mt-5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-[var(--text-faint)]">Utilization</span>
-            <span className="font-semibold" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{util.toFixed(0)}%</span>
+            <span className="font-semibold" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{formatUtilizationPct(util)}</span>
           </div>
           <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--surface-inset)]">
             <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, util))}%`, backgroundColor: UTIL_COLOR[utilLevel(util)] }} />
