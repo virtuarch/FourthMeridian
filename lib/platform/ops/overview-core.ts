@@ -403,7 +403,26 @@ export function alertEvaluatorSilence(evaluatedAtISO: string, cadenceHours: numb
   return { ageHours, dead: ageHours > cadence * ALERT_EVALUATOR_DEAD_MULTIPLE };
 }
 
-const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time" : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
+/** Age in words for the evaluator gate ("9 h", "3 d", "unreadable time"). Shared by the chip, the drawer and Attention. */
+export const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time" : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
+
+/**
+ * The evaluator gate as a JSON-safe FACT, computed SERVER-SIDE with the server's
+ * clock and shipped in a response (the Platform Health drawer must never age an
+ * evaluation against a client clock). Same thresholds as the chip — it is
+ * alertEvaluatorSilence, reshaped: `ageHours: null` = unreadable timestamp
+ * (Infinity does not survive JSON). Null = current.
+ */
+export interface AlertEvaluatorOverdue { ageHours: number | null; dead: boolean; cadenceHours: number }
+export function alertEvaluatorOverdue(evaluatedAtISO: string, cadenceHours: number | null | undefined, now: Date): AlertEvaluatorOverdue | null {
+  const silent = alertEvaluatorSilence(evaluatedAtISO, cadenceHours, now);
+  if (!silent) return null;
+  return {
+    ageHours: Number.isFinite(silent.ageHours) ? silent.ageHours : null,
+    dead: silent.dead,
+    cadenceHours: cadenceHours && cadenceHours > 0 ? cadenceHours : ALERT_EVALUATOR_DEFAULT_CADENCE_HOURS,
+  };
+}
 
 /**
  * ALERTS — firing NOW is the latest evaluation's verdict (lib/alerts/latest-evaluation.ts).

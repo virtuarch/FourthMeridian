@@ -33,7 +33,7 @@ import { getConnectionHealth } from "@/lib/connections/health";
 import { checkScheduledJobHealth } from "@/lib/jobs/health";
 import { getProviderHealth } from "@/lib/platform/provider-health";
 import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
-import { loadLatestAlertEvaluation, loadRecentAlertRuns } from "@/lib/alerts/run";
+import { ALERT_JOB_NAME, loadLatestAlertEvaluation, loadRecentAlertRuns } from "@/lib/alerts/run";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { collectAlertHistory, type AlertFiredRecord } from "@/lib/alerts/evaluate";
 import { resolveSubjects } from "@/lib/platform/incidents/preview";
@@ -193,7 +193,9 @@ export async function getAttention(
         : null,
       providers,
       resources,
-      alerts,
+      // OBS-001 — the evaluator's resolved cadence from the job-health read already
+      // made above (no new read), exactly as the Overview chip receives it.
+      alerts: alerts ? { ...alerts, cadenceHours: jobs?.jobs.find((j) => j.job === ALERT_JOB_NAME)?.expectedEveryHours ?? null } : null,
       incidents,
       policyAssignments,
     },
