@@ -835,10 +835,11 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
     const parts = typeof e.valueUnits === "string" ? {} : e.valueUnits;
     check(`${k}: unwindowedParts — every listed part exists in valueUnits`, e.unwindowedParts.length > 0 && e.unwindowedParts.every((p) => Object.prototype.hasOwnProperty.call(parts, p)), { listed: e.unwindowedParts, parts });
   }
-  check("rendering never reads the window description (no first-clause phrase; S2 2026-11-04)", !/window\.description/.test(code(src("lib/platform/intelligence/ai/core.ts")).split("export function envelopeWindowText")[1]?.split("export function renderPlaceholder")[0] ?? "x"));
+  // P1a: envelopeWindowText … renderPlaceholder now spans compose/windows.ts (from envelopeWindowText) + compose/placeholders.ts (fmtNumber … renderPlaceholder).
+  check("rendering never reads the window description (no first-clause phrase; S2 2026-11-04)", !/window\.description/.test((code(src("lib/platform/intelligence/ai/compose/windows.ts")).split("export function envelopeWindowText")[1] ?? "x") + (code(src("lib/platform/intelligence/ai/compose/placeholders.ts")).split("const fmtNumber")[1]?.split("export function renderPlaceholder")[0] ?? "x")));
   check("pct figures are on the 0–100 scale: the fixture's 25% utilisation reads 25 (not 0.25), and every pct is in [0, 100]",
     pcts.length > 0 && pcts.every((p) => p.v >= 0 && p.v <= 100) && pcts.some((p) => p.k === "ai-fleet-spend-status@1" && p.part === "utilisationPct" && p.v === 25), pcts);
-  check("the renderer reads units ONLY from valueUnits (no name inference in core.ts)", !/\/Usd\$\/|\/Pct\$\//.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+  check("the renderer reads units ONLY from valueUnits (no name inference in core.ts / compose/placeholders.ts)", ["core.ts", "compose/placeholders.ts"].every((f) => !/\/Usd\$\/|\/Pct\$\//.test(code(src(`lib/platform/intelligence/ai/${f}`)))));
 }
 
 // ── 4b. the user-numeral allowance (S2-approved) + unsupported windows + the owner's questions ──
@@ -870,9 +871,9 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
     ["24h", "24 hours", "1 hour", "7-day", "2 weeks", "3 months", "1 year"].every((t) => admitUserNumerals(t, "24 1 7 2 3", []).admitted === 1)
     && ["7d", "2w", "5 min"].every((t) => admitUserNumerals(t, "7 2 5", []).admitted === 0));
   check("the allowance is ONE named, exported function with the pinned unit list and no year branch",
-    /export function admitUserNumerals\(prose: string, scrubbedQuestion: string, envelopes: readonly MetricEnvelope\[\]\)/.test(src("lib/platform/intelligence/ai/core.ts"))
-    && /USER_NUMERAL_TIME_UNIT = \/\^\[\\s-\]\?\(\?:h\|hours\?\|days\?\|weeks\?\|months\?\|years\?\)\\b\/i;/.test(src("lib/platform/intelligence/ai/core.ts"))
-    && !/YEAR_MIN|YEAR_MAX/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+    /export function admitUserNumerals\(prose: string, scrubbedQuestion: string, envelopes: readonly MetricEnvelope\[\]\)/.test(src("lib/platform/intelligence/ai/compose/placeholders.ts"))
+    && /USER_NUMERAL_TIME_UNIT = \/\^\[\\s-\]\?\(\?:h\|hours\?\|days\?\|weeks\?\|months\?\|years\?\)\\b\/i;/.test(src("lib/platform/intelligence/ai/compose/placeholders.ts"))
+    && !/YEAR_MIN|YEAR_MAX/.test(code(src("lib/platform/intelligence/ai/core.ts")) + code(src("lib/platform/intelligence/ai/compose/placeholders.ts"))));
   check("requestedWindows reads the scrubbed question", JSON.stringify(requestedWindows("in the past 30 days or 24h")) === JSON.stringify([{ n: 30, unit: "day", hours: 720 }, { n: 24, unit: "hour", hours: 24 }]));
 
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).
@@ -933,8 +934,8 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     M([e(7), e(30)], 7) === "MATCH" && M([e(30)], 7) === "MISMATCH" && M([e(null)], 30) === "MISMATCH" && M([e(null, 24)], 24) === "MISMATCH");
   check("…a key not read this turn ⇒ UNREAD; the key match is exact", M([], null) === "UNREAD" && matchPlaceholderEnvelope([e(30)], "k@2", null).kind === "UNREAD" && matchPlaceholderEnvelope([e(30)], "K@1", null).kind === "UNREAD");
   check("the rule lives in ONE exported function the resolver calls",
-    /export function matchPlaceholderEnvelope\(envelopes: readonly MetricEnvelope\[\], key: string, window: number \| null\): PlaceholderEnvelopeMatch/.test(src("lib/platform/intelligence/ai/core.ts"))
-    && /matchPlaceholderEnvelope\(envelopes, key, fixedWindowOption\(envelopes, key, opts\.window, askedDays\)\)/.test(src("lib/platform/intelligence/ai/core.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+    /export function matchPlaceholderEnvelope\(envelopes: readonly MetricEnvelope\[\], key: string, window: number \| null\): PlaceholderEnvelopeMatch/.test(src("lib/platform/intelligence/ai/compose/placeholders.ts"))
+    && /matchPlaceholderEnvelope\(envelopes, key, fixedWindowOption\(envelopes, key, opts\.window, askedDays\)\)/.test(src("lib/platform/intelligence/ai/compose/placeholders.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts")) + code(src("lib/platform/intelligence/ai/compose/placeholders.ts"))));
 
   // Through real turns (fake model).
   const one = await turn("AI spend this week?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
@@ -1078,7 +1079,9 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     && strippedTotal(strippedLinkTargets(mixedRw, allowedRw, envB)) === sanitiseAnswer(mixedRw, allowedRw).kinds.link && strippedLinkTargets(mixedRw, allowedRw, envB).ABSOLUTE_URL_REWRITTEN === 1,
     strippedLinkTargets(mixedRw, allowedRw, envB));
   check("the sanitiser itself is unchanged by the diagnosis (sanitiseAnswer has no target-kind logic)",
-    !/LINK_TARGET_KINDS|strippedLinkTargets/.test(code(src("lib/platform/intelligence/ai/core.ts")).slice(code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export function sanitiseAnswer"), code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export const segmentsText"))));
+    // P1a: sanitiseAnswer lives in compose/sanitise.ts, followed there by the diagnosis (segmentsText moved to compose/segments.ts) — the slice ends where the diagnosis starts.
+    ((s) => s.indexOf("export function sanitiseAnswer") > -1 && s.indexOf("export const LINK_TARGET_KINDS") > s.indexOf("export function sanitiseAnswer")
+      && !/LINK_TARGET_KINDS|strippedLinkTargets/.test(s.slice(s.indexOf("export function sanitiseAnswer"), s.indexOf("export const LINK_TARGET_KINDS"))))(code(src("lib/platform/intelligence/ai/compose/sanitise.ts"))));
 
   // S2 ruling 2026-11-05 (FIX 3, re-ruled): an absolute Markdown link whose EXACT pathname + search this turn returned ⇒ OUR href.
   {
@@ -1822,7 +1825,11 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   const dir = "lib/platform/intelligence/ai";
   const files = readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/${f}`);
   check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
-  for (const f of files) {
+  // P1a: the answer-composition code moved to compose/*; the same purity scans cover it, and compose/* never imports core.ts (no cycle).
+  const composeFiles = readdirSync(path.join(ROOT, dir, "compose")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/compose/${f}`);
+  check("compose/* (P1a) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "sanitise", "segments", "stale", "verdicts", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
+  for (const f of composeFiles) check(`${f}: never imports core.ts`, !/from "\.\.\/core"|intelligence\/ai\/core"/.test(src(f)));
+  for (const f of [...files, ...composeFiles]) {
     const s = code(src(f));
     check(`${f}: never imports db / systemDb / prisma client, never fetches`, !/@\/lib\/db|systemDb|\bprisma\.|new PrismaClient|\bfetch\(|withTenantDb/.test(s));
     check(`${f}: no writes, no raw SQL, no storage`, !/\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|localStorage/.test(s));
@@ -1832,7 +1839,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
