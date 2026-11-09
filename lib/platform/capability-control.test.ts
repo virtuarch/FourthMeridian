@@ -265,8 +265,20 @@ function main() {
     check("the blocklist list (GET) stays at GROWTH_REVENUE READ",
       /export async function GET[\s\S]*requirePlatformAccess\("GROWTH_REVENUE", "READ"\)/.test(code("app/api/platform/growth-revenue/blocked-identifiers/route.ts"))
         && !/"CONTROL"|"WRITE"/.test(code("app/api/platform/growth-revenue/blocked-identifiers/route.ts")));
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES, ...BLOCKLIST_CONTROL_ROUTES].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback, Comms automation activate and beta blocklist routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // Platform AI operational memory (design v2 D11): the System Admin per-operator purge —
+    // POST-only, FRESH SECURITY_OPS CONTROL, SYSTEM_ADMIN only, enrolled TOTP (step-up),
+    // rate limited, counts only.
+    const MEMORY_PURGE_ROUTE = "app/api/platform/admin/ai-memory/purge-operator/route.ts";
+    {
+      const src = code(MEMORY_PURGE_ROUTE);
+      check(`${MEMORY_PURGE_ROUTE}: the one write verb is FRESH SECURITY_OPS CONTROL, SYSTEM_ADMIN only, TOTP step-up, rate limited, the definer through fm_system`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE|GET)/g) ?? []).length === 1 && /export async function POST/.test(src)
+          && (src.match(/requireFreshPlatformAccess\("SECURITY_OPS", "CONTROL"\)/g) ?? []).length === 1
+          && /auth\.user\.role !== UserRole\.SYSTEM_ADMIN/.test(src) && /operatorHasTotp\(auth\.user\.id\)/.test(src)
+          && /limitPlatformMutation\(/.test(src) && /PLATFORM_AI_MEMORY_PURGE_OPERATOR_SQL/.test(src));
+    }
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES, ...BLOCKLIST_CONTROL_ROUTES, MEMORY_PURGE_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback, Comms automation activate, beta blocklist and Platform AI memory purge-operator routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     for (const f of POLICY_GROUP_ROUTES) {
       const src = code(f);

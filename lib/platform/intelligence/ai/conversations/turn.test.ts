@@ -109,7 +109,9 @@ function script(steps: Step[]) {
   let i = 0;
   const generate: PlatformAiGenerate = async ({ messages, tools }) => {
     seen.push({ tools, messages: JSON.parse(JSON.stringify(messages)) });
-    const s = steps[i] ?? { content: "done" };
+    // B1 (S2): past the script, the fake model REPEATS its last answer — so a refused answer stays refused
+    // through the one corrective retry (B2: the fallback, as before). A script of tool calls only still ends "done".
+    const s = steps[i] ?? [...steps].reverse().find((x) => x.content !== undefined && !(x.calls ?? []).length) ?? { content: "done" };
     i++;
     const toolCalls = (s.calls ?? []).map((c, k) => ({ id: `call_${i}_${k}`, name: c.name, arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args) }));
     const raw = { role: "assistant", content: s.content ?? null, ...(toolCalls.length ? { tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) } : {}) };
@@ -141,7 +143,8 @@ async function main(): Promise<void> {
 
   // ── 1 + 2. the stored shape, and the owner's follow-up ──────────────────────
   console.log("1–2. the stored shape; the owner's \"what's costing the most\" → \"compare with last month\"");
-  const q1 = "What's costing me the most money?";
+  // The model path's storage / history contract (a cost-RANKING question is now server-composed — see §9 below).
+  const q1 = "What's our AI spend this week?";
   const t1 = await turn(q1, [], [
     { calls: [gm("economics-ai-cost", 7)] },
     { content: `The largest measured cost is AI: {{m:economics-ai-cost@1|part=spendUsd}}. See [Economics](${ECON_PAGE}).` },
@@ -188,7 +191,10 @@ async function main(): Promise<void> {
       && JSON.stringify((t3.outcome as { answer: unknown }).answer).includes(UNVERIFIED_FALLBACK) && !(t3.outcome as { answer: StoredAnswerV1 }).answer.segments.some((s) => s.kind === "figure"), t3.result?.grounding);
   const t3b = await turn("And the same figure again?", hist, [{ content: `It is still ${fig1?.text ?? "$1.00"}.` }]);
   check("typing the remembered value ⇒ UNGROUNDED_DIGIT, replaced", t3b.result?.grounding.replaced === true, t3b.result?.grounding);
-  check("the old value never reached the model in either turn", !sent(t3.seen).includes(fig1?.text ?? "@@") && !sent(t3b.seen).includes(fig1?.text ?? "@@"));
+  // B1: the retry call carries the model's OWN refused answer back to it (its text, not the server's); the server never sent the old value.
+  check("the old value never reached the model in either turn (from the server: history, tools, the corrective message)",
+    !sent(t3.seen).includes(fig1?.text ?? "@@") && !sent(t3b.seen.slice(0, 1)).includes(fig1?.text ?? "@@")
+    && !JSON.stringify(t3b.seen.flatMap((x) => x.messages).filter((m) => (m as { role: string }).role !== "assistant")).includes(fig1?.text ?? "@@"));
 
   // ── 4. injection in history ──────────────────────────────────────────────
   console.log("\n4. injection in history can't change scope or call writes");
@@ -477,7 +483,8 @@ async function main(): Promise<void> {
       listPages: (f) => listNavigationTargets("CUSTOMER_SUCCESS", ct, f),
       resolvePage: (id, p) => resolveNavigationTarget("CUSTOMER_SUCCESS", ct, id, p, { now: NOW }),
     };
-    const r = await turn("How are we looking today?", [], [
+    // Not briefing-class (A1): this pins the MODEL path's area scope.
+    const r = await turn("Customers needing help, and the platform posture?", [], [
       { calls: [gm("ops-overall-posture"), gm("economics-ai-cost"), gm("cs-needs-help"), { name: "open_page", args: { id: "PLATFORM_OPS:platform-incidents:open" } }] },
       { content: "Customers needing help: {{m:cs-needs-help@1}}. Posture: {{m:ops-overall-posture@1|part=failed}}." },
     ], csBinding);
@@ -494,6 +501,26 @@ async function main(): Promise<void> {
     const ask = code(src("app/api/platform/ai/ask/route.ts"));
     check("B1(b): the stateless ask route still composes every held area, each behind its own fresh guard",
       /for \(const other of platformAiAreasFor\(rows\)\)/.test(ask) && /await requireFreshPlatformAccess\(other, "READ"/.test(ask) && /composePlatformAiBindings\(parts\)/.test(ask));
+  }
+
+  // ── 9. Question C, composed (S2 (ii), 2026-11-08 live battery: 1/2 fell back on NUMBER_WORD with history) ──
+  console.log("\n9. Question C is server-composed — with and without history");
+  {
+    const QC = "What's costing me the most money in the past 30 days?";
+    // The fake model only frames (and here writes a number word: dropped, never the answer).
+    const frame = [{ content: JSON.stringify({ framing: "There are two big costs this month.", next_actions: [] }) }];
+    const noHist = await turn(QC, [], frame);
+    const withHist = await turn(QC, hist, frame);
+    for (const [name, r] of [["no history", noHist], ["with history", withHist]] as const) {
+      const ans = r.outcome.status === "COMPLETE" ? r.outcome.answer : null;
+      const text = ans ? ans.segments.map((x) => x.text).join(" ") : "";
+      check(`Question C (${name}): COMPLETE, composed (COST_RANKING), never the fallback; leader + total as TYPED figures of economics-operating-cost@1; the window note first`,
+        !!ans && r.result?.briefing?.kind === "COST_RANKING" && !r.result.grounding.replaced && !text.includes(UNVERIFIED_FALLBACK)
+          && ans.segments.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2 && ans.segments[0].kind === "note"
+          && /not the 30 days you asked about/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
+    }
+    check("Question C with history: the composed answer ignores prior turns (the framing call sees no history; facts from THIS turn's read)",
+      !sent(withHist.seen).includes("[figure from") && withHist.result?.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]).join() === "economics-operating-cost@1");
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

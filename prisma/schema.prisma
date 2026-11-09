@@ -490,6 +490,9 @@ model User {
   // Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md).
   // OPERATOR-PRIVATE: owner-only RLS, no fm_system path. Cascade on account purge.
   platformAiConversations     PlatformAiConversation[] @relation("PlatformAiConversationOwner")
+  // Platform AI operational memory (Preview only; S2-approved design v2). Operator-private:
+  // owner + ACTIVE-grant RLS, no fm_system table path. Cascade on account purge.
+  platformAiMemoryFacts       PlatformAiMemoryFact[]   @relation("PlatformAiMemoryOwner")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5335,4 +5338,85 @@ model PlatformAiMessage {
   @@unique([conversationId, clientRequestId])
   @@index([conversationId, createdAt])
   @@index([purgeAfter])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Platform AI operational memory (S2-approved design v2, 2026-11-08; O1 ruled (b)).
+// Migration 20261110120000_platform_ai_operational_memory. Preview only; both
+// flags (PLATFORM_AI_MEMORY_ENABLED, PLATFORM_AI_MEMORY_PURGE_ENABLED) ship OFF.
+// A fact is a short, typed, operator-confirmed pointer to records — never a
+// transcript: there is NO link to a conversation, message or AiInvocation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PlatformAiMemoryFactType {
+  WATCHING_ISSUE
+  OPERATIONAL_STATE
+  FOLLOW_UP
+  OPERATOR_PREFERENCE
+}
+
+enum PlatformAiMemoryOrigin {
+  OPERATOR_EXPLICIT
+  TOOL_DERIVED
+}
+
+enum PlatformAiMemoryConcern {
+  RECURRING_FAILURE
+  DEGRADATION
+  COST_SPIKE
+  CUSTOMER_IMPACT
+  AWAITING_FIX
+  MONITOR_ONLY
+}
+
+enum PlatformAiMemoryTtl {
+  H24
+  H72
+  D7
+  D30
+}
+
+enum PlatformAiMemoryInvalidReason {
+  GONE
+  STATE_CHANGED
+  AREA_LOST
+  SUPERSEDED
+}
+
+model PlatformAiMemoryFact {
+  id             String                         @id @default(cuid())
+  /// The ONLY owner. RLS: operatorUserId = current_fm_user_id() AND an ACTIVE grant for platformArea.
+  operatorUserId String
+  operator       User                           @relation("PlatformAiMemoryOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  platformArea   PlatformArea
+  factType       PlatformAiMemoryFactType
+  origin         PlatformAiMemoryOrigin
+  concern        PlatformAiMemoryConcern?
+  /// The operator's note (≤ 140 chars plaintext), encryptWithPurpose(…, PLATFORM_AI_MEMORY).
+  noteEncrypted  String?
+  /// Closed enum keys per factType (the insert trigger's allowlist). Never free text.
+  payload        Json
+  /// [{t, id, part?, w?, observedState}] 0..5 — validated key by key by the insert trigger (S2 B2).
+  sourceRefs     Json
+  ttl            PlatformAiMemoryTtl
+  /// The proposal token's jti: a confirm replay hits UNIQUE(operatorUserId, proposalJti).
+  proposalJti    String?
+  /// Set by the insert trigger (= createdAt); not in the INSERT grant.
+  observedAt     DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the insert trigger; not in the INSERT grant.
+  createdAt      DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the insert trigger to createdAt + least(ttl, cap); never moves (the immutability trigger).
+  expiresAt      DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set once (NULL → now()) by the immutability trigger; the store hides an invalidated row.
+  invalidatedAt  DateTime?
+  invalidReason  PlatformAiMemoryInvalidReason?
+  /// Soft delete: ONLY through fm_platform_ai_memory_soft_delete (O1 (b)); fm_app holds no UPDATE on it.
+  deletedAt      DateTime?
+  /// Renew = a new row superseding the old one (the old row is invalidated SUPERSEDED).
+  supersedesId   String?                        @unique
+
+  @@unique([operatorUserId, proposalJti])
+  @@index([operatorUserId, platformArea, deletedAt, expiresAt])
+  @@index([expiresAt])
+  @@index([deletedAt])
 }

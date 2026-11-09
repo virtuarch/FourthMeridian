@@ -26,6 +26,7 @@ import type { ProviderHealthResponse } from "@/app/api/platform/platform-ops/pro
 import type { EmailHealthResponse } from "@/app/api/platform/platform-ops/email-health/route";
 import type { ProviderHealth } from "@/lib/platform/provider-health";
 import { agoWords, fmtUtcInstant } from "./connection-health-view";
+import { RememberButton } from "../RememberButton";
 import { PROVIDER_FOOTNOTE, isUnavailable, providerRows, trustBadge, trustSegments, type Cell, type Fetched, type ProviderRowView } from "./provider-view";
 
 // ── Grid ─────────────────────────────────────────────────────────────────────
@@ -244,6 +245,8 @@ export function ProviderHealthSurface({
             <PanelHeader eyebrow="Provider" title={selected.label} />
             <PanelContent>
               <ProviderDetail p={selected} nowMs={nowMs} />
+              {/* Platform AI memory (design v2 §5): renders nothing unless memory is effective. */}
+              <div className="mt-4" data-provider-remember=""><RememberButton area="PLATFORM_OPS" kind="PROVIDER" id={selected.key} /></div>
             </PanelContent>
           </>
         )}

@@ -101,8 +101,9 @@ export const neutraliseBraces = (t: string): string => t.replace(/\{/g, "(").rep
 export function replayAnswer(answer: StoredAnswerV1, answeredAt: Date): string {
   return answer.segments.map((s) => {
     if (s.kind === "figure") return figureMarker(s.metric, answeredAt);
+    if (s.kind === "memory") return "(a remembered item)";
     const t = neutraliseBraces(s.text).replace(DIGITS, "[figure]");
-    return s.kind === "correction" ? `${t} ` : t; // S2 F-C1 (ii): a separate block on screen ⇒ a separating space in replay
+    return s.kind === "correction" || s.kind === "note" ? `${t} ` : t; // S2 F-C1 (ii): a separate block on screen ⇒ a separating space in replay
   }).join("");
 }
 

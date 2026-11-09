@@ -131,7 +131,7 @@ console.log("1. flag gating — decided server-side by the page; OFF by default;
   const page = code(PAGE);
   const iV0Flag = page.indexOf("if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;");
   const iArea = page.indexOf("const area = platformAiAreaFor(spaces);");
-  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} />;");
+  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} />;");
   const iAsk = page.indexOf("return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;");
   const iTotp = page.indexOf("redirect(OPERATOR_TOTP_ENROLMENT_PATH)");
   check("page order: gates → v0 flag (placeholder) → area → conversations flag → v0 PlatformAiAsk (the fallthrough)",
@@ -295,7 +295,7 @@ console.log("\n4. no Markdown parser — typed segments only (paragraph / list S
   // S2 pre-flag 4: typed server segments are never split or interpreted.
   const fig = { kind: "figure" as const, text: "1\n\n- 2", metric: "k@1", window: 7 };
   const atStart = answerBlocks([{ kind: "text", text: "Intro.\n" }, { kind: "figure", text: "- 5", metric: "k@1", window: 7 }, { kind: "text", text: " jobs.\n\n" }, fig, { kind: "link", text: "a\n\n1. b", href: "/x" }]);
-  const inl = atStart.flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.items.flat()));
+  const inl = atStart.flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.kind === "label" ? b.line : b.items.flat()));
   check("answerBlocks: a {{m:}} figure segment is never split and never read as a list marker, even when its text holds newlines or '- '",
     atStart.every((b) => b.kind === "p") && inl.filter((x) => x.kind === "figure").map((x) => x.text).join("|") === "- 5|1\n\n- 2"
     && inl.some((x) => x.kind === "figure" && x.seg === 1) && inl.some((x) => x.kind === "figure" && x.seg === 3), JSON.stringify(atStart));
@@ -303,7 +303,7 @@ console.log("\n4. no Markdown parser — typed segments only (paragraph / list S
   check("answerBlocks: splitting happens ONLY inside model text — the figures, links and text come back in order, text unchanged except newlines and list markers",
     (() => {
       const segsIn: ClientSegment[] = [{ kind: "text", text: "Costs " }, { kind: "figure", text: "$1", metric: "c@1", window: 30 }, { kind: "text", text: " for Providers (Plaid).\n\n- Jobs: " }, { kind: "figure", text: "4", metric: "j@1", window: 7 }];
-      const out = answerBlocks(segsIn).flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.items.flat())).map((x) => x.text).join("");
+      const out = answerBlocks(segsIn).flatMap((b) => (b.kind === "p" ? b.lines.flat() : b.kind === "label" ? b.line : b.items.flat())).map((x) => x.text).join("");
       return out === "Costs $1 for Providers (Plaid).Jobs: 4";
     })());
   const CORR2 = "Correction: these cover this month.\n\n- not a list\n1. not numbered";
@@ -536,14 +536,14 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
   const cmp = code(COMPONENT), pres = code(PRESENTATION);
   const importsOf = (c: string) => [...c.matchAll(/^import\s+(?:type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => m[1]).sort();
   check("conversations imports: exactly these modules", importsOf(cmp).join() === [
-    "./PlatformAiPlaceholder", "./platform-ai-conversations-model", "./platform-ai-presentation",
+    "./PlatformAiMemory", "./PlatformAiPlaceholder", "./platform-ai-conversations-model", "./platform-ai-memory-model", "./platform-ai-presentation",
     "@/components/ai/AiShell", "@/components/ai/ConversationView", "@/components/ai/answer-frame",
     "@/components/ai/FailedTurn", "@/components/ai/MessageCard",
     "@/components/atlas/ConfirmDialog", "@/components/atlas/panels/Panel", "@/components/atlas/panels/PanelParts",
     "lucide-react", "react",
   ].sort().join(), importsOf(cmp));
   check("shared presentation imports: exactly these modules (the shared AI primitives + the model)", importsOf(pres).join() === [
-    "./platform-ai-conversations-model", "@/components/ai/Composer", "@/components/ai/Markdown",
+    "./platform-ai-conversations-model", "./platform-ai-memory-model", "@/components/ai/Composer", "@/components/ai/Markdown",
     "@/components/ai/StarterLine", "@/components/ai/SuggestedPrompt", "lucide-react", "react",
   ].sort().join(), importsOf(pres));
   const named = (c: string, mod: string) => (c.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
@@ -817,7 +817,47 @@ console.log("\n11. history (parity PR4) — ?c= deep link, grouping, delete-next
 
   // The view seam is the page's default.
   check("the page passes no View (the seam is for the history test only)", !/View=/.test(code(PAGE))
-    && /export function PlatformAiConversations\(\{ areaLabel, View = PlatformAiConversationsView \}/.test(cmp));
+    && /export function PlatformAiConversations\(\{ areaLabel, memory = false, View = PlatformAiConversationsView \}/.test(cmp));
+}
+
+// ── 13. F-1 window note + F-2 section labels / one nesting level (2026-11-08) ──
+console.log("\n13. F-1 the window note is its own quiet note ABOVE the answer · F-2 section labels and one nested list level");
+{
+  const NOTE = "Note: Estimated operating cost this cycle (by category) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about.";
+  const PROSE = "The largest measured cost is AI.";
+  for (const [name, html] of [
+    ["conversations", renderToStaticMarkup(createElement(TypedAnswerSegments, { segments: [{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }] }))],
+    ["v0", renderToStaticMarkup(createElement(AnswerSegments, { segments: [{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }] }))],
+  ] as const) {
+    const block = /<div role="note" aria-label="Note" data-platform-ai-window-note=""[^>]*>([\s\S]*?)<\/div><\/div>/.exec(html);
+    check(`F-1 ${name}: the window note renders in its OWN role="note" callout (aria-label Note), once, ABOVE the body; the body holds only model text`,
+      !!block && block[1].includes(NOTE) && html.indexOf("data-platform-ai-window-note") < html.indexOf("data-platform-ai-body")
+      && !/data-platform-ai-body[^]*you asked about/.test(html) && html.includes(PROSE) && (html.match(/you asked about/g) ?? []).length === 1, html);
+    check(`F-1 ${name}: quiet (hairline border, secondary text, no accent rule, not medium weight) — distinct from the correction`,
+      /border-\[var\(--border-hairline\)\]/.test(block?.[0] ?? "") && /text-\[var\(--text-secondary\)\]/.test(block?.[0] ?? "") && !/border-l-\[var\(--accent-info\)\]|font-medium/.test(block?.[0] ?? "x"), block?.[0]);
+  }
+  check("F-1: answerBlocks never puts a note in the body", !JSON.stringify(answerBlocks([{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }])).includes("you asked about"));
+  const parsedNote = parseMessage({ id: "m10", role: "ASSISTANT", status: "COMPLETE", createdAt: H3, completedAt: H3, failureCode: null, unavailable: false, stale: true,
+    content: [{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }], citations: [], notes: [] });
+  check("F-1: the client keeps a stored note segment typed (parseMessage)", Array.isArray(parsedNote?.content) && (parsedNote!.content as ClientSegment[])[0]?.kind === "note");
+
+  // F-2: "Incidents:" before list items is a label, not a bullet; an indented item nests one level.
+  const fig = (text: string) => ({ kind: "figure" as const, text, metric: "k@1", window: null });
+  const b2 = answerBlocks([
+    { kind: "text", text: "Overall health:\n- " }, fig("1"), { kind: "text", text: " domain is degraded.\n  - Connections are affected.\n- Incidents:\n  - " }, fig("3"), { kind: "text", text: " active.\n\nIncidents: " }, fig("2"), { kind: "text", text: " open." },
+  ]);
+  check("F-2: label, list (item with one nested item), label, list, then a 'Label: figure' sentence stays a paragraph",
+    b2.map((b) => b.kind).join() === "label,ul,label,ul,p" && b2[0].kind === "label" && b2[0].line[0].text === "Overall health:"
+    && b2[1].kind === "ul" && b2[1].items.length === 1 && b2[1].sub?.[0]?.items.length === 1 && b2[1].sub?.[0]?.items[0][0].text === "Connections are affected."
+    && b2[2].kind === "label" && b2[2].line[0].text === "Incidents:" && b2[3].kind === "ul" && b2[3].items.length === 1, JSON.stringify(b2));
+  check("F-2: a label NOT followed by list items stays text; a label line carrying a figure is never a label",
+    answerBlocks([{ kind: "text", text: "Overall health:\nAll fine." }]).every((b) => b.kind === "p")
+    && answerBlocks([{ kind: "text", text: "- Jobs: " }, fig("4"), { kind: "text", text: "\n- next" }]).every((b) => b.kind === "ul"));
+  check("F-2: an indented item with no item before it is a plain top-level item", JSON.stringify(answerBlocks([{ kind: "text", text: "  - a\n  - b" }]).map((b) => b.kind)) === '["ul"]');
+  const html2 = renderToStaticMarkup(createElement(TypedAnswerSegments, { segments: [{ kind: "text", text: "Overall health:\n- " }, fig("1"), { kind: "text", text: " degraded.\n  - Connections." }] }));
+  check("F-2 render: the label is a heading-style paragraph (not an <li>), the nested item is a <ul> inside its parent <li>",
+    /<p data-platform-ai-section="" class="[^"]*font-semibold[^"]*"><span>Overall health:<\/span><\/p>/.test(html2) && !/<li[^>]*><span>Overall health/.test(html2)
+    && /<li class="min-w-0">[\s\S]*?<ul data-platform-ai-nested=""[^>]*><li class="min-w-0"><span>Connections\.<\/span><\/li><\/ul><\/li>/.test(html2), html2);
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

@@ -47,7 +47,7 @@ function main(): void {
   }
   {
     const summary = storedActivityAccountName(VisibilityLevel.SUMMARY_ONLY, REAL, cardHint);
-    check("SUMMARY_ONLY persists a generic typed label (fails closed)", summary === "Credit Card");
+    check("SUMMARY_ONLY persists a generic typed label (fails closed)", summary === "Credit Line");
     check("SUMMARY_ONLY never persists the real name", summary !== REAL && !summary.includes("Example Bank"));
   }
   check("FULL with unknown real name falls back to a generic label", storedActivityAccountName(VisibilityLevel.FULL, null, checkingHint) === "Checking Account");

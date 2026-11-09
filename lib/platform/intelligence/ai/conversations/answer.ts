@@ -35,7 +35,18 @@ export type StoredSegment =
   /** A link: a registry page id plus params — NEVER an href (re-resolved on every read). */
   | { kind: "link"; text: string; page: string; params: Record<string, string> }
   /** S2 F-C1 (ii): the server's code-written period CORRECTION (shown above the answer; never model text). */
-  | { kind: "correction"; text: string };
+  | { kind: "correction"; text: string }
+  /** F-1 (S2 2026-11-08): the server's code-written WINDOW NOTE (its own segment, shown above the answer; never model text). */
+  | { kind: "note"; text: string }
+  /**
+   * Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span. Its text is
+   * EXACTLY "noted <d Mon yyyy>" (+ " — now changed" / " — updated since") — never the
+   * note, never a fact id (MEMORY_SPAN_SHAPE, enforced on store).
+   */
+  | { kind: "memory"; text: string };
+
+/** The only text a stored memory span may carry. */
+export const MEMORY_SPAN_SHAPE = /^noted \d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}( — (now changed|updated since))?$/;
 
 export interface StoredCitation { metric: string; label: string; window: string }
 
@@ -64,7 +75,9 @@ function validSegment(s: unknown): s is StoredSegment {
   if (!isObj(s)) return false;
   switch (s.kind) {
     case "text":
-    case "correction": return exactKeys(s, ["kind", "text"]) && isText(s.text);
+    case "correction":
+    case "note": return exactKeys(s, ["kind", "text"]) && isText(s.text);
+    case "memory": return exactKeys(s, ["kind", "text"]) && typeof s.text === "string" && MEMORY_SPAN_SHAPE.test(s.text);
     case "figure":
       return exactKeys(s, ["kind", "text", "metric", "window"]) && isText(s.text, 120) && isRefId(s.metric)
         && (s.window === null || (typeof s.window === "number" && Number.isInteger(s.window) && s.window > 0 && s.window <= 3660) || isText(s.window, 120));

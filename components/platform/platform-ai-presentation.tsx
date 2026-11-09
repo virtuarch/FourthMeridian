@@ -27,6 +27,7 @@ import {
   PLATFORM_AI_SESSION_LINE, PLATFORM_AI_SESSION_NOT_SAVED, PLATFORM_AI_STARTER_HEADLINE, PLATFORM_AI_STARTER_PROMPTS,
   answerBlocks, showComposerCounter, type ClientSegment, type InlineSegment,
 } from "./platform-ai-conversations-model";
+import { PLATFORM_AI_MEMORY_LINE } from "./platform-ai-memory-model";
 
 // ── The answer body ─────────────────────────────────────────────────────────
 
@@ -52,6 +53,26 @@ export function PeriodCorrections({ segments }: { segments: readonly { kind: str
   );
 }
 
+/**
+ * F-1 (S2, 2026-11-08): the server's WINDOW NOTE segments ("Note: <metric> covers <its
+ * window>, not the <asked> you asked about.") — code-written, never model text. Their own
+ * QUIET note above the answer (role="note", aria-label "Note"): a hairline callout in
+ * secondary text, quieter than the correction, never inline in the prose.
+ */
+export function WindowNotes({ segments }: { segments: readonly { kind: string; text: string }[] }) {
+  const notes = segments.filter((s) => s.kind === "note");
+  if (notes.length === 0) return null;
+  return (
+    <div role="note" aria-label="Note" data-platform-ai-window-note=""
+      className="mb-3 flex min-w-0 gap-2 rounded-lg border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-3 py-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+      <Info size={15} aria-hidden className="mt-[3px] shrink-0 text-[var(--text-muted)]" />
+      <div className="min-w-0">
+        {notes.map((c, i) => <p key={i} className="min-w-0 break-words">{c.text}</p>)}
+      </div>
+    </div>
+  );
+}
+
 /** A stale chip: the relative time, the UTC stamp as its title. */
 export interface ChipText { chip: string; title: string }
 
@@ -60,6 +81,9 @@ function Inline({ s, chips }: { s: InlineSegment; chips?: ReadonlyMap<number, Ch
     return isSameOriginPath(s.href)
       ? <a href={s.href} className="underline underline-offset-2">{s.text}</a>
       : <span>{s.text}</span>;
+  }
+  if (s.kind === "memory") {
+    return <span data-platform-ai-memory="" className="italic text-[var(--text-secondary)]">{s.text}</span>;
   }
   if (s.kind === "figure") {
     const chip = chips?.get(s.seg);
@@ -91,6 +115,7 @@ export function TypedAnswerSegments({ segments, chips }: { segments: readonly Cl
   return (
     <>
       <PeriodCorrections segments={segments} />
+      <WindowNotes segments={segments} />
       <div data-platform-ai-body="" className="min-w-0 space-y-3 break-words leading-relaxed text-[var(--text-primary)]">
         {blocks.map((b, i) => {
           if (b.kind === "p") {
@@ -100,10 +125,23 @@ export function TypedAnswerSegments({ segments, chips }: { segments: readonly Cl
               </p>
             );
           }
+          if (b.kind === "label") {
+            return <p key={i} data-platform-ai-section="" className="min-w-0 text-sm font-semibold text-[var(--text-primary)]"><Line line={b.line} chips={chips} /></p>;
+          }
           const List = b.kind === "ul" ? "ul" : "ol";
           return (
             <List key={i} className={`min-w-0 space-y-1 pl-5 ${b.kind === "ul" ? "list-disc" : "list-decimal"}`}>
-              {b.items.map((item, j) => <li key={j} className="min-w-0"><Line line={item} chips={chips} /></li>)}
+              {b.items.map((item, j) => {
+                const sub = b.sub?.[j] ?? null;
+                const SubList = sub?.kind === "ol" ? "ol" : "ul";
+                return (
+                  <li key={j} className="min-w-0"><Line line={item} chips={chips} />{sub ? (
+                    <SubList data-platform-ai-nested="" className={`mt-1 min-w-0 space-y-1 pl-5 ${sub.kind === "ul" ? "list-[circle]" : "list-decimal"}`}>
+                      {sub.items.map((x, k) => <li key={k} className="min-w-0"><Line line={x} chips={chips} /></li>)}
+                    </SubList>
+                  ) : null}</li>
+                );
+              })}
             </List>
           );
         })}
@@ -188,10 +226,12 @@ export function PlatformAiNotice({ open, saved }: { open: boolean; saved: boolea
  * aria-controls that expands the full notice INLINE (no modal, no scroll box);
  * focus stays on the button.
  */
-export function PlatformAiDisclosureLine({ saved, open, onToggle }: { saved: boolean; open: boolean; onToggle: (open: boolean) => void }) {
+export function PlatformAiDisclosureLine({ saved, open, onToggle, memory = false }: { saved: boolean; open: boolean; onToggle: (open: boolean) => void; memory?: boolean }) {
+  // S2 MEMORY BUILD CHECKLIST: with memory effective "Read-only" is false (Remember writes a row) ⇒ the memory line.
+  const line = !saved ? PLATFORM_AI_SESSION_LINE : memory ? PLATFORM_AI_MEMORY_LINE : PLATFORM_AI_CONVERSATIONS_LINE;
   return (
-    <p data-platform-ai-disclosure={saved ? "conversations" : "session"} className="min-w-0 break-words text-center leading-5">
-      <span data-platform-ai-line="">{saved ? PLATFORM_AI_CONVERSATIONS_LINE : PLATFORM_AI_SESSION_LINE}</span>
+    <p data-platform-ai-disclosure={saved ? (memory ? "memory" : "conversations") : "session"} className="min-w-0 break-words text-center leading-5">
+      <span data-platform-ai-line="">{line}</span>
       <span aria-hidden> · </span>
       <button type="button" data-platform-ai-notice-toggle="" aria-expanded={open} aria-controls={PLATFORM_AI_NOTICE_REGION_ID}
         onClick={() => onToggle(!open)}
@@ -222,6 +262,8 @@ export interface PlatformAiComposerProps {
    * there, so a first visit's expanded notice is never clipped by the dock).
    */
   noticeIn?: "footer" | "lead";
+  /** Platform AI memory is effective (the page decides, server-side): the corrected short line. */
+  memory?: boolean;
 }
 
 /**
@@ -231,7 +273,7 @@ export interface PlatformAiComposerProps {
  * beneath. The counter appears only near the limit. aria-describedby points at
  * the full-text elements (S2 C4).
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer" }: PlatformAiComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer", memory = false }: PlatformAiComposerProps) {
   return (
     <ComposerFrame
       value={value}
@@ -250,7 +292,7 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, 
       ) : undefined}
       footer={
         <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col items-center gap-1.5 px-1 text-[11px] text-[var(--text-secondary)]">
-          <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} />
+          <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} memory={memory} />
           {noticeIn === "footer" ? <PlatformAiNotice open={noticeOpen} saved={saved} /> : null}
           {showComposerCounter(value.length) ? (
             <span data-platform-ai-counter="" className="tabular-nums">{value.length}/{PLATFORM_AI_COMPOSER_MAX}</span>

@@ -64,6 +64,7 @@ import { possessive } from "@/lib/format";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import { liquidityAccess } from "@/lib/account-classifier";
 import { liquidNetWorthTreatment } from "@/lib/debt/liquid-net-worth";
+import { liabilityKind, viewerDebtType, type DebtType } from "@/lib/debt/liability-kind";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,10 @@ import { liquidNetWorthTreatment } from "@/lib/debt/liquid-net-worth";
 export interface AccountTypeHint {
   type:            string;
   debtSubtype:     string | null;
+  /** S2 P1-R1 — optional full evidence, so the KIND (and so the name) is the
+   *  server's full classification, not a debtSubtype-only guess. */
+  providerSubtype?: string | null;
+  creditLimit?:     number | null;
   /** First name of the account owner. When provided, produces "Jane's Checking Account". */
   ownerFirstName?: string | null;
 }
@@ -150,6 +155,15 @@ export interface NormalizedAccount {
    * aggregate's subtype is a member's and always yields the same access.
    */
   providerSubtype?: string | null;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: DebtType | null;
+  /**
+   * S2 PRIVACY P1 — the tier this row was disclosed at. Read ONLY by the viewer
+   * label helpers (lib/debt/liability-kind.ts `debtLabelAccess`): a debt type is
+   * named finely on FULL rows, coarsely ("Loan") on BALANCE_ONLY rows.
+   */
+  visibilityLevel?: "FULL" | "BALANCE_ONLY";
   // Present only on FULL rows:
   institution?:    string;
   creditLimit?:    number | null;
@@ -207,9 +221,7 @@ const PLURAL_BASE: Record<string, string> = {
   "Savings Account":    "Savings Accounts",
   "Investment Account": "Investment Accounts",
   "Crypto Wallet":      "Crypto Wallets",
-  "Credit Card":        "Credit Cards",
-  "Mortgage Account":   "Mortgage Accounts",
-  "Auto Loan":          "Auto Loans",
+  "Credit Line":        "Credit Lines",
   "Loan Account":       "Loan Accounts",
   "Debt Account":       "Debt Accounts",
   "Other Account":      "Other Accounts",
@@ -224,11 +236,11 @@ function pluralizeBase(base: string): string {
 /**
  * Returns a generic, non-identifying display name for an account.
  *
- * `debtSubtype` is consumed internally to pick a more specific label for debt
- * accounts (e.g. "Credit Card" vs "Loan Account") but the raw value is never
- * present in the output.
+ * `debtSubtype` is consumed internally to pick the coarse KIND label for debt
+ * accounts ("Credit Line" / "Loan Account" / "Debt Account" — S2 PRIVACY P1:
+ * never "Mortgage" / "HELOC") and the raw value is never present in the output.
  */
-export function genericAccountName({ type, debtSubtype, ownerFirstName }: AccountTypeHint): string {
+export function genericAccountName({ type, debtSubtype, providerSubtype, creditLimit, ownerFirstName }: AccountTypeHint): string {
   let base: string;
 
   switch (type) {
@@ -241,20 +253,13 @@ export function genericAccountName({ type, debtSubtype, ownerFirstName }: Accoun
     case "crypto":
       base = "Crypto Wallet"; break;
     case "debt": {
-      switch (debtSubtype) {
-        case "credit_card":
-        case "line_of_credit":
-        case "heloc":
-          base = "Credit Card"; break;
-        case "mortgage":
-          base = "Mortgage Account"; break;
-        case "auto_loan":
-          base = "Auto Loan"; break;
-        case "personal_loan":
-        case "student_loan":
-          base = "Loan Account"; break;
-        default:
-          base = "Debt Account";
+      // S2 PRIVACY P1 — this name is shown ONLY at non-FULL tiers, so it names
+      // the coarse KIND, never the fine type: a balance-only co-member must not
+      // learn "Mortgage" / "HELOC" (home ownership + secured debt).
+      switch (liabilityKind({ type: "debt", debtSubtype, providerSubtype, creditLimit })) {
+        case "revolving":   base = "Credit Line"; break;
+        case "installment": base = "Loan Account"; break;
+        default:            base = "Debt Account";
       }
       break;
     }
@@ -279,6 +284,9 @@ export function sanitizeForBalanceOnly(
     id:          string;
     type:        string;
     debtSubtype: string | null;
+    /** S2 P1-R1 — optional full evidence for the kind-level name. */
+    providerSubtype?: string | null;
+    creditLimit?: number | null;
     balance:     number;
     currency:    string;
     lastUpdated: Date | string;
@@ -290,6 +298,8 @@ export function sanitizeForBalanceOnly(
     name:        genericAccountName({
       type:          account.type,
       debtSubtype:   account.debtSubtype,
+      providerSubtype: account.providerSubtype ?? null,
+      creditLimit:   account.creditLimit ?? null,
       ownerFirstName,
     }),
     type:        account.type,
@@ -466,6 +476,9 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
        */
       liquidTreatmentUniform: boolean;
       liquidTreatment: string | null;
+      /** S2 P1-R1 — debt groups: the members' coarse debt type (full-evidence
+       *  kind); null once two members disagree (⇒ "unknown"). */
+      coarseDebtType: DebtType | null;
       /** Non-debt members only: signed sum (identical to per-member sums). */
       assetTotal:     number;
       /** Debt members only: Σ amountOwed — clamped PER MEMBER, never netted. */
@@ -506,6 +519,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         interestRate:   a.interestRate,
         minimumPayment: a.minimumPayment,
         providerSubtype: a.providerSubtype ?? null,
+        visibilityLevel: "FULL",
       });
       continue;
     }
@@ -519,7 +533,9 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
     // Base label has no owner prefix — the prefix is added after aggregation
     // so the key stays stable even if first names differ (they shouldn't, but
     // we group by ownerId not ownerFirstName).
-    const baseLabel = genericAccountName({ type: a.type, debtSubtype: a.debtSubtype });
+    // S2 P1-R1 — named (and so GROUPED) by the full-evidence kind: every member
+    // of a debt group shares one kind, hence one liquid-NW treatment.
+    const baseLabel = genericAccountName({ type: a.type, debtSubtype: a.debtSubtype, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null });
     // 2026-10-07 — liquidity access is part of the key: an HSA must not merge
     // into an ordinary checking aggregate (nor a 401(k) into a brokerage one),
     // or the sum would carry one member's spendability for both.
@@ -538,9 +554,11 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
 
     const existing = groups.get(key);
     const treatment = isDebt ? liquidNetWorthTreatment({ type: a.type, debtSubtype: a.debtSubtype, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }) : null;
+    const coarse = isDebt ? viewerDebtType({ type: a.type, debtSubtype: a.debtSubtype, providerSubtype: a.providerSubtype ?? null, creditLimit: a.creditLimit ?? null }, "COARSE") : null;
     if (existing) {
       existing.count       += 1;
       if (existing.liquidTreatment !== treatment) existing.liquidTreatmentUniform = false;
+      if (existing.coarseDebtType !== coarse) existing.coarseDebtType = null;
       existing.memberAccountIds.push(a.id);
       existing.owedTotal   += memberOwed;
       existing.creditTotal += memberCred;
@@ -573,6 +591,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
         providerSubtype: a.providerSubtype ?? null,
         liquidTreatmentUniform: true,
         liquidTreatment: treatment,
+        coarseDebtType: coarse,
         assetTotal:     memberAsset,
         owedTotal:      memberOwed,
         creditTotal:    memberCred,
@@ -607,11 +626,20 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedSharedAcc
       type:        g.type,
       // Mortgage F1 — a mixed-kind debt aggregate drops its (first member's)
       // subtype: liquid NW then counts it (unknown), never excludes a card.
-      providerSubtype: g.type === "debt" && !g.liquidTreatmentUniform ? null : g.providerSubtype,
+      // S2 PRIVACY P1-R1 — a debt aggregate carries NO raw subtype: only the
+      // server-classified coarse debtType of its (uniform) kind. Client math
+      // (liquid NW, utilization, payoff kind) reads that. A group whose members
+      // disagree on liquid-NW treatment (cannot happen once grouped by kind,
+      // kept as a guard) reads "unknown" ⇒ counted, never overstated.
+      providerSubtype: g.type === "debt" ? null : g.providerSubtype,
+      ...(g.type === "debt"
+        ? { debtType: g.liquidTreatmentUniform && g.coarseDebtType !== null ? g.coarseDebtType : ("unknown" as DebtType) }
+        : {}),
       balance,
       currency:    g.currency,
       lastUpdated: g.lastUpdated.toISOString(),
       balanceLastUpdatedAt: g.allAttested ? (g.balanceLastUpdatedAt?.toISOString() ?? null) : null,
+      visibilityLevel: "BALANCE_ONLY",
       aggregate: {
         memberAccountIds: g.memberAccountIds,
         memberCount:      g.count,

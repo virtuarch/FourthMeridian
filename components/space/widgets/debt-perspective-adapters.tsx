@@ -38,6 +38,7 @@ import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
+import type { DebtType } from "@/lib/debt/liability-kind";
 import type { Snapshot } from "@/types";
 import { CreditCard, Plus, Loader2 } from "lucide-react";
 
@@ -66,6 +67,12 @@ export interface DebtPerspectiveAccount {
    *  the rate LABEL (lib/debt/rate-label.ts, Mortgage F3: "Mortgage rate" / "Interest
    *  rate" / "APR"); never by totals, interest, or payoff figures. null/absent = unknown. */
   providerSubtype?: string | null;
+  /** S2 PRIVACY P1 — the row's tier; non-FULL ⇒ every type LABEL is the coarse kind. */
+  visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: DebtType | null;
+
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
    *  behind it) — such a row has no single liability to attach a rate or limit to. */
   aggregate?: { memberAccountIds: string[]; memberCount: number };

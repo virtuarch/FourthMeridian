@@ -21,6 +21,7 @@
  * scripts/audit-crypto-holding-tombstone.ts guard against it.
  */
 
+import { viewerDebtType } from "@/lib/debt/liability-kind";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import {
   accountDisplayName, compareAccountsByDisplayName,
@@ -289,12 +290,16 @@ export async function getAccountsWithVisibility(
             name:        genericAccountName({
               type:          r.type,
               debtSubtype:   r.debtSubtype ?? null,
+              providerSubtype: r.providerSubtype ?? null,
+              creditLimit:   r.creditLimit ?? null,
               ownerFirstName,
             }),
             type:        r.type as Account["type"],
             institution: "",              // redacted — institution is identifying
             balance:     0,
             balanceRedacted: true,
+            // S2 PRIVACY P1 — the tier, for the viewer debt-label helpers.
+            visibilityLevel: link.visibilityLevel,
             currency:    r.currency,
             lastUpdated: r.lastUpdated.toISOString(),
             balanceLastUpdatedAt: null,
@@ -307,6 +312,8 @@ export async function getAccountsWithVisibility(
           id:          r.id,
           type:        r.type,
           debtSubtype: r.debtSubtype ?? null,
+          providerSubtype: r.providerSubtype ?? null,
+          creditLimit: r.creditLimit ?? null,
           // W-M3a — a wallet's spine value is its balance, and BALANCE_ONLY
           // discloses balances. Passing the column here instead would have shown
           // this tier $0.00 for a wallet the FULL tier values correctly.
@@ -324,6 +331,9 @@ export async function getAccountsWithVisibility(
           type:        safe.type as Account["type"],
           institution: "",              // redacted — institution is identifying
           balance:     safe.balance,
+          // S2 PRIVACY P1 — the tier, so every debt-type LABEL on this row is
+          // the coarse kind ("Loan"), never "Mortgage" / "HELOC".
+          visibilityLevel: link.visibilityLevel,
           // FM-AUDIT-022 — a fact about the balance this tier discloses.
           ...(walletBalance(r.balance, r.id, r.balanceObserved).valuationUnknown ? { valuationUnknown: true as const } : {}),
           currency:    safe.currency,
@@ -336,12 +346,14 @@ export async function getAccountsWithVisibility(
           // 2026-10-07 — what this balance can be used for (HSA, retirement,
           // unverified). A liquidity total over this tier needs it, and it
           // describes the balance the tier already discloses.
-          providerSubtype: r.providerSubtype ?? null,
-          // Mortgage F1 — the debt KIND (installment vs revolving) for liquid net
-          // worth. Already disclosed by this tier's generic name ("… mortgage"),
-          // so it reveals nothing further. creditLimit stays WITHHELD: a "home
-          // equity" row without it is counted (unknown), never excluded.
-          ...(r.type === "debt" && r.debtSubtype ? { debtSubtype: r.debtSubtype } : {}),
+          // S2 PRIVACY P1-R1 — a DEBT row carries no raw subtype: the server
+          // classifies from the full evidence (subtypes + the withheld
+          // creditLimit) and discloses only the coarse debtType of that kind
+          // (other_installment / other_revolving / unknown). Client math (liquid
+          // NW, utilization, payoff kind) reads it — identical to the FULL view.
+          ...(r.type === "debt"
+            ? { providerSubtype: null, debtType: viewerDebtType({ type: r.type, debtSubtype: r.debtSubtype ?? null, providerSubtype: r.providerSubtype ?? null, creditLimit: r.creditLimit ?? null }, "COARSE") }
+            : { providerSubtype: r.providerSubtype ?? null }),
           // v2.6-L3 — same reasoning: a quantity about the balance this tier
           // already discloses. Withholding it would make a liquidity total mix
           // reachable figures with ledger balances, which is worse.
@@ -398,6 +410,7 @@ export async function getAccountsWithVisibility(
       name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
+      visibilityLevel: "FULL",
       // FM-AUDIT-022 — `valuationUnknown` present only for an unvalued wallet.
       ...walletBalance(r.balance, r.id, r.balanceObserved),
       currency:      r.currency,
@@ -414,7 +427,10 @@ export async function getAccountsWithVisibility(
       plaidName:     r.plaidName    ?? undefined,
       officialName:  r.officialName ?? undefined,
       displayName:   r.displayName  ?? undefined,
-      creditLimit:    r.creditLimit ?? undefined,
+      // S2 P1-R1 — a known-absent limit is NULL (as on the mount, AI and snapshot
+      // paths), so a closed-end "home equity" loan classifies as installment here
+      // too. `undefined` stays reserved for a genuinely withheld field.
+      creditLimit:    r.creditLimit ?? null,
       debtSubtype:    r.debtSubtype ?? undefined,
       providerSubtype: r.providerSubtype ?? null,
       interestRate:   effectiveApr,

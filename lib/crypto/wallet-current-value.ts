@@ -56,6 +56,7 @@ import {
   valuePositionRows,
 } from "@/lib/investments/valuation";
 import { todayUTCISO } from "@/lib/time/clock";
+import { isBalanceUnobserved } from "@/lib/balances/unobserved-totals";
 import type { InstrumentValuation } from "@/lib/investments/valuation-core";
 // PERF-3 — the facts, not the dispatcher: this read runs on every /dashboard
 // render, and the dispatcher compiles every chain adapter and the Plaid SDK.
@@ -244,7 +245,7 @@ export function resolveWalletBalance(
    */
   balanceObserved?: boolean | null,
 ): WalletTotalsBalance {
-  if (balanceObserved === false) return { balance: 0, valuationUnknown: true };
+  if (isBalanceUnobserved({ balanceObserved })) return { balance: 0, valuationUnknown: true };
   if (v === undefined) return { balance: columnBalance };
   if (hasKnownValue(v)) return { balance: v.value! };
   return { balance: 0, valuationUnknown: true };

@@ -88,8 +88,17 @@ export interface Account {
   displayName?:  string;  // user-editable override; undefined until the user renames the account
   // Debt fields — effective values prefer the DebtProfile when present and fall
   // back to the legacy flat columns otherwise.
-  creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
+  /** Populated from Plaid balances.limit or manual entry. S2 P1-R1: on a FULL row a
+   *  KNOWN-ABSENT limit is null (never undefined) — undefined means "withheld". */
+  creditLimit?:    number | null;
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** S2 PRIVACY P1 — SpaceAccountLink tier this row was disclosed at. Read only
+   *  by the viewer debt-label helpers (lib/debt/liability-kind.ts debtLabelAccess). */
+  visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: import("@/lib/debt/liability-kind").DebtType | null;
+
   /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
    *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
   providerSubtype?: string | null;

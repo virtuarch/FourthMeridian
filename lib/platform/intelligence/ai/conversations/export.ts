@@ -75,7 +75,7 @@ export const omittedConversationsNote = (count: number, area: PlatformArea) =>
 
 /** A stored answer as plain rendered text: text, figure and link spans in order (links by their text only). */
 export function renderAnswerText(a: StoredAnswerV1): string {
-  return a.segments.map((s) => (s.kind === "correction" ? `${s.text} ` : s.text)).join("");
+  return a.segments.map((s) => (s.kind === "correction" || s.kind === "note" ? `${s.text} ` : s.text)).join("");
 }
 
 function exportMessage(m: MessageRecord): ExportPlatformAiMessage {

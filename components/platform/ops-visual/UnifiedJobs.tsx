@@ -29,6 +29,7 @@ import { FlaskConical, Loader2, Play, Search } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Surface } from "@/components/atlas/Surface";
 import { DetailDrawer } from "../ui/DetailDrawer";
+import { RememberButton } from "../RememberButton";
 import { LazyDisclosure } from "../leads/lead-kit";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { useSharedWidgetFetch, useSharedWidgetPublish } from "../workspace-session";
@@ -366,8 +367,12 @@ export function UnifiedJobsSurface(p: UnifiedJobsSurfaceProps) {
       </div>
       <DetailDrawer open={current !== null} onClose={() => p.onSelect(null)} eyebrow="Job" title={current?.label ?? ""} size="lg">
         {current && (
-          <JobDetail r={current} nowMs={p.nowMs} history={p.history.data} evidence={evidence} plan={controlPlan(current, a)}
-            busy={p.acting !== null} feedback={p.feedback} onDry={p.onDry} onRun={p.onRun} />
+          <>
+            <JobDetail r={current} nowMs={p.nowMs} history={p.history.data} evidence={evidence} plan={controlPlan(current, a)}
+              busy={p.acting !== null} feedback={p.feedback} onDry={p.onDry} onRun={p.onRun} />
+            {/* Platform AI memory (design v2 §5): renders nothing unless memory is effective. */}
+            <div className="mt-4" data-job-remember=""><RememberButton area="PLATFORM_OPS" kind="JOB" id={current.job} /></div>
+          </>
         )}
       </DetailDrawer>
     </>

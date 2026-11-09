@@ -13,7 +13,7 @@
  */
 
 import { FinanceDomains, type AccountsSectionData } from '@/lib/ai/types';
-import { composeInvestments } from '@/lib/ai/economic-concepts';
+import { composeExcludedTotals, composeInvestments } from '@/lib/ai/economic-concepts';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import { liquidityAccess, LIQUIDITY_ACCESS_MEANING, type LiquidityAccess } from '@/lib/account-classifier';
 import type { ToolDefinition } from './types';
@@ -71,6 +71,13 @@ export const getFinancialSnapshot: ToolDefinition = {
       // above, beside them: an account of unknown balance is excluded (never
       // counted as 0). Present only when some total is PARTIAL.
       ...(acc.totalsCoverage ? { totalsCoverage: acc.totalsCoverage } : {}),
+      // Mortgage F8a — WHICH class each excluded account belongs to, by type
+      // ("1 mortgage … debt may be understated"), so an unobserved mortgage is
+      // never read as an unvalued crypto wallet. Present only when one exists.
+      ...((): { excludedBalances?: ReturnType<typeof composeExcludedTotals> } => {
+        const x = composeExcludedTotals(acc);
+        return x ? { excludedBalances: x } : {};
+      })(),
       // Mortgage F1 (owner 2026-11-08) — liquid net worth WITH its definition and
       // the loans it excludes, so the answer explains liquid vs total net worth
       // and never presents liquid net worth as debt-free wealth.

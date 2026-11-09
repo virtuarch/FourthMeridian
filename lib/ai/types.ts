@@ -20,7 +20,7 @@
  *   adapters and sync execution.
  */
 
-import type { AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
+import type { AiExcludedAccountGroup, AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
 import type { RateLabel } from '@/lib/debt/rate-label';
@@ -628,6 +628,14 @@ export interface AccountsSectionData {
    * is an honest PARTIAL. OMITTED when nothing was excluded.
    */
   totalsUnvaluedCount?: number;
+  /**
+   * Mortgage F8c — the accounts excluded from the totals above, TYPED by the
+   * one detector (lib/balances/unobserved-totals.ts detectExcludedAccounts):
+   * class + reason + in-sentence type name ("mortgage", "crypto wallet") +
+   * count. No ids or names. Readers go through `excludedFromAiAccounts`, never
+   * `totalsUnvaluedCount`. OMITTED when nothing was excluded.
+   */
+  totalsExcluded?: AiExcludedAccountGroup[];
   /**
    * Mortgage F8 (S2) — PARTIAL status + DIRECTION beside netWorth / totalAssets /
    * totalLiabilities / liquid when an account of unknown balance (never
