@@ -29,7 +29,7 @@ import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { debtColor } from "@/components/space/widgets/debt-adapters";
 import { presentationDebtClass, presentationDebtLabel, DEBT_CLASS_LABEL } from "@/components/space/widgets/debt/debt-ledger-util";
-import { creditUtilization } from "@/lib/accounts/credit-utilization";
+import { creditUtilization, formatUtilizationPct } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { parseCreditLimitInput, saveAccountCreditLimit } from "@/lib/debt/user-terms";
@@ -279,7 +279,7 @@ export function CreditUtilizationWidget({
         <div key={r.id} className="space-y-1">
           <div className="flex items-center justify-between text-[12px]">
             <span className="text-[var(--text-secondary)] truncate">{r.name}</span>
-            <span className="font-semibold" style={{ color: UTIL_COLOR[r.level] }}>{r.pct.toFixed(0)}%</span>
+            <span className="font-semibold" style={{ color: UTIL_COLOR[r.level] }}>{formatUtilizationPct(r.pct)}</span>
           </div>
           <div className="h-2 rounded-full bg-[var(--surface-inset)] overflow-hidden">
             <div className="h-full rounded-full" style={{ width: `${r.barPct}%`, backgroundColor: UTIL_COLOR[r.level] }} />

@@ -301,8 +301,10 @@ export interface BriefPackage {
     deficitCause:        string;
     /**
      * Present only when a deficit was graded: the verdict WITH its scope, rung and
-     * operands (economic net, debt payments, the new charges they settled, net
-     * paydown). Scope CASH_NET_AFTER_DEBT_PAYDOWN — never "debt payments".
+     * operands (economic net, debt payments, the new charges they settled,
+     * revolving net paydown, and — owner F6 — unsplit loan payments with their
+     * label: principal + interest[ + escrow] not split, never paydown). Scope
+     * CASH_NET_AFTER_DEBT_PAYDOWN — never "debt payments".
      */
     deficit?:            BriefClassification;
     /** CURRENT only — graded against today's balances. Each carries WHY it fired. */

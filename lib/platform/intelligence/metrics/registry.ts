@@ -28,10 +28,13 @@
  * and an identity tier; an UNAVAILABLE provenance carries its reason; a metric
  * whose code carries its own definition version agrees with it.
  *
- * Pure and import-free at runtime (type imports only): safe for client and server.
+ * Pure: its only runtime imports are the pure scheduler facts (lib/jobs/registry.core,
+ * lib/jobs/cadence — no I/O, no clock), so it stays safe for client and server.
  */
 
 import type { PlatformAccessLevel, PlatformArea } from "@prisma/client";
+import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
+import { slotPeriodHours } from "@/lib/jobs/cadence";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -168,6 +171,14 @@ export interface MetricDefinition {
   exclusion: readonly string[];
   /** The clock the figure's freshness follows. */
   freshnessSource: string;
+  /**
+   * STALENESS LIMIT (owner rule: stale facts are never shown as current). The
+   * envelope's `freshness.asOf` older than this — or missing / unreadable — makes
+   * every figure of it STALE: Platform AI words it "last evaluated <time>, may be
+   * out of date", never "now", and a stale signal triggers nothing derived.
+   * Declared HERE, per metric (never in a composer). Positive milliseconds.
+   */
+  maxAgeMs: number;
   provenance: MetricProvenance;
   /** Known gaps, stated: what the figure cannot see. */
   coverageGaps: readonly string[];
@@ -179,6 +190,30 @@ export interface MetricDefinition {
 
 /** "id@version" — the stamp an answer built on a metric carries. */
 export const metricKey = (m: Pick<MetricDefinition, "id" | "version">): `${string}@${number}` => `${m.id}@${m.version}`;
+
+// ── Staleness limits (maxAgeMs) ──────────────────────────────────────────────
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * alerts-firing-now: its asOf is the latest evaluate-alerts run, which fires on a
+ * slot schedule (lib/jobs/registry.core.ts: 00:30, 06:30, 07:30, 12:30, 18:30 UTC).
+ * The limit is TWICE the widest gap between slots — computed from the scheduler's
+ * own facts, so a schedule change moves it (6 h widest gap ⇒ 12 h). One missed slot
+ * is tolerated; two consecutive misses make every figure of it STALE.
+ */
+export const ALERT_EVALUATION_MAX_AGE_MS: number = (() => {
+  const job = SCHEDULED_JOB_FACTS.find((j) => j.name === "evaluate-alerts");
+  if (!job) throw new Error("metrics registry: evaluate-alerts is not a registered scheduled job");
+  return 2 * slotPeriodHours(job.hourUTC) * HOUR_MS;
+})();
+
+/**
+ * Every other registered metric is READ ON REQUEST: its reader stamps asOf with the
+ * read's own clock (checkedAt / now), so a fresh read is seconds old. One hour is the
+ * limit: anything older was served from a cache or a replay, and is said to be.
+ */
+export const READ_ON_REQUEST_MAX_AGE_MS = 1 * HOUR_MS;
 
 const PO = "PLATFORM_OPS" as const;
 const CS = "CUSTOMER_SUCCESS" as const;
@@ -206,6 +241,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Job runs of the provider's producing jobs (ordered: the recency rule applies)", "ProviderCall attempt rows (unordered: the all-failed rule applies instead)"],
     exclusion: ["In-flight runs and calls (no outcome yet)"],
     freshnessSource: "JobRun rows (90-day retention) and ProviderCall rows (60-day retention)",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["A small sample never reads Healthy (NOT_ENOUGH_DATA)", "ProviderCall roll-ups carry no order, so a recent failure streak is only visible in job runs", "The provider-health route carries the job-run execution verdict only; the ProviderCall attempt verdict is folded by the Providers tile from the provider-operations payload (callsAssessment), so a retrieval through provider-health does not see it",
       "Envelope status rule (the verdict rule is unchanged): MEASURED only when every provider has an evaluable verdict (Healthy / Degraded / Failing); PARTIAL, with the counts, when some providers have no runs or not enough data; UNAVAILABLE when none does — no evaluable job runs in the window (scheduled jobs may not run in this environment). Zero healthy is never reported as a measurement when nothing was evaluated"],
@@ -234,6 +270,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["PlaidItem and wallet Connection rows of the provider"],
     exclusion: ["REVOKED connections (reported as a neutral fact)", "Connections whose owner is inactive or pending deletion", "NEEDS_REAUTH never FAILS a provider (only a reauth wave DEGRADES it)", "An ERROR share one institution explains never FAILS a provider (institution-concentrated ⇒ DEGRADED; the basis counts institutions, never names one)"],
     freshnessSource: "The connection health authority (lib/connections/health.ts) — live columns",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Without the authority's per-source tally the population is unknown and no share is computed", "Connections with no recorded institution are never assumed to share one; with no institution split at all, concentration is not assessed and the share alone decides", "A single-institution fleet can never reach FAILING on the connection half; a genuine provider outage also fails the producing job's runs, so provider-outcome@1 raises FAILING through the execution half. 'Degraded (institution-concentrated)' does NOT mean the provider is fine.",
       "Envelope status rule: UNAVAILABLE when no provider reports a connection population (nothing to assess); PARTIAL when some providers report none, or a population is unknown; MEASURED otherwise"],
@@ -256,6 +293,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Every registered provider's ApiUsageCounter totals (metered providers only)", "Failed producing-job runs in the provider window"],
     exclusion: ["Providers with no usage counter (counted as unmetered, never 0 calls)", "No per-customer or per-connection dimension"],
     freshnessSource: "ApiUsageCounter rows and JobRun rows, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["PARTIAL when any provider is unmetered: its calls are unknown, never 0", "A volume, not a verdict: provider-outcome@1 and provider-connection@2 judge health"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/provider-health/route.ts" }],
@@ -283,6 +321,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["The six overview domains, each judged by its own authority"],
     exclusion: ["The overview's latest failed executions (per-execution rows — never retrieved)", "Security, email delivery and MFA posture (not part of the overview)"],
     freshnessSource: "The overview's authorities, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["UNKNOWN never outranks a real verdict: a domain with nothing to judge is counted as unknown, not healthy", "Security, email delivery and MFA are not overview domains"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/overview/route.ts" }],
@@ -305,6 +344,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["FAILED / PARTIAL refresh executions", "AI failures", "Failed Daily Brief generations", "Connections needing reconnect (connection health)"],
     exclusion: ["The impact rows and their references (never retrieved: counts only)"],
     freshnessSource: "RefreshExecution, AiInvocation, Brief and connection-health reads, on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Customers affected is a floor (or unavailable) when a reader exposes no user reference", "PARTIAL when one of the four impact readers could not be read, or a reader returned a floor"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/attention/route.ts" }],
@@ -327,6 +367,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["The newest AlertRun summary's rule outcomes and source statuses"],
     exclusion: ["Alert history and deliveries (historical — never 'firing now')", "The alert destination address"],
     freshnessSource: "The newest alert evaluation run (JobRun summary)",
+    maxAgeMs: ALERT_EVALUATION_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["UNAVAILABLE when no evaluation has run (never 'nothing firing')", "An old evaluation is still the latest: check freshness", "A rule whose source was unreadable cannot fire — sourcesUnavailable counts them"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/alerts/route.ts" }],
@@ -348,6 +389,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["PlaidItem and wallet Connection rows with a live owner"],
     exclusion: ["Revoked connections and connections of inactive owners (retired)", "The unhealthy rows themselves (ids, institutions, owners — never retrieved)"],
     freshnessSource: "The connection health authority (lib/connections/health.ts) — live columns",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Without the per-source fault tally, reconnect needed is a floor (NEEDS_REAUTH only)"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/connection-health/route.ts" }],
@@ -370,6 +412,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["RefreshExecution rows started yesterday or today (UTC)"],
     exclusion: ["The executions themselves (ids, sources, owners — never retrieved)"],
     freshnessSource: "RefreshExecution ledger, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The window is calendar days, not a rolling 24 h", "UNAVAILABLE when the overview could not judge the pipeline"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/overview/route.ts" }],
@@ -391,6 +434,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Every registered scheduled job"],
     exclusion: ["Run rows and failure summaries (never retrieved)"],
     freshnessSource: "JobRun rows (90-day retention), read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["On a deployment with no scheduler (Preview), jobs read not scheduled — neutral, never healthy or failing"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/job-health/route.ts" }],
@@ -412,6 +456,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Every registered freshness resource"],
     exclusion: ["Per-customer data freshness (that is connection-health-summary@1)"],
     freshnessSource: "The resources' own newest observations, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Platform reference data only: a customer's own sync freshness is connection-health-summary@1"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/resource-freshness/route.ts" }],
@@ -437,6 +482,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Customer-surface AiInvocation rows in the window"],
     exclusion: ["Overhead surfaces (harness, operator)", "Unpriced calls are COUNTED, never priced at $0"],
     freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "ESTIMATED", note: "Rate-card estimate. MEASURED (invoice) is never produced: no AI invoice is read anywhere." },
     coverageGaps: ["UNAVAILABLE (no figure, never $0) when nothing in the window could be priced", "PARTIAL figures are lower bounds"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/ai-budget/route.ts" }],
@@ -469,6 +515,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["RETURNED AiInvocation rows on every surface (Conversations, Daily Brief, evaluation, Platform AI, unattributed)"],
     exclusion: ["Failed calls (they cost nothing)", "Unpriced calls are named in coverage, never priced at $0"],
     freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "ESTIMATED", note: "Rate-card estimate (tokens × code-owned rates). No AI invoice is read anywhere, so no AI dollar figure is ever billed or MEASURED." },
     coverageGaps: ["UNAVAILABLE (no figure, never $0) with no rate card, no calls, or nothing priced in the window", "PARTIAL figures are lower bounds: some days carry unpriced calls", "AI only: Plaid, other providers and infrastructure are not in this figure (economics-operating-cost@1 holds the cycle total)"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
@@ -492,6 +539,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["AI (OpenAI, every surface) this cycle", "Plaid Transactions Item-months this cycle"],
     exclusion: ["Revenue and margin (no billing source — not registered)", "Per-customer and cost-per-customer figures (pending owner definition OD-1 — not registered)", "Consented Plaid Investments Item-months not evidenced as billed (named, never priced)"],
     freshnessSource: "AiInvocation rows and the PlaidItem census, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "ESTIMATED", note: "Rate-card estimates (AI tokens × rate card; Plaid Item-months × invoice-derived rate). No invoice is read: never a bill." },
     coverageGaps: ["Always PARTIAL today: other providers and infrastructure (hosting, database) are not metered — their parts are null, never $0", "A ranking of categories is a ranking of the MEASURED ones; the unmetered parts could be larger (largestMeasuredCategory then carries the qualifier \"ranking among measured categories; some categories are incomplete\"; S2 ruling 2026-11-05)", "UNAVAILABLE when no component could be priced"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
@@ -518,6 +566,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["PlaidItem census, present during the cycle (sandbox and seeded Items excluded)"],
     exclusion: ["AI (economics-ai-cost@1)", "Other providers — not metered (named, never $0)"],
     freshnessSource: "The PlaidItem census, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "ESTIMATED", note: "Item-months × invoice-derived rate. No provider invoice is read: never a bill." },
     coverageGaps: ["PARTIAL while any provider is unmetered (other providers are not metered today)", "UNAVAILABLE with no Plaid rate card, no cycle census, or nothing priced", "Census caveats (incomplete census, unevidenced product, disagreeing readings) are named in coverage"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
@@ -540,6 +589,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["AiInvocation rows of every surface in the window, RETURNED and failed"],
     exclusion: ["No per-user, per-Space or per-customer dimension (the fleet reader exposes none)"],
     freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Failures are recorded since 2026-10-07; a window reaching before then undercounts them"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/ai-invocations/route.ts" }],
@@ -561,6 +611,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["RETURNED AiInvocation rows of every surface in the window"],
     exclusion: ["Failed calls", "No per-user, per-Space or per-customer dimension"],
     freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "ESTIMATED", note: "Tokens × code-owned rate card ÷ returned calls. No AI invoice is read: never a bill." },
     coverageGaps: ["UNAVAILABLE with no rate card, no returned calls, or nothing priced", "PARTIAL (a lower bound) when some tokens had no rate"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/ai-invocations/route.ts" }],
@@ -586,6 +637,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["UserSession heartbeat clocks (server-stamped)"],
     exclusion: ["UserSession.lastActiveAt (SESSION LAST USED) is never read as activity", "Revoked sessions"],
     freshnessSource: "The UserSession presence and interaction heartbeat clocks (database clock; read only by the PB-10 allowlisted readers)",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED", note: "The interaction clock is CLIENT-ASSERTED (low trust): presence buckets and the CS 'last active ~' only." },
     coverageGaps: ["An interaction is credited at the next beat's arrival (up to one interval late)", "Must never feed engagement, SEC-010 or any security decision"],
     permission: [{ area: CS, level: "READ", identityTier: "CUSTOMER_SUCCESS", route: "app/api/platform/customer-success/customers/route.ts" }],
@@ -609,6 +661,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["ENGAGEMENT_AUDIT_ACTIONS AuditLog rows", "AiInvocation on ENGAGEMENT_AI_SURFACES with a userId"],
     exclusion: ["Background sync, cron, webhooks, polling, prefetch, heartbeats", "SESSION_ACTIVE_DAY (that is presence)", "Operator actions on a customer; harness AI runs"],
     freshnessSource: "AuditLog product events (13-month retention) and AiInvocation (90-day retention)",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["Feature use outside Space, Brief and Transactions is not measured", "AI turns older than 90 days are not visible", "PENDING OWNER DEFINITION: operators (OD-2), accounts deactivated since (OD-3) and test accounts (OD-4) are all counted today; the policies are named UNDECIDED in lib/platform/customer/population.ts"],
     permission: [{ area: GR, level: "READ", identityTier: "OPS", route: "app/api/platform/growth-revenue/product-analytics/route.ts" }],
@@ -633,6 +686,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Every User row (the same user set the product analytics use)"],
     exclusion: [],
     freshnessSource: "User.createdAt, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["A day before the source began, or past its retention edge, is null (declared, never inferred)", "No geography (no country recorded at registration)"],
     permission: [{ area: GR, level: "READ", identityTier: "OPS", route: "app/api/platform/growth-revenue/acquisition/route.ts" }],
@@ -657,6 +711,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Unresolved SyncIssue rows (scan capped at DEFAULT_SCAN_LIMIT)"],
     exclusion: ["A stale-unverified row (no attempt or skip since it last occurred) is NOT broken now", "Events (non-incident row classes)", "Duplicate rows of one episode (folded onto the newest)"],
     freshnessSource: "SyncIssue.lastOccurredAt and RefreshEndpointResult attempt / skip evidence",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The scan is capped (DEFAULT_SCAN_LIMIT); a capped read is a floor", "Stale windows are proposed defaults pending owner confirmation (Q2)"],
     permission: [
@@ -694,6 +749,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Broken-now verdicts"],
     exclusion: ["Unverified (stale) rows", "Recovering rows"],
     freshnessSource: "SyncIssue.lastOccurredAt and RefreshEndpointResult attempt / skip evidence",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The scan is capped (DEFAULT_SCAN_LIMIT)"],
     permission: [
@@ -719,6 +775,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Unresolved SyncIssue rows (scan capped at DEFAULT_SCAN_LIMIT)"],
     exclusion: ["Broken-now incidents (incident-broken-now@1)", "Events and duplicate rows (folded)"],
     freshnessSource: "SyncIssue.lastOccurredAt and RefreshEndpointResult attempt / skip evidence",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The scan is capped (DEFAULT_SCAN_LIMIT); a capped read is a floor (PARTIAL)", "Stale windows are proposed defaults pending owner confirmation (Q2)"],
     permission: [
@@ -749,6 +806,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Resolved and archived incident rows (the archive's retention)"],
     exclusion: ["Open incidents", "Events and duplicate rows (folded)"],
     freshnessSource: "SyncIssue rows and the incident archive",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The scan is capped (DEFAULT_SCAN_LIMIT); a capped read is a floor (PARTIAL)", "Keyed on last seen, not on the resolution instant: an incident resolved in the window but last seen before it is not counted"],
     permission: [
@@ -782,6 +840,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Live (not soft-deleted) transactions"],
     exclusion: ["Unlinked rows split by class: TRANSFER, WALLET and NO_COUNTERPARTY are legitimate exclusions; only ELIGIBLE is actionable (classifyIdentity)"],
     freshnessSource: "Transaction rows, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["The headline share counts every live row; the actionable share is eligibleLinked / eligible"],
     permission: [{ area: MO, level: "READ", identityTier: "OPS", route: "app/api/platform/merchant-ops/overview/route.ts" }],
@@ -807,6 +866,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["ATTENTION_KEYS reasons, in display order", "'unassigned' only while the fail-closed policy switch is ENFORCED"],
     exclusion: ["Deactivated accounts and operators", "A customer with NO policy assignment (resolves to the default and works)"],
     freshnessSource: "Connection health, SyncIssue, policy assignments, the funnel facts, recent Plaid import verdicts and CONNECTION_LINK_EXITED product events, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["A capped read reports 'at least' (floor)", "PENDING OWNER DEFINITION of the customer population (OD-2 operators, OD-4 test accounts); the denominator is open-customers@1"],
     permission: [{ area: CS, level: "READ", identityTier: "CUSTOMER_SUCCESS", route: "app/api/platform/customer-success/overview/route.ts" }],
@@ -829,6 +889,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["role USER accounts with deactivatedAt IS NULL", "role-USER PlatformGrant holders (operators are distinguished only by SYSTEM_ADMIN role today)"],
     exclusion: ["SYSTEM_ADMIN accounts (by role)", "Deactivated accounts, including those scheduled for deletion"],
     freshnessSource: "User rows, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED", note: "PENDING OWNER DEFINITION (OD-2: whether operators count as customers; OD-4: whether test and internal accounts are excluded). Counted as today until decided — the policies are named UNDECIDED in lib/platform/customer/population.ts." },
     coverageGaps: ["The fleet read is capped (ATTENTION_SCAN_CAP); a capped read is a floor", "No test-account flag exists, so test and internal accounts are counted (OD-4)"],
     permission: [{ area: CS, level: "READ", identityTier: "CUSTOMER_SUCCESS", route: "app/api/platform/customer-success/overview/route.ts" }],
@@ -853,6 +914,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["Non-revoked sessions inside both lifetimes", "Owner deactivatedAt IS NULL ∧ deletionScheduledAt IS NULL"],
     exclusion: ["Revoked sessions", "Idle- or absolute-expired rows that were never revoked", "Sessions of deactivated or deletion-scheduled accounts"],
     freshnessSource: "UserSession rows, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED" },
     coverageGaps: ["A live session is NOT proof a browser is open (that is presence-state@1)", "Counts SESSIONS: one account with two devices is 2. The per-account figure is accounts-with-live-session@1"],
     permission: [
@@ -881,6 +943,7 @@ export const METRICS: readonly MetricDefinition[] = [
     inclusion: ["role USER accounts with ≥ 1 live session"],
     exclusion: ["SYSTEM_ADMIN accounts (by role)", "Accounts whose every session is revoked or expired", "Deactivated or deletion-scheduled accounts (the session lockout)"],
     freshnessSource: "UserSession rows, read on request",
+    maxAgeMs: READ_ON_REQUEST_MAX_AGE_MS,
     provenance: { class: "MEASURED", note: "Customer population PENDING OWNER DEFINITION (OD-2 operators, OD-4 test accounts); counted as role USER until decided (lib/platform/customer/population.ts)." },
     coverageGaps: ["A live session is NOT proof a browser is open (that is presence-state@1)"],
     permission: [{ area: GR, level: "READ", identityTier: "OPS", route: "app/api/platform/growth-revenue/users/route.ts" }],
@@ -906,6 +969,7 @@ export function metricDefinitionProblems(m: MetricDefinition): string[] {
   if (m.denominator && !m.denominator.description.trim()) p.push(`${k}: denominator needs a description`);
   if (m.path.length === 0) p.push(`${k}: path must name at least the route hop`);
   if (!m.freshnessSource.trim()) p.push(`${k}: freshnessSource is required`);
+  if (!Number.isFinite(m.maxAgeMs) || m.maxAgeMs <= 0) p.push(`${k}: maxAgeMs (the staleness limit) must be a positive number of milliseconds`);
   if (m.permission.length === 0) p.push(`${k}: at least one permission is required`);
   for (const e of m.permission) {
     if (!e.area || !e.level) p.push(`${k}: a permission needs an area and a level`);
@@ -918,4 +982,22 @@ export function metricDefinitionProblems(m: MetricDefinition): string[] {
   if ("unavailable" in m.drill ? !m.drill.unavailable.trim() : drillLinks(m.drill).length === 0 || drillLinks(m.drill).some((l) => !l.api.startsWith("/api/platform/"))) p.push(`${k}: drill is a /api/platform/ records route or a stated reason`);
   if ("bySurface" in m.drill) for (const a of Object.keys(m.drill.bySurface)) if (!m.permission.some((e) => e.area === a)) p.push(`${k}: a per-surface drill on ${a} needs a permission entry there`);
   return p;
+}
+
+// ── Staleness (pure; the clock is injected) ──────────────────────────────────
+
+export type StalenessReason = "PAST_LIMIT" | "NO_TIMESTAMP" | "UNREADABLE_TIMESTAMP";
+
+/**
+ * Is a figure stamped `asOf` too old to speak for now under `maxAgeMs`? A missing
+ * or unparseable timestamp is STALE (never assumed current); so is a missing limit.
+ * The one judgement every Platform AI path uses (retrieval stamps it on the envelope).
+ */
+export function metricStaleness(asOf: string | null | undefined, maxAgeMs: number | null | undefined, nowMs: number): { stale: boolean; reason: StalenessReason | null; ageMs: number | null } {
+  if (asOf == null || asOf === "") return { stale: true, reason: "NO_TIMESTAMP", ageMs: null };
+  const t = Date.parse(asOf);
+  if (!Number.isFinite(t)) return { stale: true, reason: "UNREADABLE_TIMESTAMP", ageMs: null };
+  const ageMs = nowMs - t;
+  if (!(typeof maxAgeMs === "number" && maxAgeMs > 0) || ageMs > maxAgeMs) return { stale: true, reason: "PAST_LIMIT", ageMs };
+  return { stale: false, reason: null, ageMs };
 }

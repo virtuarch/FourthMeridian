@@ -32,7 +32,7 @@ import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
-import type { UtilizationLevel } from "@/lib/accounts/credit-utilization";
+import { formatUtilizationPct, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
 
 // The balance-history window delta (snapshot basis) — computed, and gated on the
 // coverage floor (PB-8b), by debt-trend-points.ts `debtWindowChange`.
@@ -177,7 +177,7 @@ export function DebtHero({
             )}
             {kpis.utilizationPct != null && kpis.utilizationLevel != null && (
               <Stat label="Utilization">
-                <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{kpis.utilizationPct.toFixed(0)}% · {UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}</span>
+                <span style={{ color: UTIL_COLOR[kpis.utilizationLevel] }}>{formatUtilizationPct(kpis.utilizationPct)} · {UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}</span>
               </Stat>
             )}
           </div>
@@ -216,7 +216,7 @@ export function debtCompactKpiItems(kpis: DebtKpis, currency: string): { key: st
   return [
     { key: "liabilities", label: "Liabilities", value: String(kpis.owingCount) },
     ...(kpis.ratedCount > 0 ? [{ key: "interest", label: "Est. interest", value: `${approx}${formatCurrency(kpis.estMonthlyInterest, currency)}/mo` }] : []),
-    ...(kpis.utilizationPct != null ? [{ key: "utilization", label: "Utilization", value: `${kpis.utilizationPct.toFixed(0)}%${kpis.utilizationLevel ? ` · ${UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}` : ""}` }] : []),
+    ...(kpis.utilizationPct != null ? [{ key: "utilization", label: "Utilization", value: `${formatUtilizationPct(kpis.utilizationPct)}${kpis.utilizationLevel ? ` · ${UTILIZATION_LEVEL_LABEL[kpis.utilizationLevel]}` : ""}` }] : []),
   ];
 }
 

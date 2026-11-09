@@ -47,6 +47,8 @@ import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { openAiFactLines } from "./env-status-view";
 import { platformViewTarget } from "@/lib/platform/workspaces";
 import { alertSourceUnavailableSentence, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
+import { hoursWord } from "@/lib/platform/ops/overview-core";
+import { EVALUATOR_OVERDUE, firingAtLastEvaluationOverdue, lastEvaluatedStale } from "@/lib/platform/stale-wording";
 
 // ── Status vocabulary ─────────────────────────────────────────────────────────
 
@@ -96,11 +98,16 @@ export function worstStatus(statuses: readonly HealthStatus[]): HealthStatus {
 
 // ── Line / source shapes ──────────────────────────────────────────────────────
 
-/** How a single line reads. `bad` and `unknown` only where an AUTHORITY said so. */
-export type LineTone = "normal" | "bad" | "unknown";
+/**
+ * How a single line reads. `bad`, `warn` and `unknown` only where an AUTHORITY
+ * said so. `warn` (OBS-001) marks a fact the server judged too old to speak for
+ * now — e.g. "Last evaluated" when the alert evaluator is overdue.
+ */
+export type LineTone = "normal" | "warn" | "bad" | "unknown";
 
 export const LINE_TOKEN: Record<LineTone, string> = {
   normal:  "var(--text-muted)",
+  warn:    TONE_COLOR.warn,
   bad:     "var(--coral-400)",
   unknown: "var(--text-muted)",
 };
@@ -244,6 +251,15 @@ function agePhrase(iso: string | null, nowMs: number): string {
  * log and is listed in the disclosure, labelled historical — it never decides
  * the word. When the evaluator has never run, nothing at all is known about
  * alerting, and that is `unknown` — not "0 firing", which would read as quiet.
+ *
+ * OBS-001 (drawer) — the evaluation's AGE gate is decided on the SERVER
+ * (`d.evaluatorOverdue`, the route's alertEvaluatorSilence with the server's
+ * clock — the Overview chip's thresholds, no second opinion). When overdue:
+ * the headline and firing rows say "at last evaluation (evaluator overdue)",
+ * never "now"; the "Last evaluated" line is warn-toned and placed FIRST so the
+ * lead-row split can never fold it into the disclosure; and the group is at
+ * least Caution (Action needed once the evaluator is dead). A fresh evaluation
+ * is worded exactly as before.
  */
 export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView {
   if (d.rules.length === 0) {
@@ -266,16 +282,23 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
   // B10 monitoring (S2 ruling) — a source that failed to gather left its rules blind:
   // "no rule firing" over it is not nominal. Warn (caution), name each source.
   const blind = unavailableAlertSources(d.latest);
+  const overdue = neverEvaluated ? null : d.evaluatorOverdue ?? null;
 
-  const status: HealthStatus = neverEvaluated ? "unknown" : anyCritical ? "critical" : firing.length > 0 || blind.length > 0 ? "caution" : "nominal";
+  const ownStatus: HealthStatus = neverEvaluated ? "unknown" : anyCritical ? "critical" : firing.length > 0 || blind.length > 0 ? "caution" : "nominal";
+  const status: HealthStatus = overdue ? worstStatus([ownStatus, overdue.dead ? "critical" : "caution"]) : ownStatus;
 
-  const headline = neverEvaluated
+  const freshHeadline = neverEvaluated
     ? "Never evaluated"
     : firing.length > 0
       ? `${firing.length} rule${firing.length === 1 ? "" : "s"} firing now`
       : blind.length > 0
         ? `No rule firing · ${blind.length} alert source${blind.length === 1 ? "" : "s"} unavailable`
         : `No rule firing · ${enabled} of ${d.rules.length} enabled`;
+  const headline = !overdue
+    ? freshHeadline
+    : firing.length > 0
+      ? firingAtLastEvaluationOverdue(firing.length)
+      : `No rule firing at last evaluation (${EVALUATOR_OVERDUE})`;
 
   const blindLines: HealthLine[] = blind.map((k): HealthLine => ({
     label: alertSourceUnavailableSentence(k),
@@ -285,16 +308,25 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
 
   const firingLines: HealthLine[] = firing.map((r): HealthLine => ({
     label: titleOf(r.id),
-    detail: `firing now · ${r.breaches} breach${r.breaches === 1 ? "" : "es"} · ${r.severity ?? "severity not recorded"}`,
+    detail: `${overdue ? "firing at last evaluation" : "firing now"} · ${r.breaches} breach${r.breaches === 1 ? "" : "es"} · ${r.severity ?? "severity not recorded"}`,
     tone: "bad",
   }));
 
+  // Overdue: the server's age, in the shared stale wording, warn-toned and FIRST.
+  const overdueLine: HealthLine[] = overdue
+    ? [{
+        label: "Last evaluated",
+        detail: `${lastEvaluatedStale(overdue.ageHours == null ? null : `${hoursWord(overdue.ageHours)} ago`)} · ${EVALUATOR_OVERDUE} (expected every ${overdue.cadenceHours} h)`,
+        tone: "warn",
+      }]
+    : [];
+
   const facts: HealthLine[] = [
-    {
+    ...(overdue ? [] : [{
       label: "Last evaluated",
       detail: neverEvaluated ? "Never — no evaluation recorded" : agePhrase(d.latest?.evaluatedAtISO ?? d.lastEvaluatedAt, nowMs),
       tone: neverEvaluated ? "unknown" : "normal",
-    },
+    } satisfies HealthLine]),
     {
       label: "Rules enabled",
       detail: dormant > 0 ? `${enabled} of ${d.rules.length} · ${dormant} dormant, awaiting an authority` : `${enabled} of ${d.rules.length}`,
@@ -316,13 +348,13 @@ export function alertsView(d: PlatformAlertsResponse, nowMs: number): SourceView
     tone: "normal",
   }));
 
-  const { lines, details } = splitLines([...firingLines, ...blindLines, ...facts]);
+  const { lines, details } = splitLines([...overdueLine, ...firingLines, ...blindLines, ...facts]);
   return {
     status,
     headline,
     lines,
     details: [...details, ...history],
-    note: `Firing means the latest evaluation. Recent firings (historical, last ${d.historyRuns} evaluation${d.historyRuns === 1 ? "" : "s"}): ${d.history.length} delivered — whether an alert is still open is not recorded anywhere.`,
+    note: `${overdue ? `Firing means the latest evaluation, which is ${lastEvaluatedStale(overdue.ageHours == null ? null : `${hoursWord(overdue.ageHours)} ago`)}. ` : "Firing means the latest evaluation. "}Recent firings (historical, last ${d.historyRuns} evaluation${d.historyRuns === 1 ? "" : "s"}): ${d.history.length} delivered — whether an alert is still open is not recorded anywhere.`,
   };
 }
 

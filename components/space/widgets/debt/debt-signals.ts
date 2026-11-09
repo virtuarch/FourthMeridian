@@ -27,6 +27,7 @@ import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-per
 import { computeDebtKpis } from "./debt-kpis";
 import { blendedRateLabel } from "@/lib/debt/rate-label";
 import { hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { displayedUtilizationPct } from "@/lib/accounts/credit-utilization";
 
 export type DebtSignalTone = "ok" | "warn";
 
@@ -53,7 +54,7 @@ export function buildDebtSignals({
 
   // 1. Utilization level (landed thresholds) — only when a revolving limit exists.
   if (kpis.utilizationPct != null && kpis.utilizationLevel != null) {
-    const pct = Math.round(kpis.utilizationPct);
+    const pct = displayedUtilizationPct(kpis.utilizationPct);
     switch (kpis.utilizationLevel) {
       case "over":
         signals.push({ id: "utilization", tone: "warn", text: `Credit utilization is over the limit (${pct}%)` });

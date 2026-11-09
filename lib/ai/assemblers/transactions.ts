@@ -112,8 +112,8 @@ import { selectDebtPaymentCashLegs } from '@/lib/transactions/debt-payment-autho
 // borrowing that funded them), never the raw payment total: purchases made on a
 // card are already inside `spending`, and subtracting their settlement as well
 // counted the same consumption twice.
-import { computeDebtService, netAfterDebtPaydown } from '@/lib/transactions/debt-service';
-import { UNSPLIT_LOAN_PAYMENT_AI_NOTE } from '@/lib/debt/liability-kind';
+import { computeDebtService, debtServiceBucket, debtServiceForAi, netAfterDebtPaydown, type DebtServiceLiability, type DebtServiceOptions } from '@/lib/transactions/debt-service';
+import { debtLabelAccess, isInstallmentLoanPaymentDetail, UNSPLIT_LOAN_PAYMENT_AI_NOTE } from '@/lib/debt/liability-kind';
 import { tierResolver, type LiquidityTx } from '@/lib/transactions/liquidity';
 import { resolveTransferAssessments } from '@/lib/transactions/transfer-resolution';
 import { dispositionForMaturity } from '@/lib/transactions/transfer-evidence';
@@ -745,7 +745,18 @@ async function assembleTransactions(
   // query reaches the payload.
   const spaceAccountTypes = await client.spaceAccountLink.findMany({
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
-    select: { financialAccount: { select: { id: true, type: true } } },
+    select: {
+      // Owner F6 — the link's visibility tier decides the unsplit-label variant a
+      // viewer may see (S2 PRIVACY P1-R1: COARSE ⇒ no "escrow"/mortgage disclosure).
+      visibilityLevel: true,
+      financialAccount: { select: {
+        id: true, type: true,
+        // Owner F6 — the canonical debt-type evidence (lib/debt/liability-kind.ts),
+        // so the debt-service decomposition can tell revolving paydown from
+        // unsplit installment-loan payments. Classification input only.
+        debtSubtype: true, providerSubtype: true, creditLimit: true,
+      } },
+    },
   });
   const accountTypeById = new Map(
     spaceAccountTypes.map((l) => [l.financialAccount.id, l.financialAccount.type]),
@@ -753,6 +764,23 @@ async function assembleTransactions(
   const liqCtx = tierResolver(
     spaceAccountTypes.map((l) => ({ id: l.financialAccount.id, type: l.financialAccount.type })),
   );
+  // Owner F6 — liability facts for the debt-service decomposition (revolving
+  // paydown vs unsplit installment-loan payments), through the viewer's tier.
+  const liabilityById = new Map<string, DebtServiceLiability>(
+    spaceAccountTypes
+      .filter((l) => l.financialAccount.type === 'debt')
+      .map((l) => [l.financialAccount.id, {
+        type:            l.financialAccount.type,
+        debtSubtype:     l.financialAccount.debtSubtype,
+        providerSubtype: l.financialAccount.providerSubtype,
+        creditLimit:     l.financialAccount.creditLimit == null ? null : Number(l.financialAccount.creditLimit),
+        labelAccess:     debtLabelAccess({ visibilityLevel: l.visibilityLevel }),
+      }]),
+  );
+  const debtServiceOpts: DebtServiceOptions = {
+    liabilityOf: (id) => liabilityById.get(id),
+    hasNonRevolvingLiability: [...liabilityById.values()].some((l) => debtServiceBucket(l) !== 'revolving'),
+  };
 
   // ── REVIEW-3 C-2 — the REAL canonical income classification ────────────────
   // Same gate and same evidence as the product DTO path
@@ -803,6 +831,10 @@ async function assembleTransactions(
       counterpartyAccountId: r.counterpartyAccountId ?? a?.counterpartyAccountId ?? null,
       transferMaturity:      a?.maturity ?? null,
       transferDisposition:   a?.maturity ? dispositionForMaturity(a.maturity) : null,
+      // Owner F6 — the provider's loan-type evidence: labels an unsplit loan
+      // payment (mortgage ⇒ escrow) and attributes a counted leg whose creditor
+      // account is not established. Same field lib/data/transactions.ts carries.
+      loanPaymentDetail:     isInstallmentLoanPaymentDetail(r.pfcDetailed) ? r.pfcDetailed : null,
       incomeClass:           attr?.incomeClass ?? null,
       incomeSubtype:         attr?.subtype ?? null,
     } as unknown as LiquidityTx;
@@ -1016,7 +1048,7 @@ async function assembleTransactions(
     const r = settledById.get(lr.id);
     if (!r || isNonEconomicResidue(r.flowType)) return null;
     return amountInTarget(r, moneyCtx).amount;
-  });
+  }, debtServiceOpts);
   const netAfterDebtPayments = netAfterDebtPaydown(netCashFlow, debtService);
 
   // ── Pending aggregation ───────────────────────────────────────────────────
@@ -1281,10 +1313,15 @@ async function assembleTransactions(
     // post-M1 D3 — the decomposition behind it, so the figure travels with its
     // reason: what was paid, what of it settled charges already in spending,
     // what was borrowed, and what is left as genuine paydown.
-    debtService,
+    // Owner F6 — the AI view: ONE unsplit loan-payment figure (connected
+    // installment loans + untracked loans) with its label; the internal
+    // untracked subset and kind are dropped so the model cannot add the subset
+    // to the total it is already inside.
+    debtService: debtServiceForAi(debtService),
     // Owner F6 — unsplit loan payments carry no verified P / I / escrow split;
-    // the model is told so explicitly whenever such payments are in the figure.
-    ...(debtService.untrackedLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}),
+    // the model is told so explicitly whenever such payments (tracked OR
+    // untracked) are in the window.
+    ...(debtService.unsplitLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}),
     estimated:        windowEstimated, // MC1 P3 Slice 4 (D-7) — data-only until Phase 4
 
     pendingCreditCount,

@@ -75,7 +75,7 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { describeMetric, isMetricAccessToken, type MetricAccessToken } from "./access";
-import { daysWindowLabel, drillLinkOn, hoursWindowLabel, metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
+import { daysWindowLabel, drillLinkOn, hoursWindowLabel, metricKey, metricStaleness, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
 import { assertAudienceToken, atOpsTier, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { DEFAULT_SEARCH } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery, IncidentSearchResult } from "@/lib/platform/incidents/intelligence/types";
@@ -254,7 +254,15 @@ export interface MetricEnvelope {
    * s.cycle.start); null when the reader gives none.
    */
   window: { kind: MetricDefinition["window"]["kind"]; description: string; days: number | null; hours: number | null; label: string | null; start: string | null };
-  freshness: { asOf: string | null; source: string };
+  /**
+   * `asOf` = when the figure was true (the reader's clock; for alerts-firing-now the
+   * latest evaluation). `maxAgeMs` = the registry's staleness limit for this metric;
+   * `stale` = stamped at retrieval with the server's clock (registry metricStaleness):
+   * true ⇔ the envelope carries a figure and asOf is missing, unreadable or older than
+   * maxAgeMs. A stale figure is never presented as current (Platform AI words it "last
+   * evaluated <time>, may be out of date"). Optional only so older fixtures type.
+   */
+  freshness: { asOf: string | null; source: string; maxAgeMs?: number; stale?: boolean };
   coverage: { gaps: readonly string[]; missing: readonly string[] };
   /**
    * `kind` is "estimated" for a rate-card figure (provenance ESTIMATED: every dollar
@@ -1097,7 +1105,7 @@ function subjectsOnly(xs: readonly MetricSubject[]): MetricSubject[] {
 /** The reader's window start, kept only when it is exactly an ISO date (YYYY-MM-DD); anything else ⇒ null. */
 const isoDateOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
-function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null, code: UnavailableCode | null = null): MetricEnvelope {
+function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null, code: UnavailableCode | null = null, now: Date = new Date()): MetricEnvelope {
   const m = scope.definition;
   const base: MetricEnvelope["status"] = m.provenance.class === "ESTIMATED" ? "ESTIMATED" : "MEASURED";
   let value = p.value;
@@ -1144,7 +1152,8 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     reason,
     unavailableCode: status === "UNAVAILABLE" ? code ?? "NO_FIGURE" : null,
     window: { kind: m.window.kind, description: m.window.description, days, hours, label: windowLabel, start: isoDateOrNull(p.start) },
-    freshness: { asOf: p.asOf, source: m.freshnessSource },
+    // Staleness: only a figure can be stale (an UNAVAILABLE envelope has none to present).
+    freshness: { asOf: p.asOf, source: m.freshnessSource, maxAgeMs: m.maxAgeMs, stale: status !== "UNAVAILABLE" && metricStaleness(p.asOf, m.maxAgeMs, now.getTime()).stale },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
     ...(p.subjects !== undefined ? { subjects: status === "UNAVAILABLE" ? null : subjectsOnly(p.subjects) } : {}),
     basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
@@ -1171,7 +1180,7 @@ export async function retrieveWith(
   if (!scope) return null;
   const entry = RETRIEVAL[metricKey(scope.definition)];
   const unavailable = (code: UnavailableCode, reason: string, unit: MetricEnvelope["unit"] = "count", units: ValueUnits | null = null, est: EstimatedParts | null = null) =>
-    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est, code);
+    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est, code, now);
 
   if (!entry) return unavailable("NOT_RETRIEVABLE", "not retrievable: this metric version has no retrieval contract");
   if (entry.kind === "NOT_RETRIEVABLE") return unavailable("NOT_RETRIEVABLE", `not retrievable: ${entry.reason}`);
@@ -1196,7 +1205,7 @@ export async function retrieveWith(
 
   try {
     const p = await entry.read({ readers, tier: scope.tier, incident, window, now });
-    return envelope(scope, entry.unit, p, entry.valueUnits, entry.estimatedParts ?? null);
+    return envelope(scope, entry.unit, p, entry.valueUnits, entry.estimatedParts ?? null, null, now);
   } catch {
     // The reader's error text never enters the envelope (it could carry identifiers).
     return unavailable("READER_FAILED", `the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit, entry.valueUnits, entry.estimatedParts ?? null);

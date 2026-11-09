@@ -28,7 +28,7 @@ import type { DebtType, LiabilityKind } from '@/lib/debt/liability-kind';
 import type { AiPropertyFacts } from '@/lib/assets/property-equity';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
-import type { DebtService } from "@/lib/transactions/debt-service";
+import type { DebtServiceAiView } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
 import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
@@ -1083,8 +1083,11 @@ export interface TransactionsSummaryData {
    */
   netCashFlow:       number;
   /**
-   * netCashFlow − debtService.netPaydown: the economic net after the cash that
-   * genuinely went to REDUCING debt. A SEPARATE, named measure — never the
+   * netCashFlow − debtService.netPaydown − debtService.unsplitLoanPayments: the
+   * economic net after the cash that reduced REVOLVING debt and after every
+   * unsplit loan payment (owner F6 — installment-loan payments are debt
+   * service, principal + interest[ + escrow] not split; never "paydown"). The
+   * total subtracted is identical to the pre-F6 figure. A SEPARATE, named measure — never the
    * headline net (a debt payment is capital directed at a goal, not
    * consumption). Always ≤ netCashFlow.
    *
@@ -1102,15 +1105,18 @@ export interface TransactionsSummaryData {
    * post-M1 D3 — what the cash sent toward liabilities in this window actually
    * did (lib/transactions/debt-service.ts): `payments` (=== debtPaymentTotal),
    * the `newChargesOnLiabilities` they settle (a SUBSET of expenseTotal — never
-   * add the two), attested `debtProceeds`, and the resulting `netPaydown` /
-   * `netNewBorrowing`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
+   * add the two), attested `debtProceeds`, the resulting REVOLVING `netPaydown`
+   * / `netNewBorrowing`, and owner F6's ONE unsplit loan-payment figure
+   * `unsplitLoanPayments` (connected installment + untracked loans) with its
+   * `unsplitLoanPaymentLabel`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
    * (lib/debt/aggregates.ts), not the payoff planner's chosen payment
    * (lib/debt/payoff.ts), not L1's projected minimums (scenario-ledger.ts).
    * Optional only so fixtures that predate it still compile.
    */
-  debtService?: DebtService;
+  debtService?: DebtServiceAiView;
   /**
-   * Owner F6 — present only when `debtService.untrackedLoanPayments` > 0: the
+   * Owner F6 — present whenever `debtService.unsplitLoanPayments` > 0 (connected
+   * installment-loan payments OR untracked loan payments in the window): the
    * explicit statement that principal, interest and escrow of those unsplit
    * payments are not individually verified (UNSPLIT_LOAN_PAYMENT_AI_NOTE).
    */
