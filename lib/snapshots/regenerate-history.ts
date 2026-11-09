@@ -57,7 +57,7 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import {
-  regenerateDay, revokedLinkContributionWindow, blockingRevokedLinks, restrictedCashWriteData,
+  regenerateDay, revokedLinkContributionWindow, blockingRevokedLinks, restrictedCashWriteData, installmentDebtWriteData,
   type DayRegenInput, type DayRegenResult, type RevokedLinkFacts, type RevokedLinkWindow,
 } from "@/lib/snapshots/regenerate-history.core";
 import {
@@ -882,6 +882,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // like. A field absent here would always look "changed" and be rewritten.
       stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
       netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+      // Mortgage F1b — NOT a diffed field (kept out of SnapshotFields): read so a
+      // PRESERVED debt component keeps the row's own recorded installment share.
+      installmentDebt: true,
     },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
@@ -978,6 +981,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
     restrictedCash?: number | null; // FIN-E part 2 — undefined = preserved cash, leave the column untouched
+    installmentDebt?: number; // Mortgage F1b — undefined = preserved debt, leave the column untouched
   }> = [];
 
   /**
@@ -999,6 +1003,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
     restrictedCash?: number | null; // FIN-E part 2 — undefined = preserved cash, leave the column untouched
+    installmentDebt?: number; // Mortgage F1b — undefined = preserved debt, leave the column untouched
   }> = [];
 
   for (const dISO of candidateDates) {
@@ -1218,6 +1223,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
             cash: prior.cash, savings: prior.savings, debt: prior.debt,
             netWorth: prior.netWorth, totalAssets: prior.totalAssets,
             netLiquid: prior.netLiquid, cashOnHand: prior.cashOnHand,
+            installmentDebt: prior.installmentDebt,
           }
         : null,
       base: {
@@ -1314,6 +1320,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
         restrictedCash: res.restrictedCash,
+        installmentDebt: res.installmentDebt,
       });
     }
     if (plan.write && res.fields) {
@@ -1330,6 +1337,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
         restrictedCash: res.restrictedCash,
+        installmentDebt: res.installmentDebt,
       });
     }
 
@@ -1378,6 +1386,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // FIN-E part 2 — only when this run recomputed the day's cash; a preserving
         // write leaves the stored restrictedCash untouched (S2 review).
         ...restrictedCashWriteData(w),
+        // Mortgage F1b — only when this run recomputed the day's debt.
+        ...installmentDebtWriteData(w),
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
@@ -1413,6 +1423,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           // FIN-E part 2 — only when this run recomputed the cash; a preserved
           // cash component leaves the stored restrictedCash untouched.
           ...restrictedCashWriteData(p),
+          // Mortgage F1b — only when this run recomputed the day's debt.
+          ...installmentDebtWriteData(p),
           ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
         },
       });
@@ -1468,7 +1480,8 @@ async function verifyLiabilitySeries(
   const rows = await client.spaceSnapshot.findMany({
     where: { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
     select: { date: true, debt: true, isEstimated: true, stocks: true, crypto: true, total: true,
-              cash: true, savings: true, netWorth: true, totalAssets: true, netLiquid: true },
+              cash: true, savings: true, netWorth: true, totalAssets: true, netLiquid: true,
+              installmentDebt: true },
     orderBy: { date: "asc" },
   });
   if (rows.length === 0) return { checked: 0, healthy: true, violations: [], unverifiableAccountIds: [] };

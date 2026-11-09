@@ -49,7 +49,13 @@ export function projectWealthTrendPoints(
       // tooltip says "not a market price" — never observed, and not merely
       // "rebuilt" either. Only the two series that contain real assets.
       ...(p.realAssetsModeled && p.isEstimated && REAL_ASSET_SERIES.has(metric) ? { basis: "modeled" as const } : {}),
-    })), balanceCoverage ?? null, balanceCoverageSidesFor(metric));
+    })), balanceCoverage ?? null, balanceCoverageSidesFor(metric))
+      // Mortgage F1b — a Liquid NW point on the PREVIOUS definition (per-row
+      // basis) is its own segment, never one line with the current definition.
+      // Applied LAST so no other classification can re-join it to the current line.
+      .map((tp, i) => metric === "liquidNetWorth" && points[i].liquidBasisPrevious
+        ? { ...tp, basis: "previousDefinition" as const }
+        : tp);
   }
   const byDate = new Map(investedSeries.map((p) => [p.date, p] as const));
   const out: TrendPoint[] = [];

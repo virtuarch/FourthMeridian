@@ -75,8 +75,9 @@ export function WealthTrendChart({
       emptyMessage="No snapshot history in this range yet. Widen the range or connect accounts to build history."
       formatDate={formatWealthDate}
       headerRight={headerRight}
-      // Mortgage F1 — the liquid-NW definition change is annotated where it happened.
-      markers={liquidNetWorthChartMarkers(metric)}
+      // Mortgage F1b — annotated at the first current-definition point after a
+      // previous-definition one (per-row basis, never a date constant).
+      markers={liquidNetWorthChartMarkers(metric, result.chart.points)}
     />
   );
 }

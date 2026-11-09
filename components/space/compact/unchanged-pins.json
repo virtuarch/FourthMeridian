@@ -30,9 +30,10 @@
  "lib/debt/balance-semantics.ts": "62518023cefb3d8c3513dea5f187d1f4f976e76578ff4a4382e070a70bfd0002",
  "lib/debt/display-conversion.ts": "24dde3d88f7d640a96ee1194b8937e1175f317aa1fe3eba837445ee73e2f5c70",
  "lib/debt/effective-terms.ts": "e4ac4a1bd92cc233f077ec769fe342c0e7e0b3635211df5891035136ded960a5",
+ "lib/debt/installment-history.ts": "f7f9462396ee2c923ff1b50144d5b0d9f62b144db997dd7522287d729278119e",
  "lib/debt/interest-cost.ts": "6401bdc97e2d7d0492f5ee092bc9e5577c7d6d8f1775f8306bbc4128286af366",
  "lib/debt/liability-kind.ts": "88c78f20defdbadc4b751fa255c8260a67efc72b856aa035dab8b5faf772d6e2",
- "lib/debt/liquid-net-worth.ts": "ed266fc8c677e566513a8ceaf87bc1129ac61c82656e0523cdd74e41cf5edcf3",
+ "lib/debt/liquid-net-worth.ts": "36c9aa05325588e7d9d656d9c05038d64af25a01d8f60733538a73c25657c7ee",
  "lib/debt/payoff.ts": "c308a2dc13f80c82445698491bfe0b48f0bb40a81ad5e4f00c28e8d8b2088227",
  "lib/debt/rate-label.ts": "e637d06197f554784dd2167a94cf22bfdea8d357e255cb725ea3f182e7a74b1d",
  "lib/debt/user-terms.ts": "abd6410ba0b49041a5d46d4b57f67c725c96802e30d15d20ee3fef24344fceae",
@@ -178,5 +179,5 @@
  "lib/transactions/transfer-maturation.ts": "d0b3718c9038decac37b321d929b39598d9728858bb5badf13fb8611d50402df",
  "lib/transactions/transfer-resolution.ts": "87a181d169a8bb2c0fafe0342be1596c4e4d89418d8399acc41c549d18d24018",
  "lib/wealth/invested-label.ts": "689a2d080b5832b8fd3e459871a56bb9e6e7213c900e97fc7463c002f874218f",
- "lib/wealth/wealth-time-machine.ts": "1a8b55f50c84e234dab4fa9bf79dd04e17035c13b25b9dedf1943c53e2d2ba6f"
+ "lib/wealth/wealth-time-machine.ts": "0571745693997f77741c6322d9052895741035736ffdfd08f37ea3949dda791e"
 }

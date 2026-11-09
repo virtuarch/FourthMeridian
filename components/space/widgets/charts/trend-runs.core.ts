@@ -49,7 +49,14 @@ export type TrendBasis =
    * latest estimate carried forward, never projected. Only the per-asset history
    * chart passes these; every existing chart is unchanged.
    */
-  | "recorded" | "modeled" | "carried";
+  | "recorded" | "modeled" | "carried"
+  /**
+   * Mortgage F1b — a Liquid NW point recorded on the PREVIOUS definition
+   * (installment loans subtracted; per-row basis). Not a different quality of
+   * the same measurement but a different QUANTITY, so it is never joined to a
+   * current-definition run (`joinsAcrossSeam`): the two never share one line.
+   */
+  | "previousDefinition";
 
 /** A trend point with its epoch time resolved. Index-stable across all three functions. */
 export interface TrendGeomPoint {
@@ -192,4 +199,14 @@ export function toBasisSeams(pts: readonly TrendGeomPoint[], gapDays: number): T
     });
   }
   return out;
+}
+
+/**
+ * Whether the chart may JOIN the run after a basis seam to the run before it
+ * (v2.7: adjacent runs on different evidence bases flow on in the new style).
+ * Mortgage F1b — never across a definition change: a "previous definition"
+ * value and a current one measure different quantities, so the line breaks.
+ */
+export function joinsAcrossSeam(seam: Pick<TrendBasisSeam, "fromBasis" | "toBasis">): boolean {
+  return seam.fromBasis !== "previousDefinition" && seam.toBasis !== "previousDefinition";
 }

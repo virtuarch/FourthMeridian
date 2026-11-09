@@ -45,7 +45,7 @@
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
 import { ALL_CASH_HISTORY_AI_NOTE, UNRESTRICTED_HISTORY_AI_NOTE, cashHistoryBasisOf, cashOnBasis } from '@/lib/liquidity/cash-history';
-import { NET_LIQUID_HISTORY_AI_NOTE } from '@/lib/debt/liquid-net-worth';
+import { NET_LIQUID_HISTORY_AI_NOTE, liquidNetWorthRowBasis } from '@/lib/debt/liquid-net-worth';
 /**
  * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
  * HOLDS NO CLIENT AT ALL.
@@ -171,6 +171,13 @@ export function projectSnapshotSection(
       digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
       cashOnHand:    r.cashOnHand,
       netLiquid:     liquidBasis === 'UNRESTRICTED' ? (r.netLiquid ?? 0) - (r.restrictedCash as number) : r.netLiquid ?? 0,
+      // Mortgage F1b — THIS point's liquid-NW definition, read from its stored
+      // row (installmentDebt recorded / legacy aggregates), never from its date.
+      netLiquidBasis: liquidNetWorthRowBasis({
+        cash: r.totalCash, savings: r.totalSavings, debt: r.totalDebt,
+        netLiquid: r.netLiquid ?? (r.totalCash + r.totalSavings - r.totalDebt),
+        installmentDebt: r.installmentDebt ?? null,
+      }),
       ...(contaminated
         ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
         : {}),
@@ -281,7 +288,8 @@ export function projectSnapshotSection(
     // its restricted share, so the points are on `totalLiquid`'s basis.
     liquidBasis,
     liquidBasisNote:  liquidBasis === 'UNRESTRICTED' ? UNRESTRICTED_HISTORY_AI_NOTE : ALL_CASH_HISTORY_AI_NOTE,
-    // Mortgage F1 — the definition beside every historical netLiquid.
+    // Mortgage F1/F1b — the definition beside every historical netLiquid; each
+    // point carries its own `netLiquidBasis` (old vs new definition, per row).
     netLiquidNote:    NET_LIQUID_HISTORY_AI_NOTE,
     oldestDate:       oldest.date,
     newestDate:       latest.date,

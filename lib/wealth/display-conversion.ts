@@ -63,6 +63,8 @@ function convertSnapshot(s: Snapshot, from: string, ctx: ConversionContext): Sna
     cashOnHand:       conv(s.cashOnHand),
     // FIN-E part 2 — converted at the same rate when recorded; absent stays absent.
     ...(typeof s.restrictedCash === "number" ? { restrictedCash: conv(s.restrictedCash) } : {}),
+    // Mortgage F1b — the recorded installment share, same rate; absent stays absent.
+    ...(typeof s.installmentDebt === "number" ? { installmentDebt: conv(s.installmentDebt) } : {}),
   };
   return missed ? { ...next, fxMiss: true } : next;
 }

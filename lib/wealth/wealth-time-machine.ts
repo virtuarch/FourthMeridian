@@ -27,7 +27,7 @@
 
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — `fmt` below is used ONLY by the story sentence
 import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
-import { LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthDefinitionChange } from "@/lib/debt/liquid-net-worth";
+import { LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthDefinitionChange, liquidNetWorthRowBasis, type StoredLiquidRow } from "@/lib/debt/liquid-net-worth";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -68,10 +68,11 @@ export interface WealthComposition {
    */
   liquidDebt:  number;
   /**
-   * Mortgage F1 (S2 B1) — DELTA-ONLY: 0 on every state. In a change measured
-   * across LIQUID_NW_INSTALLMENT_EXCLUSION_FROM from an old-basis row, the part
-   * of the liquid-NW change that is the definition change (installment loans no
-   * longer subtracted) — never reported as liquid-debt movement.
+   * Mortgage F1/F1b (S2) — DELTA-ONLY: 0 on every state. In a change between
+   * two rows on DIFFERENT liquid-NW bases (per-row, `liquidNetWorthRowBasis` —
+   * never a date), the part of the liquid-NW change that is the definition
+   * change (installment loans no longer subtracted) — never reported as
+   * liquid-debt movement. Same-basis comparisons carry 0 here and are exact.
    */
   liquidDefinitionChange: number;
 }
@@ -137,6 +138,13 @@ export interface WealthChartPoint extends WealthMetrics {
    * and `totalAssets` include that component; the other series never did.
    */
   realAssetsModeled?: true;
+  /**
+   * Mortgage F1b — present (true) ONLY when this point's stored row is on the
+   * PREVIOUS liquid-NW definition (installment loans subtracted; per-row basis).
+   * Its `liquidNetWorth` is not comparable with a current-definition point, so
+   * the Liquid NW chart draws it as a separate "previous definition" segment.
+   */
+  liquidBasisPrevious?: true;
 }
 
 export interface WealthDriver {
@@ -256,6 +264,20 @@ function toChartPoint(s: Snapshot): WealthChartPoint {
     cash: st.cash, invested: st.invested,
     // RWA-2B — only ever carried, never decided here; absent ⇒ byte-identical.
     ...(s.realAssetsModeled && st.isEstimated ? { realAssetsModeled: true as const } : {}),
+    // Mortgage F1b — the row's own liquid-NW basis; absent ⇒ current definition.
+    // D2: a legacy row of a Space that never held an installment liability
+    // (`liquidLegacyRowsCurrent`) is presented as the current definition.
+    ...(liquidNetWorthRowBasis(storedLiquidRow(s)) === "INSTALLMENTS_SUBTRACTED" && !s.liquidLegacyRowsCurrent
+      ? { liquidBasisPrevious: true as const } : {}),
+  };
+}
+
+/** Mortgage F1b — a Snapshot DTO's stored liquid-NW columns (installmentDebt absent ⇒ legacy row). */
+function storedLiquidRow(s: Snapshot): StoredLiquidRow {
+  return {
+    cash: s.totalCash, savings: s.totalSavings, debt: s.totalDebt,
+    netLiquid: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    installmentDebt: s.installmentDebt ?? null,
   };
 }
 
@@ -274,8 +296,11 @@ function addDaysIso(iso: string, n: number): string {
  * last-match-wins scan; `preferOnTie: always-replace` reproduces that exactly
  * even were two rows to share a date.
  */
+function resolveSnapshot(sorted: Snapshot[], date: string): Snapshot | null {
+  return nearestOnOrBefore(sorted, date, (s) => s.date, { preferOnTie: () => true }) ?? null;
+}
 function resolveState(sorted: Snapshot[], date: string): WealthState {
-  const picked = nearestOnOrBefore(sorted, date, (s) => s.date, { preferOnTie: () => true });
+  const picked = resolveSnapshot(sorted, date);
   return picked ? { ...toState(picked), found: true } : EMPTY_STATE;
 }
 
@@ -354,12 +379,14 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   let drivers: WealthDriver[] | null = null;
   if (asOfState.found && compareState?.found) {
     const c = compareState;
-    // Mortgage F1 (S2 B1) — a window crossing the definition change from an
-    // old-basis row: that part is its own driver, and liquidDebt's delta is
-    // restated so the mortgage is never reported as liquid debt paid down.
+    // Mortgage F1b (S2) — the two rows' liquid-NW BASES (per row, never a
+    // date) decide: different bases ⇒ the definition change is its own driver
+    // (= the new-basis row's installment debt) and liquidDebt's delta is
+    // restated so the mortgage is never reported as liquid debt paid down; the
+    // same basis ⇒ 0, and the comparison is exact.
     const definitionChange = liquidNetWorthDefinitionChange(
-      { date: c.date!, cash: c.composition.cash, savings: 0, debt: c.totalLiabilities, netLiquid: c.liquidNetWorth },
-      { date: asOfState.date!, cash: asOfState.composition.cash, savings: 0, debt: asOfState.totalLiabilities, netLiquid: asOfState.liquidNetWorth },
+      storedLiquidRow(resolveSnapshot(series, compareTo!)!),
+      storedLiquidRow(resolveSnapshot(series, asOf)!),
     );
     deltas = {
       netWorth:         delta(asOfState.netWorth, c.netWorth),

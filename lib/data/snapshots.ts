@@ -216,6 +216,9 @@ export async function getRecentSnapshots(
       // FIN-E part 2 — only when RECORDED (null = not recorded, never 0), so a
       // row without it is byte-identical; converted with the rest when present.
       ...(typeof r.restrictedCash === "number" ? { restrictedCash: r.restrictedCash as number } : {}),
+      // Mortgage F1b — only when RECORDED (null = legacy row, whose liquid-NW
+      // basis is then read from its aggregates); converted with the rest.
+      ...(typeof r.installmentDebt === "number" ? { installmentDebt: r.installmentDebt as number } : {}),
     };
 
     // V26-INVESTMENTS-HISTORY / V26-CRYPTO-STATUS-1 / v2.6-A — the row's
@@ -395,6 +398,7 @@ export async function getSpaceNetWorthSummaries(
       spaceId: true, date: true, reportingCurrency: true,
       stocks: true, crypto: true, total: true, cash: true, savings: true, debt: true,
       netWorth: true, totalAssets: true, netLiquid: true, cashOnHand: true,
+      installmentDebt: true,
       isEstimated: true, cryptoValuationStatus: true,
       completenessTier: true, contributingComponentCount: true, totalComponentCount: true,
     },
