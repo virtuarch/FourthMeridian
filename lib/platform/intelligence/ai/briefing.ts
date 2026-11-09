@@ -29,14 +29,24 @@
  *   A4  the composed answer is returned as TypedAnswerSegment[] (figure / text / link), so
  *       conversations store and replay it exactly like any other answer.
  *
+ * STALE (owner rule: stale facts are never shown as current). Every envelope a composer
+ * uses is checked (isStaleEnvelope: the registry's per-metric maxAgeMs stamped at retrieval,
+ * or a missing / unreadable asOf). A stale envelope's facts are worded "at last evaluation"
+ * (never "now"), end with "(last evaluated <time>, may be out of date)" — the shared
+ * phrasebook Platform Ops uses — and their figures carry figureClass "STALE"; a stale
+ * envelope that yields no fact is still SAID (never "looks fine"); its domain is STALE,
+ * not OK. A stale signal never triggers a derived section: costs are read for alerts
+ * only when FRESH alerts are firing (alertsFiring).
+ *
  * PURE apart from the injected binding / tool executor. Imports from ./core are used only
  * inside functions (core imports this module; no top-level use of core's exports).
  */
 
 import type { MetricEnvelope, MetricSubject } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { AT_LAST_EVALUATION } from "@/lib/platform/stale-wording";
 import {
-  BRIEFING_DOMAINS, BRIEFING_NOT_YET_COVERED, LINK_LABEL_MAX, envelopeWindowText, quotableWindowPhrase, renderLabel, renderPlaceholder,
-  resolvePlaceholders, sanitiseAnswer,
+  BRIEFING_DOMAINS, BRIEFING_NOT_YET_COVERED, LINK_LABEL_MAX, envelopeWindowText, isStaleEnvelope, quotableWindowPhrase, renderLabel, renderPlaceholder,
+  resolvePlaceholders, sanitiseAnswer, staleQualifierOf, staleSubjectLabel,
   type DigitKind, type NumberWordFamily, type PlaceholderVerdict, type PlatformAiBinding, type ReasonCounts, type ToolEvidence, type TypedAnswerSegment,
 } from "./core";
 
@@ -108,10 +118,14 @@ export function classifyBriefingQuestion(scrubbedQuestion: string): BriefingClas
 
 export type BriefingCostReason = "ASKED" | "ALERT_FIRING";
 
-/** A2 — the server's "anomalous": alerts-firing-now read this turn with a firing rule. */
+/**
+ * A2 — the server's "anomalous": alerts-firing-now read this turn with a firing rule, and
+ * FRESH. A stale evaluation (past the registry's maxAgeMs, or no readable evaluation time)
+ * says what WAS firing, not what is — it never triggers the cost section.
+ */
 export function alertsFiring(envelopes: readonly MetricEnvelope[]): boolean {
   const e = envelopes.find((x) => x.metric === "alerts-firing-now@1" && x.status !== "UNAVAILABLE");
-  return !!e && num(e, "firing") !== null && num(e, "firing")! > 0;
+  return !!e && !isStaleEnvelope(e) && num(e, "firing") !== null && num(e, "firing")! > 0;
 }
 
 /**
@@ -154,9 +168,20 @@ const exact = (e: MetricEnvelope, part: string | null) => e.status !== "PARTIAL"
  * "about … (estimated)" for an estimate), with the window left to the sentence (stated once).
  */
 function fig(e: MetricEnvelope, part: string | null, estimated: boolean): Seg | null {
-  const text = renderPlaceholder(e, part, estimated, { window: false });
+  // STALE: the sentence states the stale wording once (withStaleTail); the figure carries the class.
+  const text = renderPlaceholder(e, part, estimated, { window: false, stale: false });
   if (text === null) return null;
-  return { kind: "figure", text, metric: e.metric, window: e.window.days ?? envelopeWindowText(e) };
+  return { kind: "figure", text, metric: e.metric, window: e.window.days ?? envelopeWindowText(e), ...(isStaleEnvelope(e) ? { figureClass: "STALE" as const } : {}) };
+}
+
+/** STALE — the sentence ends "(last evaluated <time>, may be out of date)." (server text, the shared phrasebook). */
+function withStaleTail(segs: readonly Seg[], e: MetricEnvelope): Seg[] {
+  const out = segs.map((x) => ({ ...x }));
+  const tail = ` (${staleQualifierOf(e)}).`;
+  const last = out[out.length - 1];
+  if (last?.kind === "text" && /\.$/.test(last.text)) last.text = `${last.text.slice(0, -1)}${tail}`;
+  else out.push(t(tail));
+  return out;
 }
 
 const t = (text: string): Seg => ({ kind: "text", text });
@@ -212,9 +237,11 @@ function tidy(segs: readonly Seg[]): Seg[] {
 // ── A2: per-metric facts ────────────────────────────────────────────────────
 
 /** One composed sentence. `issue` = something is wrong; `topic` = a figure-free server phrase (the model's context). */
-export interface BriefingFact { domain: string; metric: string; issue: boolean; topic: string; segs: Seg[]; /** S1: customer impact or a FAILED state (selected first for the size cap). */ severe?: boolean }
+export interface BriefingFact { domain: string; metric: string; issue: boolean; topic: string; segs: Seg[]; /** S1: customer impact or a FAILED state (selected first for the size cap). */ severe?: boolean;
+  /** STALE: composed from an envelope that is not current (worded "at last evaluation", never "now"). */ stale?: true }
 
-type Composer = (e: MetricEnvelope, est: boolean) => Omit<BriefingFact, "domain" | "metric">[];
+/** `stale` ⇒ the envelope is not current: a composer that would say "now" says "at last evaluation" instead. */
+type Composer = (e: MetricEnvelope, est: boolean, stale: boolean) => Omit<BriefingFact, "domain" | "metric">[];
 
 const issue = (topic: string, segs: (Seg | null)[]) => ({ issue: true, topic, segs: segs.filter((x): x is Seg => x !== null) });
 const info = (topic: string, segs: (Seg | null)[]) => ({ issue: false, topic, segs: segs.filter((x): x is Seg => x !== null) });
@@ -228,16 +255,19 @@ const COMPOSERS: Readonly<Record<string, Composer>> = {
     if (unknown !== null && unknown > 0) return [info("platform domains with nothing to judge", [fig(e, "unknown", est), t(` platform ${unknown === 1 ? "domain" : "domains"} had nothing to judge.`)])];
     return [];
   },
-  "alerts-firing-now@1": (e, est) => {
+  "alerts-firing-now@1": (e, est, stale) => {
     const firing = num(e, "firing"), critical = num(e, "firingCritical"), blind = num(e, "sourcesUnavailable");
     if (firing !== null && firing > 0) {
-      return [issue("alert rules firing", [fig(e, "firing", est), t(` alert ${firing === 1 ? "rule is" : "rules are"} firing now`),
+      return [issue(stale ? `alert rules firing ${AT_LAST_EVALUATION} (may be out of date)` : "alert rules firing", [fig(e, "firing", est),
+        t(stale ? ` alert ${firing === 1 ? "rule was" : "rules were"} firing ${AT_LAST_EVALUATION}` : ` alert ${firing === 1 ? "rule is" : "rules are"} firing now`),
         ...(critical !== null && critical > 0 ? [t(", "), fig(e, "firingCritical", est), t(" of them critical")] : []), t(`${subjectsTail(e, ["firing", "firing-critical"])}.`)])];
     }
     if (blind !== null && blind > 0) {
-      return [info("alert sources that could not be read", [t("No alert is firing, but "), fig(e, "sourcesUnavailable", est), t(` alert ${blind === 1 ? "source" : "sources"} couldn't be read, so rules over them can't fire.`)])];
+      return [info("alert sources that could not be read", [t(stale ? `No alert was firing ${AT_LAST_EVALUATION}, but ` : "No alert is firing, but "), fig(e, "sourcesUnavailable", est),
+        t(stale ? ` alert ${blind === 1 ? "source" : "sources"} couldn't be read then, so rules over them couldn't fire.` : ` alert ${blind === 1 ? "source" : "sources"} couldn't be read, so rules over them can't fire.`)])];
     }
-    return [];
+    // STALE and quiet: a stale "nothing firing" is never "fine" — it is said, with its time (withStaleTail).
+    return stale ? [info("alert evaluation out of date", [t(`No alert rule was firing ${AT_LAST_EVALUATION}.`)])] : [];
   },
   "customer-impact-24h@1": (e, est) => {
     const list = countList(e, [
@@ -257,9 +287,12 @@ const COMPOSERS: Readonly<Record<string, Composer>> = {
     const n = num(e, null);
     return n !== null && n > 0 ? [issue("customers needing help", [fig(e, null, est), t(` ${n === 1 ? "customer needs" : "customers need"} help from Customer Success.`)])] : [];
   },
-  "incident-broken-now@1": (e, est) => {
+  "incident-broken-now@1": (e, est, stale) => {
     const n = num(e, null);
-    return n !== null && n > 0 ? [issue("incidents broken now", [fig(e, null, est), t(` ${n === 1 ? "incident is" : "incidents are"} broken now.`)])] : [];
+    if (n === null || n <= 0) return [];
+    return stale
+      ? [issue(`incidents broken ${AT_LAST_EVALUATION} (may be out of date)`, [fig(e, null, est), t(` ${n === 1 ? "incident was" : "incidents were"} broken ${AT_LAST_EVALUATION}.`)])]
+      : [issue("incidents broken now", [fig(e, null, est), t(` ${n === 1 ? "incident is" : "incidents are"} broken now.`)])];
   },
   "incident-needs-verification@1": (e, est) => {
     const n = num(e, null);
@@ -333,7 +366,8 @@ const COMPOSERS: Readonly<Record<string, Composer>> = {
 // ── A2: the composition ─────────────────────────────────────────────────────
 
 /** A domain's state in THIS briefing (tests pin every one). */
-export type BriefingDomainState = "OK" | "ATTENTION" | "UNAVAILABLE" | "NOT_PERMITTED" | "NOT_READ";
+/** STALE = nothing wrong was found, but a figure it was judged from is not current (never "fine"). */
+export type BriefingDomainState = "OK" | "ATTENTION" | "STALE" | "UNAVAILABLE" | "NOT_PERMITTED" | "NOT_READ";
 
 /** How each domain is named in a sentence (protocol order = BRIEFING_DOMAINS order). */
 const DOMAIN_NAME: Readonly<Record<string, { ok: string; unavailable: string; access: string }>> = {
@@ -387,11 +421,22 @@ export function composeBriefing(
       continue;
     }
     const mine: BriefingFact[] = [];
-    for (const e of ok) for (const f of (COMPOSERS[e.metric]?.(e, isEst(e.metric)) ?? [])) if (f.segs.length) mine.push({ ...f, domain: d.key, metric: e.metric, severe: f.issue && isSevere(e, f.topic, d.key) });
+    let staleRead = false;
+    for (const e of ok) {
+      // STALE: EVERY envelope is checked before it speaks (registry maxAgeMs, or no readable asOf).
+      const stale = isStaleEnvelope(e);
+      if (stale) staleRead = true;
+      const composed = (COMPOSERS[e.metric]?.(e, isEst(e.metric), stale) ?? []).filter((f) => f.segs.length);
+      // A stale envelope with no sentence of its own is still SAID — never silently counted as fine.
+      if (stale && composed.length === 0) composed.push(info("figures out of date", [t(`${cap(staleSubjectLabel(binding.describeMetric(e.metric)?.label ?? e.metric))} showed no issue.`)]));
+      for (const f of composed) {
+        mine.push({ ...f, segs: stale ? withStaleTail(f.segs, e) : f.segs, domain: d.key, metric: e.metric, severe: f.issue && isSevere(e, f.topic, d.key), ...(stale ? { stale: true as const } : {}) });
+      }
+    }
     // A metric of a read domain that could not be read is named (its registry label), never implied fine.
     for (const e of read) if (e.status === "UNAVAILABLE") unreadable.push([t(`${binding.describeMetric(e.metric)?.label ?? e.metric} is unavailable right now.`)]);
     facts.push(...mine);
-    domains.push({ key: d.key, state: mine.some((f) => f.issue) ? "ATTENTION" : "OK" });
+    domains.push({ key: d.key, state: mine.some((f) => f.issue) ? "ATTENTION" : staleRead ? "STALE" : "OK" });
   }
 
   const allIssues = facts.filter((f) => f.issue);
@@ -402,7 +447,8 @@ export function composeBriefing(
   const issues = allIssues.filter((f) => chosen.has(f));
   const overflow = allIssues.length - issues.length;
   // Informational sentences: kept only while they add to a short answer (costs when read; the rest only when nothing is wrong).
-  const infos = facts.filter((f) => !f.issue && (f.domain === "costs" || allIssues.length === 0 || f.topic === "alert sources that could not be read" || f.topic === "customer impact read incompletely"));
+  // A stale informational sentence is always kept: it is what stops a stale figure reading as current.
+  const infos = facts.filter((f) => !f.issue && (f.stale || f.domain === "costs" || allIssues.length === 0 || f.topic === "alert sources that could not be read" || f.topic === "customer impact read incompletely"));
   const list = issues.length >= 2 || (opts.list && issues.length >= 1);
   const body: Seg[] = [];
   const sentence = (segs: readonly Seg[]) => { if (body.length) body.push(t(" ")); body.push(...capFirst(segs)); };
@@ -417,7 +463,10 @@ export function composeBriefing(
     rest.push([t("…and "), more, t(` more ${overflow === 1 ? "item needs" : "items need"} attention`),
       ...(opts.moreLink ? [t(" — see "), { kind: "link" as const, text: opts.moreLink.text, href: opts.moreLink.href }, t(".")] : [t(".")])]);
   }
-  if (issues.length === 0 && domains.some((d) => d.state === "OK")) rest.push([t(unreadable.length ? "Nothing needs attention in what could be checked." : "Nothing needs attention right now.")]);
+  const anyStale = domains.some((d) => d.state === "STALE") || facts.some((f) => f.stale);
+  if (issues.length === 0 && domains.some((d) => d.state === "OK" || d.state === "STALE")) {
+    rest.push([t(anyStale ? "Nothing needs attention in what could be checked, though some of it may be out of date." : unreadable.length ? "Nothing needs attention in what could be checked." : "Nothing needs attention right now.")]);
+  }
   if (fine.length > 0) rest.push([t(`${cap(joinWords(fine))} ${fine.length === 1 && !/s$/.test(fine[0]) ? "looks" : "look"} fine.`)]);
   for (const f of infos) rest.push(f.segs);
   rest.push(...unreadable);
@@ -460,6 +509,7 @@ export function composeCostRanking(envelopes: readonly MetricEnvelope[], binding
     ? [t(cap(`${windowLead(e)}the largest measured cost is ${label}${/^at least\b/.test(largest.text) ? ", " : " at "}`)), largest, t(".")]
     : [t(cap(`${windowLead(e)}no cost category could be measured, so there is no ranking.`))];
   if (total) segs.push(t(" The operating cost is "), total, t("."));
+  if (isStaleEnvelope(e)) return done(withStaleTail(segs, e), "STALE", "largest measured operating cost (may be out of date)");
   return done(segs, "OK", "largest measured operating cost");
 }
 

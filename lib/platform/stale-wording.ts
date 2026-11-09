@@ -28,12 +28,28 @@ export function lastEvaluatedStale(when: string | null, verb: "evaluated" | "upd
     : `last ${verb} ${when}, ${STALE_QUALIFIER}`;
 }
 
+/** The stale counterpart of "now" — "firing at last evaluation", never "firing now". */
+export const AT_LAST_EVALUATION = "at last evaluation";
+
 /** "3 rules firing at last evaluation" — the stale counterpart of "firing now". */
 export function firingAtLastEvaluation(n: number): string {
-  return `${n} rule${n === 1 ? "" : "s"} firing at last evaluation`;
+  return `${n} rule${n === 1 ? "" : "s"} firing ${AT_LAST_EVALUATION}`;
 }
 
 /** "3 rules firing at last evaluation (evaluator overdue)". */
 export function firingAtLastEvaluationOverdue(n: number): string {
   return `${firingAtLastEvaluation(n)} (${EVALUATOR_OVERDUE})`;
+}
+
+/**
+ * An absolute stamp for an AI answer, where no relative clock is shown:
+ * "2026-11-08 06:30 UTC". Null for a missing or unreadable timestamp (the caller
+ * then says "time not recorded" via lastEvaluatedStale — never "now").
+ */
+export function absoluteUtcStamp(iso: string | null | undefined): string | null {
+  if (iso == null || iso === "") return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t).toISOString();
+  return `${d.slice(0, 10)} ${d.slice(11, 16)} UTC`;
 }
