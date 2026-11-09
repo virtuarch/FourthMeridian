@@ -88,7 +88,7 @@ console.log("2. link_exited — an exit in 7 d with no connection since; codes o
     { userId: "after", at: ago(10), stage: null, errorCode: "INSTITUTION_DOWN" },
     { userId: "old", at: ago(7 * 24 + 1), stage: null, errorCode: "ITEM_LOCKED" },
     { userId: "retry", at: ago(1), stage: null, errorCode: "NONE" },
-    { userId: "weird", at: ago(1), stage: "<script>", errorCode: "Chase Bank: wrong password" },
+    { userId: "weird", at: ago(1), stage: "<script>", errorCode: "Example Bank: wrong password" },
   ];
   const f = withFunnel(facts({ users: ["x1", "x2", "after", "old", "retry", "weird"].map((id) => user(id, 200)), linkExits: exits }), {
     plaidItems: [plaid("pa", "after", 5), plaid("pr", "retry", 3)],
@@ -104,11 +104,11 @@ console.log("2. link_exited — an exit in 7 d with no connection since; codes o
     attentionDetailOf(fold, "x1"));
   check("a clean cancel reads 'closed without an error'", attentionDetailOf(fold, "x2").link_exited === "closed without an error at INSTITUTION_NOT_FOUND");
   check("privacy: a non-code value never reaches the detail (reads OTHER / no stage)",
-    attentionDetailOf(fold, "weird").link_exited === "exit code OTHER" && !JSON.stringify([...fold.details.values()]).includes("Chase"), attentionDetailOf(fold, "weird"));
+    attentionDetailOf(fold, "weird").link_exited === "exit code OTHER" && !JSON.stringify([...fold.details.values()]).includes("Example Bank"), attentionDetailOf(fold, "weird"));
   check("linkExitDetail: null codes → OTHER", linkExitDetail({ stage: null, errorCode: null }) === "exit code OTHER");
-  const row = linkExitFactOf({ userId: "u", createdAt: ago(1), metadata: { provider: "PLAID", stage: "REQUIRES_OAUTH", errorCode: "NONE", institution: "Chase", error_message: "x" } });
+  const row = linkExitFactOf({ userId: "u", createdAt: ago(1), metadata: { provider: "PLAID", stage: "REQUIRES_OAUTH", errorCode: "NONE", institution: "Example Bank", error_message: "x" } });
   check("the reader keeps only userId, time, stage and errorCode from the event metadata",
-    row !== null && JSON.stringify(Object.keys(row).sort()) === JSON.stringify(["at", "errorCode", "stage", "userId"]) && !JSON.stringify(row).includes("Chase"));
+    row !== null && JSON.stringify(Object.keys(row).sort()) === JSON.stringify(["at", "errorCode", "stage", "userId"]) && !JSON.stringify(row).includes("Example Bank"));
   check("an event without a user is dropped", linkExitFactOf({ userId: null, createdAt: ago(1), metadata: {} }) === null);
   check("non-object metadata reads no codes", JSON.stringify(linkExitFactOf({ userId: "u", createdAt: ago(1), metadata: [1] })) === JSON.stringify({ userId: "u", at: ago(1), stage: null, errorCode: null }));
 }
