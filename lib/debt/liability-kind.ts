@@ -468,4 +468,7 @@ export function unsplitLoanKindOf(kinds: Iterable<UnsplitLoanKind>): UnsplitLoan
  */
 export const UNSPLIT_LOAN_PAYMENT_AI_NOTE =
   "Unsplit loan payments: principal, interest and (for a mortgage) escrow have NOT been individually verified. "
-  + "Do not present any part of such a payment as principal reduction or paydown, and do not estimate a split.";
+  + "Do not present any part of such a payment as principal reduction or paydown, and do not estimate a split. "
+  + "Never state a principal amount, a balance-reduction amount or payoff progress derived from these payments "
+  + "(connected installment loans and loans that are not connected alike); call them \"loan payments\" with the "
+  + "unsplit label given.";

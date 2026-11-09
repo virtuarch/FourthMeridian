@@ -285,7 +285,7 @@ console.log("F6. Unsplit label by loan type (owner F6 / S2 D3) — aggregate Cas
   check("AI natureNote is the row's type-aware description",
     src("lib/ai/conversation/tools/transactions.ts").includes("natureNote: natureDescription(resolved.nature, r.loanPaymentDetail)"));
   check("AI assembler attaches the F6 'not individually verified' note whenever unsplit payments are present",
-    src("lib/ai/assemblers/transactions.ts").includes("debtService.untrackedLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}"));
+    src("lib/ai/assemblers/transactions.ts").includes("debtService.unsplitLoanPayments > 0 ? { unsplitLoanPaymentNote: UNSPLIT_LOAN_PAYMENT_AI_NOTE } : {}"));
 }
 
 if (failures > 0) {
