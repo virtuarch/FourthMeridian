@@ -337,7 +337,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
                         {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
                       </span>
-                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} />
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
                     </td>
                     <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
                     <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
@@ -363,7 +363,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
                         {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
-                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} />
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
                     </span>
                     <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : presenceText(c)}</span>
                   </button>
@@ -680,17 +680,37 @@ export function listPopulation(list: CustomerListResponse): string {
  * PB-4 — "Needs help" and the reasons, on a customer's row. Nothing for a
  * customer with no reason (or a response from a build without the field).
  */
-export function NeedsHelpChip({ keys, reasons }: { keys: readonly AttentionKey[] | undefined; reasons: CustomerListResponse["attentionReasons"] | undefined }) {
-  if (!keys || keys.length === 0) return null;
+export function NeedsHelpChip({ keys, reasons, detail, testAccount }: {
+  keys: readonly AttentionKey[] | undefined;
+  reasons: CustomerListResponse["attentionReasons"] | undefined;
+  /** Per reason, the server's closed-vocabulary detail (an exit code, an import reason) — optional. */
+  detail?: Partial<Record<AttentionKey, string>>;
+  /** A reserved test e-mail domain: a visible LABEL only (OD-4 undecided — still counted). */
+  testAccount?: boolean;
+}) {
+  const test = testAccount === true ? (
+    <span data-test-account title="Reserved test e-mail domain — a label only; still counted until the owner decides (OD-4)"
+      className="mt-1 inline-flex items-center self-start rounded-full border border-[var(--border-hairline)] px-1.5 py-px text-[10px] font-medium text-[var(--text-muted)]">test</span>
+  ) : null;
+  if (!keys || keys.length === 0) return test;
   const named = (k: AttentionKey) => reasons?.find((r) => r.key === k);
+  const word = (k: AttentionKey) => `${named(k)?.short ?? k}${detail?.[k] ? ` (${detail[k]})` : ""}`;
+  const title = keys.map((k) => [named(k)?.label ?? k, detail?.[k], named(k)?.action ? `Next: ${named(k)?.action}` : null].filter(Boolean).join(" — ")).join(" · ");
+  const next = named(keys[0])?.action;
   return (
-    <span data-needs-help={keys.join(" ")} title={keys.map((k) => named(k)?.label ?? k).join(" · ")}
-      className="mt-1 inline-flex max-w-full items-center gap-1 self-start truncate rounded-full border px-1.5 py-px text-[10px] font-medium"
-      style={{ color: "var(--accent-warning)", borderColor: "color-mix(in srgb, var(--accent-warning) 40%, transparent)" }}>
-      <span>Needs help</span>
-      <span aria-hidden>·</span>
-      <span className="truncate">{keys.map((k) => named(k)?.short ?? k).join(", ")}</span>
-    </span>
+    <>
+      <span className="mt-1 inline-flex max-w-full items-center gap-1 self-start">
+        <span data-needs-help={keys.join(" ")} title={title}
+          className="inline-flex max-w-full items-center gap-1 truncate rounded-full border px-1.5 py-px text-[10px] font-medium"
+          style={{ color: "var(--accent-warning)", borderColor: "color-mix(in srgb, var(--accent-warning) 40%, transparent)" }}>
+          <span>Needs help</span>
+          <span aria-hidden>·</span>
+          <span className="truncate">{keys.map(word).join(", ")}</span>
+        </span>
+        {test}
+      </span>
+      {next && <span data-needs-help-next className="block truncate text-[10px] text-[var(--text-muted)]" title={next}>{`Next: ${next}`}</span>}
+    </>
   );
 }
 
