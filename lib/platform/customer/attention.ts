@@ -26,7 +26,9 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
-import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
+import { OPEN_CUSTOMER_WHERE, RESERVED_TEST_EMAIL_WHERE } from "@/lib/platform/customer/population";
+import { AuditAction } from "@/lib/audit-actions";
+import { loadImportsForItemIds } from "@/lib/platform/onboarding/import-facts";
 import { assignableGroups } from "@/lib/entitlements/policy-groups";
 import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { UNASSIGNED_CUSTOMER_WHERE } from "@/lib/platform/policy-assignment-health";
@@ -34,7 +36,11 @@ import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-c
 import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import { incidentAccessors, type CsToken } from "@/lib/platform/incidents/intelligence";
 import type { CsIncidentVerdict, VerdictList } from "@/lib/platform/incidents/intelligence/types";
-import { foldAttention, incidentOwnersOf, type AttentionFacts, type AttentionFold } from "./attention-core";
+import {
+  IMPORT_ATTENTION_DAYS, LINK_EXIT_WINDOW_DAYS, foldAttention, incidentOwnersOf, linkExitFactOf, type AttentionFacts, type AttentionFold,
+} from "./attention-core";
+
+const DAY_MS = 86_400_000;
 
 const BROKEN = ["NEEDS_REAUTH", "ERROR"] as const;
 /** Open SyncIssue rows the module scans for the broken-now page; a full scan is reported as a floor (`truncated`). */
@@ -70,7 +76,8 @@ export async function loadAttention(
   // NOT a `policy` issue; it is its own `unassigned` reason, and only while the
   // fail-closed switch is enforced (below).
   const live = assignableGroups(await loadPolicyGroupCatalogue()).map((g) => g.key);
-  const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned] = await Promise.all([
+  const exitFrom = new Date(now.getTime() - LINK_EXIT_WINDOW_DAYS * DAY_MS);
+  const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned, exits, testAccounts] = await Promise.all([
     client.user.findMany({ where: OPEN_CUSTOMER_WHERE, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true }, take: cap }),
@@ -84,8 +91,23 @@ export async function loadAttention(
     failClosed
       ? client.user.findMany({ where: UNASSIGNED_CUSTOMER_WHERE, select: { id: true }, take: cap })
       : Promise.resolve([] as { id: string }[]),
+    // link_exited — the CONNECTION_LINK_EXITED product events of the window (AuditLog @@index([action, createdAt])).
+    // userId, time and the metadata's closed-vocabulary codes only (linkExitFactOf); no institution is recorded at all.
+    client.auditLog.findMany({ where: { action: AuditAction.CONNECTION_LINK_EXITED, createdAt: { gte: exitFrom } }, select: { userId: true, createdAt: true, metadata: true }, orderBy: { createdAt: "desc" }, take: cap }),
+    // The "test" LABEL (OD-4 undecided — labelled, never excluded): open customers on a reserved e-mail domain, ids only.
+    client.user.findMany({ where: { AND: [OPEN_CUSTOMER_WHERE, RESERVED_TEST_EMAIL_WHERE] }, select: { id: true }, take: cap }),
   ]);
-  const floor = [customers, plaidBroken, connBroken, invalid, unassigned].some((rows) => rows.length >= cap) || incidentPage.truncated;
+
+  // import_failed / import_stuck — the Plaid Items linked in the import window, picked from the funnel
+  // facts already in hand (no second fleet read), then read by primary key through the shared loader.
+  const importFrom = now.getTime() - IMPORT_ATTENTION_DAYS * DAY_MS;
+  const recentItemIds = funnel.plaidItems
+    .filter((p) => new Date(p.createdAt).getTime() >= importFrom && p.status !== "REVOKED")
+    .map((p) => p.id);
+  const imports = await loadImportsForItemIds(recentItemIds, now, client);
+
+  const floor = [customers, plaidBroken, connBroken, invalid, unassigned, exits, testAccounts].some((rows) => rows.length >= cap)
+    || incidentPage.truncated || imports.floor;
 
   const facts: AttentionFacts = {
     activeCustomerIds: new Set(customers.map((c) => c.id)),
@@ -96,6 +118,9 @@ export async function loadAttention(
     policyIssueOwners: invalid.map((a) => a.userId),
     unassignedOwners: unassigned.map((u) => u.id),
     policyFailClosed: failClosed,
+    recentImports: imports.items.flatMap((i) => (i.userId ? [{ userId: i.userId, verdict: i.verdict }] : [])),
+    linkExits: exits.flatMap((r) => { const f = linkExitFactOf(r); return f ? [f] : []; }),
+    testAccountIds: testAccounts.map((u) => u.id),
     floor,
   };
   return { facts, fold: foldAttention(facts, now), incidentPage };

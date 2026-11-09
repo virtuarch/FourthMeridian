@@ -74,6 +74,22 @@ export function attentionBars(o: CsOverviewResponse): ShareBar[] {
   return o.attention.reasons.map((r) => ({ key: r.key, label: r.label, count: r.count, share: o.customers.active ? r.count / o.customers.active : null }));
 }
 
+/**
+ * The suggested next step for every reason that applies to someone now — TEXT ONLY (no
+ * control here contacts a customer). An older response without `action` yields nothing.
+ */
+export function attentionNextSteps(o: CsOverviewResponse): { key: string; label: string; action: string }[] {
+  return o.attention.reasons.filter((r) => r.count > 0 && typeof r.action === "string" && r.action.length > 0)
+    .map((r) => ({ key: r.key, label: r.label, action: r.action }));
+}
+
+/** "N of them are labelled test …" — a label, never an exclusion (OD-4 undecided); null when none. */
+export function attentionTestCaption(o: CsOverviewResponse): string | null {
+  const t = o.attention.testAccounts ?? 0;
+  if (t <= 0) return null;
+  return `${n(t)} of them ${t === 1 ? "is" : "are"} labelled test (reserved e-mail domain) — still counted until the owner decides (OD-4)`;
+}
+
 /** Where open customer accounts are now: the furthest stage reached through, as shares of them. */
 export function stageBars(o: CsOverviewResponse): ShareBar[] {
   return o.stages.map((s) => ({ key: s.key, label: s.label, count: s.count, share: o.customers.active ? s.count / o.customers.active : null }));
