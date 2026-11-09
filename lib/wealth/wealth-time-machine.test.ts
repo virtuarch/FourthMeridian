@@ -15,9 +15,12 @@ import {
   computeWealthTimeMachine,
   wealthCompositionItems,
   WEALTH_EPSILON,
+  WEALTH_CATEGORY_LABELS,
+  LIQUID_DEBT_DRIVER_LABELS,
   type WealthTimeMachineInput,
   type WealthComposition,
 } from "./wealth-time-machine";
+import { METRIC_DRIVER_COMPONENTS } from "@/components/space/widgets/wealth/wealth-metric-facets";
 import type { Snapshot } from "@/types";
 
 let failures = 0;
@@ -220,6 +223,82 @@ console.log("Composition — crypto included, zero categories filtered, Real Wor
   ];
   const r = computeWealthTimeMachine(base({ snapshots: s, asOf: "2026-06-02", compareTo: "2026-01-02" }));
   check("driver rows use 'Real World Assets'", r.drivers?.some((d) => d.id === "real" && d.label === "Real World Assets") === true);
+}
+
+console.log("Mortgage F1 — the liquidDebt driver label follows BOTH end rows' liquid-NW bases");
+{
+  // A stored row: legacy (installmentDebt NULL ⇒ netLiquid subtracted ALL debt)
+  // or new basis (installmentDebt recorded ⇒ netLiquid excludes it).
+  const row = (date: string, cash: number, card: number, inst: number, legacy: boolean, extra: Partial<Snapshot> = {}): Snapshot => ({
+    ...snap(date, { totalCash: cash, totalDebt: card + inst }),
+    netLiquid: legacy ? cash - card - inst : cash - card,
+    ...(legacy ? {} : { installmentDebt: inst }),
+    ...extra,
+  } as Snapshot);
+  const liquidIds = new Set<string>(METRIC_DRIVER_COMPONENTS.liquidNetWorth);
+  const cents = (n: number) => Math.round(n * 100);
+  // Σ Liquid-NW drivers (liquidDebt subtracts) — what the Liquid NW ledger shows.
+  const driverSum = (r: ReturnType<typeof computeWealthTimeMachine>) => (r.drivers ?? [])
+    .filter((d) => liquidIds.has(d.id))
+    .reduce((s, d) => s + (d.id === "liquidDebt" ? -d.delta : d.delta), 0);
+  const run = (a: Snapshot, b: Snapshot) => computeWealthTimeMachine({ snapshots: [a, b], asOf: b.date, compareTo: a.date, currency: "USD" });
+  const debtLabel = (r: ReturnType<typeof computeWealthTimeMachine>) => r.drivers?.find((d) => d.id === "liquidDebt")?.label;
+
+  // Synthetic-fixture shape: card 5,000 → 3,000, mortgage 300,000 → 299,000, cash 10,000 → 11,000.
+  const cases: { name: string; legacyA: boolean; legacyB: boolean; label: string; debtDelta: number }[] = [
+    { name: "legacy → legacy", legacyA: true,  legacyB: true,  label: LIQUID_DEBT_DRIVER_LABELS.previous, debtDelta: -3_000 },
+    { name: "new → new",       legacyA: false, legacyB: false, label: LIQUID_DEBT_DRIVER_LABELS.current,  debtDelta: -2_000 },
+    { name: "legacy → new",    legacyA: true,  legacyB: false, label: LIQUID_DEBT_DRIVER_LABELS.previous, debtDelta: -3_000 },
+    { name: "new → legacy (rollback-era row)", legacyA: false, legacyB: true, label: LIQUID_DEBT_DRIVER_LABELS.previous, debtDelta: -3_000 },
+  ];
+  for (const c of cases) {
+    const a = row("2026-10-01", 10_000, 5_000, 300_000, c.legacyA);
+    const b = row("2026-11-20", 11_000, 3_000, 299_000, c.legacyB);
+    const r = run(a, b);
+    check(`${c.name}: liquidDebt label = "${c.label}"`, debtLabel(r) === c.label, String(debtLabel(r)));
+    check(`${c.name}: liquidDebt amount unchanged (${c.debtDelta}: ${c.label === LIQUID_DEBT_DRIVER_LABELS.current ? "excl. long-term loans" : "all debts"})`,
+      approx(r.deltas!.composition.liquidDebt, c.debtDelta), String(r.deltas!.composition.liquidDebt));
+    check(`${c.name}: Σ Liquid NW drivers = Δ Liquid NW to the cent`, cents(driverSum(r)) === cents(r.deltas!.liquidNetWorth.abs),
+      `${driverSum(r)} vs ${r.deltas!.liquidNetWorth.abs}`);
+  }
+  check("WEALTH_CATEGORY_LABELS.liquidDebt is the current-definition label (one source)",
+    WEALTH_CATEGORY_LABELS.liquidDebt === LIQUID_DEBT_DRIVER_LABELS.current);
+  check("label copy stays coarse (P1-R1: no loan type)",
+    Object.values(LIQUID_DEBT_DRIVER_LABELS).every((l) => !/mortgage|auto|student|installment/i.test(l)));
+
+  // D2 — a legacy row of a Space that never held an installment liability is
+  // numerically the current definition (same rule as the chart segment flag).
+  const d2a = row("2026-10-01", 10_000, 5_000, 0, true, { liquidLegacyRowsCurrent: true });
+  const d2b = row("2026-11-20", 11_000, 3_000, 0, true, { liquidLegacyRowsCurrent: true });
+  const d2 = run(d2a, d2b);
+  check("D2: never-held-installments legacy rows keep the current label (matches the chart)",
+    debtLabel(d2) === LIQUID_DEBT_DRIVER_LABELS.current && d2.chart.points.every((p) => !p.liquidBasisPrevious));
+
+  // Property: randomized rows on random bases. The identity holds to the cent,
+  // the amount is Δ all debts unless both ends are new-basis, and no driver is
+  // labelled "excl. long-term loans" when either end row is legacy.
+  let seed = 0x5eed_f1;
+  const rnd = (max: number) => { seed = (seed * 1_103_515_245 + 12_345) & 0x7fffffff; return seed % (max + 1); };
+  let identityFails = 0, labelFails = 0, amountFails = 0, labelled = 0;
+  for (let i = 0; i < 2_000; i++) {
+    const legacyA = rnd(1) === 1, legacyB = rnd(1) === 1;
+    const instA = rnd(3) === 0 ? 0 : rnd(500_000), instB = rnd(3) === 0 ? 0 : rnd(500_000);
+    const a = row("2026-09-01", rnd(80_000), rnd(30_000), instA, legacyA);
+    const b = row("2026-12-01", rnd(80_000), rnd(30_000), instB, legacyB);
+    const r = run(a, b);
+    if (cents(driverSum(r)) !== cents(r.deltas!.liquidNetWorth.abs)) identityFails++;
+    const expectedDebt = legacyA || legacyB
+      ? b.totalDebt - a.totalDebt
+      : (b.totalDebt - instB) - (a.totalDebt - instA);
+    if (cents(r.deltas!.composition.liquidDebt) !== cents(expectedDebt)) amountFails++;
+    const l = debtLabel(r);
+    if (l !== undefined) labelled++;
+    if ((legacyA || legacyB) && l !== undefined && /excl\. long-term loans/.test(l)) labelFails++;
+    if (!legacyA && !legacyB && l !== undefined && l !== LIQUID_DEBT_DRIVER_LABELS.current) labelFails++;
+  }
+  check("property: Σ Liquid NW drivers = Δ Liquid NW to the cent (2,000 random windows)", identityFails === 0, `${identityFails} failures`);
+  check("property: liquidDebt Δ = Δ all debts unless both ends are new-basis (amounts unchanged)", amountFails === 0, `${amountFails} failures`);
+  check("REGRESSION: no driver labelled 'excl. long-term loans' when either end row is legacy", labelFails === 0 && labelled > 1_000, `${labelFails} failures, ${labelled} labelled`);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
