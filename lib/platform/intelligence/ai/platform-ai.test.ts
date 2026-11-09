@@ -696,7 +696,8 @@ console.log("\n4g. safety net (1) — a bare key without @N");
   check("net (1) +: {{m:incident-broken-now}} with incident-broken-now@1 read ⇒ RESOLVED, the figure of that exact key",
     pos.grounding.verdict === "RESOLVED" && segmentsText(pos.answer) === "3 incidents are broken." && pos.citations.find((c) => c.metric === "incident-broken-now@1")?.figures.join() === "3", { g: pos.grounding, t: segmentsText(pos.answer) });
   const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
-  const k1 = { metric: "k@1", surface: "PLATFORM_OPS", value: 4, valueUnits: "count", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } } as unknown as MetricEnvelope;
+  // A current asOf: a figure with NO timestamp is STALE (and would carry the stale wording) — not what this net pins.
+  const k1 = { metric: "k@1", surface: "PLATFORM_OPS", value: 4, valueUnits: "count", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s", stale: false } } as unknown as MetricEnvelope;
   const k2 = { ...k1, metric: "k@2", value: 9 } as MetricEnvelope;
   const two = v([k1, k2], "{{m:k}} things");
   check("net (1) −: TWO versions of the id read + a bare key ⇒ still unresolved (VERSION)", two.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(two.unresolvedBy) === JSON.stringify({ VERSION: 1 }), two.unresolvedBy);
@@ -716,7 +717,8 @@ console.log("\n4g. safety net (1) — a bare key without @N");
 console.log("\n4h. safety net (2) — a one-part object without |part; owner replays with plausible spellings");
 {
   const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
-  const base = { surface: "PLATFORM_OPS", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } };
+  // A current asOf (a missing one is STALE — pinned in 4u, not here).
+  const base = { surface: "PLATFORM_OPS", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s", stale: false } };
   const one = { ...base, metric: "o@1", value: { costUsd: 2.5 }, valueUnits: { costUsd: "usd" } } as unknown as MetricEnvelope;
   const twoPart = { ...base, metric: "t@1", value: { aUsd: 1, bUsd: 2 }, valueUnits: { aUsd: "usd", bUsd: "usd" } } as unknown as MetricEnvelope;
   check("net (2) +: a one-part object, no |part ⇒ RESOLVED to its only part", segmentsText(v([one], "{{m:o@1}}").segments) === "$2.50" && v([one], "{{m:o@1}}").summary.verdict === "RESOLVED");
@@ -1830,7 +1832,9 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./briefing", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+  // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
+  check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
   check("ledger.ts calls the ONE provider chokepoint (generateWithTools) inside runWithAiInvocationContext with surface platform_ai — no parallel AI client",
     /runWithAiInvocationContext\(\s*\{[^}]*surface: PLATFORM_AI_ASK_SURFACE/.test(ledger) && /generateWithTools\(/.test(ledger) && !/from "openai"|new OpenAI/.test(ledger));
@@ -2366,7 +2370,7 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
   check("B1 Question C: a number-word answer is retried and the placeholder answer kept (with the window note)", qc.result.grounding.retry?.outcome === "PASS" && !qc.result.grounding.replaced && qc.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE", qc.result.grounding);
   // Static: briefing.ts imports only core (functions, used lazily) and retrieve-core types.
   const bImports = [...src("lib/platform/intelligence/ai/briefing.ts").matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
-  check("briefing.ts imports: ./core and retrieve-core TYPES only", bImports.join() === ["./core", "type @/lib/platform/intelligence/metrics/retrieve-core"].sort().join(), bImports);
+  check("briefing.ts imports: ./core, the pure stale phrasebook and retrieve-core TYPES only", bImports.join() === ["./core", "@/lib/platform/stale-wording", "type @/lib/platform/intelligence/metrics/retrieve-core"].sort().join(), bImports);
 }
 
 // ── 4t. S1 briefing size cap · (i) word-family trace · (ii) composed cost ranking, S2-approved 2026-11-08 ──
@@ -2445,6 +2449,102 @@ console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · co
   check("(ii) composeCostRanking is pure over envelopes", composeCostRanking([], { describeMetric: () => null }).domains[0].state === "NOT_PERMITTED");
   const stored = storedAnswerOf(qc.result, qc.record);
   check("(ii) A4: stored typed (note + figures), valid", isStoredAnswer(stored) && stored.segments[0].kind === "note" && stored.segments.filter((x) => x.kind === "figure").length === 2);
+}
+
+// ── 4u. STALE — owner rule: stale facts are never shown as current (registry maxAgeMs) ──
+console.log("\n4u. STALE figures: fresh / stale / missing timestamp — composer, cost gate, model path");
+{
+  const { alertsFiring, composeBriefing } = await import("./briefing");
+  const { isStaleEnvelope, renderPlaceholder } = await import("./core");
+  const { ALERT_EVALUATION_MAX_AGE_MS } = await import("@/lib/platform/intelligence/metrics/registry");
+  const txt = (r: { result: { answer: { text: string }[] } }) => r.result.answer.map((x) => x.text).join("");
+  const frame = script([{ content: "{}" }]);
+  const H = 3_600_000;
+  const alertRunsAt = (evaluatedAtISO: string, firing = true) => async () => [{ evaluatedAtISO, deliveryStatus: "DELIVERED", destination: null, counts: {},
+    rules: [{ id: "job-failing", kind: "job", enabled: true, live: true, firing, breaches: firing ? 1 : 0, severity: firing ? "warning" : null }] }] as never;
+  const at = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * H).toISOString();
+  const fresh = opsBinding(OPS, readers({ alertRuns: alertRunsAt(at(1)) }));
+  const edge = opsBinding(OPS, readers({ alertRuns: alertRunsAt(at(11)) }));
+  const stale = opsBinding(OPS, readers({ alertRuns: alertRunsAt(at(13)) }));
+  const unreadable = opsBinding(OPS, readers({ alertRuns: alertRunsAt("not-a-date") }));
+  const STAMP = "2026-11-03 23:00 UTC"; // NOW − 13 h
+  const econReads = (r: { result: { trace: { tool: string; refs: string[] }[] } }) => r.result.trace.filter((x) => x.tool === "get_metric" && /^(economics-|ai-fleet|ai-call)/.test(x.refs[0] ?? "")).length;
+
+  // Retrieval stamps the verdict with the SERVER clock and the REGISTRY limit.
+  const eFresh = (await fresh.readMetric("alerts-firing-now@1", {}))!, eEdge = (await edge.readMetric("alerts-firing-now@1", {}))!, eStale = (await stale.readMetric("alerts-firing-now@1", {}))!;
+  const eBad = (await unreadable.readMetric("alerts-firing-now@1", {}))!;
+  check("retrieval: freshness carries the registry maxAgeMs (alerts: 12 h) and a stale stamp — 1 h / 11 h fresh, 13 h stale, unreadable time stale",
+    eFresh.freshness.maxAgeMs === ALERT_EVALUATION_MAX_AGE_MS && ALERT_EVALUATION_MAX_AGE_MS === 12 * H
+    && eFresh.freshness.stale === false && eEdge.freshness.stale === false && eStale.freshness.stale === true && eBad.freshness.stale === true,
+    [eFresh.freshness, eEdge.freshness, eStale.freshness, eBad.freshness]);
+  const noTs = { ...eFresh, freshness: { asOf: null, source: eFresh.freshness.source } } as MetricEnvelope;
+  const garbled = { ...eFresh, freshness: { asOf: "yesterday-ish", source: eFresh.freshness.source } } as MetricEnvelope;
+  check("isStaleEnvelope: fresh false; past the limit true; a MISSING or unparseable timestamp true even without a stamp; UNAVAILABLE never stale",
+    !isStaleEnvelope(eFresh) && isStaleEnvelope(eStale) && isStaleEnvelope(noTs) && isStaleEnvelope(garbled)
+    && !isStaleEnvelope({ ...eStale, status: "UNAVAILABLE", value: null }));
+  check("renderPlaceholder: a stale figure carries the shared wording; fresh wording unchanged",
+    renderPlaceholder(eFresh, "firing") === "1" && renderPlaceholder(eStale, "firing") === `1 (last evaluated ${STAMP}, may be out of date)`
+    && renderPlaceholder(noTs, "firing") === "1 (last evaluated time not recorded, may be out of date)", renderPlaceholder(eStale, "firing"));
+
+  // Cost gate: only FRESH firing alerts are the server's "anomalous".
+  check("alertsFiring: fresh firing ⇒ true; stale firing ⇒ false; missing timestamp ⇒ false", alertsFiring([eFresh]) && !alertsFiring([eStale]) && !alertsFiring([noTs]) && !alertsFiring([garbled]));
+
+  // Composer over envelopes (the composed briefing's wording; the full turn below caps issues at BRIEFING_MAX_ISSUES).
+  const desc = { describeMetric: (k: string) => opsBinding(OPS).describeMetric(k) };
+  const body = (envs: MetricEnvelope[]) => composeBriefing(envs, desc, { list: false, cost: null });
+  const textOf = (c: { segments: { text: string }[] }) => c.segments.map((x) => x.text).join("");
+  const cFresh = body([eFresh]), cEdge = body([eEdge]), cStale = body([eStale]), cBad = body([eBad]);
+  check("composer fresh: 'firing now', no stale wording, no STALE figure (wording unchanged)",
+    /1 alert rule is firing now — job-failing \(firing\)\./.test(textOf(cFresh)) && !/may be out of date|at last evaluation/.test(textOf(cFresh)) && !cFresh.segments.some((x) => x.kind === "figure" && x.figureClass === "STALE"), textOf(cFresh));
+  check("composer: 11 h old (inside 2 × the 6 h slot gap) is still current", /firing now/.test(textOf(cEdge)) && !/may be out of date/.test(textOf(cEdge)), textOf(cEdge));
+  check("composer stale: 'was firing at last evaluation' + '(last evaluated <time>, may be out of date)', never 'firing now'",
+    /1 alert rule was firing at last evaluation — job-failing \(firing\) \(last evaluated 2026-11-03 23:00 UTC, may be out of date\)\./.test(textOf(cStale)) && !/\bnow\b/.test(textOf(cStale).split("\n\n")[0]), textOf(cStale));
+  check("composer stale: the alert figure's class is STALE; the fact is marked stale", cStale.segments.some((x) => x.kind === "figure" && x.metric === "alerts-firing-now@1" && x.figureClass === "STALE") && cStale.facts.every((f) => f.stale === true));
+  check("composer: an unreadable evaluation time is STALE ('time not recorded')", /firing at last evaluation .*\(last evaluated time not recorded, may be out of date\)/.test(textOf(cBad)), textOf(cBad));
+
+  // The full turn — the cost gate (regression): stale firing alerts never add the cost section.
+  const rFresh = await runComposed("How are we looking today?", fresh, frame);
+  check("turn fresh: costs read for ALERT_FIRING (unchanged)", rFresh.result.briefing?.cost === "ALERT_FIRING" && econReads(rFresh) > 0, rFresh.result.briefing);
+  const rEdge = await runComposed("How are we looking today?", edge, frame);
+  check("turn 11 h old: still ALERT_FIRING", rEdge.result.briefing?.cost === "ALERT_FIRING");
+  const rStale = await runComposed("How are we looking today?", stale, frame);
+  check("REGRESSION: stale firing alerts do NOT add the cost section (no economics read, cost=none, costs 'weren't checked')",
+    rStale.result.briefing?.cost === null && econReads(rStale) === 0 && /Costs weren't checked/.test(txt(rStale)) && rStale.result.briefing?.domains.costs === "NOT_READ" && !/firing now/.test(txt(rStale)), { b: rStale.result.briefing, t: txt(rStale) });
+  const rUnreadable = await runComposed("How are we looking today?", unreadable, frame);
+  check("turn: an unreadable evaluation time ⇒ no cost section, never 'firing now'", rUnreadable.result.briefing?.cost === null && econReads(rUnreadable) === 0 && !/firing now/.test(txt(rUnreadable)));
+  const rStaleAsked = await runComposed("How are we looking on costs today?", stale, frame);
+  check("…an operator who ASKS about cost still gets costs (ASKED)", rStaleAsked.result.briefing?.cost === "ASKED" && econReads(rStaleAsked) > 0);
+
+  // Composer over envelopes directly — missing timestamp, and a stale QUIET evaluation is said, never "fine".
+  const cMissing = composeBriefing([noTs], desc, { list: false, cost: null });
+  check("composeBriefing: a missing timestamp ⇒ stale wording, never 'now'", /firing at last evaluation/.test(cMissing.segments.map((x) => x.text).join("")) && /time not recorded, may be out of date/.test(cMissing.segments.map((x) => x.text).join("")) && cMissing.facts.every((f) => f.stale === true));
+  const quietStale = (await opsBinding(OPS, readers({ alertRuns: alertRunsAt(at(30), false) })).readMetric("alerts-firing-now@1", {}))!;
+  const cQuiet = composeBriefing([quietStale], desc, { list: false, cost: null });
+  const qText = cQuiet.segments.map((x) => x.text).join("");
+  check("composeBriefing: a stale QUIET evaluation is SAID with its time; the health domain is STALE, never OK / 'looks fine' / 'right now'",
+    /No alert rule was firing at last evaluation \(last evaluated 2026-11-03 06:00 UTC, may be out of date\)\./.test(qText) && cQuiet.domains.find((d) => d.key === "health")?.state === "STALE"
+    && !/looks? fine|right now/.test(qText), { qText, d: cQuiet.domains });
+  const cQuietFresh = composeBriefing([eFresh].map((e) => ({ ...e, value: { ...(e.value as object), firing: 0, firingCritical: 0 } }) as MetricEnvelope), desc, { list: false, cost: null });
+  check("composeBriefing: a FRESH quiet evaluation is unchanged (OK, 'right now')", cQuietFresh.domains.find((d) => d.key === "health")?.state === "OK" && /Nothing needs attention right now\./.test(cQuietFresh.segments.map((x) => x.text).join("")));
+
+  // MODEL path: the tool output carries the flag + asOf, the figure carries the wording, the server adds a note.
+  const ask = (b: PlatformAiBinding) => runModel("Which alerts are firing?", b, script([{ calls: [{ name: "get_metric", args: { id: "alerts-firing-now" } }] }, { content: "{{m:alerts-firing-now@1|part=firing}} alert rules are firing." }]));
+  const mFresh = await ask(fresh), mStale = await ask(stale);
+  const tFresh = toolResultsOf(mFresh).find((x) => x.metric === "alerts-firing-now@1"), tStale = toolResultsOf(mStale).find((x) => x.metric === "alerts-firing-now@1");
+  check("model path: get_metric output — fresh: stale false; stale: stale true + as_of + freshness.asOf/stale/maxAgeMs + a 'NOT current' note",
+    tFresh?.stale === false && tFresh?.as_of === undefined
+    && tStale?.stale === true && tStale?.as_of === STAMP && tStale?.freshness?.stale === true && tStale?.freshness?.asOf === at(13) && tStale?.freshness?.maxAgeMs === 12 * H
+    && /^Last evaluated 2026-11-03 23:00 UTC, may be out of date\. These figures are NOT current/.test(tStale?.stale_note ?? ""), tStale);
+  check("model path fresh: RESOLVED, no note, wording unchanged", mFresh.result.grounding.verdict === "RESOLVED" && txt(mFresh) === "1 alert rules are firing." && !mFresh.result.answer.some((x) => x.kind === "note"), txt(mFresh));
+  check("model path stale: KEPT, RESOLVED_WITH_STALE_NOTE, a server note first, the figure itself says it may be out of date, figureClass STALE",
+    !mStale.result.grounding.replaced && mStale.result.grounding.verdict === "RESOLVED_WITH_STALE_NOTE" && mStale.result.grounding.staleNote === 1
+    && mStale.result.answer[0].kind === "note" && mStale.result.answer[0].text === `Note: Alert rules firing — last evaluated ${STAMP}, may be out of date.`
+    && txt(mStale).includes(`1 (last evaluated ${STAMP}, may be out of date) alert rules are firing.`)
+    && mStale.record.typed.some((x) => x.kind === "figure" && x.figureClass === "STALE"), { g: mStale.result.grounding, t: txt(mStale) });
+  const quoted = await runModel("Which alerts are firing?", stale, script([{ calls: [{ name: "get_metric", args: { id: "alerts-firing-now" } }] }, { content: `As of ${STAMP}, {{m:alerts-firing-now@1|part=firing}} alert rules were firing.` }]));
+  check("model path: quoting the server's as_of stamp is not an ungrounded digit", !quoted.result.grounding.replaced, quoted.result.grounding);
+  const st = storedAnswerOf(mStale.result, mStale.record);
+  check("model path stale: the stored answer is valid (note + the figure with its stale wording)", isStoredAnswer(st) && st.segments[0].kind === "note" && st.segments.some((x) => x.kind === "figure" && /may be out of date/.test(x.text)));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

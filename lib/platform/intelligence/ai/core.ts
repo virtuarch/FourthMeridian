@@ -71,6 +71,7 @@ import type { PlatformArea } from "@prisma/client";
 import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
 import type { FigureUnit, MetricEnvelope, RankedCategory, RetrievalParams, UnavailableCode } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
+import { absoluteUtcStamp, lastEvaluatedStale } from "@/lib/platform/stale-wording";
 import { buildConversationTurnMessages, type AssembledHistory } from "./conversations/history";
 import {
   BRIEFING_FRAMING_PROMPT, COST_RANKING_KEY, briefingFramingMessage, checkActions, checkFraming, classifyBriefingQuestion, composeBriefing, composeCostRanking, composedLineCount,
@@ -556,7 +557,15 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
         ? { windows: def.window.days, retry: "Read this metric again with one of `windows` (or no window); that figure states its own window." } : {};
       // Question C (2026-11-08): a window sent to a FIXED-window metric was ignored — say so, so the placeholders are copied as given (no |window).
       const ignored = windowIgnored ? { window_ignored: "This metric has one fixed window (window_phrase); the window you sent was not used. Copy its placeholders exactly as given — they take no |window." } : {};
-      return { ...e, area, ...period, ...placeholdersFor(e), ...labelPlaceholdersFor(e), ...retry, ...ignored };
+      // STALE (owner rule): the model is told in the result itself — the flag, the time, and that "now" is wrong.
+      const isStale = isStaleEnvelope(e);
+      const stamp = isStale ? absoluteUtcStamp(e.freshness.asOf) : null;
+      const stale = isStale
+        ? { stale: true, as_of: stamp ?? "not recorded", stale_note: `${staleQualifierOf(e).replace(/^l/, "L")}. These figures are NOT current: never say now, currently or right now about them.` }
+        : { stale: false };
+      // The stamp is server text handed to the model to quote: it joins the leftover-digit allowlist like a registry label.
+      if (stamp) ev.labels.add(stamp);
+      return { ...e, area, ...period, ...placeholdersFor(e), ...labelPlaceholdersFor(e), ...stale, ...retry, ...ignored };
     }
     case "find_page": {
       const a = plainArgs(rawArgs, ["query"]);
@@ -825,6 +834,40 @@ export function strippedLinkTargets(raw: string, allowed: ReadonlySet<string>, e
 // placeholder ⇒ the fallback too (C5: no extra model round). This closes v0's
 // attribution gap: a figure can only be the figure of the metric it names.
 
+// ── STALE figures (owner rule: stale facts are never shown as current) ──────
+//
+// A figure is STALE when its envelope carries a figure and the registry's per-metric
+// limit (maxAgeMs) says its asOf is too old — stamped at retrieval with the server's
+// clock (freshness.stale) — or when its asOf is missing or unreadable (checked here
+// too: a missing timestamp is never assumed current). A stale figure keeps its value
+// but is worded "last evaluated <time>, may be out of date" (the shared phrasebook,
+// lib/platform/stale-wording.ts — the same words Platform Ops shows), its typed
+// segment carries figureClass "STALE", and the model path adds a server note and the
+// RESOLVED_WITH_STALE_NOTE verdict. A stale signal never triggers a derived section.
+
+/** The figure class of a typed figure segment: absent = current; "STALE" = see above. */
+export const FIGURE_CLASSES = ["STALE"] as const;
+export type FigureClass = (typeof FIGURE_CLASSES)[number];
+
+/** True when `e` carries a figure that must not be presented as current. */
+export function isStaleEnvelope(e: Pick<MetricEnvelope, "status" | "value" | "freshness">): boolean {
+  if (e.status === "UNAVAILABLE" || e.value === null) return false;
+  if (e.freshness?.stale === true) return true;
+  const asOf = e.freshness?.asOf ?? null;
+  return asOf === null || asOf === "" || !Number.isFinite(Date.parse(asOf));
+}
+
+/** "last evaluated 2026-11-08 06:30 UTC, may be out of date" for this envelope (server text). */
+export const staleQualifierOf = (e: Pick<MetricEnvelope, "freshness">): string => lastEvaluatedStale(absoluteUtcStamp(e.freshness?.asOf ?? null));
+
+/** A registry label as the SUBJECT of a stale sentence: a trailing "now" (e.g. "Alert rules firing now") is never repeated for a stale figure. */
+export const staleSubjectLabel = (label: string): string => label.replace(/\s+(?:right\s+)?now$/i, "").trim();
+
+/** The model-path server note for stale placed metrics: "Note: Alert rules firing — last evaluated …, may be out of date." */
+export function staleNoteText(stale: readonly MetricEnvelope[], labelOf: (metric: string) => string): string {
+  return stale.map((e) => `Note: ${staleSubjectLabel(labelOf(e.metric))} — ${staleQualifierOf(e)}.`).join(" ");
+}
+
 /** One well-formed placeholder. Anything else that opens `{{` or closes `}}` is MALFORMED. */
 const PLACEHOLDER = /\{\{\s*([ml]):([a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?)((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
 
@@ -906,6 +949,8 @@ const UNIT_AFTER = /^\s*(?:%|percent\b|pct\b|[kKM]\b|bn\b|USD\b|dollars?\b|cents
  */
 export const PLACEHOLDER_VERDICTS = [
   "NONE", "RESOLVED", "RESOLVED_WITH_WINDOW_NOTE",
+  /** A placed figure is STALE: the answer is KEPT, each stale figure carries its stale wording and a server note is prepended. */
+  "RESOLVED_WITH_STALE_NOTE",
   "MALFORMED_PLACEHOLDER", "UNIT_MISMATCH", "WINDOW_MISMATCH", "UNRESOLVED_PLACEHOLDER",
   "USER_NUMERAL_COLLISION", "UNGROUNDED_DIGIT",
 ] as const;
@@ -1259,8 +1304,9 @@ const FIGURE_UNITS: readonly FigureUnit[] = ["count", "usd", "pct"];
  * FIGURE ONLY — the ranked category's NAME is {{l:<key>|part=<ranking>}} (renderLabel).
  */
 export function renderPlaceholder(e: MetricEnvelope, part: string | null, estimated = false,
-  /** A1–A4 (composed briefing): `window: false` leaves the window out of the qualifier — the composed sentence states it once (quotableWindowPhrase). Wording otherwise identical (F-3). */
-  opts: { window?: boolean } = {}): string | null {
+  /** A1–A4 (composed briefing): `window: false` leaves the window out of the qualifier — the composed sentence states it once (quotableWindowPhrase). Wording otherwise identical (F-3).
+   *  `stale: false` leaves the STALE qualifier out — only for a composed sentence that states it once itself. */
+  opts: { window?: boolean; stale?: boolean } = {}): string | null {
   if (e.status === "UNAVAILABLE" || e.value === null) return `unavailable — ${e.reason ?? "no figure"}`;
   const units = e.valueUnits ?? null;
   let n: number | null;
@@ -1287,7 +1333,10 @@ export function renderPlaceholder(e: MetricEnvelope, part: string | null, estima
   // A configuration part (unwindowedParts, e.g. a threshold) is not measured over the window: no window label.
   const win = opts.window === false || (part !== null && (e.unwindowedParts ?? []).includes(part)) ? null : envelopeWindowText(e);
   const notes = [...(win !== null ? [win] : []), ...(isEstimate ? ["estimated"] : [])];
-  const fig = `${fmtNumber(n, unit)}${notes.length ? ` (${notes.join(", ")})` : ""}`;
+  // STALE: the figure itself says it is not current (server text), so no reader can present it as now.
+  const stale = opts.stale !== false && isStaleEnvelope(e) ? staleQualifierOf(e) : null;
+  const qual = [...(notes.length ? [notes.join(", ")] : []), ...(stale ? [stale] : [])].join("; ");
+  const fig = `${fmtNumber(n, unit)}${qual ? ` (${qual})` : ""}`;
   // F-3 (S2 2026-11-08): "at least" ONLY for a part that is truly a lower bound — a PARTIAL part the envelope does not list as exact.
   const floor = e.status === "PARTIAL" && !(part !== null && (e.exactParts ?? []).includes(part));
   const worded = floor ? `at least ${fig}` : isEstimate ? `about ${fig}` : fig;
@@ -1398,7 +1447,8 @@ export function fixedWindowOption(envelopes: readonly MetricEnvelope[], key: str
  */
 export type TypedAnswerSegment =
   | { kind: "text"; text: string }
-  | { kind: "figure"; text: string; metric: string; window: number | string | null }
+  /** `figureClass: "STALE"` ⇔ the envelope's figure is not current (its text carries the stale wording; absent = current). */
+  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass }
   | { kind: "link"; text: string; href: string }
   | ServerNoteSegment
   /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
@@ -1466,7 +1516,7 @@ export function resolvePlaceholders(
   const stream = { text: "", spans: [] as RenderedSpan[] };
 
   const resolveParts = (text: string, lineStart = true): { text: string; parts: TypedAnswerSegment[] } => {
-    const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null } | { kind: "label" })[] = [];
+    const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null; stale: boolean } | { kind: "label" })[] = [];
     const out = text.replace(PLACEHOLDER, (m, kind: "m" | "l", written: string, rawOpts: string, offset: number) => {
       claims++;
       const opts = placeholderOptions(rawOpts);
@@ -1498,7 +1548,7 @@ export function resolvePlaceholders(
       figures.set(key, [...(figures.get(key) ?? []), fig]);
       // The figure's qualifier carries its window unless the part is unwindowed (renderPlaceholder's rule).
       const windowed = !(p.part !== null && (e.unwindowedParts ?? []).includes(p.part)) && envelopeWindowText(e) !== null;
-      meta.push({ kind: "figure", metric: key, window: e.window.days ?? envelopeWindowText(e), windowPhrase: windowed ? quotableWindowPhrase(e) : null });
+      meta.push({ kind: "figure", metric: key, window: e.window.days ?? envelopeWindowText(e), windowPhrase: windowed ? quotableWindowPhrase(e) : null, stale: isStaleEnvelope(e) });
       return `${SENTINEL}${fig}${SENTINEL}`;
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
@@ -1545,7 +1595,7 @@ export function resolvePlaceholders(
       const f = i % 2 === 1 ? meta[(i - 1) / 2] : null;
       if (f) stream.spans.push({ start: stream.text.length, end: stream.text.length + piece.length, kind: f.kind, text: piece, windowPhrase: f.kind === "figure" ? f.windowPhrase : null });
       stream.text += piece;
-      if (f?.kind === "figure") parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window });
+      if (f?.kind === "figure") parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window, ...(f.stale ? { figureClass: "STALE" as const } : {}) });
       else if (piece) {
         const prev = parts[parts.length - 1];
         if (prev?.kind === "text") prev.text += piece; else parts.push({ kind: "text", text: piece });
@@ -1681,7 +1731,7 @@ export function periodCorrectionText(affected: readonly MetricEnvelope[], asked:
   return `Correction: the figures for ${listLabels(labels)} cover ${listLabels(phrases)}, not the ${period} you asked about; that period cannot be measured for them.`;
 }
 
-export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE";
+export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE" || v === "RESOLVED_WITH_STALE_NOTE";
 
 // ── The turn ────────────────────────────────────────────────────────────────
 
@@ -1729,6 +1779,8 @@ export interface PlatformAiAnswer {
      * (note fired AND periodMismatch > 0); absent otherwise. The verdict stays RESOLVED_WITH_WINDOW_NOTE.
      */
     correction?: 1;
+    /** STALE: 1 when the server prepended the stale note (a placed figure was not current); absent otherwise. */
+    staleNote?: 1;
     /**
      * S2 2026-11-08 (counts only; present when > 0 and the answer was kept): sentences where the
      * same rendered label came from two {{l:}} placeholders (labelRepeatCount), and window_phrase
@@ -2058,6 +2110,21 @@ export async function runPlatformAiTurn(input: {
       : [{ kind: "text", text: `${UNVERIFIED_FALLBACK}. Open the Platform page it comes from.` }];
     typed = answer.map((x) => ({ ...x }));
   }
+  // STALE (owner rule): a placed figure that is not current keeps its own stale wording, and ONE
+  // server note (prepended, its own segment — never model text) names each stale metric with its
+  // last-evaluated time. RESOLVED becomes RESOLVED_WITH_STALE_NOTE (a window note keeps its verdict).
+  let staleNote: 1 | undefined;
+  if (!replaced) {
+    const seenStale = new Set<string>();
+    const staleEnvs = placed.placed.filter((e) => isStaleEnvelope(e) && !seenStale.has(e.metric) && seenStale.add(e.metric));
+    if (staleEnvs.length > 0) {
+      if (verdict === "RESOLVED") verdict = "RESOLVED_WITH_STALE_NOTE";
+      const text = staleNoteText(staleEnvs, (key) => binding.describeMetric(key)?.label ?? key);
+      answer = [{ kind: "note", text }, ...answer];
+      typed = [{ kind: "note", text }, ...typed];
+      staleNote = 1;
+    }
+  }
   // Memory: expand the sentinels — plain text in the display answer, a typed `memory` span in the stored one.
   if (memText.length > 0) {
     const plain = (t: string) => t.replace(MEM_SENTINEL, (_m, l: string) => memText[l.charCodeAt(0) - 97] ?? "");
@@ -2101,6 +2168,7 @@ export async function runPlatformAiTurn(input: {
         ...(Object.keys(placed.wordFamilyBy).length ? { wordFamilyBy: placed.wordFamilyBy } : {}), ...(periodMismatch !== undefined ? { periodMismatch } : {}),
         ...(retry ? { retry } : {}),
         ...(correction ? { correction } : {}),
+        ...(staleNote ? { staleNote } : {}),
         ...(!replaced && placed.labelRepeat > 0 ? { labelRepeat: placed.labelRepeat } : {}),
         ...(!replaced && placed.windowRepeat > 0 ? { windowRepeat: placed.windowRepeat } : {}) },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
