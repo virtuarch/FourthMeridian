@@ -29,7 +29,13 @@ export interface CsOverviewResponse {
     customers: number;
     /** True when a fleet read hit its row cap — every count here is a floor ("≥N"). */
     floor: boolean;
-    reasons: { key: AttentionKey; label: string; count: number }[];
+    /** Each reason with its suggested next step for the operator (TEXT ONLY — nothing here contacts a customer). */
+    reasons: { key: AttentionKey; label: string; action: string; count: number }[];
+    /**
+     * Of `customers`, how many have a reserved test e-mail domain (example.test, example.com, …).
+     * A LABEL only: OD-4 (whether test accounts are excluded) is undecided, so they stay counted.
+     */
+    testAccounts: number;
   };
   /** Live connections by health (REVOKED / owner-inactive are retired, not members). */
   connections: { total: number; counts: Record<HealthState, number>; retired: { revoked: number; ownerInactive: number } };
@@ -50,7 +56,13 @@ export interface CsOverviewResponse {
  * `policy` — an assignment naming an unknown / invalid / retired group.
  * `unassigned` — no assignment while the fail-closed switch is ENFORCED (the customer is restricted now);
  * never present otherwise (S2 ruling, 2026-11-02).
+ * `import_failed` / `import_stuck` — a recent bank connection's first import, by the import-status rule
+ * (import-status-core.ts): failed, or in progress with its newest run failed (a resume is pending).
+ * `link_exited` — Plaid Link closed without success in the last 7 days and no connection was made since.
+ * `no_connection_24h` — registered 24 h – 7 d ago with no connection or account yet (`stalled` takes over at 7 d).
  */
-export type AttentionKey = "reconnect" | "incident" | "policy" | "unassigned" | "stalled";
+export type AttentionKey =
+  | "reconnect" | "incident" | "import_failed" | "import_stuck" | "link_exited"
+  | "policy" | "unassigned" | "no_connection_24h" | "stalled";
 /** The Customers list's `attention` filter: one reason, or any reason. */
 export type AttentionFilter = AttentionKey | "any";

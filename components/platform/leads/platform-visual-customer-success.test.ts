@@ -23,7 +23,7 @@ const O: CsOverviewResponse = {
   checkedAt: "2026-11-20T15:00:00.000Z", windowDays: 30, customers: { active: 8, deactivated: 1 },
   stages: [{ key: "registered", label: "Registered", count: 0 }, { key: "verified", label: "Verified", count: 1 }, { key: "firstSession", label: "First session", count: 2 },
     { key: "firstConnection", label: "First connection", count: 3 }, { key: "firstAiTurn", label: "First AI turn", count: 1 }, { key: "firstBriefViewed", label: "First Brief viewed", count: 0 }, { key: "returned", label: "Returned", count: 1 }],
-  attention: { customers: 3, floor: false, reasons: [{ key: "reconnect", label: "A connection needs reconnecting", count: 1 }, { key: "incident", label: "An unresolved sync issue", count: 1 }, { key: "policy", label: "Assigned policy group is unknown, invalid or retired", count: 0 }, { key: "stalled", label: "Not connected 7+ days after registering", count: 2 }] },
+  attention: { customers: 3, floor: false, testAccounts: 1, reasons: [{ key: "reconnect", label: "A connection needs reconnecting", action: "Review the connection. Customer contact requires owner approval.", count: 1 }, { key: "incident", label: "An unresolved sync issue", action: "Open the incident.", count: 1 }, { key: "policy", label: "Assigned policy group is unknown, invalid or retired", action: "Assign a group.", count: 0 }, { key: "stalled", label: "Not connected 7+ days after registering", action: "Review the registration.", count: 2 }] },
   connections: { total: 5, counts: zero, retired: { revoked: 2, ownerInactive: 0 } },
   incidents: { days: [{ day: "2026-11-20", opened: 1, resolved: 2 }], floor: false, openByKind: [{ kind: "MISSING_ACCOUNT", label: "Missing account", count: 1 }], open: 1, openFloor: false },
   onboarding: { stages: [{ key: "verified", label: "Verified" }, { key: "firstSession", label: "First session" }, { key: "firstConnection", label: "First connection" }, { key: "firstAiTurn", label: "First AI turn" }, { key: "firstBriefViewed", label: "First Brief viewed" }],
@@ -66,6 +66,12 @@ console.log("2b. PB-4 — each reason opens the Customers list filtered to it");
     floored.includes("≥3 need help") && floored.includes("Show all ≥3 who need help in the list") && floored.includes("Counts are at least (≥)")
     && csKpis({ ...ok, data: { ...O, attention: { ...O.attention, floor: true } } }).find((k) => k.key === "help")?.value === "≥3");
   check("an uncapped read shows plain counts", !html.includes("≥") );
+  check("suggested next steps: text for every reason with a count, none for an empty reason",
+    html.includes("data-attention-next-steps") && html.includes("Review the connection. Customer contact requires owner approval.") && html.includes("Review the registration.")
+    && !html.includes("Assign a group."));
+  check("test accounts are labelled, still counted (OD-4)", html.includes("1 of them is labelled test") && html.includes("3 need help"));
+  const noTest = render({ ...ok, data: { ...O, attention: { ...O.attention, testAccounts: 0 } } });
+  check("no test caption when there are none", !noTest.includes("labelled test"));
   const lead = strip("components/platform/leads/CustomerSuccessLead.tsx");
   check("the control hands off through cs-attention-link and lands on the list", /requestCustomerAttentionFilter\(filter\); goToSection\("cs-customers"\)/.test(lead) && /const showWho = p\.customerList \?/.test(lead));
   const types = strip("lib/platform/customer/overview-types.ts");
