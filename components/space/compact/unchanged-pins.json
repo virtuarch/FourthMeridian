@@ -179,5 +179,5 @@
  "lib/transactions/transfer-maturation.ts": "d0b3718c9038decac37b321d929b39598d9728858bb5badf13fb8611d50402df",
  "lib/transactions/transfer-resolution.ts": "87a181d169a8bb2c0fafe0342be1596c4e4d89418d8399acc41c549d18d24018",
  "lib/wealth/invested-label.ts": "689a2d080b5832b8fd3e459871a56bb9e6e7213c900e97fc7463c002f874218f",
- "lib/wealth/wealth-time-machine.ts": "0571745693997f77741c6322d9052895741035736ffdfd08f37ea3949dda791e"
+ "lib/wealth/wealth-time-machine.ts": "58f4bc262391c2773751eb85fdd7a1e8151c767d8190a76c81c26cf29e9c819e"
 }
