@@ -51,6 +51,24 @@ export async function loadImportsForOwners(userIds: readonly string[], now: Date
   return { items: out.items, floor: out.floor || rows.length >= IMPORT_ITEMS_MAX };
 }
 
+/**
+ * Customer Success "who needs help" — the verdicts of the given Plaid Items (the
+ * attention reader picks the recently linked ones from the funnel facts it already
+ * holds). Primary-key lookup; owner included (CS may name it).
+ */
+export async function loadImportsForItemIds(itemIds: readonly string[], now: Date, client = systemDb): Promise<{ items: ImportedItem[]; floor: boolean }> {
+  if (itemIds.length === 0) return { items: [], floor: false };
+  const ids = [...itemIds].slice(0, IMPORT_ITEMS_MAX);
+  const rows = await client.plaidItem.findMany({
+    where: { id: { in: ids } },
+    select: { ...ITEM_SELECT, userId: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: IMPORT_ITEMS_MAX,
+  });
+  const out = await fold(rows.map((r) => ({ ...r, status: String(r.status) })), now);
+  return { items: out.items, floor: out.floor || itemIds.length > IMPORT_ITEMS_MAX };
+}
+
 /** Platform Ops — Plaid Items linked since `since` by active customers. NO owner is selected. */
 export async function loadImportsLinkedSince(since: Date, now: Date, client = systemDb): Promise<{ items: ImportedItem[]; floor: boolean }> {
   const rows = await client.plaidItem.findMany({
