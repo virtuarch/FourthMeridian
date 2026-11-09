@@ -37,7 +37,10 @@ import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-c
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
-import { ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, idsForAttention, type AttentionFold } from "./attention-core";
+import {
+  ATTENTION_ACTIONS, ATTENTION_LABELS, ATTENTION_SHORT, attentionDetailOf, attentionOf, idsForAttention, type AttentionFold,
+} from "./attention-core";
+import { isReservedTestEmail } from "./population";
 import { loadAttention } from "./attention";
 import type { AttentionFilter, AttentionKey } from "./overview-types";
 import type { LastActiveBucket, PresenceState } from "@/lib/presence/definitions";
@@ -55,6 +58,10 @@ export interface CustomerListRow extends CustomerRollup {
   connectionCount: number;
   /** PB-4 — why this customer needs help, in display order ([] = no reason, or not an active customer). */
   attention: AttentionKey[];
+  /** Per reason, a short closed-vocabulary detail (a Link exit code, an import reason in words) — never an institution or a message. */
+  attentionDetail: Partial<Record<AttentionKey, string>>;
+  /** A reserved test e-mail domain — shown as a "test" LABEL; still counted everywhere (OD-4 undecided). */
+  testAccount: boolean;
 }
 
 export interface CustomerList {
@@ -63,14 +70,14 @@ export interface CustomerList {
   /** PB-4 — the filter this page was read with (null = none). */
   attention: AttentionFilter | null;
   /** PB-4 — the reasons that apply now, named by the server (the list's chips and filter options). */
-  attentionReasons: { key: AttentionKey; label: string; short: string }[];
+  attentionReasons: { key: AttentionKey; label: string; short: string; action: string }[];
   /** S2 — true when the attention read hit its row cap: the filtered population is a floor ("≥N"). */
   attentionFloor: boolean;
   /** PRIV-ref — set when the search was an opaque reference: how it resolved, and the not-found line. */
   refSearch: CustomerRefSearch | null;
 }
 
-const reasonsOf = (fold: AttentionFold) => fold.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key] }));
+const reasonsOf = (fold: AttentionFold) => fold.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key], action: ATTENTION_ACTIONS[key] }));
 
 /** The id tail of an opaque `user …abc123` reference (or a bare 6+ character token), else null. */
 export function opaqueRefTail(search: string): string | null {
@@ -256,6 +263,8 @@ export async function listCustomers(
         cohorts: cohortsBy.get(u.id) ?? [],
         connectionCount: (plaidBy.get(u.id) ?? 0) + (connBy.get(u.id) ?? 0),
         attention: attentionOf(att.fold, u.id),
+        attentionDetail: attentionDetailOf(att.fold, u.id),
+        testAccount: isReservedTestEmail(u.email),
         ...rollup,
       };
     }),
