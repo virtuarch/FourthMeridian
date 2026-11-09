@@ -44,7 +44,9 @@ export type DeficitCauseClassification =
    * them. A card payment that settles purchases already counted in spending is
    * NOT paydown, so a household whose payments settle the SAME WINDOW's charges
    * is never DEBT_DRIVEN. What this verdict states is exact: income covered
-   * spending, and more cash than the surplus went to REDUCING what is owed.
+   * spending, and more cash than the surplus went to debt — revolving net
+   * paydown plus (owner F6) installment-loan payments, which are debt SERVICE
+   * reported unsplit (principal + interest[ + escrow]), never principal reduction.
    *
    * ⚠️ STATEMENT LAG IS REAL PAYDOWN, AND IS GRADED AS SUCH. A full-payer whose
    * spending FELL across the window edge pays last period's larger statement
@@ -214,9 +216,11 @@ export type ClassificationScope =
   /** Liquid cash divided by the monthly expense baseline, in months. */
   | 'LIQUID_CASH_VS_MONTHLY_EXPENSES'
   /**
-   * The economic net (income − spending) less the cash that actually REDUCED debt
-   * (lib/transactions/debt-service.ts). Not "debt payments": a card payment that
-   * settles purchases already counted as spending is not in it.
+   * The economic net (income − spending) less the cash that actually REDUCED
+   * revolving debt and less unsplit loan payments (owner F6: installment-loan
+   * payments, principal + interest[ + escrow] not split — never principal
+   * reduction) (lib/transactions/debt-service.ts). Not "debt payments": a card
+   * payment that settles purchases already counted as spending is not in it.
    */
   | 'CASH_NET_AFTER_DEBT_PAYDOWN';
 
@@ -345,8 +349,9 @@ export interface CashFlowSection {
   /**
    * WHY the window ran a deficit, if it did. Graded on two figures only: the
    * canonical economic net (`netCashFlow`) and that net after the cash which
-   * genuinely REDUCED debt (`netAfterDebtPayments` = economic net − net
-   * paydown). See DeficitCauseClassification.
+   * genuinely REDUCED revolving debt and after unsplit loan payments
+   * (`netAfterDebtPayments` = economic net − revolving net paydown − unsplit
+   * loan payments; owner F6). See DeficitCauseClassification.
    */
   deficitCause:                 DeficitCauseClassification;
   /**

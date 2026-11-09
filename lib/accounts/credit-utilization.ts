@@ -46,11 +46,25 @@ export interface UtilizationRow {
   level:   UtilizationLevel;
 }
 
-/** Level thresholds (utilization %): <30 low, 30–70 moderate, 70–100 high, >100 over. */
+/**
+ * The utilization % exactly as every surface shows it: a whole percent
+ * (`toFixed(0)` — DebtHero, the utilization rows, CreditHealthInputs, debt
+ * signals). The level is graded on THIS value so the word can never contradict
+ * the number beside it (29.9% used to read "30% · Low").
+ */
+export function displayedUtilizationPct(pct: number): number {
+  return Math.round(pct);
+}
+
+/**
+ * Level thresholds (utilization %, graded on the DISPLAYED whole percent):
+ * <30 low, 30–69 moderate, 70–100 high, >100 over.
+ */
 export function utilizationLevel(pct: number): UtilizationLevel {
-  if (pct > 100) return "over";
-  if (pct >= 70) return "high";
-  if (pct >= 30) return "moderate";
+  const shown = displayedUtilizationPct(pct);
+  if (shown > 100) return "over";
+  if (shown >= 70) return "high";
+  if (shown >= 30) return "moderate";
   return "low";
 }
 

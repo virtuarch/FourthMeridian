@@ -24,6 +24,20 @@ check("35% → moderate",  utilizationLevel(35) === "moderate");
 check("90% → high",      utilizationLevel(90) === "high");
 check("120% → over",     utilizationLevel(120) === "over");
 
+// ── Boundaries are graded on the DISPLAYED whole percent (label never contradicts number) ──
+check("29.4% shows 29% → low",      utilizationLevel(29.4) === "low");
+check("29.9% shows 30% → moderate", utilizationLevel(29.9) === "moderate");
+check("30.0% → moderate",           utilizationLevel(30) === "moderate");
+check("69.4% shows 69% → moderate", utilizationLevel(69.4) === "moderate");
+check("69.5% shows 70% → high",     utilizationLevel(69.5) === "high");
+check("100.4% shows 100% → high",   utilizationLevel(100.4) === "high");
+check("100.5% shows 101% → over",   utilizationLevel(100.5) === "over");
+for (const p of [0, 12.5, 29.49, 29.5, 29.9, 30, 69.49, 69.5, 99.6, 100.4, 100.5, 140]) {
+  const shown = Number(p.toFixed(0));
+  const want = shown > 100 ? "over" : shown >= 70 ? "high" : shown >= 30 ? "moderate" : "low";
+  check(`label matches shown ${p.toFixed(0)}% for ${p}`, utilizationLevel(p) === want);
+}
+
 // ── Normalization: 0.35 ratio → 35%, not 3500% ──────────────────────────────────
 const normal = creditUtilization([acct({ id: "card", balance: 350, creditLimit: 1000 })]);
 check("normal: pct is 35 (not 3500)", normal.rows[0].pct === 35);
