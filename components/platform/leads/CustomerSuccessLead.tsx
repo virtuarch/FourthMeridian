@@ -42,7 +42,7 @@ import { ShareBars } from "../charts/ShareBars";
 import { cohortLayout } from "../charts/heatmap-model";
 import { ONBOARDING_SHORT, cohortCellText, describeCohortCell } from "./growth-model";
 import {
-  CS_POPULATION_PENDING_NOTE, CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
+  CS_POPULATION_PENDING_NOTE, CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, attentionNextSteps, attentionTestCaption, csHero, healthItems, incidentBars, stageBars,
   type CsWindow,
 } from "./customer-success-model";
 import type { ReactNode } from "react";
@@ -108,6 +108,19 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
                     denominator={`of ${n(o.customers.active)} open customer accounts · one customer can have several reasons`}
                     {...(showWho ? { onSelect: (key: string) => showWho(key as AttentionFilter), selectLabel: (b: { label: string; count: number }) => `Show the ${n(b.count)} customer${b.count === 1 ? "" : "s"}: ${b.label}` } : {})} />
                   {o.attention.floor && <Caption>{"Counts are at least (≥) — a fleet read reached its row cap"}</Caption>}
+                  {attentionTestCaption(o) && <Caption>{attentionTestCaption(o)}</Caption>}
+                  {attentionNextSteps(o).length > 0 && (
+                    <div className="mt-3" data-attention-next-steps>
+                      <p className="text-[11px] font-medium text-[var(--text-secondary)]">Suggested next steps</p>
+                      <ul className="mt-1 flex flex-col gap-1">
+                        {attentionNextSteps(o).map((s) => (
+                          <li key={s.key} className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                            <span className="font-medium text-[var(--text-secondary)]">{s.label}:</span> {s.action}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   <Caption>{CS_POPULATION_PENDING_NOTE}</Caption>
                   {showWho && o.attention.customers > 0 && (
                     <button type="button" onClick={() => showWho("any")} data-attention-any

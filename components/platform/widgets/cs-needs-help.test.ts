@@ -18,19 +18,31 @@ let failures = 0;
 const check = (name: string, cond: boolean, d?: unknown) => { if (cond) console.log(`  ✓ ${name}`); else { failures++; console.error(`  ✗ ${name} — ${JSON.stringify(d)}`); } };
 const strip = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const REASONS = [
-  { key: "reconnect" as const, label: "A connection needs reconnecting", short: "Reconnect" },
-  { key: "incident" as const, label: "An active sync incident", short: "Sync incident" },
-  { key: "policy" as const, label: "Assigned policy group is unknown, invalid or retired", short: "Policy group" },
-  { key: "stalled" as const, label: "Stalled before first connection, 7+ days after registering", short: "Stalled" },
+  { key: "reconnect" as const, label: "A connection needs reconnecting", short: "Reconnect", action: "Review the connection." },
+  { key: "incident" as const, label: "An active sync incident", short: "Sync incident", action: "Open the incident." },
+  { key: "policy" as const, label: "Assigned policy group is unknown, invalid or retired", short: "Policy group", action: "Assign a group." },
+  { key: "stalled" as const, label: "Stalled before first connection, 7+ days after registering", short: "Stalled", action: "Review the registration." },
 ];
 
 console.log("1. the chip");
 {
   const html = renderToStaticMarkup(createElement(NeedsHelpChip, { keys: ["reconnect", "incident"], reasons: REASONS }));
   check("names 'Needs help' and the reasons' chip words", html.includes("Needs help") && html.includes("Reconnect, Sync incident"), html);
-  check("the full reasons are its title", html.includes('title="A connection needs reconnecting · An active sync incident"'), html);
+  check("the full reasons, each with its next step, are its title",
+    html.includes('title="A connection needs reconnecting — Next: Review the connection. · An active sync incident — Next: Open the incident."'), html);
   check("no reason ⇒ nothing", renderToStaticMarkup(createElement(NeedsHelpChip, { keys: [], reasons: REASONS })) === "");
   check("an older response without the field ⇒ nothing", renderToStaticMarkup(createElement(NeedsHelpChip, { keys: undefined, reasons: undefined })) === "");
+  const R2 = [
+    { key: "link_exited" as const, label: "Left bank linking without connecting", short: "Left linking", action: "Review the exit code. Customer contact requires owner approval." },
+    { key: "import_failed" as const, label: "Import failed", short: "Import failed", action: "Review the failure reason." },
+  ];
+  const withDetail = renderToStaticMarkup(createElement(NeedsHelpChip, { keys: ["link_exited", "import_failed"], reasons: R2, detail: { link_exited: "exit code INVALID_CREDENTIALS" } }));
+  check("a reason's closed-code detail follows its chip word", withDetail.includes("Left linking (exit code INVALID_CREDENTIALS), Import failed"), withDetail);
+  check("the first reason's suggested next step is shown as text", withDetail.includes("data-needs-help-next") && withDetail.includes("Next: Review the exit code. Customer contact requires owner approval."), withDetail);
+  check("no button or link in the chip", !/<button|<a /.test(withDetail));
+  const test = renderToStaticMarkup(createElement(NeedsHelpChip, { keys: [], reasons: R2, testAccount: true }));
+  check("a test account with no reason still shows the 'test' label", test.includes("data-test-account") && test.includes(">test<"), test);
+  check("no 'test' label unless flagged", !withDetail.includes("data-test-account"));
 }
 
 console.log("2. the hand-off event");
@@ -47,7 +59,8 @@ console.log("3. the list (source pins)");
   const src = strip("components/platform/widgets/CsCustomersWidget.tsx");
   check("the filter asks the audited route for attention=<key|any>", /&attention=\$\{encodeURIComponent\(att\)\}/.test(src) && /\/api\/platform\/customer-success\/customers\?search=/.test(src));
   check("a 'Needs help' filter control with every server-named reason", /data-attention-filter/.test(src) && /Needs help — any reason/.test(src) && /list\?\.attentionReasons \?\? \[\]\)\.map/.test(src));
-  check("the chip is on BOTH the desktop row and the phone row", (src.match(/<NeedsHelpChip keys=\{c\.attention\} reasons=\{list\.attentionReasons\} \/>/g) ?? []).length === 2);
+  check("the chip is on BOTH the desktop row and the phone row (with details and the test label)",
+    (src.match(/<NeedsHelpChip keys=\{c\.attention\} reasons=\{list\.attentionReasons\} detail=\{c\.attentionDetail\} testAccount=\{c\.testAccount\} \/>/g) ?? []).length === 2);
   check("the dashboard's reason rows set the same filter (listener added and removed)",
     /window\.addEventListener\(CS_ATTENTION_FILTER_EVENT, onFilter\)/.test(src) && /window\.removeEventListener\(CS_ATTENTION_FILTER_EVENT, onFilter\)/.test(src));
   check("a refetch after an action keeps the filter", /await loadList\(search, attention\)/.test(src));
