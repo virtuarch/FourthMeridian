@@ -190,6 +190,34 @@ console.log("history never becomes a row");
   check("never evaluated → checked, but no alert rows", never.authorities.checked.includes("alert-evaluation") && !never.items.some((i) => i.entity.kind === "alert-rule"));
 }
 
+console.log("OBS-001 — alert rows are age-gated exactly like the Overview chip");
+{
+  // Fresh (2 h old, 6 h cadence + 2 h grace): wording unchanged.
+  const fresh = buildAttention(full, now).items.find((i) => i.id === "alert:job-failing");
+  check("fresh → 'Firing in the latest evaluation', no stale wording", /^Firing in the latest evaluation — 1 breach \(critical\)\.$/.test(fresh?.problem ?? ""), fresh?.problem);
+  check("fresh → basis carries no overdue marker", !/evaluator overdue/.test(fresh?.basis ?? ""));
+  // Overdue (20 h old > 6 + 2): still a row (never hidden), but never current.
+  const overdueIn = { ...alerts, latest: { ...alerts.latest!, evaluatedAtISO: AGO(20) } };
+  const overdue = buildAttention({ ...full, alerts: overdueIn }, now).items.find((i) => i.id === "alert:job-failing");
+  check("overdue → the row is kept, severity unchanged", overdue?.severity === "critical");
+  check("overdue → 'Firing at last evaluation', not 'latest'", /^Firing at last evaluation — /.test(overdue?.problem ?? ""), overdue?.problem);
+  check("overdue → shared stale wording with the server-side age", /Evaluator overdue: last evaluated 20 h ago, may be out of date\./.test(overdue?.problem ?? ""), overdue?.problem);
+  check("overdue → basis says the evaluation is too old to speak for now", /evaluator overdue/.test(overdue?.basis ?? ""));
+  // The resolved cadence is honoured (same handling as the chip): 24 h cadence ⇒ 20 h is fresh.
+  const slow = buildAttention({ ...full, alerts: { ...overdueIn, cadenceHours: 24 } }, now).items.find((i) => i.id === "alert:job-failing");
+  check("a 24 h resolved cadence ⇒ 20 h old is current (wording unchanged)", /^Firing in the latest evaluation/.test(slow?.problem ?? ""), slow?.problem);
+  // Unreadable timestamp ⇒ silent, time stated as not recorded.
+  const unreadable = buildAttention({ ...full, alerts: { ...alerts, latest: { ...alerts.latest!, evaluatedAtISO: "not-a-date" } } }, now).items.find((i) => i.id === "alert:job-failing");
+  check("unreadable evaluation time → stale, 'time not recorded'", /last evaluated time not recorded, may be out of date/.test(unreadable?.problem ?? ""), unreadable?.problem);
+  // Overdue source row.
+  const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const])) as Record<(typeof ALERT_AUTHORITY_SOURCES)[number], "ok" | "failed" | "unknown">;
+  const src = buildAttention({ ...full, alerts: { ...overdueIn, latest: { ...overdueIn.latest, authorities: { ...allOk, syncIncidents: "failed" } } } }, now).items.find((i) => i.id === "alert-source:syncIncidents");
+  check("overdue → alert-source row says 'last evaluation' + may be out of date", /in the last evaluation/.test(src?.problem ?? "") && /may be out of date/.test(src?.problem ?? ""), src?.problem);
+  // Never ran: no rows, nothing claimed.
+  const never = buildAttention({ ...full, alerts: { latest: null, titles: {} } }, now);
+  check("never evaluated → no alert rows", !never.items.some((i) => i.entity.kind === "alert-rule" || i.entity.kind === "alert-source"));
+}
+
 console.log("B10 monitoring — a failed alert source is a WARNING row, never silence");
 {
   const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const])) as Record<(typeof ALERT_AUTHORITY_SOURCES)[number], "ok" | "failed" | "unknown">;
@@ -390,7 +418,7 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   // The alerts route's new field strips the destination (an address).
   const alertsRoute = strip("app/api/platform/platform-ops/alerts/route.ts");
   const latest = strip("lib/alerts/latest-evaluation.ts");
-  check("alerts route exposes `latest` through the projection, not the raw summary", alertsRoute.includes("latest: latestAlertEvaluation(recentRuns)"));
+  check("alerts route exposes `latest` through the projection, not the raw summary", /\blatest(?::|\s*=)\s*latestAlertEvaluation\(recentRuns\)/.test(alertsRoute));
   // OBS-011: the projection may READ a legacy row's `destination` to fold it into
   // a boolean (`destinationConfigured`), but the address itself never crosses.
   check("the projection never copies `destination` (presence only)",
