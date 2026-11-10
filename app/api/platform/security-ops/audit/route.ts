@@ -7,10 +7,13 @@
  * AUTHORIZATION: requirePlatformAccess("SECURITY_OPS", "READ") — the granted,
  * non-SYSTEM_ADMIN platform staff this feature exists for. It deliberately does
  * NOT reuse /api/admin/audit's requireSystemAdmin gate (which would 403 those
- * users). It reuses that route's QUERY SHAPE only: db.auditLog filtered by the
+ * users). It reuses that route's QUERY SHAPE only: auditLog filtered by the
  * canonical ADMIN_SECURITY_FILTER_ACTIONS set (lib/audit-actions.ts).
  *
- * Scaled down to a card: the most recent RECENT_LIMIT security events, no
+ * P12a: the read lives in lib/platform/security/audit-feed.ts (pure move);
+ * this route is gate → reader → JSON.
+ *
+ * Scaled down to a card: the most recent security events, no
  * filter/pagination UI. PII-minimized — action + time + a coarse actor
  * (username or "system"); never email/IP/user-agent.
  */
@@ -18,45 +21,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { ADMIN_SECURITY_FILTER_ACTIONS } from "@/lib/audit-actions";
+import { readSecurityAuditFeed, type PlatformAuditResponse } from "@/lib/platform/security/audit-feed";
 
 export const runtime = "nodejs";
 
-const RECENT_LIMIT = 15;
-
-export interface PlatformAuditEvent {
-  id:     string;
-  action: string;
-  at:     string;       // ISO timestamp
-  actor:  string;       // username, or "system" when no user is attached
-}
-
-export interface PlatformAuditResponse {
-  events: PlatformAuditEvent[];
-}
+export type { PlatformAuditEvent, PlatformAuditResponse } from "@/lib/platform/security/audit-feed";
 
 export async function GET() {
   const [, err] = await requirePlatformAccess("SECURITY_OPS", "READ");
   if (err) return err;
 
-  const rows = await db.auditLog.findMany({
-    where:   { action: { in: ADMIN_SECURITY_FILTER_ACTIONS } },
-    orderBy: { createdAt: "desc" },
-    take:    RECENT_LIMIT,
-    select:  {
-      id:        true,
-      action:    true,
-      createdAt: true,
-      user:      { select: { username: true } },
-    },
-  });
-
-  const events: PlatformAuditEvent[] = rows.map((r) => ({
-    id:     r.id,
-    action: r.action,
-    at:     r.createdAt.toISOString(),
-    actor:  r.user?.username ?? "system",
-  }));
-
-  return NextResponse.json({ events } satisfies PlatformAuditResponse);
+  return NextResponse.json((await readSecurityAuditFeed(db)) satisfies PlatformAuditResponse);
 }
