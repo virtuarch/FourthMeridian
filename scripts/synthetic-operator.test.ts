@@ -16,7 +16,7 @@ import {
   passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord, utcStamp, providerConnectionBlocksCleanup,
   E0_LIVE_PROFILE, E0_LIVE_ROSTER, E0_LIVE_AREAS, ALWAYS_FORBIDDEN_AREAS, E0_LIVE_FLIP_OPERATOR, e0LiveOperator, isE0LiveGrantAllowed,
   isRosterGrant, isE0LiveFlipArea, computeE0LiveDeadline, e0LiveDirFor, e0LiveOperatorDir, e0LiveRecordDirRefusal, parseE0LiveRecord,
-  classifySignalLine, regrantAuditAction, AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS,
+  classifySignalLine, regrantAuditAction, AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS, E0_LIVE_PROFILE_EXPIRES, decideE0LiveProvisionExpiry,
 } from "./lib/synthetic-operator.core";
 import { createPrivateDir, writePrivateJson, shredFile } from "./lib/synthetic-operator.files";
 import { PlaidItemStatus } from "@prisma/client";
@@ -447,6 +447,35 @@ check("the shared per-user cleanup keeps the REVOKED-item guard, the zero-grace 
   /providerConnectionBlocksCleanup\(plaidItems\.map\(\(i\) => i\.status\)\)/.test(purgeBody)
   && /where: \{ id: u\.id, email: expectedEmail, role: "USER" \}/.test(purgeBody)
   && /for \(const f of SECRET_FILES\) shredFile\(path\.join\(opDir, f\)\);/.test(purgeBody));
+
+// ══ e0-live hard stop (S2 09eh) ═══════════════════════════════════════════════
+console.log("\nsynthetic operator — e0-live profile hard stop (S2 09eh)\n");
+check("E0_LIVE_PROFILE_EXPIRES is pinned to 2026-12-15T23:59:59Z (an extension is a visible, reviewed change)",
+  E0_LIVE_PROFILE_EXPIRES === "2026-12-15T23:59:59Z", E0_LIVE_PROFILE_EXPIRES);
+const coreRaw = readFileSync(path.join(ROOT, "scripts/lib/synthetic-operator.core.ts"), "utf8");
+check("source pin: the core declares the expiry literal exactly once",
+  (coreRaw.match(/export const E0_LIVE_PROFILE_EXPIRES = "2026-12-15T23:59:59Z" as const;/g) ?? []).length === 1);
+const expEnd = Date.parse("2026-12-15T23:59:59Z");
+check("before the expiry ⇒ provision allowed", decideE0LiveProvisionExpiry(new Date("2026-11-10T12:00:00Z")).ok);
+check("one ms before the expiry ⇒ allowed", decideE0LiveProvisionExpiry(new Date(expEnd - 1)).ok);
+check("EXACTLY at the expiry ⇒ allowed (inclusive end)", decideE0LiveProvisionExpiry(new Date(expEnd)).ok);
+const dAfter = decideE0LiveProvisionExpiry(new Date(expEnd + 1));
+check("one ms after the expiry ⇒ refused with a clear message naming the expiry",
+  !dAfter.ok && /expired at 2026-12-15T23:59:59Z/.test(dAfter.reason) && /--provision is refused/.test(dAfter.reason), dAfter);
+check("well after the expiry ⇒ refused", !decideE0LiveProvisionExpiry(new Date("2027-01-01T00:00:00Z")).ok);
+check("an invalid clock ⇒ refused (fail closed)", !decideE0LiveProvisionExpiry(new Date(Number.NaN)).ok);
+check("an invalid expiry ⇒ refused (fail closed)", !decideE0LiveProvisionExpiry(new Date("2026-11-10T00:00:00Z"), "not-a-date").ok);
+const mainBody = src.slice(src.indexOf("async function main("));
+check("main: e0-live --provision checks the expiry BEFORE the database import (nothing contacted, nothing written)",
+  /if \(decision\.profile === "e0-live" && decision\.command\.kind === "provision"\) \{\s*const expiry = decideE0LiveProvisionExpiry\(new Date\(\)\);\s*if \(!expiry\.ok\) refuse\(\[expiry\.reason\], false\);/.test(mainBody)
+  && mainBody.indexOf("decideE0LiveProvisionExpiry(") < mainBody.indexOf('await import("@/lib/db")'));
+check("provisionE0Live re-checks the expiry with the record's own `now` before any directory or row is written",
+  /const now = new Date\(\);\s*const expiry = decideE0LiveProvisionExpiry\(now\);\s*if \(!expiry\.ok\) refuse\(\[expiry\.reason\], true\);/.test(e0ProvBody)
+  && e0ProvBody.indexOf("decideE0LiveProvisionExpiry(now)") < e0ProvBody.indexOf("createPrivateDir("));
+check("revoke / regrant / cleanup (e0-live) are NOT gated by the expiry",
+  (src.match(/decideE0LiveProvisionExpiry\(/g) ?? []).length === 2
+  && !/decideE0LiveProvisionExpiry/.test(between("const FLIP_OP =", "async function cleanupE0Live("))
+  && !/decideE0LiveProvisionExpiry/.test(e0CleanBody));
 
 if (failures) { console.error(`\n${failures} check(s) failed, ${passed} passed`); process.exit(1); }
 console.log(`\nall ${passed} checks passed`);

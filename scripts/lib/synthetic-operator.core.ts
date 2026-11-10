@@ -284,6 +284,30 @@ export function providerConnectionBlocksCleanup(statuses: readonly PlaidItemStat
 
 export const E0_LIVE_PROFILE = "e0-live" as const;
 
+/**
+ * S2 ruling 09eh — hard stop for the e0-live profile. After this instant
+ * `--provision --profile=e0-live` is REFUSED before any database contact or
+ * file write. The end is INCLUSIVE (exactly this instant is still allowed).
+ * Revoke / regrant / cleanup are never blocked (cleanup must always work).
+ * Pinned by the test: any extension is a visible, reviewed change.
+ */
+export const E0_LIVE_PROFILE_EXPIRES = "2026-12-15T23:59:59Z" as const;
+
+export type E0LiveExpiryDecision = { ok: true } | { ok: false; reason: string };
+
+/** Pure: may an e0-live PROVISION run at `now`? Allowed iff now <= E0_LIVE_PROFILE_EXPIRES. */
+export function decideE0LiveProvisionExpiry(now: Date, expires: string = E0_LIVE_PROFILE_EXPIRES): E0LiveExpiryDecision {
+  const end = Date.parse(expires);
+  const t = now.getTime();
+  if (!Number.isFinite(end) || !Number.isFinite(t)) {
+    return { ok: false, reason: "the e0-live profile expiry or the current time is not a valid instant — refusing to provision." };
+  }
+  if (t > end) {
+    return { ok: false, reason: `the e0-live profile expired at ${expires} (S2 09eh) — --provision is refused; revoke/regrant/cleanup still work. Extending it requires a reviewed change to E0_LIVE_PROFILE_EXPIRES.` };
+  }
+  return { ok: true };
+}
+
 export type E0LiveRole = "ops" | "cs1" | "cs2" | "cs3" | "rev";
 export type E0LiveArea = "PLATFORM_OPS" | "CUSTOMER_SUCCESS";
 
