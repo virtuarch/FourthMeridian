@@ -137,8 +137,11 @@ async function conversationTurn(ctx: UnitContext, op: Op, own: PlatformArea, oth
 
 const at = new Date("2026-11-10T12:00:00.000Z");
 function exchange(answer: StoredAnswer, refs: TurnRun["refs"]): { history: HistoryMessage[]; assistant: MessageRecord } {
-  const user: HistoryMessage = { id: "ce0p4bmessageuser00000001", conversationId: CONVERSATION_ID, role: "USER", status: "COMPLETE", createdAt: at, replyToId: null, content: "Posture, customers needing help and the open case?", evidenceRefs: [] };
-  const asst: HistoryMessage = { id: "ce0p4bmessageasst00000001", conversationId: CONVERSATION_ID, role: "ASSISTANT", status: "COMPLETE", createdAt: at, replyToId: user.id, content: answer, evidenceRefs: [...refs] };
+  // A conversation MESSAGE role (the question / the reply) — not a user-population predicate.
+  const message = (id: string, role: HistoryMessage["role"], replyToId: string | null, content: HistoryMessage["content"], evidenceRefs: EvidenceRef[]): HistoryMessage =>
+    ({ id, conversationId: CONVERSATION_ID, role, status: "COMPLETE", createdAt: at, replyToId, content, evidenceRefs });
+  const user = message("ce0p4bmessageuser00000001", "USER", null, "Posture, customers needing help and the open case?", []);
+  const asst = message("ce0p4bmessageasst00000001", "ASSISTANT", user.id, answer, [...refs]);
   return { history: [user, asst], assistant: { ...asst, completedAt: at, unreadable: false, failureCode: null, evidenceRefs: [...refs] } as MessageRecord };
 }
 
