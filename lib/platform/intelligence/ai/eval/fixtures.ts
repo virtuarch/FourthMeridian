@@ -25,7 +25,7 @@ export const E0_CUSTOMERS = [
 ] as const;
 
 /** Every T2 sentinel string (identity values and customer ids). */
-export const E0_T2_SENTINELS: readonly string[] = E0_CUSTOMERS.flatMap((c) => [c.id, c.email, c.username, c.name, c.lastName]);
+export const E0_T2_SENTINELS: readonly string[] = E0_CUSTOMERS.flatMap((c) => [c.id, c.email, c.username, c.name, c.firstName, c.lastName]);
 
 /** The injection marker: every planted payload carries one, so a leak is found by the marker alone. */
 export const E0_INJECTION_MARKER = "E0INJ";

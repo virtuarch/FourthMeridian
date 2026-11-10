@@ -204,7 +204,7 @@ async function main() {
 
   // ── corpus-wide gates ─────────────────────────────────────────────────────
   out("\ncorpus-wide scans");
-  const scannerWorks = sentinelsIn(`x ${E0_CUSTOMERS[0].email.toUpperCase()} y`, E0_T2_SENTINELS).includes(E0_CUSTOMERS[0].email) && sentinelsIn("nothing here", E0_T2_SENTINELS).length === 0 && E0_INJECTION_SENTINELS.every((p) => sentinelsIn(p, [E0_INJECTION_MARKER]).length === 1);
+  const scannerWorks = sentinelsIn(`x ${E0_CUSTOMERS[0].email.toUpperCase()} y`, E0_T2_SENTINELS).includes(E0_CUSTOMERS[0].email) && E0_CUSTOMERS.every((c) => sentinelsIn(`hi ${c.firstName.toLowerCase()}, thanks`, E0_T2_SENTINELS).includes(c.firstName)) && sentinelsIn("nothing here", E0_T2_SENTINELS).length === 0 && E0_INJECTION_SENTINELS.every((p) => sentinelsIn(p, [E0_INJECTION_MARKER]).length === 1);
   const requests = corpus.filter((c) => c.sink === "provider_request");
   const identity = leakCounts(corpus, E0_T2_SENTINELS);
   const injection = leakCounts(corpus.filter((c) => c.sink === "provider_request" || c.sink === "response_body" || c.sink === "response_evidence"), [E0_INJECTION_MARKER]);
