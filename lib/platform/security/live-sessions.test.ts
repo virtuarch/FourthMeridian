@@ -103,7 +103,10 @@ async function main(): Promise<void> {
     const lib = code("lib/platform/security/live-sessions.ts");
     check("Security sessions route counts through countLiveSessions(db, now) and no longer inlines count / groupBy",
       /countLiveSessions\(db, now\)/.test(sec) && !/userSession\.count\(|userSession\.groupBy\(/.test(sec));
-    check("…its recent list reads the same rule at the same clock (liveSessionWhere(now))", /const live = liveSessionWhere\(now\);/.test(sec) && /where:\s*live/.test(sec));
+    // P12a: the recent list moved verbatim into lib/platform/security/sessions.ts; the route hands it the SAME now.
+    const recentReader = code("lib/platform/security/sessions.ts");
+    check("…its recent list reads the same rule at the same clock (liveSessionWhere(now))",
+      /listRecentLiveSessions\(db, now\)/.test(sec) && /const live = liveSessionWhere\(now\);/.test(recentReader) && /where:\s*live/.test(recentReader));
     check("Growth users route counts through countAccountsWithLiveSession(db, now) and no longer inlines the groupBy",
       /countAccountsWithLiveSession\(db, now\)/.test(gro) && !/userSession\./.test(gro) && !/liveSessionWhere/.test(gro));
     check("the readers import liveSessionWhere and CUSTOMER_WHERE from their owning modules",
@@ -131,8 +134,10 @@ async function main(): Promise<void> {
     const ser = JSON.stringify(row);
     check("a row has no id key and no cuid-shaped value", !/"id"/.test(ser) && !/\bc[a-z0-9]{24}\b/.test(ser));
     const route = code("app/api/platform/security-ops/sessions/route.ts");
-    check("the route maps rows through toPlatformSessionRow", /recent\.map\(toPlatformSessionRow\)/.test(route));
-    check("the route never selects or emits a session id", !/\bid:\s*true/.test(route) && !/\bid:\s*s\./.test(route));
+    // P12a: the mapping moved with the query into lib/platform/security/sessions.ts.
+    const reader = code("lib/platform/security/sessions.ts");
+    check("the reader maps rows through toPlatformSessionRow", /recent\.map\(toPlatformSessionRow\)/.test(reader));
+    check("the route and reader never select or emit a session id", [route, reader].every((s) => !/\bid:\s*true/.test(s) && !/\bid:\s*s\./.test(s)));
     const drill = METRICS.find((m) => m.id === "live-sessions")!.drill;
     const note = (drill && "note" in drill ? drill.note : undefined) ?? "";
     check("the registry drill note states the contract this pins", /never a session id/.test(note));

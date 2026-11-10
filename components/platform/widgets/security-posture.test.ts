@@ -62,6 +62,7 @@ const PARTS = "components/platform/widgets/SecurityPostureParts.tsx";
 const VIEW = "components/platform/widgets/security-posture-view.ts";
 const CORE = "lib/platform/security/anomalies-core.ts";
 const ROUTE = "app/api/platform/security-ops/anomalies/route.ts";
+const READER = "lib/platform/security/anomalies.ts"; // P12a: the route's read, moved verbatim
 const ADAPTERS = ["SecAuthPostureWidget", "SecAnomaliesWidget", "SecAuditFeedWidget", "SecOperatorActionsWidget", "SecSessionsWidget"] as const;
 const SECTION = { id: "s1", key: "sec_auth_posture", label: "Authentication Posture" };
 
@@ -281,9 +282,10 @@ function main() {
     check("no IPv4 literal", !/\b\d{1,3}(?:\.\d{1,3}){3}\b/.test(html));
     check("no user-agent string, no userId, no raw key", !/Mozilla|userId|identifier:/.test(html));
     const route = strip(ROUTE);
-    check("route: projects every trip through the pure core", /projectAnomalyTrip\(r, windowMinutes\)/.test(route) && !/\bkey:\s/.test(route));
-    check("route: selects no email / ip / user-agent", !/email:\s*true|ipAddress:\s*true|userAgent:\s*true/.test(route));
-    check("route: still gated SECURITY_OPS READ before reading", /requirePlatformAccess\(\s*["']SECURITY_OPS["']\s*,\s*["']READ["']\s*\)/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("findMany"));
+    const reader = strip(READER);
+    check("reader: projects every trip through the pure core", /projectAnomalyTrip\(r, windowMinutes\)/.test(reader) && !/\bkey:\s/.test(reader) && !/\bkey:\s/.test(route));
+    check("route + reader: select no email / ip / user-agent", [route, reader].every((s) => !/email:\s*true|ipAddress:\s*true|userAgent:\s*true/.test(s)));
+    check("route: still gated SECURITY_OPS READ before reading", /requirePlatformAccess\(\s*["']SECURITY_OPS["']\s*,\s*["']READ["']\s*\)/.test(route) && route.indexOf("requirePlatformAccess") > -1 && route.indexOf("requirePlatformAccess") < route.indexOf("readSecurityAnomalies(db"));
     check("core: pure (no db, no clock, no env)", !/@\/lib\/db|server-only|Date\.now|new Date\(|process\.env/.test(strip(CORE)));
   }
 

@@ -229,8 +229,9 @@ function pin() {
 
   // The nine display sites use the shared definition.
   const SITES = [
-    "app/api/platform/security-ops/sessions/route.ts",
-    "app/api/platform/security-ops/auth-posture/route.ts",
+    // P12a: the Security sessions recent list and the auth-posture read moved verbatim into these readers.
+    "lib/platform/security/sessions.ts",
+    "lib/platform/security/auth-posture.ts",
     "lib/platform/security/analytics.ts",
     // The Security sessions and Growth users COUNTS moved into this shared reader (live-sessions@1, accounts-with-live-session@1).
     "lib/platform/security/live-sessions.ts",

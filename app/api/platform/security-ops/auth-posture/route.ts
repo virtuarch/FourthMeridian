@@ -8,40 +8,24 @@
  * aggregate SHAPE (per-user totpEnabled / forcePasswordReset /
  * recoveryCodesRemaining / activeSessionCount) but rolls it up into a small
  * summary card — no per-user table, so no per-user PII crosses the boundary.
+ *
+ * P12a: the read lives in lib/platform/security/auth-posture.ts (pure move;
+ * live sessions via liveSessionWhere at this request's clock); this route is
+ * gate → reader → JSON.
  */
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { liveSessionWhere } from "@/lib/auth/session-proof";
+import { readAuthPosture, type PlatformAuthPosture } from "@/lib/platform/security/auth-posture";
 
 export const runtime = "nodejs";
 
-export interface PlatformAuthPosture {
-  totalUsers:             number;
-  totpEnabled:            number; // users with TOTP enabled
-  forcedResetPending:     number; // users with forcePasswordReset = true
-  activeSessions:         number; // LIVE UserSession rows (liveSessionWhere — SEC-010 lifetime + lockout)
-  usersWithRecoveryCodes: number; // users with ≥1 unused recovery code
-}
+export type { PlatformAuthPosture } from "@/lib/platform/security/auth-posture";
 
 export async function GET() {
   const [, err] = await requirePlatformAccess("SECURITY_OPS", "READ");
   if (err) return err;
 
-  const [totalUsers, totpEnabled, forcedResetPending, activeSessions, recovery] = await Promise.all([
-    db.user.count(),
-    db.user.count({ where: { totpEnabled: true } }),
-    db.user.count({ where: { forcePasswordReset: true } }),
-    db.userSession.count({ where: liveSessionWhere(new Date()) }),
-    db.recoveryCode.groupBy({ by: ["userId"], where: { usedAt: null }, _count: { id: true } }),
-  ]);
-
-  return NextResponse.json({
-    totalUsers,
-    totpEnabled,
-    forcedResetPending,
-    activeSessions,
-    usersWithRecoveryCodes: recovery.length,
-  } satisfies PlatformAuthPosture);
+  return NextResponse.json((await readAuthPosture(db, new Date())) satisfies PlatformAuthPosture);
 }
