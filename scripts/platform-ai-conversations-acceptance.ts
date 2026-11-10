@@ -740,14 +740,14 @@ rollback;
     const polRows = pol.out.split("\n").filter(Boolean).map((l) => { const [name, cmd, gtUsed, geUsed, ...rest] = l.split("|"); return { name, cmd, gtUsed, geUsed, qual: rest.join("|") }; });
     // Deparse forms: (now() AT TIME ZONE 'UTC'::text) (PG14+ SQL-syntax deparse) or timezone('UTC'::text, now())
     // (older); tolerant of whitespace, an optional pg_catalog. prefix and an optional ::text on the zone literal.
-    const NOW = String.raw`(?:pg_catalog\.)?now\(\)`;
-    const CMP = new RegExp(String.raw`"purgeAfter"\s*>\s*(?:(?:pg_catalog\.)?timezone\(\s*'UTC'(?:::text)?\s*,\s*${NOW}\s*\)|\(\s*${NOW}\s+AT\s+TIME\s+ZONE\s+'UTC'(?:::text)?\s*\))`, "i");
+    const NOW_EXPR_RE = String.raw`(?:pg_catalog\.)?now\(\)`;
+    const CMP = new RegExp(String.raw`"purgeAfter"\s*>\s*(?:(?:pg_catalog\.)?timezone\(\s*'UTC'(?:::text)?\s*,\s*${NOW_EXPR_RE}\s*\)|\(\s*${NOW_EXPR_RE}\s+AT\s+TIME\s+ZONE\s+'UTC'(?:::text)?\s*\))`, "i");
     const strictPolicy = (p: (typeof polRows)[number]) => p.gtUsed === "true" && p.geUsed === "false" && CMP.test(p.qual)
       && (p.qual.match(/"purgeAfter"/g) ?? []).length === 1;
     const reads = polRows.filter((p) => p.cmd === "r" || p.cmd === "*");
     const updPol = polRows.find((p) => p.name === "fm_app_upd");
     const cmpText = reads[0]?.qual.match(CMP)?.[0] ?? "";
-    const at = (purge: string) => cmpText.replace('"purgeAfter"', `'${purge}'::timestamp(3)`).replace(new RegExp(NOW, "i"), "'2026-01-01 00:00:00.123+00'::timestamptz");
+    const at = (purge: string) => cmpText.replace('"purgeAfter"', `'${purge}'::timestamp(3)`).replace(new RegExp(NOW_EXPR_RE, "i"), "'2026-01-01 00:00:00.123+00'::timestamptz");
     const evalEq = cmpText ? psql(owner, `select (${at("2026-01-01 00:00:00.123")})::text || '|' || (${at("2026-01-01 00:00:00.124")})::text;`) : { ok: false, out: "", err: "no strict comparison in the read policy" };
     check(96, "read boundary is STRICT ('>'): fm_app_sel (the only fm_app read policy) and fm_app_upd USING use timestamp '>' (never '>='); that comparison at purgeAfter = now() exactly ⇒ false, +1 ms ⇒ true; as fm_app under the real policy (one now()): purgeAfter = ms-floor(now()) + 1 ms ⇒ visible, ms-floor(now()) (≤ now()) ⇒ hidden",
       boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`)
