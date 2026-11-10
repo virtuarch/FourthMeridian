@@ -53,5 +53,6 @@ export async function conversationAreaAccess(area: PlatformArea, operatorId: str
   const binding = bindArea(scope, { metricToken: metricAccessFor(auth), incidentToken });
   if (!binding) return null;
   // Platform AI memory (design v2 §2): the authorized readers come from THIS fresh guard result.
-  return { resolvePage: binding.resolvePage, binding, area, memoryReaders: buildMemoryReaders(incidentToken, area, binding) };
+  // P2: the route-issued scope travels with the binding — the turn boundary rechecks exactly it, per tool call.
+  return { resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding) };
 }

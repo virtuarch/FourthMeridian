@@ -122,8 +122,9 @@ console.log("\n3. static — one implementation, both callers, no break-glass, n
   walk("app/api/platform/ai");
   const importers = [...files, ...["app", "lib", "components", "jobs"].flatMap((d) => { const out: string[] = []; const w = (x: string) => { for (const e of readdirSync(path.join(ROOT, x))) { const r = `${x}/${e}`; if (e === "node_modules" || e.startsWith(".")) continue; if (statSync(path.join(ROOT, r)).isDirectory()) w(r); else if (/\.tsx?$/.test(e) && !/\.test\.tsx?$/.test(e)) out.push(r); } }; w(d); return out; })]
     .filter((f, i, a) => a.indexOf(f) === i && /intelligence\/ai\/authz\/scope["']|from "\.\.?\/(?:authz\/)?scope"/.test(src(f)) && f !== SCOPE);
-  check("scope.ts is imported (outside tests) only by the ask route and the conversations' area guard",
-    importers.sort().join() === "app/api/platform/ai/ask/route.ts,app/api/platform/ai/conversations/area-access.ts", importers);
+  // P2: the turn boundary (validates route-issued ScopedAreas) and the per-call recheck (the same I-7 rule on each fresh guard) consume it too.
+  check("scope.ts is imported (outside tests) only by the ask route, the conversations' area guard, the turn boundary and the per-call recheck",
+    importers.sort().join() === "app/api/platform/ai/ask/route.ts,app/api/platform/ai/conversations/area-access.ts,lib/platform/intelligence/ai/authz/boundary.ts,lib/platform/intelligence/ai/authz/recheck.ts", importers);
 
   const breakGlassReaders = files.filter((f) => /DISABLE_SYSTEM_ADMIN|isSystemAdminDisabled|decideBreakGlass|decideAdminApiAccess/.test(code(src(f))));
   check("I-7: nothing under lib/platform/intelligence/ai/** or app/api/platform/ai/** reads the SYSTEM_ADMIN kill switch or the break-glass decision",

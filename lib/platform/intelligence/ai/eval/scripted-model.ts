@@ -17,9 +17,16 @@
 
 import type { PlatformAiGenerate } from "../core";
 
+/** P2 — a mid-turn revocation the E0 runner applies to the fixture world when this step is served (between tool calls N and N+1). */
+export type E0Revocation = "GRANT" | "SESSION" | "TOTP";
+
 export interface ScriptStep {
   calls?: { name: string; args: unknown }[];
   content?: string;
+  /** Applied when the provider SERVES this step — after the previous round's tool calls ran, before this round's calls run. */
+  effect?: () => void;
+  /** E0 cases: a revocation by code (the runner owns the fixture world; see e0-ci.test.ts). */
+  revoke?: E0Revocation;
 }
 
 export interface ScriptedProvider {
@@ -44,7 +51,7 @@ const completion = (model: unknown, s: ScriptStep, n: number) => {
 };
 
 /** Fake the provider at the network edge (the real route's provider chokepoint). */
-export function installScriptedProvider(): ScriptedProvider {
+export function installScriptedProvider(opts: { onServe?: (s: ScriptStep) => void } = {}): ScriptedProvider {
   const original = globalThis.fetch;
   let script: ScriptStep[] = [];
   const requests: string[] = [];
@@ -57,6 +64,8 @@ export function installScriptedProvider(): ScriptedProvider {
     allRequests.push(raw);
     const body = JSON.parse(raw) as { model?: unknown };
     const s = script.shift() ?? { content: "done" };
+    s.effect?.();
+    opts.onServe?.(s);
     return new Response(JSON.stringify(completion(body.model, s, allRequests.length)), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   return {
@@ -75,6 +84,7 @@ export function scriptedGenerate(steps: readonly ScriptStep[]): { generate: Plat
     requests.push(JSON.stringify({ model, messages, tools, max_tokens: maxTokens }));
     n++;
     const s = queue.shift() ?? { content: "done" };
+    s.effect?.();
     const calls = (s.calls ?? []).map((c, i) => ({ id: `c${n}_${i}`, name: c.name, arguments: JSON.stringify(c.args) }));
     return {
       content: s.content ?? null,

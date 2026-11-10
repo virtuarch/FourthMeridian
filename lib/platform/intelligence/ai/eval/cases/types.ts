@@ -10,6 +10,10 @@
 import type { GateId } from "../gates";
 import type { E0_OPERATORS } from "../fixtures";
 import type { ScriptStep } from "../scripted-model";
+import type { PlatformArea } from "@prisma/client";
+import type { PlatformAiBinding } from "../../core";
+import type { ScopedArea } from "../../authz/boundary";
+import type { PlatformAiRecheck } from "../../authz/recheck";
 
 export type E0Pack = "metrics" | "navigation" | "memory" | "boundary";
 
@@ -56,7 +60,28 @@ export interface CoreMemoryCase {
   check(obs: CoreTurnObservation): string[];
 }
 
-export type E0Case = RouteCase | CoreMemoryCase;
+/**
+ * P2 — what a UNIT case gets from the runner: real route-issued scopes and real bindings for
+ * the fixture operators (scope.ts is only imported by the runner, a test file), and a recheck
+ * that reads the fixture world's grant rows on every call.
+ */
+export interface UnitContext {
+  operatorId(op: keyof typeof E0_OPERATORS): string;
+  scoped(op: keyof typeof E0_OPERATORS, area: PlatformArea): { scope: ScopedArea; binding: PlatformAiBinding } | null;
+  /** A per-call recheck over the fixture world's PlatformGrant rows (status ACTIVE ⇒ fresh guard). */
+  recheck(op: keyof typeof E0_OPERATORS): PlatformAiRecheck;
+}
+
+/** A case that drives authz/boundary.ts directly (handle binding, flag-OFF packs): no provider. */
+export interface UnitCase {
+  kind: "unit";
+  id: string;
+  pack: E0Pack;
+  gates: readonly GateId[];
+  run(ctx: UnitContext): Promise<string[]>;
+}
+
+export type E0Case = RouteCase | CoreMemoryCase | UnitCase;
 
 /** Tool results helper: the i-th result equals the one NOT_FOUND shape. */
 export const isNotFound = (x: unknown): boolean => JSON.stringify(x) === JSON.stringify({ found: false });
