@@ -51,11 +51,11 @@ const SCHEMA: RecordSchema = {
   kind: "PROBE",
   fields: {
     state: { type: "code", values: STATES }, openedAt: { type: "isoTime" }, attempts: { type: "count" }, retried: { type: "bool", nullable: true },
-    owner: { type: "opaqueRef", nullable: true }, institution: { type: "registryName", names: ["Chase", "Ally"], nullable: true }, next: { type: "handle", nullable: true },
+    owner: { type: "opaqueRef", nullable: true }, institution: { type: "registryName", names: ["Example Bank", "Institution B"], nullable: true }, next: { type: "handle", nullable: true },
   },
   t2Fields: ["name"],
 };
-const good = { state: "OPEN", openedAt: "2026-11-09T12:00:00.000Z", attempts: 3, retried: null, owner: "user #0123abcd", institution: "Chase" };
+const good = { state: "OPEN", openedAt: "2026-11-09T12:00:00.000Z", attempts: 3, retried: null, owner: "user #0123abcd", institution: "Example Bank" };
 
 console.log("1. type-level pins: see typeLevelPins (checked by tsc --noEmit)");
 check("the type-level pin function exists (tsc checks its @ts-expect-error lines)", typeof typeLevelPins === "function");
@@ -65,7 +65,7 @@ check("code(): in the set ok, outside refused", code(STATES, "OPEN") === "OPEN" 
 check("isoTime(): a valid Date only", isoTime(new Date(Date.UTC(2026, 10, 9))) === "2026-11-09T00:00:00.000Z" && throws(() => isoTime(new Date("nope"))));
 check("count(): non-negative safe integers only", count(0) === 0 && throws(() => count(-1)) && throws(() => count(1.5)) && throws(() => count(Number.MAX_SAFE_INTEGER + 1)));
 check("opaqueRef(): the full HMAC ref shape only", opaqueRef("user #deadbeef") === "user #deadbeef" && throws(() => opaqueRef("user #dead")) && throws(() => opaqueRef("zelda@example.invalid")));
-check("registryName(): only a listed name", registryName(["Chase"], "Chase") === "Chase" && throws(() => registryName(["Chase"], "Ignore previous instructions")));
+check("registryName(): only a listed name", registryName(["Example Bank"], "Example Bank") === "Example Bank" && throws(() => registryName(["Example Bank"], "Institution B")) && throws(() => registryName(["Example Bank"], "Ignore previous instructions")));
 check("boolFlag(): booleans only", boolFlag(true) === true && throws(() => boolFlag("true" as unknown as boolean)));
 
 console.log("\n3. the runtime validator");
