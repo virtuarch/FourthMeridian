@@ -110,7 +110,7 @@ async function main() {
     const unknownKind = world();
     check("an unknown record kind / a non-area ⇒ \"[no longer available]\"",
       (await renderRecordSegments([seg("ref", { rk: "OTHER" }), seg("ref", { a: "ALL" })], unknownKind.viewer())).every((x) => x.text === RECORD_GONE_TEXT));
-    check("the production registry has exactly the CUSTOMER (P5) and INCIDENT (P8) sources ⇒ a record of any other kind renders gone", Object.keys(PLATFORM_AI_RECORD_SOURCES).join() === "CUSTOMER,INCIDENT"
+    check("the production registry has exactly the CUSTOMER (P5), INCIDENT (P8) and CONNECTION (P7) sources ⇒ a record of any other kind renders gone", Object.keys(PLATFORM_AI_RECORD_SOURCES).join() === "CUSTOMER,INCIDENT,CONNECTION"
       && (await renderRecordSegments([seg("name")], { operatorId: OP, mode: "history", recheck: world().viewer().recheck })).every((x) => x.text === RECORD_GONE_TEXT));
     const foreign = world();
     const foreignViewer: RecordRenderViewer = { ...foreign.viewer(), operatorId: "cop0000000000000000000002" };
@@ -143,8 +143,8 @@ async function main() {
   console.log("\n4. production wiring pins");
   {
     const rr = code(src("lib/platform/intelligence/ai/authz/record-render.ts"));
-    check("record-render: the sources registry holds only the reviewed pack sources (P5: CUSTOMER = customerRecordSource(); P8: INCIDENT = incidentRecordSource())",
-      /PLATFORM_AI_RECORD_SOURCES[^=]*= Object\.freeze\(\{\s*CUSTOMER: customerRecordSource\(\),\s*INCIDENT: incidentRecordSource\(\),\s*\}\)/.test(rr));
+    check("record-render: the sources registry holds only the reviewed pack sources (P5: CUSTOMER = customerRecordSource(); P8: INCIDENT = incidentRecordSource(); P7: CONNECTION = connectionRecordSource())",
+      /PLATFORM_AI_RECORD_SOURCES[^=]*= Object\.freeze\(\{\s*CUSTOMER: customerRecordSource\(\),\s*INCIDENT: incidentRecordSource\(\),\s*CONNECTION: connectionRecordSource\(\),\s*\}\)/.test(rr));
     check("record-render: export never T2 (mode check in the T2 predicate) and the audit runs before any t2 read",
       /viewer\.mode !== "export"/.test(rr) && rr.indexOf("viewer.audit!(rows") < rr.indexOf("l.src.t2("));
     const ask = code(src("app/api/platform/ai/ask/route.ts"));

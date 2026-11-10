@@ -51,7 +51,7 @@ import { CORE_TOOL_NAMES, PLATFORM_AI_TOOL_REGISTRY, platformAiRegistrySchemas }
 
 /** The env getters the pack flags read (a test passes its own; an absent pack getter is OFF). */
 export type PackFlagEnv = Pick<typeof liveEnv, "isPlatformAiEnabled" | "isPlatformAiMemoryEnabled">
-  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled" | "isPlatformAiPackIncidentsEnabled" | "isPlatformAiPackOnboardingEnabled">>;
+  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled" | "isPlatformAiPackIncidentsEnabled" | "isPlatformAiPackOnboardingEnabled" | "isPlatformAiPackConnectionsEnabled">>;
 
 const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   metrics: (e) => e.isPlatformAiEnabled === true,
@@ -63,6 +63,8 @@ const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   incidents: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackIncidentsEnabled === true,
   // P6 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_ONBOARDING_ENABLED === "true"; default OFF).
   onboarding: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackOnboardingEnabled === true,
+  // P7 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_CONNECTIONS_ENABLED === "true"; default OFF).
+  connections: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackConnectionsEnabled === true,
 };
 
 /** Is this pack's server flag ON? Unknown pack ⇒ false. */
@@ -98,7 +100,15 @@ export const PACK_SCHEMA_TOKEN_BUDGET = 750;
  */
 export const ROUTER_RULES: readonly { readonly pack: string; readonly match: RegExp }[] = [
   { pack: "incidents", match: /\b(?:incidents?|outages?|alerts?|alerting|investigat(?:e|ed|ing|ion)|root cause|broken|degraded|degradation)\b/i },
-  { pack: "connections", match: /\b(?:connections?|connected|wallets?|institutions?|banks?|re-?auth(?:enticate|orization)?|relink|link(?:ed)? accounts?|plaid)\b/i },
+  // P7 (PACK-PR-CONDITIONS 1 / 2): RE-JUSTIFIED and NARROWED. The pack is customer-linkable, so its row is
+  // reviewed word by word. Bare "connected" is gone — it matched staff / infrastructure questions ("are the
+  // operators connected", "is the scheduler connected"). Kept, each a connection-health word an operator uses
+  // for the customer's bank / wallet links: connection(s), wallet(s), institution(s), bank(s), reauth / re-auth /
+  // reauthenticate / reauthorization, relink, linked account(s), plaid. "banks?" is broad on purpose (the owner's
+  // own wording, "Are bank connections healthy?"); a false route only OFFERS the pack — its CS record tool still
+  // needs CUSTOMER_SUCCESS + a fresh CS tier + a customer HANDLE, and every call is audited (invokeTool is the
+  // authority). Pinned in engine/router-decisions.snapshot.json (connectionsPackOn).
+  { pack: "connections", match: /\b(?:connections?|wallets?|institutions?|banks?|re-?auth(?:enticate|orization)?|relink|link(?:ed)? accounts?|plaid)\b/i },
   { pack: "jobs", match: /\b(?:jobs?|cron|scheduler|scheduled|refresh(?:es|ed|ing)?|sync(?:s|ed|ing)?|pipeline|executions?|retries|backlog)\b/i },
   // S2 P5 follow-up (e): NARROWED. Bare "users?" / "members?" / "new users?" are gone — they matched
   // growth questions ("how many users signed up"), staff ("members of the ops team") and anything

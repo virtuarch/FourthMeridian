@@ -35,6 +35,7 @@ import type { PlatformAiToolContract, ToolAreas } from "./contract";
 import { CUSTOMERS_PACK_TOOLS } from "./packs/customers.server";
 import { INCIDENTS_PACK_TOOLS } from "./packs/incidents.server";
 import { ONBOARDING_PACK_TOOLS } from "./packs/onboarding.server";
+import { CONNECTIONS_PACK_TOOLS } from "./packs/connections.server";
 
 /** What the existing executor needs for one call — the per-turn context P1b passes through unchanged. */
 export interface LegacyToolContext {
@@ -127,6 +128,10 @@ const TOOLS: PlatformAiTool[] = [
   // CS guard) and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS (CUSTOMER kind, audited), behind
   // PLATFORM_AI_PACK_ONBOARDING_ENABLED (engine/router.ts PACK_FLAG; default OFF).
   ...(ONBOARDING_PACK_TOOLS as PlatformAiTool[]),
+  // P7 — the connections pack (tools/packs/connections.ts, incl. wallets): an identity-free OPS aggregate over
+  // lib/connections/health.ts and a CS-tier customer-linkable RECORD tool (CONNECTION kind, audited), behind
+  // PLATFORM_AI_PACK_CONNECTIONS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(CONNECTIONS_PACK_TOOLS as PlatformAiTool[]),
 ];
 
 export const PLATFORM_AI_TOOL_REGISTRY: readonly PlatformAiTool[] = Object.freeze(TOOLS);
