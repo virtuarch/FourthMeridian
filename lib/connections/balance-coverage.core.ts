@@ -279,6 +279,83 @@ export function balanceCoverageNote(covRead: ClientBalanceCoverage, sides: reado
     `; ${owed ? "a missing debt isn’t $0 owed" : "a missing balance isn’t $0"}.`;
 }
 
+// ── B12 O-3 — the DEFAULT chart starts at the coverage floor ─────────────────
+//
+// PB-8 marks the days before the floor PARTIAL, and that stays true. But on a
+// brand-new connection most debts have no balance history before today, so a
+// 1-month window drew a month of partial points far ABOVE today and then a
+// cliff to today's value — the first thing a new user saw read as "my net worth
+// crashed". The default view now STARTS at the coverage floor (the owner's
+// valuation-coverage ruling: charts start at the coverage floor), and the
+// partial days stay one opt-in away ("Show partial history"), drawn partial
+// exactly as before, with the PB-8 note. Nothing is filled, zeroed or
+// re-valued: the clip only chooses where the default plot begins, and every
+// figure outside the chart (headline, totals, Liquid NW, changes) is untouched.
+// Loading / unavailable / nothing-to-cover ⇒ no floor is known ⇒ no clip.
+
+/**
+ * The day the DEFAULT chart starts — the coverage floor — when the plotted
+ * window `chartFromISO` starts before it; null when nothing is hidden (no floor
+ * known, or the window already starts on/after it). The same condition as
+ * `balanceCoverageNote`, so the clip and the note can never disagree.
+ */
+export function balanceChartStartISO(
+  covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], chartFromISO: string | null,
+): string | null {
+  const from = balanceCoveredFromISO(covRead, sides);
+  return from && chartFromISO && chartFromISO < from ? from : null;
+}
+
+/**
+ * The points the chart plots: by default only those on/after the coverage
+ * floor; every point (already marked partial) when the viewer opted in. Values
+ * are never changed. A window that lies wholly before the floor plots nothing
+ * (the chart's empty state; the note says where history starts) — never a
+ * partial point passed off as the default view.
+ */
+export function clipToBalanceCoverage<P extends { date: string }>(
+  points: readonly P[], covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], showPartial: boolean,
+): P[] {
+  const start = showPartial ? null : balanceChartStartISO(covRead, sides, points[0]?.date ?? null);
+  return start ? points.filter((p) => p.date >= start) : points.slice();
+}
+
+/** The series' noun in "Your <subject> history starts …" (WealthMetricKey). */
+function historySubject(metric: string): string {
+  switch (metric) {
+    case "liquidNetWorth":   return "liquid net worth";
+    case "totalAssets":      return "assets";
+    case "cash":             return "cash";
+    case "totalLiabilities": return "debt";
+    default:                 return "net worth";
+  }
+}
+
+/** The opt-in control's two labels. */
+export const SHOW_PARTIAL_HISTORY_LABEL = "Show partial history";
+export const HIDE_PARTIAL_HISTORY_LABEL = "Hide partial history";
+
+/**
+ * The one sentence under a chart whose default view starts at the coverage
+ * floor, or null when nothing is hidden. Day one (the floor is today):
+ * "Your net worth history starts today. It builds as your accounts sync."
+ * Otherwise it names the floor and the PB-8 count of accounts missing earlier.
+ */
+export function balanceHistoryStartNote(
+  covRead: ClientBalanceCoverage, metric: string, chartFromISO: string | null, todayISO: string,
+): string | null {
+  const sides = balanceCoverageSidesFor(metric);
+  const start = balanceChartStartISO(covRead, sides, chartFromISO);
+  const cov = knownBalanceCoverage(covRead);
+  if (!start || !cov || !chartFromISO) return null;
+  const subject = historySubject(metric);
+  if (start >= todayISO) return `Your ${subject} history starts today. It builds as your accounts sync.`;
+  const all = floorsFor(cov, sides);
+  const missing = all.filter((f) => f > chartFromISO).length;
+  return `Your ${subject} history starts ${fmtDay(start)}. Earlier days are partial: ${missing} of ${all.length} ` +
+    `${noun(sides, cov, all.length)} ${missing === 1 ? "has" : "have"} no balance history that far back.`;
+}
+
 // ── PB-8b — a change is never measured across the coverage floor ─────────────
 //
 // PB-8 marks the days before the floor UNKNOWN on the chart, but a headline
