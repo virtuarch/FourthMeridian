@@ -19,12 +19,13 @@
  *   5. handlePlatformAiAsk: body → kill switch → global cost freeze → the
  *      per-operator daily turn cap → the turn                 → 400 / 503 / 429
  *
- * THE SURFACE comes from the guard result, never from the request: `bindingFor`
- * switches on `auth.grant.area` and every case calls retrieveMetric /
- * listNavigationTargets / resolveNavigationTarget with a STRING-LITERAL surface
- * (pinned by the metric and navigation source scans). The tokens are minted
- * here from this function's own guard result (metricAccessFor /
- * incidentAudienceFor — the guard-provenance pins).
+ * THE SURFACE comes from the guard result, never from the request: P1b —
+ * authz/scope.ts `scopeFromGuard` admits only a real grant for exactly the guarded
+ * area and this operator (I-7: break-glass is never in scope), and its `bindArea`
+ * calls retrieveMetric / listNavigationTargets / resolveNavigationTarget with a
+ * STRING-LITERAL surface per area (pinned by the metric and navigation source
+ * scans). The tokens are minted here from this function's own guard result
+ * (metricAccessFor / incidentAudienceFor — the guard-provenance pins).
  *
  * NO PERSISTENCE: nothing about the question or the answer is stored; the
  * AiInvocation ledger keeps metadata only (surface platform_ai, overhead). One
@@ -38,73 +39,23 @@ import { requireUser } from "@/lib/session";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 import { loadPlatformDirectory } from "@/lib/platform/directory.server";
-import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import { env } from "@/lib/env";
-import { metricAccessFor, describeMetric, listMetrics, type MetricAccessToken } from "@/lib/platform/intelligence/metrics/access";
-import { retrieveMetric, type RetrievalContext } from "@/lib/platform/intelligence/metrics/retrieve";
-import { listNavigationTargets, resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
+import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
+import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
 import {
   composePlatformAiBindings, handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, platformAiAreaFor, platformAiAreasFor,
-  type PlatformAiAreaBinding, type PlatformAiBinding,
+  type PlatformAiAreaBinding,
 } from "@/lib/platform/intelligence/ai/core";
 import { classifyPlatformAiFailure, makePlatformAiGenerate, platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
-import type { PlatformArea } from "@prisma/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
-
-/** The binding for the guard's area: every accessor call takes a string-literal surface (pinned). */
-function bindingFor(area: PlatformArea, ctx: RetrievalContext): PlatformAiBinding | null {
-  const t: MetricAccessToken = ctx.metricToken;
-  const common = (label: string) => ({
-    surfaceLabel: label,
-    describeMetric: (id: string) => describeMetric(t, id),
-  });
-  switch (area) {
-    case "PLATFORM_OPS": return {
-      ...common(PLATFORM_AREAS.PLATFORM_OPS.label),
-      listMetrics: (f) => listMetrics(t, { ...f, area: "PLATFORM_OPS" }),
-      readMetric: (id, p) => retrieveMetric("PLATFORM_OPS", ctx, id, p),
-      listPages: (f) => listNavigationTargets("PLATFORM_OPS", t, f),
-      resolvePage: (id, p) => resolveNavigationTarget("PLATFORM_OPS", t, id, p),
-    };
-    case "SECURITY_OPS": return {
-      ...common(PLATFORM_AREAS.SECURITY_OPS.label),
-      listMetrics: (f) => listMetrics(t, { ...f, area: "SECURITY_OPS" }),
-      readMetric: (id, p) => retrieveMetric("SECURITY_OPS", ctx, id, p),
-      listPages: (f) => listNavigationTargets("SECURITY_OPS", t, f),
-      resolvePage: (id, p) => resolveNavigationTarget("SECURITY_OPS", t, id, p),
-    };
-    case "GROWTH_REVENUE": return {
-      ...common(PLATFORM_AREAS.GROWTH_REVENUE.label),
-      listMetrics: (f) => listMetrics(t, { ...f, area: "GROWTH_REVENUE" }),
-      readMetric: (id, p) => retrieveMetric("GROWTH_REVENUE", ctx, id, p),
-      listPages: (f) => listNavigationTargets("GROWTH_REVENUE", t, f),
-      resolvePage: (id, p) => resolveNavigationTarget("GROWTH_REVENUE", t, id, p),
-    };
-    case "CUSTOMER_SUCCESS": return {
-      ...common(PLATFORM_AREAS.CUSTOMER_SUCCESS.label),
-      listMetrics: (f) => listMetrics(t, { ...f, area: "CUSTOMER_SUCCESS" }),
-      readMetric: (id, p) => retrieveMetric("CUSTOMER_SUCCESS", ctx, id, p),
-      listPages: (f) => listNavigationTargets("CUSTOMER_SUCCESS", t, f),
-      resolvePage: (id, p) => resolveNavigationTarget("CUSTOMER_SUCCESS", t, id, p),
-    };
-    case "MERCHANT_OPS": return {
-      ...common(PLATFORM_AREAS.MERCHANT_OPS.label),
-      listMetrics: (f) => listMetrics(t, { ...f, area: "MERCHANT_OPS" }),
-      readMetric: (id, p) => retrieveMetric("MERCHANT_OPS", ctx, id, p),
-      listPages: (f) => listNavigationTargets("MERCHANT_OPS", t, f),
-      resolvePage: (id, p) => resolveNavigationTarget("MERCHANT_OPS", t, id, p),
-    };
-    default: return null;
-  }
-}
 
 export async function POST(req: NextRequest) {
   // 0. The kill switch: OFF ⇒ nothing else runs (no session read, no ledger read, no provider).
@@ -125,22 +76,27 @@ export async function POST(req: NextRequest) {
   const limited = await limitPlatformMutation(auth.user.id, "platform-ai-ask");
   if (limited) return limited;
 
-  const metricToken = metricAccessFor(auth);
+  // P1b (I-7): the ONE scope rule (authz/scope.ts) — a real grant for exactly this area, this
+  // operator; break-glass (grant null) is never in scope. The tokens are minted HERE from this
+  // function's own guard result; scope.ts binds them with a literal surface per area.
+  const primaryScope = scopeFromGuard(auth, area, auth.user.id);
+  const metricToken = primaryScope ? metricAccessFor(auth) : null;
   const incidentToken = incidentAudienceFor(auth);
-  const primary = metricToken && auth.grant ? bindingFor(auth.grant.area, { metricToken, incidentToken }) : null;
+  const primary = primaryScope ? bindArea(primaryScope, { metricToken, incidentToken }) : null;
 
   // MULTI-AREA (owner 2026-11-08): every OTHER area the operator holds, each behind ITS OWN
   // fresh guard (grant, operator 2FA, live revocation). A refused / revoked area is skipped —
   // never bound. Tokens are minted from that area's own guard result; the surface is still a
-  // literal per case in bindingFor. Composition is pure (core.ts composePlatformAiBindings).
-  const parts: PlatformAiAreaBinding[] = primary && auth.grant ? [{ area: auth.grant.area, binding: primary }] : [];
+  // literal per case in authz/scope.ts bindArea. Composition is pure (core.ts composePlatformAiBindings).
+  const parts: PlatformAiAreaBinding[] = primary && primaryScope ? [{ area: primaryScope.area, binding: primary }] : [];
   if (primary) {
     for (const other of platformAiAreasFor(rows)) {
       if (other === area) continue;
       const [otherAuth, otherErr] = await requireFreshPlatformAccess(other, "READ", { probe: true });
-      if (otherErr || !otherAuth.grant || otherAuth.grant.area !== other || otherAuth.user.id !== auth.user.id) continue;
-      const otherToken = metricAccessFor(otherAuth);
-      const otherBinding = otherToken ? bindingFor(otherAuth.grant.area, { metricToken: otherToken, incidentToken: incidentAudienceFor(otherAuth) }) : null;
+      if (otherErr) continue;
+      const otherScope = scopeFromGuard(otherAuth, other, auth.user.id);
+      if (!otherScope) continue;
+      const otherBinding = bindArea(otherScope, { metricToken: metricAccessFor(otherAuth), incidentToken: incidentAudienceFor(otherAuth) });
       if (otherBinding) parts.push({ area: other, binding: otherBinding });
     }
   }

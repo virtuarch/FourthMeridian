@@ -18,7 +18,8 @@ import type { FigureClass } from "./stale";
 export type CorrectionSegment = { kind: "correction"; text: string };
 /**
  * F-1 (S2, 2026-11-08) — the code-written WINDOW NOTE (RESOLVED_WITH_WINDOW_NOTE with no
- * period restated: "Note: <metric> covers <its window>, not the <asked> you asked about.").
+ * period restated). Since G1b-1 (S2 P2, 2026-11-10) its text is compose/window-disclosure.ts:
+ * "Note: You asked about <asked>; <metric> covers <served window> instead." (one note per answer).
  * Its OWN segment (it used to be merged into the first text segment, so it read as model
  * prose): stored typed (B11), replayed as its own segment, rendered in a quiet role="note"
  * callout ABOVE the answer. Never model text.

@@ -86,7 +86,8 @@ import {
   DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
   type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type UnresolvedReason,
 } from "./compose/verdicts";
-import { envelopeHours, quotableWindowPhrase, requestedWindows, windowPhrase } from "./compose/windows";
+import { envelopeHours, quotableWindowPhrase, requestedWindows } from "./compose/windows";
+import { parseAskedPeriods, windowDisclosureText } from "./compose/window-disclosure";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
 
@@ -1011,7 +1012,12 @@ export async function runPlatformAiTurn(input: {
   const unsupported = placeholderPasses(verdict) && asked.length > 0
     ? placed.placed.filter((e) => { const h = envelopeHours(e); return h === null || !asked.some((a) => a.hours === h); })
     : [];
-  if (unsupported.length > 0) verdict = "RESOLVED_WITH_WINDOW_NOTE";
+  // G1b-1 (S2 P2, 2026-11-10): the asked period (numeric AND calendar phrasings) vs the window each
+  // placed figure was SERVED with ⇒ ONE deterministic disclosure note when any differs (pure: compose/window-disclosure).
+  const disclosure = placeholderPasses(verdict)
+    ? windowDisclosureText(parseAskedPeriods(question), placed.placed, (key) => binding.describeMetric(key)?.label ?? key)
+    : null;
+  if (unsupported.length > 0 || disclosure !== null) verdict = "RESOLVED_WITH_WINDOW_NOTE";
   const replaced = !placeholderPasses(verdict);
   if (!replaced) for (const c of citations) c.figures = placed.figures.get(c.metric) ?? [];
   // S2 ruling 2026-11-05: figures from different windows ⇒ ONE code-written note (decided from the placed envelopes).
@@ -1021,25 +1027,20 @@ export async function runPlatformAiTurn(input: {
   let correction: 1 | undefined;
   if (verdict === "RESOLVED_WITH_WINDOW_NOTE") {
     periodMismatch = periodMismatchCount(placed.modelProse, asked);
-    // The asked period is ALWAYS the server-parsed requestedWindows — never the model's wording.
-    const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
+    // The asked period is ALWAYS server-parsed from the question — never the model's wording.
     const seenKeys = new Set<string>();
     const affected = unsupported.filter((e) => !seenKeys.has(e.metric) && seenKeys.add(e.metric));
-    if (periodMismatch > 0) {
+    if (periodMismatch > 0 && affected.length > 0) {
       // S2 F-C1 (ii): the model restated the asked period ⇒ the note becomes a CORRECTION segment
       // (server data only; the model's prose is neither rewritten, removed nor reordered).
       const text = periodCorrectionText(affected, asked, (key) => binding.describeMetric(key)?.label ?? key);
       answer = [{ kind: "correction", text }, ...answer];
       typed = [{ kind: "correction", text }, ...typed];
       correction = 1;
-    } else {
-      const lines = affected.map((e) => {
-        const def = binding.describeMetric(e.metric);
-        return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
-      });
-      // F-1: its own typed segment (never merged into the model's first text segment).
-      answer = [{ kind: "note", text: lines.join(" ") }, ...answer];
-      typed = [{ kind: "note", text: lines.join(" ") }, ...typed];
+    } else if (disclosure !== null) {
+      // F-1: its own typed segment (never merged into the model's first text segment), BEFORE the figures.
+      answer = [{ kind: "note", text: disclosure }, ...answer];
+      typed = [{ kind: "note", text: disclosure }, ...typed];
     }
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
@@ -1153,12 +1154,9 @@ async function runComposedBriefing(input: {
     if (binding.describeMetric(COST_RANKING_KEY) !== null) await read(COST_RANKING_KEY);
     composed = composeCostRanking(ev.envelopes, binding);
     const e = [...ev.envelopes].reverse().find((x) => x.metric === COST_RANKING_KEY && x.status !== "UNAVAILABLE");
-    const asked = requestedWindows(question);
-    const h = e ? envelopeHours(e) : null;
-    if (e && asked.length > 0 && (h === null || !asked.some((a) => a.hours === h))) {
-      const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
-      lead.push({ kind: "note", text: `Note: ${binding.describeMetric(e.metric)?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.` });
-    }
+    // G1b-1 (S2 P2): the asked period vs the served window — the SAME deterministic disclosure as the model path.
+    const disclosure = e ? windowDisclosureText(parseAskedPeriods(question), [e], (key) => binding.describeMetric(key)?.label ?? key) : null;
+    if (disclosure) lead.push({ kind: "note", text: disclosure });
   } else {
     cost = await readBriefingEnvelopes(binding, ev, cls, read);
     // S1: the overflow sentence links the Operations page (where the posture tile renders), resolved for THIS token.

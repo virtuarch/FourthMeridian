@@ -211,12 +211,16 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
   for (const d of ["app", "lib", "components", "jobs"]) if (existsSync(path.join(ROOT, d))) walk(path.join(ROOT, d));
   // retrieve-core.ts (Phase 3 retrieval) reads definitions through describeMetric and mints nothing (retrieve.test.ts pins it).
   // navigation/access.ts (foundation step 3) takes the caller's token and mints nothing (navigation/registry.test.ts pins it).
+  // Platform AI P1b: authz/scope.ts is the ONE Platform AI area binder; it takes the token its guarded caller
+  // minted (the ask route, the conversations' area guard) and mints nothing (no metricAccessFor / guard call).
+  const scopeBinderOk = (f: string) => f === "lib/platform/intelligence/ai/authz/scope.ts"
+    && !/metricAccessFor\(|incidentAudienceFor\(|require(?:Fresh)?PlatformAccess\(|ISSUED\.add\(/.test(code(src(f) ?? ""));
   const badImporters = importers.filter((f) => !f.endsWith(".test.ts") && f !== "lib/platform/intelligence/metrics/retrieve-core.ts"
-    && f !== "lib/platform/intelligence/navigation/access.ts"
+    && f !== "lib/platform/intelligence/navigation/access.ts" && !scopeBinderOk(f)
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
   check("metric access tokens are issued in exactly one module (access.ts)",
     /ISSUED\.add\(/.test(code(src("lib/platform/intelligence/metrics/access.ts") ?? "")) && importers.every((f) => !/ISSUED\.add\(/.test(code(src(f) ?? ""))));
-  check("access.ts is imported only by tests, retrieve-core.ts, navigation/access.ts, or API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
+  check("access.ts is imported only by tests, retrieve-core.ts, navigation/access.ts, the Platform AI binder (authz/scope.ts, mints nothing), or API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
 }
 
 // ── STALENESS LIMITS (owner rule: stale facts are never shown as current) ────
