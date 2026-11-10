@@ -517,7 +517,7 @@ async function main(): Promise<void> {
       check(`Question C (${name}): COMPLETE, composed (COST_RANKING), never the fallback; leader + total as TYPED figures of economics-operating-cost@1; the window note first`,
         !!ans && r.result?.briefing?.kind === "COST_RANKING" && !r.result.grounding.replaced && !text.includes(UNVERIFIED_FALLBACK)
           && ans.segments.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2 && ans.segments[0].kind === "note"
-          && /not the 30 days you asked about/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
+          && /^Note: You asked about the past 30 days; .* covers .* \(month to date, UTC\) instead\.$/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
     }
     check("Question C with history: the composed answer ignores prior turns (the framing call sees no history; facts from THIS turn's read)",
       !sent(withHist.seen).includes("[figure from") && withHist.result?.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]).join() === "economics-operating-cost@1");
