@@ -51,7 +51,7 @@ import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import { summarizeCryptoPricing } from "@/lib/prices/current-quote.core";
 import { CompactSectionTabs } from "@/components/space/compact/CompactSectionTabs";
 import { assetsCompactVisibility } from "@/components/space/compact/compact-sections";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
@@ -267,6 +267,9 @@ export function WealthWorkspace({
   // uses). Presentation-side; WealthResult is untouched.
   const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
   const changeGate = useMemo(() => wealthChangeGate(result, balanceCoverage), [result, balanceCoverage]);
+  // B12 O-3 — the trend defaults to starting at the coverage floor; the viewer
+  // may opt in to the partial days before it (chart + note share this one flag).
+  const [showPartialHistory, setShowPartialHistory] = useState(false);
 
   // The canonical Investments series over the SAME converted rows — the ONE
   // classifier of per-point confidence / coverage the Investments lens plotted.
@@ -662,6 +665,7 @@ export function WealthWorkspace({
             metric={metric}
             investedSeries={investedSeries}
             onSelectPoint={handleSelectPoint}
+            showPartialHistory={showPartialHistory}
           />
           {/* v2.7-P0 — forward-only basis change: rows before the release stay on
               the reported-ledger basis (never rewritten), so a window spanning
@@ -678,7 +682,8 @@ export function WealthWorkspace({
           )}
           {/* PB-8 — a window reaching back before an account's balance-history
               floor says the history there is partial (never $0 owed). */}
-          <BalanceCoverageNote from={result.chart.points[0]?.date ?? null} metric={metric} />
+          <BalanceCoverageNote from={result.chart.points[0]?.date ?? null} metric={metric}
+            partialHistory={{ shown: showPartialHistory, onToggle: () => setShowPartialHistory((v) => !v), todayISO: today }} />
           {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
           <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
           {/* Mortgage F1 — wherever Liquid NW is stated, its definition + excluded loans (compact). */}
