@@ -63,6 +63,26 @@ const QUESTIONS = [
   "What does [customer h_AAAAAAAAAAAAAAAA] need?",
   "Is anyone in the attention queue?",
   "Are members of the ops team online?",
+  // P5 follow-up (e) — the narrowed rule: false positives that must NOT route customers ...
+  "How many users signed up",
+  "members of the ops team",
+  "Which users have admin access?",
+  "How many new users this month?",
+  // ... and genuine customer questions that still must.
+  "Which account holders need help?",
+  "Show member accounts needing attention",
+  "Who recently joined?",
+  "Any customers with failed imports?",
+];
+
+/** S2 P5 follow-up (e): the customers rule's pinned false positives (never customers) and true positives (always). */
+const CUSTOMERS_FALSE_POSITIVES = [
+  "How many users signed up this week?", "How many users signed up", "Are members of the ops team online?",
+  "members of the ops team", "Which users have admin access?", "How many new users this month?",
+];
+const CUSTOMERS_TRUE_POSITIVES = [
+  "Which customers need attention?", "What does [customer h_AAAAAAAAAAAAAAAA] need?", "Is anyone in the attention queue?",
+  "Which account holders need help?", "Show member accounts needing attention", "Who recently joined?", "Any customers with failed imports?",
 ];
 
 async function main() {
@@ -131,6 +151,10 @@ async function main() {
     unrelated.filter((q) => withCustomers[q] !== today[q]));
   check("matched questions: the core packs + customers only (the router only OFFERS; invokeTool stays the authority)",
     QUESTIONS.filter((q) => rule.test(q)).every((q) => withCustomers[q] === "metrics,navigation,memory,customers"));
+  const fp = CUSTOMERS_FALSE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || rule.test(q) || withCustomers[q].split(",").includes("customers"));
+  check(`P5 follow-up (e): ${CUSTOMERS_FALSE_POSITIVES.length} bare users/members questions never route customers (pack ON)`, fp.length === 0, fp);
+  const tp = CUSTOMERS_TRUE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || !rule.test(q) || !withCustomers[q].split(",").includes("customers"));
+  check(`P5 follow-up (e): ${CUSTOMERS_TRUE_POSITIVES.length} genuine customer questions still route customers (pack ON)`, tp.length === 0, tp);
   check("a resolved subject marker ([customer h_…]) routes the customers pack", withCustomers["What does [customer h_AAAAAAAAAAAAAAAA] need?"] === "metrics,navigation,memory,customers");
   const outOfScope = R.routePlatformAiPacks({ question: "Which customers need attention?", areas: ["PLATFORM_OPS"], memory: true }, env, { enabled: () => true }).join();
   check("an operator without the CUSTOMER_SUCCESS area is never offered the customers pack", outOfScope === "metrics,navigation,memory", outOfScope);
