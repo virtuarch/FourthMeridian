@@ -654,6 +654,17 @@ export type PlatformAiToolInvoker = (name: string, rawArgs: string, ctx: {
   ev: ToolEvidence; paramKeys: readonly string[]; asked: readonly { hours: number }[]; memory?: PlatformAiMemoryHooks;
 }) => Promise<unknown>;
 
+/**
+ * P3 — the turn's tool OFFER, from the turn boundary (authz/boundary.ts `tools`, built on
+ * engine/router.ts). `route` gets the SCRUBBED question once, before any tool call; `schemas`
+ * is what each model call is offered (it can grow when the model calls more_tools). Absent ⇒
+ * platformAiToolSchemas, as before P3. core.ts never imports the router (no cycle).
+ */
+export interface PlatformAiTurnTools {
+  route(question: string): void;
+  schemas(paramKeys: readonly string[]): unknown[];
+}
+
 /** The dispatcher a turn uses: the injected boundary, else the executor over the turn's binding. */
 const dispatcherFor = (invoke: PlatformAiToolInvoker | undefined, binding: PlatformAiBinding): PlatformAiToolInvoker =>
   invoke ?? ((name, rawArgs, c) => executePlatformAiTool(name, rawArgs, binding, c.ev, c.paramKeys, c.asked, c.memory));
@@ -928,6 +939,8 @@ export async function runPlatformAiTurn(input: {
   classifyBriefing?: boolean;
   /** P2 — the turn boundary's invokeTool (production callers always pass it); absent ⇒ the executor. */
   invoke?: PlatformAiToolInvoker;
+  /** P3 — the turn boundary's tool offer (router); absent ⇒ every core tool, as before. */
+  tools?: PlatformAiTurnTools;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
@@ -936,7 +949,10 @@ export async function runPlatformAiTurn(input: {
   if (cls?.briefing || cls?.costRanking) return runComposedBriefing({ ...input, question, cls });
   const paramKeys = modelParamKeys(binding);
   const memory = input.memory;
-  const tools = platformAiToolSchemas(paramKeys, { memory: !!memory });
+  // P3: the router sees the SCRUBBED question (once, before any tool call); each round is offered its current schemas.
+  input.tools?.route(question);
+  const staticTools = input.tools ? null : platformAiToolSchemas(paramKeys, { memory: !!memory });
+  const offer = () => staticTools ?? input.tools!.schemas(paramKeys);
   // The fixed rules + THIS operator's briefing coverage (server data: which briefing metrics the binding can read).
   const systemPrompt = `${PLATFORM_AI_SYSTEM_PROMPT}\n${briefingCoverageText(binding)}`;
   const messages: unknown[] = input.history
@@ -959,7 +975,7 @@ export async function runPlatformAiTurn(input: {
   while (rounds < PLATFORM_AI_MAX_ROUNDS) {
     const last = rounds === PLATFORM_AI_MAX_ROUNDS - 1 || toolCalls >= PLATFORM_AI_MAX_TOOL_CALLS;
     rounds++;
-    const out = await input.generate({ model: input.model, messages, tools: last ? [] : tools, maxTokens, signal: input.signal });
+    const out = await input.generate({ model: input.model, messages, tools: last ? [] : offer(), maxTokens, signal: input.signal });
     tokens += out.usage?.totalTokens ?? 0;
     messages.push(out.raw ?? { role: "assistant", content: out.content });
     if (out.toolCalls.length === 0) { raw = out.content ?? ""; stop = "ANSWERED"; break; }
@@ -1331,6 +1347,8 @@ export interface PlatformAiAskDeps {
   traceTurn?(line: string): void;
   /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
   invoke?: PlatformAiToolInvoker;
+  /** P3 — the turn boundary's tool offer (the route passes it with `invoke`). */
+  tools?: PlatformAiTurnTools;
 }
 
 export interface PlatformAiHttp { status: number; body: Record<string, unknown>; headers?: Record<string, string> }
@@ -1396,6 +1414,7 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
       ...(deps.invoke ? { invoke: deps.invoke } : {}),
+      ...(deps.tools ? { tools: deps.tools } : {}),
     });
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));

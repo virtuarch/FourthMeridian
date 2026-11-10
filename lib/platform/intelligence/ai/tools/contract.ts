@@ -238,3 +238,27 @@ export function toolCallCost(c: Pick<PlatformAiToolContract<never>, "cost">, arg
   const n = typeof tc === "function" ? tc(args) : tc;
   return Number.isInteger(n) && n >= 1 ? n : 1;
 }
+
+/**
+ * P3 — the JSON function schema the model is sent for a contract-declared tool (P5+ packs; the
+ * six existing tools keep core.ts's own serialisation, pinned by the schema snapshot). Every
+ * argument is closed: enum values, integer bounds, a registry id's max length, a handle's key
+ * pattern, the turn's page-filter keys, a guardedText max length. additionalProperties false.
+ */
+export function contractToolSchema(c: Pick<PlatformAiToolContract<never>, "name" | "description" | "args">, paramKeys: readonly string[] = []): unknown {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const [k, a] of Object.entries(c.args.properties)) {
+    const d = a.description ? { description: a.description } : {};
+    switch (a.kind) {
+      case "enum": properties[k] = { type: "string", enum: [...a.values], ...d }; break;
+      case "int": properties[k] = { type: "integer", ...(a.offered ? { enum: [...a.offered] } : { minimum: a.min, maximum: a.max }), ...d }; break;
+      case "registryId": properties[k] = { type: "string", maxLength: a.maxLength, ...d }; break;
+      case "handle": properties[k] = { type: "string", pattern: HANDLE_KEY_PATTERN.source, ...d }; break;
+      case "guardedText": properties[k] = { type: "string", maxLength: a.maxLength, ...d }; break;
+      case "registryParams": properties[k] = { type: "object", properties: Object.fromEntries(paramKeys.map((p) => [p, { type: "string", maxLength: a.maxValueLength }])), additionalProperties: false, ...d }; break;
+    }
+    if (!a.optional) required.push(k);
+  }
+  return { type: "function", function: { name: c.name, description: c.description, parameters: { type: "object", properties, required, additionalProperties: false } } };
+}

@@ -25,7 +25,7 @@
 
 import {
   PLATFORM_AI_TURN_TIMEOUT_MS, runPlatformAiTurn, segmentsText, traceLine,
-  type PlaceholderVerdict, type PlatformAiAnswer, type PlatformAiBinding, type PlatformAiGenerate, type PlatformAiToolInvoker, type PlatformAiTurnRecord,
+  type PlaceholderVerdict, type PlatformAiAnswer, type PlatformAiBinding, type PlatformAiGenerate, type PlatformAiToolInvoker, type PlatformAiTurnRecord, type PlatformAiTurnTools,
 } from "../core";
 import {
   EVIDENCE_REFS_MAX, REF_ID_SHAPE, STORED_ANSWER_VERSION, STORED_CITATIONS_MAX, STORED_NOTES_MAX, STORED_SEGMENTS_MAX, STORED_TEXT_MAX,
@@ -134,6 +134,8 @@ export interface ConversationTurnInput {
   onMemoryRefusals?(codes: readonly string[]): void;
   /** P2 — the turn boundary's invokeTool (the turn runner always passes it; absent ⇒ the executor). */
   invoke?: PlatformAiToolInvoker;
+  /** P3 — the turn boundary's tool offer (router + more_tools); absent ⇒ every core tool. */
+  tools?: PlatformAiTurnTools;
 }
 
 export interface ConversationTurnRun {
@@ -156,6 +158,7 @@ export async function runConversationTurn(input: ConversationTurnInput): Promise
       signal: input.signal ?? AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
       ...(input.memory ? { memory: input.memory.hooks } : {}),
       ...(input.invoke ? { invoke: input.invoke } : {}),
+      ...(input.tools ? { tools: input.tools } : {}),
     });
     if (result.grounding.replaced) input.onUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     input.onTrace?.(`${traceLine(result)} history=${history.exchangesUsed}/${history.exchangesUsed + history.exchangesDropped}`);
