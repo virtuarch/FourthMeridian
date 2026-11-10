@@ -28,7 +28,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import type { PlatformAiBinding } from "../core";
+import { admitPlatformAiSpend, type PlatformAiBinding, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
 import type { StoredAnswerV1 } from "./answer";
 import {
   PLATFORM_AI_CONVERSATION_MESSAGES_MAX,
@@ -111,6 +111,12 @@ export interface TurnAdmissionDeps {
   admission(): Promise<{ paused: boolean }>;
   freeze(): Promise<{ frozen: boolean }>;
   turns(operatorId: string, now: Date): Promise<{ allowed: boolean; detail?: string }>;
+  /**
+   * P2b — the daily $ caps' reservation (lib/platform/ai/platform-ai-spend.ts), AFTER the daily
+   * cap. Both conversation routes pass it (pinned in lib/platform/ai/platform-ai-spend.test.ts);
+   * absent ⇒ no $ gate (unit tests). An admitted reservation is released after the turn settles.
+   */
+  spend?(operatorId: string, now: Date): Promise<PlatformAiSpendGate>;
 }
 
 // ── Pure pieces ─────────────────────────────────────────────────────────────
@@ -300,6 +306,18 @@ async function admit(v: Viewer, deps: TurnAdmissionDeps & { now(): Date }): Prom
   return null;
 }
 
+/**
+ * P2b — the daily $ caps (core.ts admitPlatformAiSpend), run right after `admit`: COST_CAP ⇒
+ * 429 + Retry-After to UTC midnight; unavailable ⇒ 503 ALLOWANCE_UNAVAILABLE (fail closed).
+ * Nothing is stored on a refusal; an admission is released in `finally` by the caller.
+ */
+async function holdSpend(v: Viewer, deps: TurnAdmissionDeps & { now(): Date }): Promise<{ refused: ConversationHttp | null; held: PlatformAiSpendAdmission }> {
+  const held = await admitPlatformAiSpend(deps.spend, v.operatorId, deps.now());
+  if (!held.refusal) return { refused: null, held };
+  const r = held.refusal;
+  return { refused: unavailable(r.status, r.reason, r.retryAfter ? { "Retry-After": String(r.retryAfter) } : undefined), held };
+}
+
 const VALIDATION = (): ConversationHttp =>
   ({ status: 400, body: { error: `Send { clientRequestId: <uuid>, question: 1–${PLATFORM_AI_MESSAGE_MAX} characters }.`, code: "VALIDATION" } });
 
@@ -340,26 +358,32 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
   }
   const refused = await admit(v, deps);
   if (refused) return refused;
-  const access = await deps.areaAccess(v.area, v.operatorId);
-  if (!access) return notFound();
-  // One scrub for both sinks (S2 B3): this exact string is stored AND sent.
-  const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
-  const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
-  switch (out.kind) {
-    case "LIMIT":
-      return { status: 409, body: { error: "Delete a conversation to start another.", code: "CONVERSATION_LIMIT", limits: { conversations: { max: PLATFORM_AI_CONVERSATIONS_MAX } } } };
-    case "DELETED":
-      return notFound();
-    case "REPLAY": {
-      // A concurrent create with the same key won: answer as a replay (no turn here).
-      const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
-      if (!a) return notFound();
-      return pairResponse(200, out.conversation, out.pair, a);
+  const cost = await holdSpend(v, deps);
+  if (cost.refused) return cost.refused;
+  try {
+    const access = await deps.areaAccess(v.area, v.operatorId);
+    if (!access) return notFound();
+    // One scrub for both sinks (S2 B3): this exact string is stored AND sent.
+    const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
+    const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
+    switch (out.kind) {
+      case "LIMIT":
+        return { status: 409, body: { error: "Delete a conversation to start another.", code: "CONVERSATION_LIMIT", limits: { conversations: { max: PLATFORM_AI_CONVERSATIONS_MAX } } } };
+      case "DELETED":
+        return notFound();
+      case "REPLAY": {
+        // A concurrent create with the same key won: answer as a replay (no turn here).
+        const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
+        if (!a) return notFound();
+        return pairResponse(200, out.conversation, out.pair, a);
+      }
+      case "CREATED": {
+        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+        return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
+      }
     }
-    case "CREATED": {
-      const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
-    }
+  } finally {
+    await cost.held.release();
   }
 }
 
@@ -395,21 +419,27 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   if (prior) return pairResponse(200, null, prior, access);
   const refused = await admit(v, deps);
   if (refused) return refused;
-  const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
-  const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
-  switch (out.kind) {
-    case "NOT_FOUND":
-      return notFound();
-    case "IN_FLIGHT":
-      return { status: 409, body: { error: "This conversation is still answering a question.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
-    case "FULL":
-      return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
-    case "REPLAY":
-      return pairResponse(200, null, out.pair, access);
-    case "APPENDED": {
-      const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(200, null, r.pair, access, r.memoryProposal);
+  const cost = await holdSpend(v, deps);
+  if (cost.refused) return cost.refused;
+  try {
+    const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
+    const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
+    switch (out.kind) {
+      case "NOT_FOUND":
+        return notFound();
+      case "IN_FLIGHT":
+        return { status: 409, body: { error: "This conversation is still answering a question.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
+      case "FULL":
+        return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
+      case "REPLAY":
+        return pairResponse(200, null, out.pair, access);
+      case "APPENDED": {
+        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+        return pairResponse(200, null, r.pair, access, r.memoryProposal);
+      }
     }
+  } finally {
+    await cost.held.release();
   }
 }
 

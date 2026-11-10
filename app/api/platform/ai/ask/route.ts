@@ -55,6 +55,7 @@ import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audie
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
+import { reservePlatformAiSpend } from "@/lib/platform/ai/platform-ai-spend";
 import {
   composePlatformAiBindings, handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, platformAiAreaFor, platformAiAreasFor,
   type PlatformAiAreaBinding,
@@ -136,6 +137,7 @@ export async function POST(req: NextRequest) {
     admission: () => readPaidRequestsAdmission(),
     freeze: () => readGlobalCostFreeze(),
     turns: (id, now) => readPlatformAiTurns(id, now),
+    spend: (id, now) => reservePlatformAiSpend(id, now, { model }),
     generate: makePlatformAiGenerate({ operatorId: auth.user.id, turnId: correlationId }),
     ...(boundary ? { invoke: boundary.invoke } : {}),
     model,

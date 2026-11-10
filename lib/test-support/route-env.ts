@@ -24,5 +24,11 @@ for (const k of [
   "RATE_LIMIT_ENABLED", "RATE_LIMIT_SHADOW", "TURNSTILE_SECRET_KEY", "RESEND_API_KEY", "DISABLE_SYSTEM_ADMIN",
   "CLIENT_IP_TRUST_CLOUDFLARE", "SENTRY_DSN", "NEXT_PUBLIC_SENTRY_DSN", "VERCEL", "VERCEL_ENV",
 ]) delete env[k];
+// Platform AI P2b — the daily $ caps. With VERCEL_ENV deleted above, a MISSING cap refuses every
+// turn (S2 ruling 8, fail closed), so route tests run with explicit TEST caps, far above any
+// fixture turn. Test constants, not owner numbers (OI-2). A test that needs a cap missing or
+// invalid sets / deletes these itself.
+env.PLATFORM_AI_DAILY_USD_CAP_PER_OPERATOR = "100";
+env.PLATFORM_AI_DAILY_USD_CAP_PLATFORM     = "500";
 
 export {};

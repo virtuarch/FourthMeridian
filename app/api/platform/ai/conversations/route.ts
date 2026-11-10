@@ -31,6 +31,8 @@ import { env } from "@/lib/env";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
+import { reservePlatformAiSpend } from "@/lib/platform/ai/platform-ai-spend";
+import { platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import { platformAiAreaFor } from "@/lib/platform/intelligence/ai/core";
 import {
   NOT_AVAILABLE_BODY, grantedAreasFrom, handleCreateConversation, handleListConversations, type ConversationHttp,
@@ -95,6 +97,7 @@ export async function POST(req: NextRequest) {
       admission: () => readPaidRequestsAdmission(),
       freeze: () => readGlobalCostFreeze(),
       turns: (id, now) => readPlatformAiTurns(id, now),
+      spend: (id, now) => reservePlatformAiSpend(id, now, { model: platformAiModel().model }),
       runTurn: runConversationTurnForRoute,
     }));
   } catch (e) {

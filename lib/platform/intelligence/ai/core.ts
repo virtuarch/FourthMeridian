@@ -1269,7 +1269,42 @@ async function runComposedBriefing(input: {
 
 // ── The request handler (the route calls it AFTER its own guards) ───────────
 
-export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER";
+export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER";
+
+/**
+ * P2b (design v2 §10, I-10) — the daily $ caps' reservation, as the handlers see it
+ * (lib/platform/ai/platform-ai-spend.ts reservePlatformAiSpend). `detail` COST_CAP ⇒ 429
+ * COST_CAP (Retry-After to UTC midnight); any other refusal ⇒ 503 ALLOWANCE_UNAVAILABLE
+ * (fail closed). An admitted reservation is RELEASED in `finally` after the turn.
+ */
+export interface PlatformAiSpendGate {
+  verdict: { allowed: boolean; detail?: string };
+  release(): Promise<void>;
+}
+
+/** What the $ gate decided: a refusal (nothing held), or admitted holding a reservation to release after the turn. */
+export interface PlatformAiSpendAdmission {
+  refusal: { status: 429 | 503; reason: "COST_CAP" | "ALLOWANCE_UNAVAILABLE"; retryAfter?: number } | null;
+  release(): Promise<void>;
+}
+
+/**
+ * The $ gate, run AFTER the daily turn cap and BEFORE any provider request (both handlers:
+ * handlePlatformAiAsk and conversations/handlers.ts). A throw is a refusal (fail closed).
+ * `spend` absent ⇒ admitted with nothing held (unit tests; every route passes it).
+ */
+export async function admitPlatformAiSpend(
+  spend: ((operatorId: string, now: Date) => Promise<PlatformAiSpendGate>) | undefined, operatorId: string, now: Date,
+): Promise<PlatformAiSpendAdmission> {
+  const none = async () => {};
+  if (!spend) return { refusal: null, release: none };
+  let gate: PlatformAiSpendGate;
+  try { gate = await spend(operatorId, now); } catch { return { refusal: { status: 503, reason: "ALLOWANCE_UNAVAILABLE" }, release: none }; }
+  if (gate.verdict.allowed) return { refusal: null, release: () => gate.release().catch(() => {}) };
+  return gate.verdict.detail === "COST_CAP"
+    ? { refusal: { status: 429, reason: "COST_CAP", retryAfter: secondsToUtcMidnight(now) }, release: none }
+    : { refusal: { status: 503, reason: "ALLOWANCE_UNAVAILABLE" }, release: none };
+}
 
 export interface PlatformAiAskDeps {
   /** PLATFORM_AI_ENABLED, read server-side. */
@@ -1279,6 +1314,11 @@ export interface PlatformAiAskDeps {
   admission(): Promise<{ paused: boolean; state: string; cause?: string | null }>;
   freeze(): Promise<{ frozen: boolean; state: string }>;
   turns(operatorId: string, now: Date): Promise<{ allowed: boolean; detail?: string; remaining: number }>;
+  /**
+   * P2b — the daily $ caps' reservation (lib/platform/ai/platform-ai-spend.ts). Every route
+   * passes it (pinned in lib/platform/ai/platform-ai-spend.test.ts); absent ⇒ no $ gate (unit tests).
+   */
+  spend?(operatorId: string, now: Date): Promise<PlatformAiSpendGate>;
   generate: PlatformAiGenerate;
   model: string;
   reasoningModel?: boolean;
@@ -1322,7 +1362,8 @@ export function parseAskBody(body: unknown): string | null {
 
 /**
  * ORDER: the flag (nothing else runs when it is off) → the body → the binding →
- * the kill switch → the global cost freeze → the daily turn cap → the turn.
+ * the kill switch → the global cost freeze → the daily turn cap → the daily $ caps
+ * (operator, then platform; P2b — a reservation released after the turn) → the turn.
  * Every refusal happens BEFORE `generate` is called.
  */
 export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps): Promise<PlatformAiHttp> {
@@ -1346,6 +1387,10 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       ? refuse(429, "DAILY_TURNS", { "Retry-After": String(secondsToUtcMidnight(now)) })
       : refuse(503, "ALLOWANCE_UNAVAILABLE");
   }
+  const held = await admitPlatformAiSpend(deps.spend, deps.operatorId, now);
+  if (held.refusal) {
+    return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);
+  }
   try {
     const { result } = await runPlatformAiTurn({
       question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
@@ -1358,6 +1403,8 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);
+  } finally {
+    await held.release();
   }
 }
 

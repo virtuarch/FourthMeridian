@@ -6,10 +6,11 @@
  */
 
 import { BOUNDARY_CASES } from "./boundary";
+import { COST_CAP_ROUTE_CASES, COST_CAP_UNIT_CASES } from "./cost-cap";
 import { MEMORY_CASES } from "./memory";
 import { METRICS_CASES } from "./metrics";
 import { NAVIGATION_CASES } from "./navigation";
 import { P2_BOUNDARY_CASES } from "./p2-boundary";
 import type { E0Case } from "./types";
 
-export const E0_CASES: readonly E0Case[] = [...METRICS_CASES, ...NAVIGATION_CASES, ...BOUNDARY_CASES, ...MEMORY_CASES, ...P2_BOUNDARY_CASES];
+export const E0_CASES: readonly E0Case[] = [...METRICS_CASES, ...NAVIGATION_CASES, ...BOUNDARY_CASES, ...MEMORY_CASES, ...P2_BOUNDARY_CASES, ...COST_CAP_ROUTE_CASES, ...COST_CAP_UNIT_CASES];

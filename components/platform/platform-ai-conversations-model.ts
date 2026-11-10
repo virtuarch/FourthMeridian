@@ -184,6 +184,7 @@ export const REFUSAL_COPY: Readonly<Record<string, string>> = {
   KILL_SWITCH: "AI requests are paused on this platform.",
   COST_FREEZE: "Platform costs are frozen, so AI is not running.",
   DAILY_TURNS: "You have used today's Platform AI questions. It resets at midnight UTC.",
+  COST_CAP: "Platform AI has reached today's spending limit. It resets at midnight UTC.",
   ALLOWANCE_UNAVAILABLE: "Platform AI could not check its limits, so it did not run.",
   TIMEOUT: "That took too long, so it was stopped.",
   PROVIDER: "The AI provider did not answer.",
