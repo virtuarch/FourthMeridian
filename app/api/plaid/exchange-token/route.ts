@@ -40,6 +40,7 @@ import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError, 
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 import { billableRefusalResponse, NOTHING_DISCONNECTED_SENTENCE } from "@/lib/entitlements/consume";
 import { limitByUser } from "@/lib/rate-limit";
+import { connectionAddFailureCode, recordConnectionAddFailure } from "@/lib/connections/add-failure";
 
 // D2.x Slice 1 (fast-path split). This request returns as soon as the fast
 // slice is durable — token exchanged, accounts/balances persisted, holdings
@@ -55,12 +56,16 @@ import { limitByUser } from "@/lib/rate-limit";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  // B12 PR-B — the authenticated user, once known, so a failure below can be
+  // captured for Platform Operations (never set for an unauthenticated call).
+  let failureUserId: string | null = null;
   try {
     // SEC-FIX-1 — this route authenticates via getSpaceContext(); add the
     // shared guard so a forced-TOTP-enrolment-pending session is denied at
     // the API layer (the page middleware never runs on /api/*).
-    const [, authErr] = await requireUser();
+    const [user, authErr] = await requireUser();
     if (authErr) return authErr;
+    failureUserId = user.id;
 
     const { public_token, institution_id, institution_name } = await req.json();
 
@@ -161,6 +166,16 @@ export async function POST(req: NextRequest) {
     }
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
+    // B12 PR-B — one CONNECTION_ADD_FAILED row {provider, stage, errorCode},
+    // closed-vocabulary codes only. Only the unexpected / provider failures land
+    // here: the deliberate refusals above (restricted, not admitted, duplicate)
+    // are answered before this point and are not failures. Best-effort — it
+    // never throws, so the response is exactly what it was.
+    if (failureUserId) {
+      await recordConnectionAddFailure({
+        userId: failureUserId, provider: "PLAID", stage: "EXCHANGE", errorCode: connectionAddFailureCode(err, code),
+      });
+    }
     return NextResponse.json({ error: message }, { status });
   }
 }

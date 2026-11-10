@@ -123,9 +123,9 @@ console.log("4. beta-scale cap → floor (the active-incident scan's pattern)");
   const raw = readFileSync(path.join(process.cwd(), "lib/platform/customer/attention.ts"), "utf8");
   check("the beta-scale assumption is named in the reader", /BETA-SCALE ASSUMPTION/.test(raw) && /ACTIVE_INCIDENT_SCAN → `truncated` → `openFloor`/.test(raw));
   const fleet = (reader.match(/findMany\(\{[^)]*\}\)/g) ?? []).filter((m) => !/id: \{ in:/.test(m));
-  check("every fleet findMany this reader owns (7) is capped", fleet.length === 7 && fleet.every((m) => /take: cap/.test(m)), fleet);
+  check("every fleet findMany this reader owns (8) is capped", fleet.length === 8 && fleet.every((m) => /take: cap/.test(m)), fleet);
   check("a read reaching the cap (or a truncated incident scan, or a capped import read) marks the floor",
-    /\[customers, plaidBroken, connBroken, invalid, unassigned, exits, testAccounts\]\.some\(\(rows\) => rows\.length >= cap\)\s*\|\| incidentPage\.truncated \|\| imports\.floor/.test(reader) && /floor,\n\s*\};/.test(reader));
+    /\[customers, plaidBroken, connBroken, invalid, unassigned, exits, failures, testAccounts\]\.some\(\(rows\) => rows\.length >= cap\)\s*\|\| incidentPage\.truncated \|\| imports\.floor/.test(reader) && /floor,\n\s*\};/.test(reader));
   // PB-1 R6b — CS attention reads the module's CS-tier broken-now page and takes the incident owner from the
   // module's attribution (subjectUserId, D4): no projection page, no item / account owner lookup of its own.
   check("PB-1 R6b: the reader reads the module's broken-now page with the route's CS token, never the projection page",

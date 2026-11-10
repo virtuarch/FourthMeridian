@@ -194,6 +194,13 @@ export const AuditAction = {
   // — never the address, the name, the balance or the purchase price.
   WALLET_ADD:               "WALLET_ADD",
   MANUAL_ASSET_ADD:         "MANUAL_ASSET_ADD",
+  // B12 PR-B — a bank link (Plaid link-token / exchange-token) or a wallet add
+  // FAILED server-side (lib/connections/add-failure.ts). result FAILURE;
+  // metadata = { provider, stage, errorCode } — closed-vocabulary codes only,
+  // never a provider message, institution, token, address or amount. A
+  // lifecycle fact like WALLET_ADD, NOT a product event (no retention delete,
+  // so no DB-010 policy change). Read by Customer Success `link_failed`.
+  CONNECTION_ADD_FAILED:    "CONNECTION_ADD_FAILED",
   // Mortgage F9 (owner 2026-11-08; S2 R1) — the owner's property actions, written
   // in the SAME tenant transaction as the profile write by
   // lib/assets/property-links.ts. metadata = { propertyId, debtAccountId? } /
