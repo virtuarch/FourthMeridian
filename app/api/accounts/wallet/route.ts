@@ -144,6 +144,7 @@ import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { walletAddMetadata } from "@/lib/analytics/product-events";
+import { connectionAddFailureCode, recordConnectionAddFailure } from "@/lib/connections/add-failure";
 import { BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { isProductSupportedChain, PRODUCT_CHAIN_VALUES } from "@/lib/crypto/product-chains";
 import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch";
@@ -166,9 +167,29 @@ import { cooldownMsFromMinutes } from "@/lib/plaid/refreshCooldown";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
-  const [, err] = await requireUser();
+  const [user, err] = await requireUser();
   if (err) return err;
 
+  // B12 PR-B — a wallet add that THROWS used to reach only the function log.
+  // It now also writes one CONNECTION_ADD_FAILED row {provider: WALLET, stage:
+  // WALLET_ADD, errorCode} (a server class only — never the address, the name
+  // or the chain), best-effort, and then rethrows: the response is exactly the
+  // one the framework always gave. Validation refusals (400), the connection
+  // cap (403) and a chain sync that did not complete (reported in
+  // `initialSync`, its own SyncIssue) are answers, not failures, and are not
+  // captured here.
+  try {
+    return await addWallet(req);
+  } catch (e) {
+    await recordConnectionAddFailure({
+      userId: user.id, provider: "WALLET", stage: "WALLET_ADD", errorCode: connectionAddFailureCode(e),
+    });
+    throw e;
+  }
+}
+
+/** The wallet add itself — called only by POST above, after its session guard. */
+async function addWallet(req: NextRequest): Promise<NextResponse> {
   const { name, walletAddress, walletChain } = await req.json();
 
   if (!name?.trim())          return NextResponse.json({ error: "Wallet name is required." },    { status: 400 });

@@ -48,6 +48,9 @@ import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { buildAuditData } from "@/lib/audit";
 import { toISODateUTC } from "@/lib/time/clock";
 import type { CHAT_REFUSAL_SAY } from "@/lib/ai/conversation/refusal-sentences";
+import { LINK_EXIT_ERROR_CODES, linkExitErrorCode, type LinkExitErrorCode } from "@/lib/analytics/link-error-codes";
+
+export { LINK_EXIT_ERROR_CODES, linkExitErrorCode, type LinkExitErrorCode };
 
 /** The one capability a writer needs: run a single parameterised statement. */
 export interface ProductEventClient {
@@ -267,27 +270,10 @@ export const LINK_EXIT_STAGES = [
 ] as const;
 export type LinkExitStage = (typeof LINK_EXIT_STAGES)[number];
 
-/**
- * Plaid error codes a Link exit can carry (`error.error_code`). NONE = a clean
- * cancel (no error); OTHER = any code outside this list.
- */
-export const LINK_EXIT_ERROR_CODES = [
-  "NONE",
-  // ITEM_ERROR
-  "INVALID_CREDENTIALS", "INVALID_MFA", "INVALID_SEND_METHOD", "INSUFFICIENT_CREDENTIALS",
-  "ITEM_LOCKED", "ITEM_LOGIN_REQUIRED", "ITEM_NOT_SUPPORTED", "MFA_NOT_SUPPORTED",
-  "NO_ACCOUNTS", "NO_INVESTMENT_ACCOUNTS", "PRODUCTS_NOT_SUPPORTED", "USER_SETUP_REQUIRED",
-  "USER_INPUT_TIMEOUT", "ACCESS_NOT_GRANTED", "PASSWORD_RESET_REQUIRED",
-  // INSTITUTION_ERROR
-  "INSTITUTION_DOWN", "INSTITUTION_NOT_RESPONDING", "INSTITUTION_NOT_AVAILABLE",
-  "INSTITUTION_NO_LONGER_SUPPORTED", "INSTITUTION_NOT_ENABLED_IN_ENVIRONMENT",
-  "INSTITUTION_REGISTRATION_REQUIRED",
-  // INVALID_INPUT / OAUTH / API
-  "INVALID_LINK_TOKEN", "LINK_TOKEN_EXPIRED", "OAUTH_STATE_ID_MISMATCH", "OAUTH_INVALID_STATE",
-  "REDIRECT_URI_MISMATCH", "RATE_LIMIT_EXCEEDED", "INTERNAL_SERVER_ERROR", "PLANNED_MAINTENANCE",
-  "OTHER",
-] as const;
-export type LinkExitErrorCode = (typeof LINK_EXIT_ERROR_CODES)[number];
+// The Plaid error-code vocabulary (LINK_EXIT_ERROR_CODES / linkExitErrorCode) lives in the
+// writer-free lib/analytics/link-error-codes.ts, so a non-product-event module (the
+// CONNECTION_ADD_FAILED writer, lib/connections/add-failure.ts) can share it without
+// importing this writer module. Re-exported here unchanged.
 
 /** Where a first successful sync came from (RefreshExecution.sourceKind). */
 export const FIRST_SYNC_SOURCE_KINDS = ["PLAID_ITEM", "WALLET"] as const;
@@ -321,13 +307,6 @@ export function linkExitStage(raw: unknown): LinkExitStage {
   return up !== "NONE" && isOneOf(LINK_EXIT_STAGES, up) ? up : "OTHER";
 }
 
-/** Map a raw Plaid error code to the closed error vocabulary. Never returns free text. */
-export function linkExitErrorCode(raw: unknown): LinkExitErrorCode {
-  if (raw === null || raw === undefined || raw === "") return "NONE";
-  if (typeof raw !== "string") return "OTHER";
-  const up = raw.trim().toUpperCase();
-  return up !== "NONE" && isOneOf(LINK_EXIT_ERROR_CODES, up) ? up : "OTHER";
-}
 
 /**
  * CONNECTION_LINK_STARTED — a Plaid Link token was minted for the user (a fresh
