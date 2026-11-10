@@ -138,6 +138,66 @@ async function main() {
       check("denial rows: codes only — RECHECK_REFUSED for call 2, AREA_NOT_IN_SCOPE for call 3 (no second recheck read)",
         rows.length === 2 && /tool=list_metrics pack=metrics reason=RECHECK_REFUSED/.test(rows[0]) && /tool=get_metric pack=metrics reason=AREA_NOT_IN_SCOPE/.test(rows[1]) && !rows.some((w) => /incident-broken-now/.test(w)), rows);
       grant.status = "ACTIVE";
+
+      // ── 3b. S2 condition (ruling 3, #520): the COMPOSED BRIEFING's own server reads go through the
+      // boundary; a read the boundary refuses (grant revoked before / between briefing reads) renders as
+      // unavailable / omitted through the existing not-found handling — NEVER as 0 or a zero-like figure.
+      process.stdout.write("\n3b. composed briefing — a refused server read is omitted / unavailable, never 0\n");
+      const { runPlatformAiTurn, segmentsText, NOT_FOUND } = await import("../core");
+      const { createTurnBoundary } = await import("./boundary");
+      const { bindArea } = await import("./scope");
+      const { metricAccessFor } = await import("@/lib/platform/intelligence/metrics/access");
+      const { incidentAudienceFor } = await import("@/lib/platform/incidents/intelligence/audience");
+      const { scriptedGenerate } = await import("../eval/scripted-model");
+      const opsId = E0_OPERATORS.ops.id;
+      const opsAuth = { user: { id: opsId, role: UserRole.USER }, grant: { area: "PLATFORM_OPS" as const, level: "READ" as const } };
+      const opsScope = scopeFromGuard(opsAuth, "PLATFORM_OPS", opsId)!;
+      const opsBinding = bindArea(opsScope, { metricToken: metricAccessFor(opsAuth), incidentToken: incidentAudienceFor(opsAuth) })!;
+      const ZERO_LIKE = /^\s*(?:\$?0+(?:[.,]0+)?%?|zero|none|no)\b/i;
+      const briefingWithRevocation = async (allowedReads: number) => {
+        let rechecks = 0;
+        // The recheck re-reads the fixture grant row on EVERY call; the grant is revoked after `allowedReads` reads.
+        const recheck = async (area: PlatformArea): Promise<FreshGuard | null> => {
+          rechecks++;
+          if (rechecks > allowedReads) grant.status = "REVOKED";
+          const row = fake.one("PlatformGrant", { userId: opsId, area });
+          return row && row.status === "ACTIVE" ? { auth: opsAuth, csTier: false } : null;
+        };
+        const b = createTurnBoundary({
+          operatorId: opsId, correlationId: `briefing-${allowedReads}`, areas: [{ scope: opsScope, binding: opsBinding }], binding: opsBinding,
+          recheck, packs: ["metrics", "navigation"], packEnabled: () => true,
+        });
+        const reads: { id: string; refused: boolean }[] = [];
+        const invokeLogged: typeof b.invoke = async (name, raw, c) => {
+          const out = await b.invoke(name, raw, c);
+          if (name === "get_metric") reads.push({ id: String((JSON.parse(raw) as { id?: unknown }).id), refused: out === NOT_FOUND });
+          return out;
+        };
+        const g = scriptedGenerate([{ content: "Here is where things stand." }]);
+        const { result, record } = await runPlatformAiTurn({ question: "How are we looking today?", binding: opsBinding, generate: g.generate, model: "e0-scripted", invoke: invokeLogged });
+        grant.status = "ACTIVE";
+        return { result, record, reads };
+      };
+      for (const [why, allowed] of [["revoked BEFORE the first briefing read", 0], ["revoked BETWEEN briefing reads (after read 2)", 2]] as const) {
+        const { result, record, reads } = await briefingWithRevocation(allowed);
+        const refused = new Set(reads.filter((r) => r.refused).map((r) => r.id));
+        const figures = record.typed.filter((s): s is Extract<typeof s, { kind: "figure" }> => s.kind === "figure");
+        const refusedFigures = figures.filter((f) => refused.has(f.metric));
+        const zeroForRefused = refusedFigures.filter((f) => ZERO_LIKE.test(f.text));
+        check(`${why}: it IS a server-composed briefing whose reads went through the boundary, and ${allowed === 0 ? "every" : "the later"} read was refused`,
+          !!result.briefing && reads.length > allowed && refused.size === reads.length - allowed && (allowed === 0 || reads.slice(0, allowed).every((r) => !r.refused)),
+          { briefing: !!result.briefing, reads });
+        check(`${why}: no figure segment for any refused metric (so no 0 / zero-like figure for it)`, refusedFigures.length === 0 && zeroForRefused.length === 0, refusedFigures);
+        const refusedLabels = [...refused].map((id) => opsBinding.describeMetric(id)?.label).filter((l): l is string => !!l);
+        const text = segmentsText(result.answer);
+        check(`${why}: the answer text never states a refused metric next to a 0 ("<label>: 0", "0 <label>")`,
+          !refusedLabels.some((l) => new RegExp(`${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\W{0,3}(?:is|are|:)?\\s*\\$?0\\b|\\b0\\s+${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(text)), text);
+        const coverage = result.coverage ?? [];
+        const readMetrics = new Set(record.metricsRead.map((m) => m.metric));
+        check(`${why}: no refused metric counts as read (its domain is unavailable / not read, never a 0 reading)`,
+          [...refused].every((id) => !readMetrics.has(id)) && (allowed !== 0 || coverage.every((d) => d.status !== "read")), { coverage, metricsRead: [...readMetrics] });
+        if (allowed === 0) check(`${why}: no figure at all is rendered`, figures.length === 0, figures);
+      }
     } finally {
       Object.assign(console, orig);
       provider.restore();
