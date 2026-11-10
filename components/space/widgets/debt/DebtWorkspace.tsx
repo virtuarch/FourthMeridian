@@ -33,7 +33,7 @@
  * Owns NO time state — asOf / compareTo / today are shell props threaded into the hook.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Check, AlertTriangle, Loader2 } from "lucide-react";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
@@ -222,6 +222,9 @@ export function DebtWorkspace({
   // chart states). Only real when ≥2 in-window points exist; never invented.
   // PB-8b — never across a liability's balance-history floor: withheld, and said.
   const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
+  // B12 O-3 — Balance history defaults to starting at the coverage floor; the
+  // viewer may opt in to the partial days before it (chart + note share this flag).
+  const [showPartialHistory, setShowPartialHistory] = useState(false);
   const { change, withheld: changeWithheld } = useMemo<{ change: DebtWindowChange | null; withheld: string | null }>(
     () => debtWindowChange(history, balanceCoverage),
     [history, balanceCoverage],
@@ -354,10 +357,12 @@ export function DebtWorkspace({
           asOf={asOf}
           compareTo={compareTo}
           onSelectPoint={handleSelectPoint}
+          showPartialHistory={showPartialHistory}
         />
         {/* PB-8 — before a liability's balance-history floor the debt history is
             partial: said under the chart, never read as $0 owed. */}
-        <BalanceCoverageNote from={history?.points[0]?.date ?? null} metric="totalLiabilities" />
+        <BalanceCoverageNote from={history?.points[0]?.date ?? null} metric="totalLiabilities"
+          partialHistory={{ shown: showPartialHistory, onToggle: () => setShowPartialHistory((v) => !v), todayISO: today }} />
         {/* v2.7 header parity — the headline's qualifying disclosures live UNDER
             THE CHART (every width), never in / below the header. */}
         <HeroNotes notes={debtHeroNotes({ historical, asOf, redactions })} />
