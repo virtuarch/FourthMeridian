@@ -1887,7 +1887,7 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
   check("the route and the page both use platformAiAreaFor; the page passes the registry label",
     /const area = platformAiAreaFor\(rows\);/.test(code(src("app/api/platform/ai/ask/route.ts")))
     && /const area = platformAiAreaFor\(spaces\);/.test(code(src("app/(shell)/dashboard/platform/ai/page.tsx")))
-    && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} subjectNotice=\{subjectNotice\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
+    && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
   check("the label is the registry's display label (PLATFORM_AREAS), the same one the route's binding reports",
     platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("lib/platform/intelligence/ai/authz/scope.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("lib/platform/intelligence/ai/authz/scope.ts")));
   // Personal parity PR6 (owner 2026-11-08): the area is the shell header's context label, announced "Answering from: <label>".

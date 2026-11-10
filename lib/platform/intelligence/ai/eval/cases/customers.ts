@@ -29,7 +29,6 @@ import {
   type SubjectAuditRow, type SubjectDeps, type SubjectLimiterVerdict,
 } from "../../authz/subject";
 import type { RecordRenderSource } from "../../authz/record-render";
-import type { PlatformAiRecheck } from "../../authz/recheck";
 import { CUSTOMER_AREA, CUSTOMER_RECORD_KIND, customersPackTools, type CustomersPackReaders } from "../../tools/packs/customers";
 import { E0_CUSTOMERS, E0_CUSTOMER_REF_TOKENS, E0_INJECTION_MARKER, E0_T2_SENTINELS, e0CustomerDtos } from "../fixtures";
 import { sentinelsIn } from "../gates";
@@ -59,17 +58,11 @@ const SOURCE: RecordRenderSource = {
   t2: async () => null,
 };
 
-/** The fixture recheck plus the CS incident token the Production recheck mints from the same guard. */
-const withToken = (rc: PlatformAiRecheck): PlatformAiRecheck => async (a) => {
-  const g = await rc(a);
-  return g ? { ...g, ...(g.csTier ? { incidentToken: { audience: "CUSTOMER_SUCCESS" } as never } : {}) } : null;
-};
-
 function boundaryFor(ctx: UnitContext, op: "cs" | "ops", area: PlatformArea, correlationId: string, audit?: Parameters<typeof createTurnBoundary>[0]["audit"]) {
   const part = ctx.scoped(op, area);
   if (!part) return null;
   return createTurnBoundary({
-    operatorId: ctx.operatorId(op), correlationId, areas: [part], binding: part.binding, recheck: withToken(ctx.recheck(op)),
+    operatorId: ctx.operatorId(op), correlationId, areas: [part], binding: part.binding, recheck: ctx.recheck(op),
     packs: ["customers"], packEnabled: () => true, registry: customersPackTools(readers()) as never,
     recordSources: { [CUSTOMER_RECORD_KIND]: SOURCE }, ...(audit ? { audit } : {}),
   });

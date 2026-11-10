@@ -64,5 +64,6 @@ export default async function PlatformAiPage() {
   // P5 (S2 09dp): the customer-lookup notice wherever the customers pack is offered (strict flag + a CS grant).
   const subjectNotice = showsSubjectNotice({ customersPackOn: env.isPlatformAiPackCustomersEnabled, areas: platformAiAreasFor(spaces) });
   if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} subjectNotice={subjectNotice} />;
-  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} subjectNotice={subjectNotice} />;
+  if (subjectNotice) return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} subjectNotice />;
+  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;
 }

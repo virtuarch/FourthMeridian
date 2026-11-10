@@ -26,7 +26,8 @@
 import "server-only";
 
 import type { PlatformArea } from "@prisma/client";
-import type { CsToken, OpsToken } from "@/lib/platform/incidents/intelligence/audience";
+// Token TYPES via the intelligence module (the minter module is imported only by the guarded caller, recheck.server.ts).
+import type { CsToken, OpsToken } from "@/lib/platform/incidents/intelligence";
 import { inScope, isScopedArea, type ScopeAuth, type ScopedArea } from "./scope";
 
 /** One fresh guard result for one area (from the injected recheck). */

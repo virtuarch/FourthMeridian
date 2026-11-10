@@ -133,7 +133,7 @@ console.log("1. flag gating — decided server-side by the page; OFF by default;
   const iV0Flag = page.indexOf("if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;");
   const iArea = page.indexOf("const area = platformAiAreaFor(spaces);");
   const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} subjectNotice={subjectNotice} />;");
-  const iAsk = page.indexOf("return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} subjectNotice={subjectNotice} />;");
+  const iAsk = page.indexOf("return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;");
   const iTotp = page.indexOf("redirect(OPERATOR_TOTP_ENROLMENT_PATH)");
   check("page order: gates → v0 flag (placeholder) → area → conversations flag → v0 PlatformAiAsk (the fallthrough)",
     iTotp > -1 && iV0Flag > iTotp && iArea > iV0Flag && iConv > iArea && iAsk > iConv, { iTotp, iV0Flag, iArea, iConv, iAsk });
@@ -720,7 +720,7 @@ console.log("\n12. v0 parity — flag on, conversations off: the same shell, a s
   const page = code("app/(shell)/dashboard/platform/ai/page.tsx");
   check("P5 the page decides the notice server-side from the strict pack getter and the operator's areas, and passes it to both views",
     /showsSubjectNotice\(\{ customersPackOn: env\.isPlatformAiPackCustomersEnabled, areas: platformAiAreasFor\(spaces\) \}\)/.test(page)
-    && /<PlatformAiConversations [^>]*subjectNotice=\{subjectNotice\}/.test(page) && /<PlatformAiAsk [^>]*subjectNotice=\{subjectNotice\}/.test(page));
+    && /<PlatformAiConversations [^>]*subjectNotice=\{subjectNotice\}/.test(page) && /if \(subjectNotice\) return <PlatformAiAsk [^>]*subjectNotice \/>/.test(page));
   const ANSWER = {
     surface: "Platform Operations", notes: ["A v0 note."], grounding: {} as never,
     answer: [{ kind: "text" as const, text: "Para one.\n\n- item " }, { kind: "link" as const, text: "Providers", href: "/dashboard/platform/PLATFORM_OPS" }],

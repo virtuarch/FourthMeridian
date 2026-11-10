@@ -36,7 +36,7 @@ import type { AttentionKey } from "@/lib/platform/customer/overview-types";
 import type { CustomerDetail } from "@/lib/platform/customer/customer-detail";
 import type { RecentlyJoined } from "@/lib/platform/customer/recently-joined-core";
 import { FUNNEL_STAGE_LABELS, FUNNEL_STAGE_ORDER } from "@/lib/platform/growth/product-analytics-core";
-import type { CsToken } from "@/lib/platform/incidents/intelligence/audience";
+import type { CsToken } from "@/lib/platform/incidents/intelligence";
 import { OPAQUE_USER_REF_PREFIX, OPAQUE_USER_REF_TOKEN } from "@/lib/platform/opaque-user-ref-format";
 import type { LastActiveBucket, PresenceState } from "@/lib/presence/definitions";
 import type { FreshGuard } from "../../authz/recheck";
