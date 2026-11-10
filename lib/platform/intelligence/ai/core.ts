@@ -774,7 +774,7 @@ export interface PlatformAiAnswer {
   /** A1–A4: present only on a SERVER-COMPOSED briefing — codes and counts, never text. */
   briefing?: {
     composed: true; kind: "BRIEFING" | "COST_RANKING"; pattern: string; list: boolean; cost: BriefingCostReason | null;
-    /** S1: issue items shown / counted in the overflow sentence; the composed body's line count. */
+    /** S1: issue items shown / counted in the overflow line; P13a: the whole answer's non-empty line count (≤ BRIEFING_MAX_LINES). */
     shown: number; overflow: number; lines: number; windowNote?: true;
     framing: FramingOutcome; framingVerdict: PlaceholderVerdict | "LINK" | "TOO_LONG" | null;
     actions: number; actionsDropped: number; absoluteStripped: number; issues: number; figures: number;
@@ -1311,7 +1311,8 @@ async function runComposedBriefing(input: {
     ...lead,
     ...(framing.text ? [{ kind: "text" as const, text: `${framing.text}${composed.list ? "\n" : " "}` }] : []),
     ...composed.segments,
-    ...(actions.kept.length ? [{ kind: "text" as const, text: "\n\nNext steps:" }, ...actions.kept.flatMap((a) => [{ kind: "text" as const, text: "\n- " }, { kind: "link" as const, text: a.text, href: a.href }])] : []),
+    // P13a: next steps on ONE line (the whole answer stays ≤ BRIEFING_MAX_LINES).
+    ...(actions.kept.length ? [{ kind: "text" as const, text: "\n\nNext steps: " }, ...actions.kept.flatMap((a, i) => [...(i > 0 ? [{ kind: "text" as const, text: " · " }] : []), { kind: "link" as const, text: a.text, href: a.href }])] : []),
   ];
   // Merge adjacent text (stable stored shape); figures stay typed (A4).
   const merged: TypedAnswerSegment[] = [];
@@ -1334,7 +1335,7 @@ async function runComposedBriefing(input: {
       coverage: coverage.map(({ key, label, status }) => ({ key, label, status })),
       briefing: {
         composed: true, kind: cls.costRanking ? "COST_RANKING" : "BRIEFING", pattern: cls.pattern ?? "UNKNOWN", list: composed.list, cost,
-        shown: composed.shown, overflow: composed.overflow, lines: composedLineCount(composed.segments), ...(lead.length ? { windowNote: true as const } : {}),
+        shown: composed.shown, overflow: composed.overflow, lines: composedLineCount(answer), ...(lead.length ? { windowNote: true as const } : {}),
         framing: framing.outcome, framingVerdict: framing.verdict, actions: actions.kept.length, actionsDropped: actions.dropped, absoluteStripped: actions.absolute,
         issues: composed.facts.filter((f) => f.issue).length, figures: composed.figures,
         domains: Object.fromEntries(composed.domains.map((d) => [d.key, d.state])), ...(modelError ? { modelError: true as const } : {}),
