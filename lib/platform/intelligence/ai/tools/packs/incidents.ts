@@ -314,7 +314,7 @@ export function overviewOf(broken: VerdictList<AnyVerdict>, stale: VerdictList<A
     brokenNow: b.length,
     needsVerification: stale.items.filter((v) => v.rowClass === "incident").length,
     bySeverity: tally(SEVERITIES, b.map((v) => v.effectiveSeverity)),
-    byDomain: tally(DOMAINS, b.map((v) => v.domain)),
+    byDomain: tally(DOMAINS, b.map((v) => ((DOMAINS as readonly string[]).includes(v.domain) ? v.domain : "unknown"))),
     widespread: b.filter((v) => v.spread?.spread === "widespread").length,
     customerActionable: b.filter((v) => v.customerActionable === true).length,
     causeStatus: tally(CAUSE_STATUSES, b.map((v) => causeStatusOf(v))),
