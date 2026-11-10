@@ -19,7 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  OPERATOR_2FA_NOTICE_TEXT, PLATFORM_HOME_HREF, START_2FA_HREF, USER_2FA_NOTICE_ACTION, USER_2FA_NOTICE_TEXT,
+  OPERATOR_2FA_NOTICE_TEXT, PLATFORM_HOME_HREF, operatorWordingApplies, START_2FA_HREF, USER_2FA_NOTICE_ACTION, USER_2FA_NOTICE_TEXT,
   operatorEnrolmentHref, platformToggleHref, safeOperatorContinuePath, twoFactorAudience, twoFactorNoticeCopy,
   twoFactorRequiredCopy,
 } from "@/lib/auth/operator-2fa-prompt";
@@ -58,6 +58,18 @@ console.log("A. wording selection (pure)");
   check("…and its action opens setup directly, cancellable (setup2fa=start, not the enforced mode)",
     op.href === START_2FA_HREF && op.href === "/dashboard/settings/security?setup2fa=start" && op.actionLabel === "Set up 2FA");
 
+  // S2 C1 — "required" wording only while operator TOTP is actually enforced.
+  const pick = (hasActiveGrant: boolean, totpEnabled: boolean, enforced: boolean) =>
+    twoFactorNoticeCopy(twoFactorAudience(operatorWordingApplies({ hasActiveGrant, totpEnabled, enforced })));
+  check("operator + no TOTP + ENFORCED ⇒ operator copy", pick(true, false, true).title === OPERATOR_2FA_NOTICE_TEXT);
+  check("operator + no TOTP + NOT enforced ⇒ ordinary copy", JSON.stringify(pick(true, false, false)) === JSON.stringify(user));
+  check("non-operator ⇒ ordinary copy, enforced or not",
+    JSON.stringify(pick(false, false, true)) === JSON.stringify(user) && JSON.stringify(pick(false, false, false)) === JSON.stringify(user));
+  check("enrolled operator ⇒ never operator wording", operatorWordingApplies({ hasActiveGrant: true, totpEnabled: true, enforced: true }) === false);
+  check("the required banner follows the same gate (not enforced ⇒ ordinary sentence)",
+    twoFactorRequiredCopy(twoFactorAudience(operatorWordingApplies({ hasActiveGrant: true, totpEnabled: false, enforced: false }))).body
+      === "Your organization requires 2FA. Set it up now to continue using Fourth Meridian.");
+
   const reqUser = twoFactorRequiredCopy("user");
   const reqOp = twoFactorRequiredCopy("operator");
   check("the widget's required banner: users keep the prior sentence",
@@ -87,9 +99,10 @@ console.log("B. the notice rail picks the copy from the server flag only");
       && !("twoFactorOperator" in readNoticeStatus({ maintenance: false, twoFactorReminder: true, twoFactorOperator: "true" })!)
       && !("twoFactorOperator" in readNoticeStatus({ maintenance: false, twoFactorReminder: true })!));
   const status = code(read("lib/platform/notices/app-notice-status.ts"));
-  check("the flag is the server's grant count (directory.server), only for a user without 2FA",
+  check("the flag is the server's grant count (directory.server), only for a user without 2FA, only when ENFORCED (S2 C1)",
     /import \{ hasActivePlatformGrants \} from "@\/lib\/platform\/directory\.server";/.test(status)
-      && /const operator = me && !me\.totpEnabled \? await hasActivePlatformGrants\(userId\) : false;/.test(status));
+      && /const enforced = env\.isOperatorTotpEnforced;/.test(status)
+      && /const operator = enforced && me && !me\.totpEnabled\s*\? operatorWordingApplies\(\{ hasActiveGrant: await hasActivePlatformGrants\(userId\), totpEnabled: me\.totpEnabled, enforced \}\)\s*: false;/.test(status));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,7 +156,7 @@ console.log("D. enrolment widget: auto-open + continue");
       && /fetch\("\/api\/user\/totp\/verify", \{/.test(totp) && /JSON\.stringify\(\{ code: trimmed \}\)/.test(totp));
 
   check("the audience on Settings is a SERVER fact (getSecurity → page → SecuritySettings → TotpSection)",
-    /operator: await hasActivePlatformGrants\(userId\)/.test(read("lib", "settings", "loaders.ts"))
+    /const enforced = env\.isOperatorTotpEnforced;\s*[\s\S]{0,200}const operator = enforced\s*\? operatorWordingApplies\(\{ hasActiveGrant: await hasActivePlatformGrants\(userId\), totpEnabled: false, enforced \}\)\s*: false;/.test(read("lib", "settings", "loaders.ts"))
       && /<SecuritySettings email=\{email\} operator=\{operator\} \/>/.test(read("app", "(shell)", "dashboard", "settings", "security", "page.tsx"))
       && /<TotpSection audience=\{twoFactorAudience\(operator\)\} \/>/.test(read("components", "settings", "SecuritySettings.tsx")));
 

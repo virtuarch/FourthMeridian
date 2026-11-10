@@ -29,7 +29,17 @@ import { validateReturnTo } from "@/lib/auth/return-to";
 
 export type TwoFactorAudience = "operator" | "user";
 
-/** Server fact → audience. `isOperator` must come from the server's grant read. */
+/**
+ * S2 C1 — the "required" (operator) wording applies ONLY when it is true:
+ * the user holds an active grant, has no TOTP, AND operator TOTP is ENFORCED
+ * (env.isOperatorTotpEnforced, read by the server caller). Enforcement off ⇒
+ * false ⇒ the ordinary copy everywhere. All three inputs are server facts.
+ */
+export function operatorWordingApplies(input: { hasActiveGrant: boolean; totpEnabled: boolean; enforced: boolean }): boolean {
+  return input.enforced === true && input.hasActiveGrant === true && input.totpEnabled !== true;
+}
+
+/** Server fact → audience. `isOperator` must be the server's operatorWordingApplies result. */
 export function twoFactorAudience(isOperator: boolean): TwoFactorAudience {
   return isOperator === true ? "operator" : "user";
 }
