@@ -320,6 +320,23 @@ export function clipToBalanceCoverage<P extends { date: string }>(
   return start ? points.filter((p) => p.date >= start) : points.slice();
 }
 
+/**
+ * B12 P3 — whether the chart must HOLD (render its placeholder, no points)
+ * because the coverage read that decides the default clip is still LOADING.
+ * Drawing the unclipped points first would flash a day-one user's partial
+ * month (the "crash") before the clip lands. Never held when the series is
+ * ungoverned (sides = []), when the viewer opted in to partial history (every
+ * point is drawn either way), or once the read resolves — FAILED and
+ * nothing-to-cover render immediately, unclipped, exactly as before. The read
+ * always settles (a failure resolves to UNAVAILABLE), so the hold is bounded
+ * by the one data-health read.
+ */
+export function balanceChartPending(
+  covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], showPartial: boolean,
+): boolean {
+  return !showPartial && sides.length > 0 && isBalanceCoverageLoading(covRead);
+}
+
 /** The series' noun in "Your <subject> history starts …" (WealthMetricKey). */
 function historySubject(metric: string): string {
   switch (metric) {

@@ -16,7 +16,7 @@
  *   - reconstructed runs are dashed + faint with HOLLOW markers;
  *   - the unknown is a hatched band labelled "no data", not an absence;
  *   - y-scale from real points ONLY (no interpolation across the hole);
- *   - three x-axis labels + 3–4 y-axis value ticks (compact, in the caller's
+ *   - three x-axis labels (identical ones collapse — B12 P3) + 3–4 y-axis value ticks (compact, in the caller's
  *     currency) over subtle gridlines; an HTML tooltip that won't snap across a gap.
  *
  * v2.7 final UX pass (owner) — NO provenance legend. The technical "Observed /
@@ -96,6 +96,18 @@ export function niceTicks(lo: number, hi: number): number[] {
   return best;
 }
 
+/**
+ * B12 P3 — the x-axis labels: first · middle · last, with identical labels
+ * collapsed (in order). A day-one chart (one plotted date) used to print the
+ * same date three times; it now prints it once, centred under its one point.
+ * Three distinct labels are returned exactly as before. Exported for the test.
+ */
+export function xAxisLabels(dates: readonly string[], formatDate: (iso: string) => string): string[] {
+  if (dates.length === 0) return [];
+  const picked = [dates[0], dates[Math.floor(dates.length / 2)], dates[dates.length - 1]].map(formatDate);
+  return picked.filter((l, i) => picked.indexOf(l) === i);
+}
+
 /** Default date label — "Jan 1, 2025" (UTC), matching the Net Worth chart exactly. */
 function defaultFormatDate(iso: string): string {
   return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("en-US", {
@@ -156,6 +168,7 @@ export function TrendChart({
   formatDate = defaultFormatDate,
   onSelectPoint,
   markers,
+  pending = false,
 }: {
   points:       TrendPoint[];
   currency:     string;
@@ -177,6 +190,13 @@ export function TrendChart({
    * plotted window; the CALLER writes the label. Omitted ⇒ unchanged.
    */
   markers?: { date: string; label: string }[];
+  /**
+   * B12 P3 — OPTIONAL. The caller cannot yet say WHICH points to plot (the
+   * balance-coverage read that decides the day-one clip is in flight): hold a
+   * same-height placeholder, plot nothing, rather than draw points that are
+   * about to be clipped away. Omitted ⇒ unchanged.
+   */
+  pending?: boolean;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -318,6 +338,18 @@ export function TrendChart({
       {headerRight}
     </div>
   ) : null;
+
+  if (pending) {
+    return (
+      <section>
+        {header}
+        <div data-trend-pending="" aria-busy="true" aria-label={label} role="img">
+          <div aria-hidden className="w-full animate-pulse rounded-lg bg-[var(--surface-muted)]" style={{ height: H }} />
+          <div aria-hidden className="mt-1 h-[17px]" />
+        </div>
+      </section>
+    );
+  }
 
   if (!geom) {
     return (
@@ -471,11 +503,15 @@ export function TrendChart({
         </div>
 
         {/* Axis — three labels; the shape is the message, dates are orientation. */}
-        <div className="mt-1 flex justify-between text-[11px] text-[var(--text-muted)]" style={{ paddingLeft: geom.padL }}>
-          <span>{formatDate(geom.pts[0].date)}</span>
-          <span>{formatDate(geom.pts[Math.floor(geom.pts.length / 2)].date)}</span>
-          <span>{formatDate(geom.last.date)}</span>
-        </div>
+        {/* B12 P3 — identical labels collapse; a lone label is centred under its point. */}
+        {(() => {
+          const axis = xAxisLabels(geom.pts.map((p) => p.date), formatDate);
+          return (
+            <div className={axis.length === 1 ? "mt-1 flex justify-center text-[11px] text-[var(--text-muted)]" : "mt-1 flex justify-between text-[11px] text-[var(--text-muted)]"} style={{ paddingLeft: geom.padL }}>
+              {axis.map((l) => <span key={l}>{l}</span>)}
+            </div>
+          );
+        })()}
       </div>
     </section>
   );
