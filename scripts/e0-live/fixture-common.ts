@@ -54,7 +54,14 @@ export function teardownDeadline(tag: string): string {
 /** DB URLs that must NOT be exported in the parent shell (the env file is the only source). */
 export const DB_ENV_KEYS = ["DATABASE_URL", "DIRECT_URL", "DATABASE_URL_APP", "DATABASE_URL_AUTH", "DATABASE_URL_SYSTEM"] as const;
 const SUPABASE_KEY = /^supabase:([a-z0-9]+)\//;
-const REF_RE = /^[a-z0-9]{15,40}$/;
+
+/**
+ * S2 R1 (09ej) — the project refs are PINNED here, as in every earlier reviewed
+ * fixture script; an exported pair is never trusted on its own (a mis-set pair —
+ * e.g. FM_PREVIEW_DB_REF set to the Production ref — would otherwise pass).
+ */
+export const PREVIEW_REF = "lqagrryecvhbaqvczjgc";
+export const PROD_REF = "qirfzvvaeddukjiphims";
 
 export interface E0LiveGuardInput {
   /** The process environment (exported variables). */
@@ -74,10 +81,10 @@ export type E0LiveGuardDecision =
  *   1. no DB URL exported in the shell (an exported DATABASE_URL beats any env file);
  *   2. VERCEL_ENV=production (shell or file) refuses;
  *   3. the env file exists and is 0600 (no group/other bits);
- *   4. FM_PREVIEW_DB_REF and FM_PRODUCTION_DB_REF are set, well-formed and distinct
- *      (operator facts — never in the repository);
- *   5. DIRECT_URL and DATABASE_URL both identify the PREVIEW project (positive proof)
- *      and neither string contains the Production ref anywhere;
+ *   4. FM_PREVIEW_DB_REF and FM_PRODUCTION_DB_REF are set and EQUAL the pinned
+ *      PREVIEW_REF / PROD_REF constants (S2 R1) — a swapped, wrong or partial pair refuses;
+ *   5. DIRECT_URL and DATABASE_URL both identify PREVIEW_REF (positive proof) and
+ *      neither string contains PROD_REF anywhere;
  *   6. DIRECT_URL is the session port 5432 (one interactive transaction);
  *   7. the repo's repair-env guard agrees (--env=preview, apply): same logical
  *      database for both URLs, FM_DB_GUARD respected, not the Production project.
@@ -96,11 +103,11 @@ export function decideE0LiveGuard(i: E0LiveGuardInput): E0LiveGuardDecision {
   if ((i.envFileMode & 0o077) !== 0) return refuse("the Preview env file must be mode 0600.");
   if ((i.envFile.VERCEL_ENV ?? "").toLowerCase() === "production") return refuse("the env file sets VERCEL_ENV=production — refused.");
 
-  const previewRef = (i.exported.FM_PREVIEW_DB_REF ?? "").trim().toLowerCase();
-  const prodRef = (i.exported.FM_PRODUCTION_DB_REF ?? "").trim().toLowerCase();
-  if (!REF_RE.test(previewRef)) return refuse("FM_PREVIEW_DB_REF is not set (or malformed), so the target cannot be proven to be Preview.");
-  if (!REF_RE.test(prodRef)) return refuse("FM_PRODUCTION_DB_REF is not set (or malformed), so the target cannot be proven outside Production.");
-  if (previewRef === prodRef) return refuse("FM_PREVIEW_DB_REF equals FM_PRODUCTION_DB_REF — refused.");
+  // S2 R1 — the exported pair must equal the pinned constants; the checks below use ONLY the constants.
+  if ((i.exported.FM_PREVIEW_DB_REF ?? "").trim() !== PREVIEW_REF) return refuse("FM_PREVIEW_DB_REF must be set and equal the pinned Preview ref.");
+  if ((i.exported.FM_PRODUCTION_DB_REF ?? "").trim() !== PROD_REF) return refuse("FM_PRODUCTION_DB_REF must be set and equal the pinned Production ref.");
+  const previewRef = PREVIEW_REF;
+  const prodRef = PROD_REF;
 
   const directUrl = i.envFile.DIRECT_URL ?? "";
   const pooledUrl = i.envFile.DATABASE_URL ?? "";

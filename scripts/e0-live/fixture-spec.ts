@@ -386,7 +386,9 @@ export function buildFixturePlan(input: FixturePlanInput): FixturePlan {
   });
 
   // ── Incidents (SyncIssue only; lifecycleState null = open; no SyncIssueEvent from scripts/) ──
-  const confirmer = newId(); // a soft-ref sentinel (no FK); the cause-confirm writer is Phase 2+
+  // A soft-ref sentinel (no FK); the cause-confirm writer is Phase 2+. S2 ruling 09ej (3): placeholder
+  // confirmer / audit ids without audit rows are accepted for tagged Preview fixtures — noted in the RUN-LOG.
+  const confirmer = newId();
   const keyFor = (item: string) => `v1::PLAID::${item}::transactions::${tag}`;
   const incident = (
     k: string, opts: { cause?: SyncIssueRow["causeStatus"]; causeCode?: string; resolved?: string; previous?: string; agoFirst: number; agoLast: number },

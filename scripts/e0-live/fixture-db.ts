@@ -11,6 +11,13 @@
  * when the fixture user goes), AiInvocation (cost ledger), and any SyncIssueEvent a
  * run's operator action wrote on a fixture incident (scripts/ may not write or
  * delete that table — the incident-boundary census; counted as left in place).
+ *
+ * S2 rulings (09ej), recorded here:
+ *   (2) The E0-LIVE runner is READ-ONLY on fixture incidents: no acknowledge, resolve
+ *       or recover. ANY operator event found on a fixture incident at teardown is a
+ *       RUNNER DEFECT — report it, count it (leftInPlace), leave it.
+ *   (3) Placeholder confirmer ids WITHOUT audit rows (CONFIRMED-cause fixtures,
+ *       fixture-spec.ts) are ACCEPTED for tagged Preview fixtures; note them in the RUN-LOG.
  */
 
 import type { Prisma } from "@prisma/client";

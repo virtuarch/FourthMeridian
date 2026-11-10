@@ -11,6 +11,7 @@ import path from "node:path";
 import {
   decideE0LiveGuard, makeTag, parseTag, nonceFromBytes, teardownDeadline, utcDay, repoBasisRefusal, migrationBasisRefusal,
   parseManifest, matchTagToManifest, emptyIds, rowHash, stableJson, driftCounts, MANIFEST_TABLES, DB_ENV_KEYS,
+  PREVIEW_REF, PROD_REF,
   type E0LiveManifest,
 } from "./fixture-common";
 
@@ -21,8 +22,8 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   else { failures++; console.error(`  ✗ ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`); }
 }
 
-const PROD_REF = "prodprojectref0000001";
-const PREV_REF = "previewprojectref0002";
+// S2 R1 — the guard uses the PINNED refs; the tests use the same constants.
+const PREV_REF = PREVIEW_REF;
 const OTHER_REF = "otherprojectref000003";
 const SECRET = "s3cr3tPassw0rd";
 const direct = (ref: string, port = 5432) => `postgresql://postgres:${SECRET}@db.${ref}.supabase.co:${port}/postgres`;
@@ -48,6 +49,19 @@ for (const mode of [0o644, 0o640, 0o604, 0o660]) {
 check("FM_PREVIEW_DB_REF unset ⇒ refused", !ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: undefined }), envFile: FILE(), envFileMode: 0o600 })));
 check("FM_PRODUCTION_DB_REF unset ⇒ refused", !ok(decideE0LiveGuard({ exported: EXP({ FM_PRODUCTION_DB_REF: undefined }), envFile: FILE(), envFileMode: 0o600 })));
 check("preview ref == production ref ⇒ refused", !ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: PROD_REF }), envFile: FILE(), envFileMode: 0o600 })));
+// S2 R1 (09ej) — a mis-set exported pair never passes; only the pinned pair does.
+check("R1: the refs are pinned constants", PREVIEW_REF === "lqagrryecvhbaqvczjgc" && PROD_REF === "qirfzvvaeddukjiphims");
+check("R1: correct exported pair ⇒ allowed", ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: PREVIEW_REF, FM_PRODUCTION_DB_REF: PROD_REF }), envFile: FILE(), envFileMode: 0o600 })));
+check("R1: SWAPPED pair (Preview var = Prod ref, Prod var = Preview ref) ⇒ refused",
+  !ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: PROD_REF, FM_PRODUCTION_DB_REF: PREVIEW_REF }), envFile: FILE(), envFileMode: 0o600 })));
+check("R1: WRONG pair (both refs unrelated, URLs on that 'preview') ⇒ refused",
+  !ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: OTHER_REF, FM_PRODUCTION_DB_REF: "anotherprojectref0004" }), envFile: FILE({ DIRECT_URL: direct(OTHER_REF), DATABASE_URL: pooled(OTHER_REF) }), envFileMode: 0o600 })));
+check("R1: env Preview var set to the Prod ref, Prod var anything else, URLs on Prod ⇒ refused",
+  !ok(decideE0LiveGuard({ exported: EXP({ FM_PREVIEW_DB_REF: PROD_REF, FM_PRODUCTION_DB_REF: OTHER_REF }), envFile: FILE({ DIRECT_URL: direct(PROD_REF), DATABASE_URL: pooled(PROD_REF) }), envFileMode: 0o600 })));
+check("R1: correct exported pair but URLs on Prod ⇒ refused (URL checks use the constants)",
+  !ok(decideE0LiveGuard({ exported: EXP(), envFile: FILE({ DIRECT_URL: direct(PROD_REF), DATABASE_URL: pooled(PROD_REF) }), envFileMode: 0o600 })));
+check("R1: upper-cased Prod ref ⇒ refused (exact match)",
+  !ok(decideE0LiveGuard({ exported: EXP({ FM_PRODUCTION_DB_REF: PROD_REF.toUpperCase() }), envFile: FILE(), envFileMode: 0o600 })));
 check("DIRECT_URL on the PRODUCTION project ⇒ refused",
   !ok(decideE0LiveGuard({ exported: EXP(), envFile: FILE({ DIRECT_URL: direct(PROD_REF) }), envFileMode: 0o600 })));
 check("DATABASE_URL on the PRODUCTION project ⇒ refused",
