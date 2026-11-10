@@ -20,7 +20,15 @@
     "How many users signed up this week?": "metrics,navigation,memory",
     "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory",
     "Is anyone in the attention queue?": "metrics,navigation,memory",
-    "Are members of the ops team online?": "metrics,navigation,memory"
+    "Are members of the ops team online?": "metrics,navigation,memory",
+    "How many users signed up": "metrics,navigation,memory",
+    "members of the ops team": "metrics,navigation,memory",
+    "Which users have admin access?": "metrics,navigation,memory",
+    "How many new users this month?": "metrics,navigation,memory",
+    "Which account holders need help?": "metrics,navigation,memory",
+    "Show member accounts needing attention": "metrics,navigation,memory",
+    "Who recently joined?": "metrics,navigation,memory",
+    "Any customers with failed imports?": "metrics,navigation,memory"
   },
   "everyPlannedPackDeclared": {
     "How are we looking today?": "metrics,navigation,memory",
@@ -39,10 +47,18 @@
     "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory,incidents,connections,jobs",
     "Open the platform ops page": "metrics,navigation,memory",
     "Remember that the scheduler is degraded.": "metrics,navigation,memory,incidents,jobs",
-    "How many users signed up this week?": "metrics,navigation,memory,customers",
+    "How many users signed up this week?": "metrics,navigation,memory",
     "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory,customers",
     "Is anyone in the attention queue?": "metrics,navigation,memory,customers",
-    "Are members of the ops team online?": "metrics,navigation,memory,customers"
+    "Are members of the ops team online?": "metrics,navigation,memory",
+    "How many users signed up": "metrics,navigation,memory",
+    "members of the ops team": "metrics,navigation,memory",
+    "Which users have admin access?": "metrics,navigation,memory",
+    "How many new users this month?": "metrics,navigation,memory",
+    "Which account holders need help?": "metrics,navigation,memory,customers",
+    "Show member accounts needing attention": "metrics,navigation,memory,customers",
+    "Who recently joined?": "metrics,navigation,memory,customers",
+    "Any customers with failed imports?": "metrics,navigation,memory,customers,onboarding"
   },
   "customersPackOn": {
     "How are we looking today?": "metrics,navigation,memory",
@@ -61,9 +77,17 @@
     "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory,customers",
     "Open the platform ops page": "metrics,navigation,memory",
     "Remember that the scheduler is degraded.": "metrics,navigation,memory",
-    "How many users signed up this week?": "metrics,navigation,memory,customers",
+    "How many users signed up this week?": "metrics,navigation,memory",
     "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory,customers",
     "Is anyone in the attention queue?": "metrics,navigation,memory,customers",
-    "Are members of the ops team online?": "metrics,navigation,memory,customers"
+    "Are members of the ops team online?": "metrics,navigation,memory",
+    "How many users signed up": "metrics,navigation,memory",
+    "members of the ops team": "metrics,navigation,memory",
+    "Which users have admin access?": "metrics,navigation,memory",
+    "How many new users this month?": "metrics,navigation,memory",
+    "Which account holders need help?": "metrics,navigation,memory,customers",
+    "Show member accounts needing attention": "metrics,navigation,memory,customers",
+    "Who recently joined?": "metrics,navigation,memory,customers",
+    "Any customers with failed imports?": "metrics,navigation,memory,customers"
   }
 }
