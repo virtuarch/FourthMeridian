@@ -18,18 +18,19 @@ import "@/lib/test-support/route-env";
 process.env.PLATFORM_AI_ENABLED = "true";
 process.env.OPENAI_API_KEY = "sk-test-not-a-real-key";
 delete process.env.AI_CHAT_MODEL;
-delete process.env.OPERATOR_TOTP_ENFORCEMENT;
+// P2: operator 2FA ENFORCED, so "2FA disabled mid-turn" is a real refusal (every fixture operator has TOTP on).
+process.env.OPERATOR_TOTP_ENFORCEMENT = "enforce";
+for (const k of Object.keys(process.env)) if (k.startsWith("PLATFORM_AI_PACK_")) delete process.env[k];
 
 import bcrypt from "bcryptjs";
-import { UserRole } from "@prisma/client";
+import { UserRole, type PlatformArea } from "@prisma/client";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { invoke, request, signIn } from "@/lib/test-support/route-harness";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
-import { E0_CASES } from "./cases";
-import type { CoreMemoryCase, CoreTurnObservation, RouteCase, RouteTurnObservation } from "./cases/types";
+import type { CoreMemoryCase, CoreTurnObservation, RouteCase, RouteTurnObservation, UnitCase, UnitContext } from "./cases/types";
 import { E0_CUSTOMERS, E0_INJECTION_MARKER, E0_INJECTION_SENTINELS, E0_OPERATORS, E0_T2_SENTINELS, seedE0World } from "./fixtures";
 import { E0_GATES, gateOutcome, leakCounts, sentinelsIn, type Collected, type GateId } from "./gates";
-import { installScriptedProvider, scriptedGenerate } from "./scripted-model";
+import { installScriptedProvider, scriptedGenerate, type ScriptStep } from "./scripted-model";
 
 const out = (s: string) => process.stdout.write(`${s}\n`);
 const NOW = Date.now();
@@ -70,8 +71,22 @@ async function main() {
   const { bindArea, scopeFromGuard } = await import("../authz/scope");
   const { metricAccessFor } = await import("@/lib/platform/intelligence/metrics/access");
   const { incidentAudienceFor } = await import("@/lib/platform/incidents/intelligence/audience");
+  // Loaded AFTER the env above is set (the P2 cases import lib/env and the boundary).
+  const { E0_CASES } = await import("./cases");
 
-  const provider = installScriptedProvider();
+  // P2 — mid-turn revocation: applied to the fixture world for the case's operator when the
+  // provider SERVES the scripted step (after tool call N ran, before call N+1 runs).
+  let currentOperator: (typeof E0_OPERATORS)[keyof typeof E0_OPERATORS] | null = null;
+  let revocationsApplied = 0;
+  const applyRevocation = (s: ScriptStep) => {
+    if (!s.revoke || !currentOperator) return;
+    const id = currentOperator.id;
+    revocationsApplied++;
+    if (s.revoke === "GRANT") for (const g of fake.table("PlatformGrant")) { if (g.userId === id) g.status = "REVOKED"; }
+    if (s.revoke === "TOTP") for (const u of fake.table("User")) { if (u.id === id) u.totpEnabled = false; }
+    if (s.revoke === "SESSION") { const t = fake.table("UserSession"); for (let i = t.length - 1; i >= 0; i--) if (t[i].userId === id) t.splice(i, 1); }
+  };
+  const provider = installScriptedProvider({ onServe: applyRevocation });
   const corpus: Collected[] = [];
   const results = new Map<GateId, { ok: boolean }[]>();
   const record = (g: GateId, ok: boolean) => { if (!results.has(g)) results.set(g, []); results.get(g)!.push({ ok }); };
@@ -95,6 +110,7 @@ async function main() {
 
   async function runRoute(c: RouteCase): Promise<string[]> {
     const cookie = await cookieFor(c.operator);
+    currentOperator = E0_OPERATORS[c.operator];
     const obs: RouteTurnObservation[] = [];
     for (const turn of c.turns) {
       provider.load(turn.steps);
@@ -109,8 +125,28 @@ async function main() {
       obs.push({ status: r.status, body, requests, toolResults, returnedHrefs: hrefsOf(toolResults) });
     }
     drainLedger();
+    currentOperator = null;
     return c.check(obs);
   }
+
+  // P2 unit cases: real route-issued scopes + real bindings for fixture operators (minted here, in the
+  // test, from a fixture guard result), and a recheck that re-reads the fixture grant row on every call.
+  const fixtureAuth = (op: keyof typeof E0_OPERATORS, area: PlatformArea) => ({ user: { id: E0_OPERATORS[op].id, role: UserRole.USER }, grant: { area, level: "READ" as const } });
+  const unitCtx: UnitContext = {
+    operatorId: (op) => E0_OPERATORS[op].id,
+    scoped(op, area) {
+      const a = fixtureAuth(op, area);
+      const scope = scopeFromGuard(a, area, a.user.id);
+      const binding = scope ? bindArea(scope, { metricToken: metricAccessFor(a), incidentToken: incidentAudienceFor(a) }) : null;
+      return scope && binding ? { scope, binding } : null;
+    },
+    recheck: (op) => async (area) => {
+      const row = fake.one("PlatformGrant", { userId: E0_OPERATORS[op].id, area });
+      if (!row || row.status !== "ACTIVE") return null;
+      return { auth: fixtureAuth(op, area), csTier: area === "CUSTOMER_SUCCESS" };
+    },
+  };
+  const runUnit = (c: UnitCase): Promise<string[]> => c.run(unitCtx);
 
   // Core-level memory: the Ops binding from scope.ts (tokens minted here, in the test, from a fixture guard result).
   const opsAuth = { user: { id: E0_OPERATORS.ops.id, role: UserRole.USER }, grant: { area: "PLATFORM_OPS" as const, level: "READ" as const } };
@@ -131,14 +167,14 @@ async function main() {
     return c.check(obs);
   }
 
-  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary)\n");
+  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags)\n");
   let caseCount = 0;
   console.log = console.info = console.warn = console.error = capture;
   try {
     for (const c of E0_CASES) {
       caseCount++;
       let problems: string[];
-      try { problems = c.kind === "route" ? await runRoute(c) : await runCore(c); }
+      try { problems = c.kind === "route" ? await runRoute(c) : c.kind === "unit" ? await runUnit(c) : await runCore(c); }
       catch (e) { problems = [`threw ${e instanceof Error ? e.name : "error"}`]; }
       for (const g of c.gates) record(g, problems.length === 0);
       if (problems.length) failures.push(`${c.id}: ${problems.join("; ")}`);
@@ -180,6 +216,12 @@ async function main() {
   out(`  ${saRefused ? "✓" : "✗"} SA_BREAK_GLASS_REFUSAL: authz/scope.ts admits no area for a break-glass SYSTEM_ADMIN`);
   record("SA_BREAK_GLASS_REFUSAL", saRefused);
   if (!saRefused) failures.push("scope admitted a SYSTEM_ADMIN");
+
+  // P2: the mid-turn revocations really happened (grant ×2, session, 2FA) — the route cases are not vacuous.
+  const revocationsHeld = revocationsApplied === 4;
+  out(`  ${revocationsHeld ? "✓" : "✗"} REVOCATION_MID_TURN non-vacuous: ${revocationsApplied} mid-turn revocation(s) applied between tool calls (expected 4)`);
+  record("REVOCATION_MID_TURN", revocationsHeld);
+  if (!revocationsHeld) failures.push("the mid-turn revocations were not applied");
 
   // ── the gate report (counts only) ─────────────────────────────────────────
   out(`\nE0 gates (${caseCount} cases)`);

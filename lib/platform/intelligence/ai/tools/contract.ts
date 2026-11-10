@@ -7,8 +7,7 @@
  * (and, if so, the audit it must write), its PII class and its cost against the
  * per-turn tool budget. P1b declares the EXISTING tools only (tools/registry.ts);
  * the single enforcement point that consumes these declarations (invokeTool, the
- * per-call recheck, handles, the fail-closed audit) is P2. Nothing here changes
- * what a turn does today.
+ * per-call recheck, handles, the fail-closed audit) is authz/boundary.ts (P2).
  *
  * THE RULES THE TYPES MAKE STRUCTURAL
  *   · ClosedSchema args: enums, bounded integers, registry ids (a fixed shape the
@@ -33,6 +32,7 @@
 import type { PlatformArea } from "@prisma/client";
 import type { AuditActionType } from "@/lib/audit-actions";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
+import type { RecordSchema } from "../evidence/record-envelope";
 
 // ── Result status ────────────────────────────────────────────────────────────
 
@@ -90,7 +90,11 @@ export interface EnumArg extends ArgBase { readonly kind: "enum"; readonly value
 /** A bounded integer; `offered` is the schema hint the model sees (each tool still accepts only its own). */
 export interface IntArg extends ArgBase { readonly kind: "int"; readonly min: number; readonly max: number; readonly offered?: readonly number[] }
 export interface RegistryIdArg extends ArgBase { readonly kind: "registryId"; readonly registry: RegistryIdKind; readonly pattern: RegExp; readonly maxLength: number }
-export interface HandleArg extends ArgBase { readonly kind: "handle" }
+/**
+ * A per-turn record handle (authz/handles.ts). `recordKind` = the record kind the handle
+ * must have been minted for (P2: the boundary refuses a handle argument without one).
+ */
+export interface HandleArg extends ArgBase { readonly kind: "handle"; readonly recordKind?: string }
 /** The page-filter map: keys from the visible pages' registry params (denied keys removed); values validated by the owning parser. */
 export interface RegistryParamsArg extends ArgBase { readonly kind: "registryParams"; readonly maxValueLength: number }
 export interface GuardedTextArg extends ArgBase { readonly kind: "guardedText"; readonly sink: GuardedTextSink; readonly maxLength: number }
@@ -143,8 +147,10 @@ export type PlatformAiToolContract<Ctx = unknown> = {
    * executor's own shape until the P2 boundary wraps it.
    */
   readonly run: (args: Readonly<Record<string, unknown>>, ctx: Ctx) => Promise<unknown>;
-  /** Record-level visibility re-check (P2+ RECORD tools). */
+  /** Record-level visibility re-check (P2+ RECORD tools): the resolved record id of each handle argument. */
   readonly revalidate?: (ref: string, ctx: Ctx) => Promise<boolean>;
+  /** P2 — a RECORD tool's closed record shape (evidence/record-envelope.ts); required when scope = RECORD. */
+  readonly recordSchema?: RecordSchema;
 } & ToolScopeSpec;
 
 // ── Runtime validation ──────────────────────────────────────────────────────
@@ -167,6 +173,7 @@ export function contractProblems(c: PlatformAiToolContract<never>): string[] {
   if (typeof c.customerLinkable !== "boolean") out.push("customerLinkable: not declared");
   if (c.scope === "AGGREGATE" && c.customerLinkable !== false) out.push("customerLinkable: an AGGREGATE tool cannot link to a customer");
   if (c.customerLinkable === true && !(c.audit && typeof c.audit.action === "string" && c.audit.detail?.surface === "platform-ai")) out.push("audit: required for a customer-linkable tool");
+  if (c.scope === "RECORD" && !(c.recordSchema && typeof c.recordSchema.kind === "string")) out.push("recordSchema: required for a RECORD tool");
   if (![0, 1, 2].includes(c.pii)) out.push("pii: not 0 | 1 | 2");
   const tc = c.cost?.toolCalls;
   if (!(typeof tc === "function" || (typeof tc === "number" && Number.isInteger(tc) && tc >= 1))) out.push("cost.toolCalls: not a positive integer or function");
@@ -177,6 +184,7 @@ export function contractProblems(c: PlatformAiToolContract<never>): string[] {
     if (a.kind === "enum" && (a.values.length === 0 || a.values.some((v) => typeof v !== "string"))) out.push(`args.${k}: empty or non-string enum`);
     if (a.kind === "int" && !(Number.isInteger(a.min) && Number.isInteger(a.max) && a.min <= a.max)) out.push(`args.${k}: unbounded int`);
     if (a.kind === "registryId" && !((REGISTRY_ID_KINDS as readonly string[]).includes(a.registry) && a.pattern instanceof RegExp && a.maxLength > 0 && a.maxLength <= 120)) out.push(`args.${k}: bad registry id`);
+    if (a.kind === "handle" && !(typeof a.recordKind === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(a.recordKind))) out.push(`args.${k}: handle without a record kind`);
     if (a.kind === "guardedText" && (!GUARDED_TEXT_ALLOWLIST.includes(`${c.name}.${k}`) || !(GUARDED_TEXT_SINKS as readonly string[]).includes(a.sink) || !(a.maxLength > 0 && a.maxLength <= 200))) out.push(`args.${k}: guardedText outside the allowlist`);
   }
   return out;

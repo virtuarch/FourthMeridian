@@ -57,6 +57,13 @@ export const E0_OPERATORS = {
   admin: { id: "ce0operatorsystemadmin001", email: "e0-admin@fm.test", username: "e0admin" },
   revoked: { id: "ce0operatorrevokedgrant01", email: "e0-revoked@fm.test", username: "e0revoked" },
   growthOnly: { id: "ce0operatorgrowthonly0001", email: "e0-growth@fm.test", username: "e0growth" },
+  // P2 handle binding: a SECOND Ops operator (a handle minted for `ops` must not resolve for them).
+  ops2: { id: "ce0operatorplatformops002", email: "e0-ops2@fm.test", username: "e0ops2" },
+  // P2 mid-turn revocation cases: one operator per revocation kind (their state is changed mid-case, never restored).
+  midGrant: { id: "ce0operatormidturngrant01", email: "e0-mid-grant@fm.test", username: "e0midgrant" },
+  midSession: { id: "ce0operatormidturnsessn01", email: "e0-mid-session@fm.test", username: "e0midsession" },
+  midTotp: { id: "ce0operatormidturntotp001", email: "e0-mid-totp@fm.test", username: "e0midtotp" },
+  midCs: { id: "ce0operatormidturncsgrnt1", email: "e0-mid-cs@fm.test", username: "e0midcs" },
 } as const;
 
 /** The seeding seam (lib/test-support/fake-prisma.ts FakePrisma satisfies it). */
@@ -77,6 +84,12 @@ export function seedE0World(fake: E0Seeder, opts: { passwordHash: string; now: n
   fake.seed("PlatformGrant", { userId: E0_OPERATORS.cs.id, area: "CUSTOMER_SUCCESS", level: "READ", status: "ACTIVE" });
   fake.seed("PlatformGrant", { userId: E0_OPERATORS.revoked.id, area: "PLATFORM_OPS", level: "READ", status: "REVOKED" });
   fake.seed("PlatformGrant", { userId: E0_OPERATORS.growthOnly.id, area: "GROWTH_REVENUE", level: "READ", status: "ACTIVE" });
+  for (const op of [E0_OPERATORS.ops2, E0_OPERATORS.midGrant, E0_OPERATORS.midSession, E0_OPERATORS.midTotp]) {
+    fake.seed("User", { ...op, ...verified, ...CUSTOMER_WHERE, totpEnabled: true });
+    fake.seed("PlatformGrant", { userId: op.id, area: "PLATFORM_OPS", level: "READ", status: "ACTIVE" });
+  }
+  fake.seed("User", { ...E0_OPERATORS.midCs, ...verified, ...CUSTOMER_WHERE, totpEnabled: true });
+  fake.seed("PlatformGrant", { userId: E0_OPERATORS.midCs.id, area: "CUSTOMER_SUCCESS", level: "READ", status: "ACTIVE" });
   for (const [name, area] of [["Platform Operations", "PLATFORM_OPS"], ["Customer Success", "CUSTOMER_SUCCESS"], ["Growth & Revenue", "GROWTH_REVENUE"], ["Security Operations", "SECURITY_OPS"]] as const) {
     fake.seed("Space", { name, type: "PLATFORM", platformArea: area });
   }

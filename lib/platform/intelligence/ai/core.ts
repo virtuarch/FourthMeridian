@@ -642,6 +642,22 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
   }
 }
 
+/**
+ * P2 — ONE tool call as the turn hands it to its dispatcher. The production callers
+ * (the ask route, the conversations' turn runner) inject the turn boundary's
+ * `invokeTool` (authz/boundary.ts: pack flag, strict parse, scope, per-call recheck,
+ * handles, tier, audit, envelope, trace — any refusal is this file's NOT_FOUND). Absent
+ * ⇒ the executor directly (core-level tests; the same defences as before P2).
+ * core.ts never imports the boundary or the registry (no cycle; registry.test pins it).
+ */
+export type PlatformAiToolInvoker = (name: string, rawArgs: string, ctx: {
+  ev: ToolEvidence; paramKeys: readonly string[]; asked: readonly { hours: number }[]; memory?: PlatformAiMemoryHooks;
+}) => Promise<unknown>;
+
+/** The dispatcher a turn uses: the injected boundary, else the executor over the turn's binding. */
+const dispatcherFor = (invoke: PlatformAiToolInvoker | undefined, binding: PlatformAiBinding): PlatformAiToolInvoker =>
+  invoke ?? ((name, rawArgs, c) => executePlatformAiTool(name, rawArgs, binding, c.ev, c.paramKeys, c.asked, c.memory));
+
 // ── Answer composition → ./compose/* (P1a, 2026-11-09) ──────────────────────
 //
 // The link sanitiser, placeholder grounding, STALE figures, the verdict enum and its
@@ -910,6 +926,8 @@ export async function runPlatformAiTurn(input: {
    * of that path's own defences only; production callers never pass it.
    */
   classifyBriefing?: boolean;
+  /** P2 — the turn boundary's invokeTool (production callers always pass it); absent ⇒ the executor. */
+  invoke?: PlatformAiToolInvoker;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
@@ -933,6 +951,7 @@ export async function runPlatformAiTurn(input: {
   // The period(s) the operator asked about (server-parsed from the scrubbed question): the tool contract (periodContract) and the window note.
   const asked = requestedWindows(question);
   const maxTokens = input.reasoningModel ? PLATFORM_AI_COMPLETION_TOKENS_REASONING : PLATFORM_AI_COMPLETION_TOKENS;
+  const dispatch = dispatcherFor(input.invoke, binding);
 
   let rounds = 0, toolCalls = 0, tokens = 0;
   let raw: string | null = null;
@@ -950,7 +969,7 @@ export async function runPlatformAiTurn(input: {
         result = { error: `tool budget spent (${PLATFORM_AI_MAX_TOOL_CALLS} calls); answer from the results you have` };
         ev.trace.push({ tool: (PLATFORM_AI_TOOLS as readonly string[]).includes(call.name) || (!!memory && (PLATFORM_AI_MEMORY_TOOLS as readonly string[]).includes(call.name)) ? call.name as PlatformAiTraceStep["tool"] : "unknown", outcome: "BUDGET", refs: [] });
       }
-      else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys, asked, memory); }
+      else { toolCalls++; result = await dispatch(call.name, call.arguments, { ev, paramKeys, asked, memory }); }
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
     if (tokens >= PLATFORM_AI_TURN_TOKEN_CEILING) { stop = "TOKEN_CEILING"; break; }
@@ -1139,12 +1158,15 @@ const BRIEFING_MODEL_TOOLS: readonly string[] = ["find_page", "open_page"];
  */
 async function runComposedBriefing(input: {
   question: string; cls: BriefingClass; binding: PlatformAiBinding; generate: PlatformAiGenerate; model: string; reasoningModel?: boolean; signal?: AbortSignal;
+  invoke?: PlatformAiToolInvoker;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding, question, cls } = input;
   const paramKeys = modelParamKeys(binding);
   const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [], pages: new Map() };
   // A2: the server's reads, in protocol order (costs only when asked or an alert is firing).
-  const read = (key: string) => executePlatformAiTool("get_metric", JSON.stringify({ id: key }), binding, ev, paramKeys);
+  // P2: the server's own reads go through the same dispatcher (the boundary's per-call recheck included).
+  const dispatch = dispatcherFor(input.invoke, binding);
+  const read = (key: string) => dispatch("get_metric", JSON.stringify({ id: key }), { ev, paramKeys, asked: [] });
   let cost: BriefingCostReason | null = null;
   let composed: ComposedBriefing;
   const lead: TypedAnswerSegment[] = [];
@@ -1197,7 +1219,7 @@ async function runComposedBriefing(input: {
         } else if (toolCalls >= PLATFORM_AI_MAX_TOOL_CALLS) {
           ev.trace.push({ tool: call.name as PlatformAiTraceStep["tool"], outcome: "BUDGET", refs: [] });
           result = { error: `tool budget spent (${PLATFORM_AI_MAX_TOOL_CALLS} calls); answer from the results you have` };
-        } else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys); }
+        } else { toolCalls++; result = await dispatch(call.name, call.arguments, { ev, paramKeys, asked: [] }); }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
       if (tokens >= PLATFORM_AI_TURN_TOKEN_CEILING) break;
@@ -1267,6 +1289,8 @@ export interface PlatformAiAskDeps {
   countUngrounded?(verdict: PlaceholderVerdict, unresolved: number): void;
   /** One metadata line per answered turn (traceLine: tool codes and registry ids, never text). */
   traceTurn?(line: string): void;
+  /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
+  invoke?: PlatformAiToolInvoker;
 }
 
 export interface PlatformAiHttp { status: number; body: Record<string, unknown>; headers?: Record<string, string> }
@@ -1326,6 +1350,7 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     const { result } = await runPlatformAiTurn({
       question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
+      ...(deps.invoke ? { invoke: deps.invoke } : {}),
     });
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));

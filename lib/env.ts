@@ -50,6 +50,14 @@ import { previousKeyProblem, previousKeyWarning } from "@/lib/plaid/encryption";
 
 // ── Internal snapshot (read once at module load) ──────────────────────────────
 
+/**
+ * Platform AI per-pack flag rule (design v2 §11, I-8): ON only when the master flag AND
+ * the pack's own flag are both exactly "true". Anything else (unset, "1", "TRUE", " true") ⇒ OFF.
+ */
+export function strictPlatformAiPackFlag(master: string | undefined, pack: string | undefined): boolean {
+  return master === "true" && pack === "true";
+}
+
 const _e = {
   DATABASE_URL:         process.env.DATABASE_URL,
   NEXTAUTH_SECRET:      process.env.NEXTAUTH_SECRET,
@@ -182,6 +190,20 @@ const _e = {
   // and the memory retention purge that must accompany it. Strict `=== "true"`; unset = OFF.
   PLATFORM_AI_MEMORY_ENABLED: process.env.PLATFORM_AI_MEMORY_ENABLED,
   PLATFORM_AI_MEMORY_PURGE_ENABLED: process.env.PLATFORM_AI_MEMORY_PURGE_ENABLED,
+  // Platform AI per-pack flags (design v2 §11, I-8; P2) — one server flag per future tool
+  // pack. Strict `=== "true"`, each implies PLATFORM_AI_ENABLED; unset ⇒ OFF. No pack is
+  // declared behind them yet (each lands with its pack PR); Prod enable = owner action.
+  PLATFORM_AI_PACK_CUSTOMERS_ENABLED: process.env.PLATFORM_AI_PACK_CUSTOMERS_ENABLED,
+  PLATFORM_AI_PACK_ONBOARDING_ENABLED: process.env.PLATFORM_AI_PACK_ONBOARDING_ENABLED,
+  PLATFORM_AI_PACK_CONNECTIONS_ENABLED: process.env.PLATFORM_AI_PACK_CONNECTIONS_ENABLED,
+  PLATFORM_AI_PACK_INCIDENTS_ENABLED: process.env.PLATFORM_AI_PACK_INCIDENTS_ENABLED,
+  PLATFORM_AI_PACK_JOBS_ENABLED: process.env.PLATFORM_AI_PACK_JOBS_ENABLED,
+  PLATFORM_AI_PACK_PROVIDERS_ENABLED: process.env.PLATFORM_AI_PACK_PROVIDERS_ENABLED,
+  PLATFORM_AI_PACK_AI_USAGE_ENABLED: process.env.PLATFORM_AI_PACK_AI_USAGE_ENABLED,
+  PLATFORM_AI_PACK_AUDIT_HISTORY_ENABLED: process.env.PLATFORM_AI_PACK_AUDIT_HISTORY_ENABLED,
+  PLATFORM_AI_PACK_POLICIES_ENABLED: process.env.PLATFORM_AI_PACK_POLICIES_ENABLED,
+  PLATFORM_AI_PACK_GROWTH_ENABLED: process.env.PLATFORM_AI_PACK_GROWTH_ENABLED,
+  PLATFORM_AI_PACK_MERCHANTS_ENABLED: process.env.PLATFORM_AI_PACK_MERCHANTS_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -938,6 +960,26 @@ export const env = {
    */
   get isPlatformAiMemoryPurgeEnabled() { return _e.PLATFORM_AI_MEMORY_PURGE_ENABLED === "true"; },
   /** The memory DISABLE-ORDER hazard, as a fact (never an enable): the memory flag is set while its purge flag is not. */
+  /**
+   * Platform AI per-pack flags (design v2 §11, invariant I-8; P2). Each getter is
+   * ON only when PLATFORM_AI_ENABLED === "true" AND its own PLATFORM_AI_PACK_<P>_ENABLED
+   * === "true" (strict; "1" / "TRUE" / unset ⇒ OFF). A pack's tools are refused by the
+   * turn boundary (authz/boundary.ts invokeTool step 1) while its flag is OFF. The three
+   * existing packs keep their existing flags (engine/router.ts): metrics + navigation =
+   * PLATFORM_AI_ENABLED, memory = the memory flag. Production enable of any pack is an
+   * owner action after the S2 per-pack review; record packs only after P4.
+   */
+  get isPlatformAiPackCustomersEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_CUSTOMERS_ENABLED); },
+  get isPlatformAiPackOnboardingEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_ONBOARDING_ENABLED); },
+  get isPlatformAiPackConnectionsEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_CONNECTIONS_ENABLED); },
+  get isPlatformAiPackIncidentsEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_INCIDENTS_ENABLED); },
+  get isPlatformAiPackJobsEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_JOBS_ENABLED); },
+  get isPlatformAiPackProvidersEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_PROVIDERS_ENABLED); },
+  get isPlatformAiPackAiUsageEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_AI_USAGE_ENABLED); },
+  get isPlatformAiPackAuditHistoryEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_AUDIT_HISTORY_ENABLED); },
+  get isPlatformAiPackPoliciesEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_POLICIES_ENABLED); },
+  get isPlatformAiPackGrowthEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_GROWTH_ENABLED); },
+  get isPlatformAiPackMerchantsEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_MERCHANTS_ENABLED); },
   get isPlatformAiMemoryFlagSetWithoutPurge() { return _e.PLATFORM_AI_MEMORY_ENABLED === "true" && _e.PLATFORM_AI_MEMORY_PURGE_ENABLED !== "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group

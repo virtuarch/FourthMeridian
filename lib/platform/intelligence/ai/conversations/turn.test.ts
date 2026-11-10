@@ -437,7 +437,7 @@ async function main(): Promise<void> {
       && (code(src("lib/platform/intelligence/ai/authz/scope.ts")).match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(code(src("lib/platform/intelligence/ai/authz/scope.ts"))));
   const runner = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
   check("the runner binds ONLY access.binding, the ledgered seam with the conversation id, and logs metadata only",
-    /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId \}\)/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
+    /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId, turnId: correlationId \}\)/.test(runner) && /invoke: boundary\.invoke/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
   const turnSrc = code(src("lib/platform/intelligence/ai/conversations/turn.ts"));
   check("turn.ts is pure: no db, env, clock (beyond the timeout signal) or provider import", !/@\/lib\/db|@\/lib\/env|new Date\(|Date\.now|generateWithTools|from "openai"|withTenantDb|systemDb/.test(turnSrc));
   const handlers = code(src("lib/platform/intelligence/ai/conversations/handlers.ts"));

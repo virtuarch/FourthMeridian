@@ -16,6 +16,8 @@
 
 import "server-only";
 
+import { randomUUID } from "node:crypto";
+
 import { classifyPlatformAiFailure, makePlatformAiGenerate, platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import { runConversationTurn } from "@/lib/platform/intelligence/ai/conversations/turn";
 import type { AreaAccess, TurnRunDeps } from "@/lib/platform/intelligence/ai/conversations/handlers";
@@ -27,6 +29,9 @@ import { retrieveFacts } from "@/lib/platform/intelligence/ai/memory/retrieve";
 import { buildMemoryTurn, type MemoryTurn } from "@/lib/platform/intelligence/ai/memory/turn";
 import * as memoryStore from "@/lib/platform/intelligence/ai/memory/store";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
+import { createTurnBoundary } from "@/lib/platform/intelligence/ai/authz/boundary";
+import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { platformAiPackEnabled, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -56,13 +61,26 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
   let memory: MemoryTurn | undefined;
   try { memory = await memoryTurnFor(operatorId, question, access, history); }
   catch { memory = undefined; console.warn(`[platform-ai] memory unavailable for this turn (${ROUTE_KEY})`); }
+  // P2 — THE turn boundary: every tool call re-authorized (pack flag, strict args, the
+  // conversation's own area re-checked FRESH per call, per-turn handles). No scope ⇒ no tool runs.
+  const correlationId = randomUUID();
+  const boundary = createTurnBoundary({
+    operatorId, correlationId,
+    areas: access.scope ? [{ scope: access.scope, binding: access.binding }] : [],
+    binding: access.binding,
+    recheck: platformAiFreshRecheck,
+    packs: routePlatformAiPacks({ memory: !!memory }),
+    packEnabled: (p) => platformAiPackEnabled(p),
+    onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${ROUTE_KEY})`),
+  });
   const run = await runConversationTurn({
     conversationId, question, binding: access.binding, history,
     ...(memory ? {
       memory,
       onMemoryRefusals: (codes: readonly string[]) => { void memoryStore.recordProposalRefusals(operatorId, access.area!, codes).catch(() => {}); },
     } : {}),
-    generate: makePlatformAiGenerate({ operatorId, conversationId }),
+    generate: makePlatformAiGenerate({ operatorId, conversationId, turnId: correlationId }),
+    invoke: boundary.invoke,
     model, reasoningModel: reasoning, classify: classifyPlatformAiFailure,
     onUngrounded: (verdict, unresolved) => console.warn(`[platform-ai] answer replaced: verdict=${verdict} unresolved=${unresolved} (${ROUTE_KEY})`),
     onTrace: (line) => console.info(`[platform-ai] turn ${line} (${ROUTE_KEY})`),

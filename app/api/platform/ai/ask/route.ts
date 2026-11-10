@@ -18,6 +18,11 @@
  *   4. the #352 per-operator limiter (limitPlatformMutation)  → 429
  *   5. handlePlatformAiAsk: body → kill switch → global cost freeze → the
  *      per-operator daily turn cap → the turn                 → 400 / 503 / 429
+ *   6. P2 — EVERY tool call of the turn through the turn boundary
+ *      (authz/boundary.ts invokeTool): pack flag, strict args, the held areas, a FRESH
+ *      requireFreshPlatformAccess per call (authz/recheck.server.ts — a mid-turn
+ *      revocation refuses the next call and drops the area), per-turn handles, tier,
+ *      envelope; any refusal is the one NOT_FOUND the model sees
  *
  * THE SURFACE comes from the guard result, never from the request: P1b —
  * authz/scope.ts `scopeFromGuard` admits only a real grant for exactly the guarded
@@ -34,6 +39,7 @@
  * never text, never a value).
  */
 
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
@@ -42,6 +48,9 @@ import { loadPlatformDirectory } from "@/lib/platform/directory.server";
 import { env } from "@/lib/env";
 import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
+import { createTurnBoundary, type ScopedArea } from "@/lib/platform/intelligence/ai/authz/boundary";
+import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { platformAiPackEnabled, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
@@ -89,6 +98,8 @@ export async function POST(req: NextRequest) {
   // never bound. Tokens are minted from that area's own guard result; the surface is still a
   // literal per case in authz/scope.ts bindArea. Composition is pure (core.ts composePlatformAiBindings).
   const parts: PlatformAiAreaBinding[] = primary && primaryScope ? [{ area: primaryScope.area, binding: primary }] : [];
+  // P2: each bound area keeps its route-issued scope — the turn boundary rechecks exactly these.
+  const scoped: { scope: ScopedArea; binding: NonNullable<typeof primary> }[] = primary && primaryScope ? [{ scope: primaryScope, binding: primary }] : [];
   if (primary) {
     for (const other of platformAiAreasFor(rows)) {
       if (other === area) continue;
@@ -97,13 +108,25 @@ export async function POST(req: NextRequest) {
       const otherScope = scopeFromGuard(otherAuth, other, auth.user.id);
       if (!otherScope) continue;
       const otherBinding = bindArea(otherScope, { metricToken: metricAccessFor(otherAuth), incidentToken: incidentAudienceFor(otherAuth) });
-      if (otherBinding) parts.push({ area: other, binding: otherBinding });
+      if (otherBinding) { parts.push({ area: other, binding: otherBinding }); scoped.push({ scope: otherScope, binding: otherBinding }); }
     }
   }
   const binding = composePlatformAiBindings(parts);
 
   let body: unknown;
   try { body = await req.json(); } catch { body = null; }
+
+  // P2 — THE turn boundary (authz/boundary.ts invokeTool): every tool call of this turn is
+  // re-authorized — pack flag, strict args, scope, a FRESH requireFreshPlatformAccess per call
+  // (non-probe), handles bound to this operator + this turn's correlation id. Denial rows: codes only.
+  const correlationId = randomUUID();
+  const boundary = binding ? createTurnBoundary({
+    operatorId: auth.user.id, correlationId, areas: scoped, binding,
+    recheck: platformAiFreshRecheck,
+    packs: routePlatformAiPacks({ memory: false }),
+    packEnabled: (p) => platformAiPackEnabled(p),
+    onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${PLATFORM_AI_ROUTE_KEY})`),
+  }) : null;
 
   const { model, reasoning } = platformAiModel();
   const res = await handlePlatformAiAsk(body, {
@@ -113,7 +136,8 @@ export async function POST(req: NextRequest) {
     admission: () => readPaidRequestsAdmission(),
     freeze: () => readGlobalCostFreeze(),
     turns: (id, now) => readPlatformAiTurns(id, now),
-    generate: makePlatformAiGenerate({ operatorId: auth.user.id }),
+    generate: makePlatformAiGenerate({ operatorId: auth.user.id, turnId: correlationId }),
+    ...(boundary ? { invoke: boundary.invoke } : {}),
     model,
     reasoningModel: reasoning,
     now: () => new Date(),
