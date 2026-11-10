@@ -24,7 +24,8 @@ import { CUSTOMER_AREA, CUSTOMER_RECORD_KIND } from "../tools/packs/customers";
 import { customerRid, findCustomerByEmail, findCustomerById, findCustomerByRefToken } from "../tools/packs/customers.server";
 import { platformAiSubjectAudit } from "./audit";
 import type { TurnBoundary } from "./boundary";
-import { REAL_SUBJECT_CLOCK, SUBJECT_LIMIT, SUBJECT_LIMITER_NAME, type SubjectDeps, type SubjectIdentifier } from "./subject";
+import { INCIDENT_CS_AREA, INCIDENT_OPS_AREA, INCIDENT_RECORD_KIND, INCIDENT_RID } from "../tools/packs/incidents";
+import { REAL_SUBJECT_CLOCK, SUBJECT_LIMIT, SUBJECT_LIMITER_NAME, type SubjectDeps, type SubjectFlags, type SubjectIdentifier } from "./subject";
 
 /** The Production lookup for one exact identifier (customer population only). */
 export async function lookupCustomerSubject(id: SubjectIdentifier): Promise<string | null> {
@@ -35,8 +36,19 @@ export async function lookupCustomerSubject(id: SubjectIdentifier): Promise<stri
   }
 }
 
-export function platformAiSubjectDeps(input: { operatorId: string; primaryArea: PlatformArea; boundary: Pick<TurnBoundary, "subjectEligibility" | "adoptSubject"> }): SubjectDeps {
+/**
+ * P8 — an exact incident id → a handle of THIS turn, per the incident audience rules: the CUSTOMER_SUCCESS
+ * area first (its CS tier — the CS tools can then investigate it), else PLATFORM_OPS (OPS tier); each a fresh
+ * recheck + the INCIDENT source's revalidate (boundary adoptRecord). null ⇒ not an incident this operator sees.
+ */
+export const INCIDENT_SUBJECT_AREAS: readonly PlatformArea[] = [INCIDENT_CS_AREA, INCIDENT_OPS_AREA];
+
+export function platformAiSubjectDeps(input: { operatorId: string; primaryArea: PlatformArea; boundary: Pick<TurnBoundary, "subjectEligibility" | "adoptSubject" | "adoptRecord"> }): SubjectDeps {
   return {
+    // P8 (PACK-PR-CONDITIONS 8): incident ids are disambiguated only while the incidents flag is ON.
+    ...(platformAiPackEnabled("incidents") ? {
+      incident: { resolve: (incidentId: string) => (INCIDENT_RID.test(incidentId) ? input.boundary.adoptRecord({ rk: INCIDENT_RECORD_KIND, rid: incidentId }, INCIDENT_SUBJECT_AREAS) : Promise.resolve(null)) },
+    } : {}),
     operatorId: input.operatorId,
     primaryArea: input.primaryArea,
     enabled: () => platformAiPackEnabled("customers"),
@@ -56,5 +68,12 @@ export function platformAiSubjectDeps(input: { operatorId: string; primaryArea: 
   };
 }
 
-/** The customers flag gates extraction itself: OFF ⇒ the question is handled exactly as before P5. */
-export const isSubjectResolutionEnabled = (): boolean => platformAiPackEnabled("customers");
+/** The pack flags subject resolution follows (each strict, default OFF). */
+export const platformAiSubjectFlags = (): SubjectFlags => ({ customers: platformAiPackEnabled("customers"), incidents: platformAiPackEnabled("incidents") });
+
+/**
+ * The customers OR (P8) incidents flag gates extraction itself: both OFF ⇒ the question is handled exactly as
+ * before P5. Incidents ON with customers OFF ⇒ only incident ids resolve; every other identifier gets the scrub's
+ * own text (authz/subject.ts PASSTHROUGH — no lookup, no audit).
+ */
+export const isSubjectResolutionEnabled = (): boolean => platformAiPackEnabled("customers") || platformAiPackEnabled("incidents");

@@ -23,6 +23,8 @@ import type { FreshGuard } from "./recheck";
 export async function platformAiRenderRecheck(area: PlatformArea): Promise<FreshGuard | null> {
   const [fresh, freshErr] = await requireFreshPlatformAccess(area, "READ", { probe: true });
   if (freshErr || !fresh) return null;
-  const csTier = fresh.grant !== null && incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
-  return { auth: fresh, csTier };
+  const incidentToken = fresh.grant !== null ? incidentAudienceFor(fresh) : null;
+  const csTier = incidentToken?.audience === "CUSTOMER_SUCCESS";
+  // P8: the token rides with the guard it was minted from (the INCIDENT source reads the module with it; never kept).
+  return { auth: fresh, csTier, incidentToken };
 }

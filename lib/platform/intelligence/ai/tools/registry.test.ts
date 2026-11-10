@@ -53,12 +53,14 @@ const memoryHooks: PlatformAiMemoryHooks = {
 /** The six pre-existing (core) tools — sections 1–4 are about them; the packs (P5+) are section 7. */
 const LEGACY = PLATFORM_AI_TOOL_REGISTRY.filter((t) => CORE_TOOL_NAMES.includes(t.name));
 const PACK_TOOLS = PLATFORM_AI_TOOL_REGISTRY.filter((t) => !CORE_TOOL_NAMES.includes(t.name));
+const CUSTOMERS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "customers");
+const INCIDENTS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "incidents");
 
 async function main() {
   console.log("1. the six existing tools, each a valid declaration");
   check("the registry declares the core's tools (4 + 2 memory) first, in the order offered, then the pack tools",
     PLATFORM_AI_REGISTERED_TOOLS.slice(0, 6).join() === CORE_TOOL_NAMES.join() && CORE_TOOL_NAMES.join() === [...PLATFORM_AI_TOOLS, ...PLATFORM_AI_MEMORY_TOOLS].join() && LEGACY.length === 6
-    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile",
+    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile,incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs",
     PLATFORM_AI_REGISTERED_TOOLS);
   for (const t of PLATFORM_AI_TOOL_REGISTRY) check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
   check("packs: metrics = list_metrics/get_metric · navigation = find_page/open_page · memory = recall/propose",
@@ -171,8 +173,8 @@ async function main() {
   console.log("\n7. P5 — the customers pack");
   {
     const { validateRecordSchema, T2_FIELD_NAMES } = await import("../evidence/record-envelope");
-    check("customers pack = list_customer_attention, list_recently_joined, get_customer_profile", PACK_TOOLS.map((t) => `${t.pack}:${t.name}`).join() === "customers:list_customer_attention,customers:list_recently_joined,customers:get_customer_profile");
-    for (const t of PACK_TOOLS) {
+    check("customers pack = list_customer_attention, list_recently_joined, get_customer_profile", CUSTOMERS_TOOLS.map((t) => `${t.pack}:${t.name}`).join() === "customers:list_customer_attention,customers:list_recently_joined,customers:get_customer_profile");
+    for (const t of CUSTOMERS_TOOLS) {
       check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
       check(`${t.name}: RECORD, customerLinkable, AuditSpec (surface platform-ai, kind CUSTOMER), tier CUSTOMER_SUCCESS, areas exactly [CUSTOMER_SUCCESS], READ, pii 2, 1 call`,
         t.scope === "RECORD" && t.customerLinkable === true && !!t.audit && t.audit.detail.surface === "platform-ai" && t.audit.detail.recordKind === "CUSTOMER"
@@ -190,6 +192,46 @@ async function main() {
       && platformAiTool("list_customer_attention")?.audit?.action === "PLATFORM_AI_RECORD_VIEWED" && platformAiTool("list_recently_joined")?.audit?.action === "PLATFORM_AI_RECORD_VIEWED");
     check("the core serialisation is unchanged by the pack (core.ts schemas carry no pack tool)",
       !(platformAiRegistrySchemas(PARAM_KEYS, { memory: true }) as Fn[]).some((s) => PACK_TOOLS.some((t) => t.name === s.function.name)));
+  }
+
+  console.log("\n8. P8 — the incidents pack");
+  {
+    const { validateRecordSchema, T2_FIELD_NAMES } = await import("../evidence/record-envelope");
+    const { CAUSAL_CONTRACT_TOOLS } = await import("../compose/causal");
+    check("incidents pack = incident_overview, list_incidents, investigate_incident, list_incidents_cs, investigate_incident_cs",
+      INCIDENTS_TOOLS.map((t) => t.name).join() === "incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs");
+    check("compose/causal.ts names exactly the incidents pack's tools (the inferred-cause contract applies to every one)",
+      CAUSAL_CONTRACT_TOOLS.join() === INCIDENTS_TOOLS.map((t) => t.name).join());
+    const LINKAGE = /user|subject|owner|target|linked|email|name|institution|label|note|message|detail|id$/i;
+    for (const t of INCIDENTS_TOOLS) {
+      check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
+      check(`${t.name}: READ; no free-string argument (only enum / INCIDENT handle)`,
+        t.requires.level === "READ" && Object.values(t.args.properties).every((a) => a.kind === "enum" || (a.kind === "handle" && a.recordKind === "INCIDENT")));
+      if (t.scope === "RECORD") {
+        check(`${t.name}: a closed record schema of kind INCIDENT — no T2-named / linkage / free-text field`,
+          !!t.recordSchema && t.recordSchema.kind === "INCIDENT" && validateRecordSchema(t.recordSchema).length === 0
+          && Object.keys(t.recordSchema.fields).every((k) => !(T2_FIELD_NAMES as readonly string[]).includes(k) && (k === "customer" || !LINKAGE.test(k))));
+      }
+    }
+    const ov = platformAiTool("incident_overview")!;
+    check("incident_overview: AGGREGATE, not linkable, tier OPS, pii 0, areas [PLATFORM_OPS, CUSTOMER_SUCCESS] (counts only)",
+      ov.scope === "AGGREGATE" && ov.customerLinkable === false && ov.requires.tier === "OPS" && ov.pii === 0 && ov.requires.areas.join() === "PLATFORM_OPS,CUSTOMER_SUCCESS");
+    for (const n of ["list_incidents", "investigate_incident"]) {
+      const t = platformAiTool(n)!;
+      check(`${n}: OPS tier on PLATFORM_OPS only, customerLinkable false (identity-free OPS verdicts), no customer field, no t2Fields`,
+        t.scope === "RECORD" && t.customerLinkable === false && t.requires.tier === "OPS" && t.requires.areas.join() === "PLATFORM_OPS"
+        && !("customer" in (t.recordSchema?.fields ?? {})) && (t.recordSchema?.t2Fields ?? []).length === 0);
+    }
+    for (const n of ["list_incidents_cs", "investigate_incident_cs"]) {
+      const t = platformAiTool(n)!;
+      check(`${n}: CS tier on CUSTOMER_SUCCESS only, customer-linkable with PLATFORM_AI_RECORD_VIEWED (kind INCIDENT), customer = opaqueRef, t2Fields = [name, email]`,
+        t.scope === "RECORD" && t.customerLinkable === true && t.audit?.action === "PLATFORM_AI_RECORD_VIEWED" && t.audit.detail.recordKind === "INCIDENT"
+        && t.requires.tier === "CUSTOMER_SUCCESS" && t.requires.areas.join() === "CUSTOMER_SUCCESS" && t.pii === 2
+        && t.recordSchema?.fields.customer?.type === "opaqueRef" && (t.recordSchema?.t2Fields ?? []).join() === "name,email");
+    }
+    check("investigate tools cost 2 calls (design §10), the lists 1",
+      platformAiTool("investigate_incident")!.cost.toolCalls === 2 && platformAiTool("investigate_incident_cs")!.cost.toolCalls === 2
+      && platformAiTool("list_incidents")!.cost.toolCalls === 1 && platformAiTool("list_incidents_cs")!.cost.toolCalls === 1);
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

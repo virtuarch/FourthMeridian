@@ -136,6 +136,7 @@ async function main() {
     today: decisions({}),
     everyPlannedPackDeclared: decisions(ruled),
     customersPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "customers" }),
+    incidentsPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "incidents" }),
   }, null, 2) + "\n";
   if (process.env.UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT === "1") { writeFileSync(SNAPSHOT, current); console.log("  (snapshot written)"); }
   const pinned = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, "utf8") : null;
@@ -158,6 +159,21 @@ async function main() {
   check("a resolved subject marker ([customer h_…]) routes the customers pack", withCustomers["What does [customer h_AAAAAAAAAAAAAAAA] need?"] === "metrics,navigation,memory,customers");
   const outOfScope = R.routePlatformAiPacks({ question: "Which customers need attention?", areas: ["PLATFORM_OPS"], memory: true }, env, { enabled: () => true }).join();
   check("an operator without the CUSTOMER_SUCCESS area is never offered the customers pack", outOfScope === "metrics,navigation,memory", outOfScope);
+
+  console.log("\n6. P8 — the incidents pack declared, flag ON (PACK-PR-CONDITIONS 1 / 3)");
+  const withIncidents = decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "incidents" });
+  const iRule = R.ROUTER_RULES.find((r) => r.pack === "incidents")!.match;
+  const iUnrelated = QUESTIONS.filter((q) => !iRule.test(q));
+  check(`${iUnrelated.length} questions the incidents rule does not match: routed exactly as today`, iUnrelated.length >= 10 && iUnrelated.every((q) => withIncidents[q] === today[q]),
+    iUnrelated.filter((q) => withIncidents[q] !== today[q]));
+  check("matched questions: the core packs + incidents only (the router only OFFERS; invokeTool stays the authority)",
+    QUESTIONS.filter((q) => iRule.test(q)).length >= 2 && QUESTIONS.filter((q) => iRule.test(q)).every((q) => withIncidents[q] === "metrics,navigation,memory,incidents"));
+  const marker = R.routePlatformAiPacks({ question: "What happened with [incident h_AAAAAAAAAAAAAAAA]?", areas: ALL, memory: true }, env, { enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "incidents" }).join();
+  check("a resolved incident subject marker ([incident h_…]) routes the incidents pack", marker === "metrics,navigation,memory,incidents", marker);
+  const noArea = R.routePlatformAiPacks({ question: "Any open incidents right now?", areas: ["GROWTH_REVENUE"], memory: true }, env, { enabled: () => true }).join();
+  check("an operator with neither PLATFORM_OPS nor CUSTOMER_SUCCESS is never offered the incidents pack", noArea === "metrics,navigation,memory", noArea);
+  const flagOff = R.routePlatformAiPacks({ question: "Any open incidents right now?", areas: ALL, memory: true }, env).join();
+  check("flag unset (the live env here) ⇒ the incidents pack is never offered", flagOff === "metrics,navigation,memory", flagOff);
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
