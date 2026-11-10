@@ -52,11 +52,12 @@ import {
 import { explainProviderError } from "@/lib/platform/incidents/explanations";
 import {
   FRESHNESS_WORD, LINK_WORD, RECOVERY_LABEL, SEVERITY_WORD, STATE_TONE, STATE_WORD, STATUS_TITLE,
-  DISPLAY_STATUS_TONE, DISPLAY_STATUS_WORD, attemptText, attemptsLine, impactLine, ongoingWord, primaryGuidance, providerCodeLine, recurrenceLine,
+  DISPLAY_STATUS_TONE, DISPLAY_STATUS_WORD, attemptText, attemptsLine, impactLine, ongoingWord, primaryGuidance, recurrenceLine,
   affectedLine, archiveLine, closureText, codeText, incidentLine, incidentTotalText, incidentTitle, pageCount, populationLine, timelineText, whenText, whyLines,
   AUDIT_REASON_OPTIONS, EMPTY_LIFECYCLE_FORM, LIFECYCLE_CONFIRM, LIFECYCLE_LABEL, OPERATOR_NOTE_MAX, RESOLUTION_REASON_OPTIONS,
   lifecycleBody, lifecycleFormValid, lifecyclePath, type LifecycleForm,
 } from "./incidents-model";
+import { incidentDiagnosisView } from "./diagnosis-model";
 
 const FIELD = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8";
 const ROW_BTN = "group flex min-h-11 w-full min-w-0 items-start gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
@@ -322,7 +323,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
   const guidance = primaryGuidance(d, ex.customerAction);
   const closure = closureText(r);
   const lifecycle = d.lifecycleActions ?? [];
-  const codeLine = providerCodeLine(dx);
+  const dv = incidentDiagnosisView(d);
   const tone = DISPLAY_STATUS_TONE[s.displayStatus];
   // An ACTIVE connection whose code once asked the customer to act: say so, never re-ask.
   const healedNote = dx.providerErrorCode && ex.customerActionRequired && !s.customerActionRequired && s.displayStatus !== "resolved"
@@ -398,24 +399,57 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
 
       {slots?.remember ? <div className="min-w-0" data-incident-remember="">{slots.remember}</div> : null}
 
-      {/* 2 · DIAGNOSIS — the verified code, plain English, confirmed vs probable. */}
+      {/* 2 · DIAGNOSIS — essentials first (diagnosis-model.ts): plain English, the verified code, confirmed vs likely, attempts, prior episodes. */}
       <Section title="Diagnosis">
-        <div className="flex min-w-0 flex-col gap-2 text-xs" data-incident-diagnosis={ex.verified ? "verified" : "unverified"}>
-          <p className="break-words text-[var(--text-primary)]">{ex.plainEnglish}</p>
-          {codeLine && <p className="break-words text-[11px] text-[var(--text-muted)]" data-provider-code>Error code: <span className="font-mono text-[var(--text-secondary)]">{codeLine}</span></p>}
-          {ex.confirmedFacts.length > 0 && (
-            <div className="min-w-0" data-confirmed-facts>
-              <p className="text-[11px] text-[var(--text-faint)]">Confirmed</p>
-              <ul className="flex list-disc flex-col gap-0.5 pl-4 text-[var(--text-secondary)]">{ex.confirmedFacts.map((f) => <li key={f}>{f}</li>)}</ul>
+        <div className="flex min-w-0 flex-col gap-2 text-xs" data-incident-diagnosis={dv.verified ? "verified" : "unverified"}>
+          <p className="break-words text-[var(--text-primary)]" data-diagnosis-plain>{dv.plainEnglish}</p>
+          {dv.codeLine && <p className="break-words text-[11px] text-[var(--text-muted)]" data-provider-code>Error code: <span className="font-mono text-[var(--text-secondary)]">{dv.codeLine}</span></p>}
+          {dv.unrecognisedNote && <p className="break-words text-[11px] text-[var(--text-muted)]" data-provider-code-unrecognised>{dv.unrecognisedNote}</p>}
+          {dv.customerStep && <p className="break-words font-medium text-[var(--text-primary)]" data-diagnosis-customer-step={dv.customerStep.kind}>{dv.customerStep.text}</p>}
+          {dv.causes.map((c) => (
+            <p key={`${c.source}:${c.status}`} className="break-words text-[var(--text-secondary)]" data-cause-status={c.status} data-cause-source={c.source}>
+              <span className="text-[11px]" style={{ color: c.status === "confirmed" ? TONE_COLOR.ok : "var(--text-faint)" }}>{`${c.label}: `}</span>{c.text}
+            </p>
+          ))}
+          {dv.unregisteredCause && <p className="text-[11px] text-[var(--text-muted)]">{"A cause was recorded with a code this view doesn't recognise (not shown)."}</p>}
+          {dv.operatorNext && <p className="break-words text-[var(--text-secondary)]" data-operator-next><span className="text-[11px] text-[var(--text-faint)]">Next step: </span>{dv.operatorNext}</p>}
+          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-attempts-summary>{dv.attempts.line}</p>
+          {dv.attempts.stamps.length > 0 && (
+            <dl className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4" data-diagnosis-attempt-times>
+              {dv.attempts.stamps.map((st) => <Stamp key={st.label} label={st.label} value={st.value} />)}
+            </dl>
+          )}
+          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-recurrence>{dv.prior.line}</p>
+        </div>
+        <Disclosure title="Diagnosis details" hint={dv.prior.episodes.length ? "confirmed facts · prior episodes" : "confirmed facts"} attr="diagnosis">
+          {dv.confirmedFacts.length > 0 ? (
+            <div className="min-w-0 text-xs" data-confirmed-facts>
+              <p className="text-[11px] text-[var(--text-faint)]">Confirmed by the error code</p>
+              <ul className="flex list-disc flex-col gap-0.5 pl-4 text-[var(--text-secondary)]">{dv.confirmedFacts.map((f) => <li key={f}>{f}</li>)}</ul>
+            </div>
+          ) : (
+            <p className="text-[11px] text-[var(--text-muted)]">No error code was recorded, so nothing is confirmed beyond what the timeline shows.</p>
+          )}
+          {dv.prior.episodes.length > 0 && (
+            <div className="min-w-0" data-diagnosis-prior>
+              <p className="text-[11px] text-[var(--text-faint)]">Prior occurrences and how they ended</p>
+              <ul className="flex min-w-0 flex-col">
+                {dv.prior.episodes.map((e) => (
+                  <li key={e.id} className="min-w-0">
+                    <button type="button" onClick={() => onSelect(e.id)} className={`${ROW_BTN} py-1.5`} data-prior-episode={e.id}>
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-words text-xs text-[var(--text-primary)]">{e.generation > 0 ? `Episode ${e.generation}` : "Earlier episode"}{e.firstSeenAt ? ` · first ${whenText(e.firstSeenAt)}` : ""}</span>
+                        <span className="block break-words text-[10px] text-[var(--text-muted)]">{e.closedAt ? `${e.outcome} · closed ${whenText(e.closedAt)}` : e.outcome}</span>
+                      </span>
+                      <ChevronRight size={12} aria-hidden className="mt-1 shrink-0 text-[var(--text-faint)]" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {dv.prior.truncated && <p className="text-[10px] text-[var(--text-faint)]">More earlier episodes exist than are listed.</p>}
             </div>
           )}
-          {ex.probableCause && (
-            <p className="break-words text-[var(--text-secondary)]" data-probable-cause><span className="text-[11px] text-[var(--text-faint)]">Probable cause (not confirmed): </span>{ex.probableCause}</p>
-          )}
-          <p className="break-words text-[var(--text-secondary)]" data-operator-next><span className="text-[11px] text-[var(--text-faint)]">Next step: </span>{ex.operatorNext}</p>
-          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-attempts-summary>{attemptsLine(dx.attempts)}</p>
-          <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-recurrence>{recurrenceLine(dx.recurrence)}</p>
-        </div>
+        </Disclosure>
       </Section>
 
       {slots?.aiAssessment}
