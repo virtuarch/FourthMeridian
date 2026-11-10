@@ -27,6 +27,7 @@ import { projectWealthTrendPoints } from "./wealth-trend-points";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 import { liquidNetWorthChartMarkers } from "@/lib/debt/liquid-net-worth";
+import { balanceCoverageSidesFor, clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 export type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 
@@ -47,6 +48,7 @@ export function WealthTrendChart({
   investedSeries,
   headerRight,
   onSelectPoint,
+  showPartialHistory = false,
 }: {
   result:          WealthResult;
   currency:        string;
@@ -58,12 +60,20 @@ export function WealthTrendChart({
   headerRight?:    ReactNode;
   /** v2.6 — open the shared historical exploration sheet for a clicked point. */
   onSelectPoint?:  (dateISO: string) => void;
+  /** B12 O-3 — the viewer opted in to the partial days before the coverage floor. */
+  showPartialHistory?: boolean;
 }) {
   const title = WEALTH_SERIES_TITLE[metric];
   // PB-8 — days before an account's balance-history floor are drawn PARTIAL
   // (the Space's one data-health read; nothing changes while it loads).
   const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
-  const points = projectWealthTrendPoints(result, metric, investedSeries, balanceCoverage);
+  // B12 O-3 — by default the plot STARTS at the coverage floor (a day-one
+  // connection is a today-only view, not a month of partial points above a
+  // cliff); opted in, the partial days are drawn, marked partial as above.
+  const points = clipToBalanceCoverage(
+    projectWealthTrendPoints(result, metric, investedSeries, balanceCoverage),
+    balanceCoverage, balanceCoverageSidesFor(metric), showPartialHistory,
+  );
 
 
   return (

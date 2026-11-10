@@ -22,11 +22,13 @@ import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/T
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 import { debtTrendPoints } from "./debt-trend-points";
+import { clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 export function DebtBalanceHistory({
   history,
   currency,
   onSelectPoint,
+  showPartialHistory = false,
 }: {
   /** The window-clipped, FX-converted Balance-Over-Time slice. null ⇒ no in-window history. */
   history:   DebtHistorySlice | null;
@@ -35,14 +37,18 @@ export function DebtBalanceHistory({
   compareTo: string | null;
   /** v2.6 — open the shared historical exploration sheet at the DEBT root. */
   onSelectPoint?: (dateISO: string) => void;
+  /** B12 O-3 — the viewer opted in to the partial days before the coverage floor. */
+  showPartialHistory?: boolean;
 }) {
   // Already clipped by the contract; project to the chart's point shape (totalDebt is
   // the value; a backfilled row is reconstructed).
   // PB-8 — days before a liability's balance-history floor are drawn PARTIAL.
   const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
   const trendPoints: TrendPoint[] = useMemo(
-    () => debtTrendPoints(history, balanceCoverage),
-    [history, balanceCoverage],
+    // B12 O-3 — by default the plot STARTS at the coverage floor; opted in, the
+    // partial days are drawn, marked partial as above.
+    () => clipToBalanceCoverage(debtTrendPoints(history, balanceCoverage), balanceCoverage, ["liability"], showPartialHistory),
+    [history, balanceCoverage, showPartialHistory],
   );
 
 
