@@ -223,9 +223,9 @@ async function main(): Promise<void> {
   check("drawer: impact names the institution and the customer step", /Example Bank.*isn(&#x27;|')t updating until the customer reconnects/.test(html));
   check("drawer: no Resync button anywhere", !html.includes("Resync connection") && !html.includes('data-recovery-action="resync"') && html.includes('data-recovery-action="request-reauth"'));
   check("drawer: explanation, confirmed facts, LABELLED probable cause, code", html.includes('data-incident-diagnosis="verified"') && html.includes("data-confirmed-facts")
-    && html.includes("Probable cause (not confirmed)") && html.includes("NO_ACCOUNTS · the connection") && html.includes("no longer sharing any accounts"));
+    && html.includes("Likely cause (not confirmed)") && html.includes("NO_ACCOUNTS · the connection") && html.includes("no longer sharing any accounts"));
   check("drawer: attempts summary shown, details behind disclosures", html.includes("data-incident-attempts-summary") && html.includes("3 sync attempts") && html.includes('data-disclosure="attempts"')
-    && html.includes('data-disclosure="timeline"') && html.includes('data-disclosure="technical"') && (html.match(/<details/g) ?? []).length === 4);
+    && html.includes('data-disclosure="timeline"') && html.includes('data-disclosure="technical"') && (html.match(/<details/g) ?? []).length === 5 && html.includes('data-disclosure="diagnosis"'));
   check("drawer: extension slots render nothing until passed", !/ai-assessment|customer-message/i.test(html));
   const withSlots = renderToStaticMarkup(createElement(IncidentDetailSurface, { d, canWrite: true, onSelect: () => {}, onRecover: () => {}, slots: { aiAssessment: createElement("p", { "data-slot": "ai" }), customerMessage: createElement("p", { "data-slot": "msg" }) } }));
   check("…and render in place when passed", withSlots.includes('data-slot="ai"') && withSlots.includes('data-slot="msg"'));
