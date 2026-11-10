@@ -22,7 +22,7 @@ import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/T
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 import { debtTrendPoints } from "./debt-trend-points";
-import { clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
+import { balanceChartPending, clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 export function DebtBalanceHistory({
   history,
@@ -50,12 +50,16 @@ export function DebtBalanceHistory({
     () => clipToBalanceCoverage(debtTrendPoints(history, balanceCoverage), balanceCoverage, ["liability"], showPartialHistory),
     [history, balanceCoverage, showPartialHistory],
   );
+  // B12 P3 — while that read is in flight the chart HOLDS its placeholder
+  // instead of flashing the unclipped series; FAILED / nothing to cover render now.
+  const pending = balanceChartPending(balanceCoverage, ["liability"], showPartialHistory);
 
 
   return (
     <TrendChart
       onSelectPoint={onSelectPoint}
-      points={trendPoints}
+      points={pending ? [] : trendPoints}
+      pending={pending}
       currency={currency}
       ariaLabel="Total debt over time"
       emptyMessage="No debt history in this range yet. Widen the range or connect accounts to build history."
