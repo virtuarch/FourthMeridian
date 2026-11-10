@@ -273,10 +273,11 @@ async function main() {
   const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const read = (f: string) => strip(readFileSync(path.join(process.cwd(), f), "utf8"));
   const route = read("app/api/platform/ai/people/route.ts");
-  check("picker route: flag + customers pack → session → FRESH P5 authority → #352 limiter → body → search; POST only; never logs",
+  const csGuard = route.indexOf('requireFreshPlatformAccess("CUSTOMER_SUCCESS", "READ")');
+  check("picker route: flag + customers pack → FRESH CS guard → P5 authority → #352 limiter (guard's user id) → body → search; POST only; never logs",
     /export async function POST/.test(route) && !/export async function GET/.test(route) && !/console\./.test(route)
-    && route.indexOf("isPlatformAiEnabled") < route.indexOf("requireUser()") && route.indexOf("requireUser()") < route.indexOf("platformAiP5Authority(user.id, { probe: false })")
-    && route.indexOf("platformAiP5Authority(") < route.indexOf("limitPlatformMutation(") && route.indexOf("limitPlatformMutation(") < route.indexOf("searchPeople("));
+    && route.indexOf("isPlatformAiEnabled") < csGuard && csGuard > 0 && csGuard < route.indexOf("platformAiP5Authority(auth.user.id)")
+    && route.indexOf("platformAiP5Authority(") < route.indexOf('limitPlatformMutation(auth.user.id, "platform-ai-people")') && route.indexOf("limitPlatformMutation(") < route.indexOf("searchPeople("));
   const srv = read("lib/platform/intelligence/ai/authz/people.server.ts");
   check("people.server.ts: the SHARED P5 limiter (name + config), the PRIV-ref key, I-7 (no break-glass), the CS tier from the fresh guard",
     /checkKeyLimitStrict\(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT\)/.test(srv) && /peekKey\(input\.operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT\.windowSec\)/.test(srv)

@@ -8,8 +8,8 @@
  *
  * GATE CHAIN (every refusal before any customer read):
  *   0. PLATFORM_AI_ENABLED off, or the customers pack flag off   → 404 NOT_AVAILABLE
- *   1. a session                                                 → 401
- *   2. P5 subject-lookup authority, FRESH (authz/people.server.ts platformAiP5Authority: a real
+ *   1. requireFreshPlatformAccess("CUSTOMER_SUCCESS", "READ"), recorded → 401 / 403
+ *   2. P5 subject-lookup authority, FRESH (authz/people.server.ts platformAiP5Authority: the pack, a real
  *      CUSTOMER_SUCCESS grant for this operator with the CS tier; never break-glass)  → 403
  *   3. the #352 per-operator mutation limiter                    → 429
  *   4. the body: exactly { q }, normalised (authz/people.ts)     → 400
@@ -19,7 +19,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireUser } from "@/lib/session";
+import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { env } from "@/lib/env";
 import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 import { platformAiPackEnabled } from "@/lib/platform/intelligence/ai/engine/router";
@@ -34,15 +34,17 @@ const NOT_AVAILABLE = { error: "Not available.", code: "NOT_AVAILABLE" } as cons
 
 export async function POST(req: NextRequest) {
   if (!env.isPlatformAiEnabled || !platformAiPackEnabled("customers")) return NextResponse.json(NOT_AVAILABLE, { status: 404, headers: NO_STORE });
-  const [user, uerr] = await requireUser();
-  if (uerr) return uerr;
-  if (!(await platformAiP5Authority(user.id, { probe: false }))) return NextResponse.json({ error: "Forbidden" }, { status: 403, headers: NO_STORE });
-  const limited = await limitPlatformMutation(user.id, "platform-ai-people");
+  // The CS area's own guard, FRESH and recorded (session, grant, operator 2FA, live revocation).
+  const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "READ");
+  if (err) return err;
+  // P5 authority on top: the customers pack, I-7 (a real grant, this operator, never break-glass) and the CS tier.
+  if (!(await platformAiP5Authority(auth.user.id))) return NextResponse.json({ error: "Forbidden" }, { status: 403, headers: NO_STORE });
+  const limited = await limitPlatformMutation(auth.user.id, "platform-ai-people");
   if (limited) return limited;
   let body: unknown;
   try { body = await req.json(); } catch { body = null; }
   const q = parsePeopleBody(body);
   if (q === null) return NextResponse.json({ error: "Send { q: 3–64 letters, digits or . _ + - }.", code: "VALIDATION" }, { status: 400, headers: NO_STORE });
-  const res = await searchPeople(q, platformAiPeopleSearchDeps(user.id));
+  const res = await searchPeople(q, platformAiPeopleSearchDeps(auth.user.id));
   return NextResponse.json({ matches: res.matches }, { status: 200, headers: NO_STORE });
 }

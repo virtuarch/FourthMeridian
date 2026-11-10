@@ -47,24 +47,14 @@ function isOwnCsGrant(fresh: PlatformAuth, operatorId: string): boolean {
 }
 
 /**
- * P5 subject-lookup authority NOW, from a FRESH guard (session row, grant row, operator 2FA). `probe` ⇒ a
- * refusal is not recorded as OBS-009 (the guard asks on every turn of operators who never requested CS).
+ * P5 subject-lookup authority NOW, from a FRESH guard (session row, grant row, operator 2FA): the customers pack
+ * flag ON, the I-7 rule for the CS area, and the CS incident tier minted from THAT guard result. A probe: a refusal
+ * is not recorded as OBS-009 (the guard asks on every turn of operators who never requested CS; the picker route
+ * has already run the recorded CS guard itself).
  */
-export async function platformAiP5Authority(operatorId: string, opts: { probe: boolean }): Promise<boolean> {
+export async function platformAiP5Authority(operatorId: string): Promise<boolean> {
   if (!platformAiPackEnabled("customers")) return false;
-  return opts.probe ? p5AuthorityProbe(operatorId) : p5AuthorityRecorded(operatorId);
-}
-
-/** The guard's check on every turn: a refusal is not an OBS-009 denial (the operator did not ask for CS). */
-async function p5AuthorityProbe(operatorId: string): Promise<boolean> {
   const [fresh, freshErr] = await requireFreshPlatformAccess(P5_AREA, "READ", { probe: true });
-  if (freshErr || !fresh || !isOwnCsGrant(fresh, operatorId)) return false;
-  return incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
-}
-
-/** The picker endpoint's check: the operator asked to search customers, so a refusal IS recorded. */
-async function p5AuthorityRecorded(operatorId: string): Promise<boolean> {
-  const [fresh, freshErr] = await requireFreshPlatformAccess(P5_AREA, "READ");
   if (freshErr || !fresh || !isOwnCsGrant(fresh, operatorId)) return false;
   return incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
 }
@@ -91,7 +81,7 @@ export function platformAiPeopleSearchDeps(operatorId: string): PeopleSearchDeps
 export function platformAiPickerGuardDeps(input: { operatorId: string; primaryArea: PlatformArea }): PickerGuardDeps {
   return {
     operatorId: input.operatorId,
-    authority: () => platformAiP5Authority(input.operatorId, { probe: true }),
+    authority: () => platformAiP5Authority(input.operatorId),
     exempt: isProductVocabulary,
     exhausted: async () => (await peekKey(input.operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT.windowSec)) >= SUBJECT_LIMIT.limit,
     consume: () => limitVerdict(input.operatorId),
