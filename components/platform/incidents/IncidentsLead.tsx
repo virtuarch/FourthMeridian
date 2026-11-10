@@ -411,7 +411,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
               <span className="text-[11px]" style={{ color: c.status === "confirmed" ? TONE_COLOR.ok : "var(--text-faint)" }}>{`${c.label}: `}</span>{c.text}
             </p>
           ))}
-          {dv.unregisteredCause && <p className="text-[11px] text-[var(--text-muted)]">A cause was recorded with a code this view doesn't recognise (not shown).</p>}
+          {dv.unregisteredCause && <p className="text-[11px] text-[var(--text-muted)]">{"A cause was recorded with a code this view doesn't recognise (not shown)."}</p>}
           {dv.operatorNext && <p className="break-words text-[var(--text-secondary)]" data-operator-next><span className="text-[11px] text-[var(--text-faint)]">Next step: </span>{dv.operatorNext}</p>}
           <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-attempts-summary>{dv.attempts.line}</p>
           {dv.attempts.stamps.length > 0 && (
