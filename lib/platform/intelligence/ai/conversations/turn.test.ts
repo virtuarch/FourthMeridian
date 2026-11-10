@@ -515,7 +515,7 @@ async function main(): Promise<void> {
     const withHist = await turn(QC, hist, frame);
     for (const [name, r] of [["no history", noHist], ["with history", withHist]] as const) {
       const ans = r.outcome.status === "COMPLETE" ? r.outcome.answer : null;
-      const text = ans ? ans.segments.map((x) => x.text).join(" ") : "";
+      const text = ans ? ans.segments.map((x) => ("text" in x ? x.text : "")).join(" ") : "";
       check(`Question C (${name}): COMPLETE, composed (COST_RANKING), never the fallback; leader + total as TYPED figures of economics-operating-cost@1; the window note first`,
         !!ans && r.result?.briefing?.kind === "COST_RANKING" && !r.result.grounding.replaced && !text.includes(UNVERIFIED_FALLBACK)
           && ans.segments.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2 && ans.segments[0].kind === "note"

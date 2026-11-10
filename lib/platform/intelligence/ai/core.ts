@@ -81,6 +81,10 @@ import {
 import { labelPlaceholdersFor, placeholdersFor, resolvePlaceholders, windowMixNote } from "./compose/placeholders";
 import { LINK_TARGET_KINDS, SANITISE_KINDS, sanitiseAnswer, strippedLinkTargets, type LinkTargetKind, type SanitiseKind } from "./compose/sanitise";
 import { segmentsText, type AnswerSegment, type TypedAnswerSegment } from "./compose/segments";
+import {
+  RECORD_GONE_TEXT, RECORD_PENDING_TEXT, RECORD_PRIVATE_CHARS, RECORD_SENTINEL, extractRecordPlaceholders, hasHandleText, identityShapesIn, markInferred, renderInferred,
+  type RecordSpan, type TurnRecordLookup,
+} from "./compose/record";
 import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
 import {
   DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
@@ -836,7 +840,21 @@ export interface PlatformAiTurnRecord {
   pages: ReadonlyMap<string, { id: string; params: Record<string, string> }>;
   /** Metric keys read this turn, with window.days (null = default / fixed window). */
   metricsRead: { metric: string; days: number | null }[];
+  /**
+   * P4 (design v2 §8.1, the areasRead provenance) — the Platform areas this turn READ: each
+   * envelope's surface and each placed record's area. Stored as evidenceRefs `{k:"a"}`.
+   */
+  areasRead?: PlatformArea[];
 }
+
+/** P4 — the areas a turn read (envelope surfaces + placed record areas), registry order, each once. */
+export function areasReadOf(envelopes: readonly MetricEnvelope[], typed: readonly TypedAnswerSegment[]): PlatformArea[] {
+  const seen = new Set<string>([...envelopes.map((e) => String(e.surface)), ...typed.filter((t): t is RecordSpan => t.kind === "record").map((t) => t.a)]);
+  return ALL_PLATFORM_AREAS.filter((a) => seen.has(a));
+}
+
+/** P4 (design v2 §9) — the answer an IDENTITY_LEAK verdict shows instead of the model's (server text). */
+export const IDENTITY_FALLBACK = "I can't include identifying details in an answer. Open the Platform page for the record instead.";
 
 /**
  * The envelopes a turn CITES: every one, except a window refusal (UNAVAILABLE[WINDOW_NOT_OFFERED])
@@ -941,6 +959,12 @@ export async function runPlatformAiTurn(input: {
   invoke?: PlatformAiToolInvoker;
   /** P3 — the turn boundary's tool offer (router); absent ⇒ every core tool, as before. */
   tools?: PlatformAiTurnTools;
+  /**
+   * P4 — THIS turn's handle → record lookup (authz/boundary.ts `recordRef`): the ONLY thing a
+   * {{r:h|field}} placeholder resolves against. Absent ⇒ no records this turn (every record
+   * placeholder is RECORD_UNRESOLVED).
+   */
+  records?: TurnRecordLookup;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
@@ -1004,7 +1028,11 @@ export async function runPlatformAiTurn(input: {
   const evaluate = (text: string | null) => {
     const memText: string[] = [];
     const memIds: string[] = [];
-    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "");
+    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "").replace(RECORD_PRIVATE_CHARS, "");
+    // P4 (design v2 §9): {{inferred}}…{{/inferred}} (paired) and {{r:h|field}} — this turn's handles only.
+    modelRaw = markInferred(modelRaw).text;
+    const rec = extractRecordPlaceholders(modelRaw, input.records);
+    modelRaw = rec.text;
     if (memory) {
       modelRaw = modelRaw.replace(MEM_PLACEHOLDER, (_m, id: string) => {
         const t = memory.renderPlaceholder(id.toLowerCase());
@@ -1016,7 +1044,16 @@ export async function runPlatformAiTurn(input: {
     }
     const s = sanitiseAnswer(modelRaw, ev.hrefs);
     const placed = resolvePlaceholders(s.segments, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
-    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed };
+    // P4: record claims join the counts; an identity shape in the MODEL'S OWN prose is a hard fail
+    // (IDENTITY_LEAK, before every other verdict); an unresolved record / a bare handle ⇒ RECORD_UNRESOLVED.
+    if (rec.claims > 0) {
+      placed.summary.claims += rec.claims;
+      placed.summary.resolved += rec.claims - rec.unresolved;
+      placed.summary.unresolved += rec.unresolved;
+    }
+    if (identityShapesIn(placed.modelProse).length > 0) placed.summary.verdict = "IDENTITY_LEAK";
+    else if (rec.unresolved > 0 || hasHandleText(placed.modelProse)) placed.summary.verdict = "RECORD_UNRESOLVED";
+    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans };
   };
   let first = evaluate(raw);
   // B1 (S2-approved): ONE corrective retry, only for UNGROUNDED_DIGIT (incl. NUMBER_WORD) / WINDOW_MISMATCH,
@@ -1035,7 +1072,7 @@ export async function runPlatformAiTurn(input: {
       ...(pass ? {} : { digitBy: second.placed.digitBy, wordFamilyBy: second.placed.wordFamilyBy }) };
     if (pass) { first = second; raw = out.content ?? ""; }
   }
-  const { memText, memIds, removed, kinds, placed } = first;
+  const { memText, memIds, removed, kinds, placed, spans } = first;
   let answer = placed.segments;
   let typed: TypedAnswerSegment[] = placed.typed;
   let verdict = placed.summary.verdict;
@@ -1077,6 +1114,10 @@ export async function runPlatformAiTurn(input: {
       answer = [{ kind: "note", text: disclosure }, ...answer];
       typed = [{ kind: "note", text: disclosure }, ...typed];
     }
+  } else if (verdict === "IDENTITY_LEAK") {
+    // P4: a hard fail — nothing of the model's text survives (no link either).
+    answer = [{ kind: "text", text: IDENTITY_FALLBACK }];
+    typed = answer.map((x) => ({ ...x }));
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
     answer = href
@@ -1117,6 +1158,27 @@ export async function runPlatformAiTurn(input: {
       return out;
     });
   }
+  // P4: record spans — a typed `record` span in the stored answer (rendered at READ time by
+  // authz/record-render.ts), the fail-closed marker in the display answer until rendered;
+  // inferred spans render "Likely: …" in both. (A replaced answer carries no sentinel.)
+  if (!replaced) {
+    const display = (t: string) => renderInferred(t.replace(RECORD_SENTINEL, RECORD_PENDING_TEXT));
+    answer = answer.map((x) => ({ ...x, text: display(x.text) }));
+    typed = typed.flatMap((x): TypedAnswerSegment[] => {
+      if (x.kind === "record") return [x];
+      if (x.kind !== "text") return [{ ...x, text: display(x.text) }];
+      const out: TypedAnswerSegment[] = [];
+      let last = 0;
+      for (const m of x.text.matchAll(RECORD_SENTINEL)) {
+        if (m.index! > last) out.push({ kind: "text", text: renderInferred(x.text.slice(last, m.index)) });
+        const sp = spans[m[1].charCodeAt(0) - 97];
+        if (sp) out.push({ ...sp });
+        last = m.index! + m[0].length;
+      }
+      if (last < x.text.length) out.push({ kind: "text", text: renderInferred(x.text.slice(last)) });
+      return out;
+    });
+  }
   // D10: the answer cites memory — a {{mem}} placeholder, or an injected subject's label in its text —
   // with no live tool read of that subject this turn ⇒ the server appends the not-checked line.
   if (memory && !replaced) {
@@ -1153,7 +1215,7 @@ export async function runPlatformAiTurn(input: {
       coverage: coverage.map(({ key, label, status }) => ({ key, label, status })),
     },
     transcript: messages,
-    record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })) },
+    record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })), areasRead: areasReadOf(ev.envelopes, typed) },
   };
 }
 
@@ -1254,7 +1316,7 @@ async function runComposedBriefing(input: {
   // Merge adjacent text (stable stored shape); figures stay typed (A4).
   const merged: TypedAnswerSegment[] = [];
   for (const s of typed) { const p = merged[merged.length - 1]; if (s.kind === "text" && p?.kind === "text") p.text += s.text; else merged.push({ ...s }); }
-  const answer: AnswerSegment[] = merged.map((s) => (s.kind === "figure" || s.kind === "memory" ? { kind: "text" as const, text: s.text } : s))
+  const answer: AnswerSegment[] = merged.map((s) => (s.kind === "figure" || s.kind === "memory" || s.kind === "record" ? { kind: "text" as const, text: s.text } : s))
     .reduce<AnswerSegment[]>((acc, s) => { const p = acc[acc.length - 1]; if (s.kind === "text" && p?.kind === "text") p.text += s.text; else acc.push({ ...s }); return acc; }, []);
   for (const c of citations) c.figures = merged.filter((s): s is Extract<TypedAnswerSegment, { kind: "figure" }> => s.kind === "figure" && s.metric === c.metric).map((s) => s.text);
   const coverage = briefingCoverage(binding, ev.envelopes);
@@ -1279,7 +1341,7 @@ async function runComposedBriefing(input: {
       },
     },
     transcript: messages,
-    record: { typed: merged, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })) },
+    record: { typed: merged, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })), areasRead: areasReadOf(ev.envelopes, merged) },
   };
 }
 
@@ -1349,6 +1411,32 @@ export interface PlatformAiAskDeps {
   invoke?: PlatformAiToolInvoker;
   /** P3 — the turn boundary's tool offer (the route passes it with `invoke`). */
   tools?: PlatformAiTurnTools;
+  /** P4 — the turn boundary's handle → record lookup (the route passes it with `invoke`). */
+  records?: TurnRecordLookup;
+  /**
+   * P4 — the read-time record renderer for THIS viewer (authz/record-render.ts, mode "live").
+   * Absent ⇒ a placed record shows the fail-closed marker. Called only when the answer placed one.
+   */
+  renderRecords?(spans: readonly RecordSpan[]): Promise<ReadonlyMap<RecordSpan, string>>;
+}
+
+/**
+ * P4 — the live display answer rebuilt from the typed answer with every record span rendered
+ * for this viewer (adjacent text merged). Only called when the typed answer holds a record span.
+ */
+export function displayWithRecords(typed: readonly TypedAnswerSegment[], rendered: ReadonlyMap<RecordSpan, string>): AnswerSegment[] {
+  const out: AnswerSegment[] = [];
+  const push = (seg: AnswerSegment) => {
+    const last = out[out.length - 1];
+    if (seg.kind === "text" && last?.kind === "text") last.text += seg.text; else out.push(seg);
+  };
+  for (const t of typed) {
+    if (t.kind === "record") push({ kind: "text", text: rendered.get(t) ?? RECORD_GONE_TEXT });
+    else if (t.kind === "link") push({ kind: "link", text: t.text, href: t.href });
+    else if (t.kind === "correction" || t.kind === "note") push({ kind: t.kind, text: t.text });
+    else push({ kind: "text", text: t.text });
+  }
+  return out;
 }
 
 export interface PlatformAiHttp { status: number; body: Record<string, unknown>; headers?: Record<string, string> }
@@ -1410,12 +1498,20 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);
   }
   try {
-    const { result } = await runPlatformAiTurn({
+    const { result, record } = await runPlatformAiTurn({
       question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
       ...(deps.invoke ? { invoke: deps.invoke } : {}),
       ...(deps.tools ? { tools: deps.tools } : {}),
+      ...(deps.records ? { records: deps.records } : {}),
     });
+    // P4: a placed record is rendered for THIS viewer at read time (the only T2 path); none ⇒ the answer is unchanged.
+    const spans = record.typed.filter((t): t is RecordSpan => t.kind === "record");
+    if (spans.length > 0 && deps.renderRecords) {
+      let rendered: ReadonlyMap<RecordSpan, string>;
+      try { rendered = await deps.renderRecords(spans); } catch { rendered = new Map(); }
+      result.answer = displayWithRecords(record.typed, rendered);
+    }
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
     return { status: 200, body: { ...result } };

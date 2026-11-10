@@ -23,13 +23,18 @@
  *                SAME 404 as not-found: same status, body and headers (no
  *                existence oracle, S2 B4). No break-glass.
  *   7. binding   link re-resolution uses step 6's guard result only.
+ *   P4 records   a stored RECORD segment is rendered at READ time for THIS viewer by
+ *                authz/record-render.ts (AreaAccess.renderRecords: a fresh area check per
+ *                render, revalidate, T2 only with a fresh CS tier + the audit row first);
+ *                absent ⇒ "[no longer available]" (fail closed). Never the stored id.
  */
 
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import { admitPlatformAiSpend, type PlatformAiBinding, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
-import type { StoredAnswerV1 } from "./answer";
+import { RECORD_GONE_TEXT } from "../compose/record";
+import type { StoredAnswer, StoredRecordSegment } from "./answer";
 import {
   PLATFORM_AI_CONVERSATION_MESSAGES_MAX,
   PLATFORM_AI_CONVERSATIONS_MAX,
@@ -70,6 +75,11 @@ export interface AreaAccess {
   scope?: ScopedArea;
   /** Platform AI memory (design v2 §2): the authorized readers built from THE SAME fresh guard result. */
   memoryReaders?: MemoryReaders;
+  /**
+   * P4 — render stored record segments for THIS viewer (authz/record-render.ts; one fresh
+   * check per area per call). Absent ⇒ every record segment renders "[no longer available]".
+   */
+  renderRecords?(segments: readonly StoredRecordSegment[]): Promise<ReadonlyMap<StoredRecordSegment, string>>;
 }
 
 export interface ConversationStoreSeam {
@@ -166,9 +176,24 @@ export type RenderedSegment =
   | { kind: "note"; text: string }
   | { kind: "memory"; text: string };
 
-/** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text. */
-export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null): RenderedSegment[] {
+/** The rendered text of each record segment (P4), by segment object. */
+export type RenderedRecords = ReadonlyMap<StoredRecordSegment, string>;
+
+/**
+ * P4 — render the record segments of these messages for this viewer in ONE call (no record
+ * segment ⇒ no call, no read). A throw or no renderer ⇒ an empty map (each renders gone).
+ */
+export async function renderMessageRecords(messages: readonly MessageRecord[], access: AreaAccess | null): Promise<RenderedRecords> {
+  const segs = messages.flatMap((m) => (m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string"
+    ? m.content.segments.filter((x): x is StoredRecordSegment => x.kind === "record") : []));
+  if (segs.length === 0 || !access?.renderRecords) return new Map();
+  try { return await access.renderRecords(segs); } catch { return new Map(); }
+}
+
+/** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text; P4 records rendered for this viewer. */
+export function renderStoredAnswer(a: StoredAnswer, access: AreaAccess | null, records: RenderedRecords = new Map()): RenderedSegment[] {
   return a.segments.map((s): RenderedSegment => {
+    if (s.kind === "record") return { kind: "text", text: records.get(s) ?? RECORD_GONE_TEXT };
     if (s.kind === "link") {
       const r = access?.resolvePage(s.page, s.params) ?? null;
       return r ? { kind: "link", text: s.text, href: r.href } : { kind: "text", text: s.text };
@@ -179,7 +204,7 @@ export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null)
   });
 }
 
-export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: boolean): Record<string, unknown> {
+export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: boolean, records: RenderedRecords = new Map()): Record<string, unknown> {
   const answer = m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" ? m.content : null;
   return {
     id: m.id,
@@ -187,7 +212,7 @@ export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: b
     status: m.status,
     createdAt: m.createdAt.toISOString(),
     completedAt: m.completedAt ? m.completedAt.toISOString() : null,
-    content: m.role === "USER" ? (typeof m.content === "string" ? m.content : null) : answer ? renderStoredAnswer(answer, access) : null,
+    content: m.role === "USER" ? (typeof m.content === "string" ? m.content : null) : answer ? renderStoredAnswer(answer, access, records) : null,
     citations: answer ? answer.citations : [],
     notes: answer ? answer.notes : [],
     failureCode: m.failureCode,
@@ -202,16 +227,17 @@ const conversationDto = (c: ConversationRecord) => ({
 });
 
 /** A replay (§5.1): COMPLETE / FAILED ⇒ 200 with the stored pair; PENDING ⇒ 409 TURN_IN_FLIGHT. */
-function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): ConversationHttp {
+async function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): Promise<ConversationHttp> {
   if (pair.assistant.status === "PENDING" && status === 200) {
     return { status: 409, body: { error: "This question is still being answered.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
   }
+  const records = await renderMessageRecords([pair.assistant], access);
   return {
     status,
     body: {
       ...(conversation ? { conversation: conversationDto(conversation) } : {}),
       userMessage: messageDto(pair.user, access, false),
-      assistantMessage: messageDto(pair.assistant, access, false),
+      assistantMessage: messageDto(pair.assistant, access, false, records),
       // Memory (design v2 §3): the confirm card of THIS turn only — never stored, never on a replay.
       ...(memoryProposal && pair.assistant.status === "COMPLETE" ? { memoryProposal } : {}),
     },
@@ -452,11 +478,12 @@ export async function handleGetConversation(v: Viewer, id: string, deps: Convers
   if (!access) return notFound();
   const read = await deps.store.readConversation(v.operatorId, id, deps.now());
   if (!read) return notFound();
+  const records = await renderMessageRecords(read.messages, access);
   return {
     status: 200,
     body: {
       conversation: { ...conversationDto(read.conversation), messageCount: read.messages.length, full: isFull(read.messages.length) },
-      messages: read.messages.map((m) => messageDto(m, access, true)),
+      messages: read.messages.map((m) => messageDto(m, access, true, records)),
     },
   };
 }

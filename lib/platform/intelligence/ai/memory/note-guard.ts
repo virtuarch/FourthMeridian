@@ -37,7 +37,16 @@ export function clipNote(raw: string | null | undefined): string | null {
 }
 
 const LINK = /@|[{}]|https?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|net|org|io|app|dev|co|ai|us|uk)\b/i;
-const IDENTITY = [/subjectUserId/i, /\buser #/i, /\boperator #/i, /\bc[a-z0-9]{20,}\b/i, /[^\s@"\\]+@[^\s@"\\]+\.[a-z]{2,}/i];
+/**
+ * P4 (design v2 §8.4, I-2; S2 binding ruling 1 — rejected at WRITE): also a uuid-shaped id and a
+ * Platform AI record HANDLE key ("h_" + 16 base64url, authz/handles.ts) — memory never keeps a
+ * customer or record ref, not even a per-turn one.
+ */
+const IDENTITY = [
+  /subjectUserId/i, /\buser #/i, /\boperator #/i, /\bc[a-z0-9]{20,}\b/i, /[^\s@"\\]+@[^\s@"\\]+\.[a-z]{2,}/i,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+  /\bh_[A-Za-z0-9_-]{16}(?![A-Za-z0-9_-])/,
+];
 /** B6 — an amount, in any of the shapes the design names. */
 export const AMOUNT_SHAPES: readonly RegExp[] = [
   /[$€£¥]\s?\d|\d\s?[$€£¥]/,
