@@ -12,7 +12,7 @@
  * produces — provider requests, response evidence, logs, ledger rows.
  */
 
-import { CUSTOMER_WHERE } from "@/lib/platform/customer/population";
+import { CUSTOMER_WHERE, OPEN_ACCOUNT_WHERE } from "@/lib/platform/customer/population";
 
 /** T2 sentinels — synthetic customers' identities. */
 export const E0_CUSTOMERS = [
@@ -156,7 +156,7 @@ export function e0CustomerDtos(now: Date) {
     })),
   };
   const profile = {
-    identity: { id: zelda.id, email: zelda.email, name: zelda.name, username: zelda.username, role: "USER", createdAt: iso(600), emailVerifiedAt: iso(590), deactivatedAt: null, deletionRequestedAt: null, deletionScheduledAt: null },
+    identity: { id: zelda.id, email: zelda.email, name: zelda.name, username: zelda.username, ...CUSTOMER_WHERE, ...OPEN_ACCOUNT_WHERE, createdAt: iso(600), emailVerifiedAt: iso(590), deletionRequestedAt: null, deletionScheduledAt: null },
     activity: { presence: "IDLE", presenceLabel: E0_INJECTIONS.auditDetail, lastActive: { bucket: "TODAY", label: E0_INJECTIONS.auditDetail }, lastLoginAt: iso(30), activeSessions: 1 },
     connections: [
       { kind: "PLAID", id: "e0-item-0001", provider: "PLAID", label: E0_INJECTIONS.institutionName, status: "ERROR", errorCode: E0_INJECTIONS.errorCode, lastSyncedAt: iso(120), createdAt: iso(500), healthState: "ERROR", investmentsConsent: null },
