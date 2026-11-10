@@ -9,7 +9,8 @@ import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { cookies } from "next/headers";
-import { hasActivePlatformGrants, loadPlatformDirectory } from "@/lib/platform/directory.server";
+import { hasActivePlatformGrants, loadPlatformDirectory, operatorHasTotp } from "@/lib/platform/directory.server";
+import { env } from "@/lib/env";
 import { PLATFORM_SPACE_COOKIE, resolveCurrentPlatformSpace, type PlatformSpaceOption } from "@/lib/platform/nav";
 import { displaySpaceName } from "@/lib/format";
 import { readAppNoticeStatus } from "@/lib/platform/notices/app-notice-status";
@@ -74,6 +75,16 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     }
   }
 
+  // Owner D4 — an operator who must enrol before Platform (SEC-PLAT-1 enforced,
+  // no TOTP) gets a toggle that opens the existing enrolment widget directly.
+  // Routing only, never authority: every Platform page and route re-checks.
+  // Fail-quiet to false (the toggle then goes to the directory, whose own
+  // server check redirects to enrolment exactly as before).
+  let operatorTotpPending = false;
+  if (hasPlatformGrants && env.isOperatorTotpEnforced) {
+    operatorTotpPending = !(await operatorHasTotp(session.user.id).catch(() => true));
+  }
+
   // UNIFIED NOTICES — the notice rail's first status (maintenance + this user's
   // 2FA reminder), so maintenance is on the first paint with no layout shift.
   // Fail-quiet: a failed read renders no notice and the rail re-reads client-side.
@@ -116,7 +127,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   return (
     <DisplayCurrencyProvider currency={displayCurrency}>
       <PresenceHeartbeat />
-      <DashboardChrome hasPlatformGrants={hasPlatformGrants} platformSpaces={platformSpaces} platformArea={platformArea} noticeStatus={noticeStatus}>{children}</DashboardChrome>
+      <DashboardChrome hasPlatformGrants={hasPlatformGrants} operatorTotpPending={operatorTotpPending} platformSpaces={platformSpaces} platformArea={platformArea} noticeStatus={noticeStatus}>{children}</DashboardChrome>
     </DisplayCurrencyProvider>
   );
 }

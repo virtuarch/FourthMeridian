@@ -49,6 +49,7 @@ import type { PlatformSpaceOption } from "@/lib/platform/nav";
 export function DashboardChrome({
   children,
   hasPlatformGrants = false,
+  operatorTotpPending = false,
   noticeStatus = null,
   platformSpaces,
   platformArea = null,
@@ -61,6 +62,9 @@ export function DashboardChrome({
   // count, as the tenant, fail-closed to false): shows the GlobalHeader's
   // Personal/Platform context switch. Optional so every other mount is unchanged.
   hasPlatformGrants?: boolean;
+  // Owner D4 — a SERVER fact from the layout (grant held, operator 2FA enforced,
+  // not enrolled; fail-quiet false): the toggle opens enrolment directly.
+  operatorTotpPending?: boolean;
   // Platform Operations 2.0 R1 — SERVER facts from the layout for the Platform
   // context's three-destination nav: the granted Platform Spaces (tenant read)
   // and the remembered Current Space, already intersected with those grants.
@@ -97,7 +101,7 @@ export function DashboardChrome({
     <SpaceChromeProvider>
       <PlatformNavProvider spaces={platformSpaces} rememberedArea={platformArea} pathname={pathname}>
         <div className="min-h-screen bg-[var(--bg-base)]">
-          <GlobalHeader hasPlatformGrants={hasPlatformGrants} />
+          <GlobalHeader hasPlatformGrants={hasPlatformGrants} operatorTotpPending={operatorTotpPending} />
 
           <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
             <ContextualNavbar />

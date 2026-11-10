@@ -11,6 +11,9 @@
  * lib/platform/ai/platform-ai-spend.ts.
  *
  * ── 1. Cap resolution — FAIL CLOSED IN CODE (S2 APPROVAL ruling 8) ─────────
+ * (D5 PR1: resolvePlatformAiCaps, §1b below, adds override / setting sources and code
+ * ceilings ahead of env; the production call passes them as null, so the env rules
+ * here are unchanged.)
  * Each cap is read from its env var (lib/env.ts platformAiSpendCapInputs):
  *   · set and strict-valid (whole dollars or cents, `^(0|[1-9]\d{0,5})(\.\d{1,2})?$`) ⇒ that value;
  *   · set and anything else (" 5", "5.", "1e3", "-1", "$5", "five")      ⇒ INVALID ⇒ REFUSE, every env;
@@ -69,7 +72,8 @@ export const PLATFORM_AI_SPEND_DEFAULT_ENVS: readonly string[] = ["preview", "de
 
 const CAP_SHAPE = /^(0|[1-9]\d{0,5})(\.\d{1,2})?$/;
 
-export type CapSource = "ENV" | "TEST_DEFAULT";
+/** Where a cap's value came from. CEILING = a code ceiling lowered the winning source's value. */
+export type CapSource = "OPERATOR_OVERRIDE" | "PLATFORM_SETTING" | "ENV" | "TEST_DEFAULT" | "CEILING";
 export type CapRefusalCause = "CAP_INVALID" | "CAP_MISSING";
 
 export type ResolvedCaps =
@@ -83,9 +87,9 @@ export interface CapInputs {
   vercelEnv: string | undefined;
 }
 
-type OneCap = { ok: true; usd: number; source: CapSource } | { ok: false; cause: CapRefusalCause };
+type OneCap = { ok: true; usd: number; source: "ENV" | "TEST_DEFAULT" } | { ok: false; cause: CapRefusalCause };
 
-/** PURE — one cap from its raw env value. */
+/** PURE — one cap from its raw env value (unchanged semantics, S2 ruling 8). */
 export function resolveOneCap(raw: string | undefined, vercelEnv: string | undefined, testDefault: number): OneCap {
   if (raw === undefined || raw === "") {
     return typeof vercelEnv === "string" && PLATFORM_AI_SPEND_DEFAULT_ENVS.includes(vercelEnv)
@@ -97,15 +101,110 @@ export function resolveOneCap(raw: string | undefined, vercelEnv: string | undef
   return Number.isFinite(usd) && usd >= 0 ? { ok: true, usd, source: "ENV" } : { ok: false, cause: "CAP_INVALID" };
 }
 
-/** PURE — both caps. INVALID is reported before MISSING; the operator cap before the platform cap. */
-export function resolvePlatformAiSpendCaps(input: CapInputs): ResolvedCaps {
-  const op = resolveOneCap(input.operatorRaw, input.vercelEnv, PLATFORM_AI_SPEND_TEST_DEFAULTS.operatorUsd);
-  const pl = resolveOneCap(input.platformRaw, input.vercelEnv, PLATFORM_AI_SPEND_TEST_DEFAULTS.platformUsd);
+// ── 1b. The caps resolver (D5 PR1) — one precedence, mirroring lib/entitlements/ai-allowance.ts ──
+//
+//   OPERATOR cap:  OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
+//   PLATFORM cap:                      PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
+//
+// An override / setting is a candidate only when it is a whole, finite, non-negative
+// number; anything else is skipped and the next source wins. 0 is a candidate and
+// refuses every turn, never "unlimited". ENV keeps its strict parse (resolveOneCap):
+// an INVALID env value still refuses, exactly as before.
+//
+// The code CEILING ($20 operator / $100 platform) clamps the OPERATOR_OVERRIDE,
+// PLATFORM_SETTING and TEST_DEFAULT sources (the test defaults sit below it: a no-op).
+// It does NOT clamp ENV in this PR: today's env parse accepts any strict value up to
+// 999999.99, so clamping would lower a cap set above the ceiling, which is a behaviour
+// change. ENV stays bit-for-bit until S2 rules on it (a test pins the current value).
+
+export const PLATFORM_AI_OPERATOR_CAP_CEILING_USD = 20;
+export const PLATFORM_AI_PLATFORM_CAP_CEILING_USD = 100;
+
+export interface PlatformAiCapsInput extends CapInputs {
+  /** A per-operator override, whole USD, or null when none is set. */
+  operatorOverrideUsd: number | null;
+  /** The platform setting for the per-operator cap, whole USD, or null when absent. */
+  settingPerOperatorUsd: number | null;
+  /** The platform setting for the platform cap, whole USD, or null when absent. */
+  settingPlatformUsd: number | null;
+}
+
+export interface PlatformAiCapResolution {
+  ok: true;
+  /** The cap in force, after the ceiling where the ceiling applies. */
+  usd: number;
+  source: CapSource;
+  /** The value the winning source asked for, before the ceiling. */
+  askedUsd: number;
+  /** The source that won BEFORE the ceiling (equals `source` unless clamped). */
+  askedSource: Exclude<CapSource, "CEILING">;
+  clamped: boolean;
+}
+
+export type PlatformAiCapOutcome = PlatformAiCapResolution | { ok: false; cause: CapRefusalCause };
+
+export interface PlatformAiCapsResolution {
+  operator: PlatformAiCapOutcome;
+  platform: PlatformAiCapOutcome;
+}
+
+/** A whole, finite, non-negative number is a candidate; anything else is skipped. */
+export function isCapCandidate(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0;
+}
+
+function clampTo(source: Exclude<CapSource, "CEILING">, askedUsd: number, ceiling: number): PlatformAiCapResolution {
+  const usd = Math.min(askedUsd, ceiling);
+  const clamped = usd !== askedUsd;
+  return { ok: true, usd, source: clamped ? "CEILING" : source, askedUsd, askedSource: source, clamped };
+}
+
+function resolveCap(
+  ordered: readonly (readonly ["OPERATOR_OVERRIDE" | "PLATFORM_SETTING", number | null])[],
+  raw: string | undefined, vercelEnv: string | undefined, testDefault: number, ceiling: number,
+): PlatformAiCapOutcome {
+  for (const [source, value] of ordered) {
+    if (isCapCandidate(value)) return clampTo(source, value, ceiling);
+  }
+  const env = resolveOneCap(raw, vercelEnv, testDefault);
+  if (!env.ok) return env;
+  // ENV is NOT clamped in this PR (see §1b); TEST_DEFAULT is (a no-op at today's values).
+  if (env.source === "ENV") return { ok: true, usd: env.usd, source: "ENV", askedUsd: env.usd, askedSource: "ENV", clamped: false };
+  return clampTo(env.source, env.usd, ceiling);
+}
+
+/** PURE — both caps, each by its own precedence. */
+export function resolvePlatformAiCaps(input: PlatformAiCapsInput): PlatformAiCapsResolution {
+  return {
+    operator: resolveCap(
+      [["OPERATOR_OVERRIDE", input.operatorOverrideUsd], ["PLATFORM_SETTING", input.settingPerOperatorUsd]],
+      input.operatorRaw, input.vercelEnv, PLATFORM_AI_SPEND_TEST_DEFAULTS.operatorUsd, PLATFORM_AI_OPERATOR_CAP_CEILING_USD,
+    ),
+    platform: resolveCap(
+      [["PLATFORM_SETTING", input.settingPlatformUsd]],
+      input.platformRaw, input.vercelEnv, PLATFORM_AI_SPEND_TEST_DEFAULTS.platformUsd, PLATFORM_AI_PLATFORM_CAP_CEILING_USD,
+    ),
+  };
+}
+
+/** PURE — the resolution as the decision's ResolvedCaps. INVALID before MISSING; operator before platform (unchanged). */
+export function toResolvedCaps(r: PlatformAiCapsResolution): ResolvedCaps {
+  const { operator: op, platform: pl } = r;
   if (!op.ok && op.cause === "CAP_INVALID") return { state: "REFUSE", cause: "CAP_INVALID", cap: "OPERATOR" };
   if (!pl.ok && pl.cause === "CAP_INVALID") return { state: "REFUSE", cause: "CAP_INVALID", cap: "PLATFORM" };
   if (!op.ok) return { state: "REFUSE", cause: op.cause, cap: "OPERATOR" };
   if (!pl.ok) return { state: "REFUSE", cause: pl.cause, cap: "PLATFORM" };
   return { state: "OK", operatorUsd: op.usd, platformUsd: pl.usd, source: { operator: op.source, platform: pl.source } };
+}
+
+/** D5 PR1: the production call's input is env only (no override, no settings), so nothing changes. */
+export function envOnlyCapsInput(input: CapInputs): PlatformAiCapsInput {
+  return { ...input, operatorOverrideUsd: null, settingPerOperatorUsd: null, settingPlatformUsd: null };
+}
+
+/** PURE — both caps from env only. A thin wrapper over resolvePlatformAiCaps, kept for existing callers/tests. */
+export function resolvePlatformAiSpendCaps(input: CapInputs): ResolvedCaps {
+  return toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(input)));
 }
 
 // ── 3. The reserve ─────────────────────────────────────────────────────────

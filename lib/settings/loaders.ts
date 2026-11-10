@@ -22,6 +22,9 @@ import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { totpEnrollmentPathFor } from "@/lib/admin-totp-enrollment";
+import { hasActivePlatformGrants } from "@/lib/platform/directory.server";
+import { env } from "@/lib/env";
+import { operatorWordingApplies } from "@/lib/auth/operator-2fa-prompt";
 import {
   getPreferenceMatrix,
   type PreferenceMatrixRow,
@@ -116,6 +119,10 @@ export async function getAccount(): Promise<AccountData> {
 
 export interface SecurityData {
   email: string;
+  /** Owner D4 — holds ANY active PlatformGrant (the toggle's own fail-closed
+   *  count) AND operator TOTP is ENFORCED (S2 C1). Wording + return path for the
+   *  enrolment widget only; enforcement off ⇒ false ⇒ the ordinary copy. */
+  operator: boolean;
 }
 
 export async function getSecurity(): Promise<SecurityData> {
@@ -127,7 +134,13 @@ export async function getSecurity(): Promise<SecurityData> {
     select: { email: true },
   });
   if (!user) return redirectToLogin();
-  return { email: user.email };
+  const enforced = env.isOperatorTotpEnforced;
+  // The widget only shows the "required" copy while not enrolled; totpEnabled
+  // false here asks "would an un-enrolled operator see operator copy?".
+  const operator = enforced
+    ? operatorWordingApplies({ hasActiveGrant: await hasActivePlatformGrants(userId), totpEnabled: false, enforced })
+    : false;
+  return { email: user.email, operator };
 }
 
 // ── Preferences ───────────────────────────────────────────────────────────────

@@ -51,6 +51,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Layers, Shield, type LucideIcon } from "lucide-react";
 import { PLATFORM_DIRECTORY_HREF, navContext, primaryHref, type NavContext } from "@/lib/space-nav";
+import { platformToggleHref } from "@/lib/auth/operator-2fa-prompt";
 
 interface Segment {
   id:    NavContext;
@@ -65,22 +66,32 @@ const SEGMENTS: readonly Segment[] = [
 ];
 
 /** The route-aware wrapper the GlobalHeader mounts. */
-export function PlatformContextSwitch({ hasPlatformGrants }: { hasPlatformGrants: boolean }) {
+export function PlatformContextSwitch({ hasPlatformGrants, operatorTotpPending = false }: { hasPlatformGrants: boolean; operatorTotpPending?: boolean }) {
   const pathname = usePathname();
-  return <PlatformContextSwitchView hasPlatformGrants={hasPlatformGrants} pathname={pathname} />;
+  return <PlatformContextSwitchView hasPlatformGrants={hasPlatformGrants} operatorTotpPending={operatorTotpPending} pathname={pathname} />;
 }
 
 /** Pure over its props (grant flag + pathname) so it renders in a test without
- *  the App Router. Renders NOTHING — not an empty track — without a grant. */
+ *  the App Router. Renders NOTHING — not an empty track — without a grant.
+ *
+ *  Owner D4 — `operatorTotpPending` is a SERVER fact from the layout (active
+ *  grant AND operator 2FA enforced AND no TOTP; fail-quiet false). When true the
+ *  Platform segment opens the existing enrolment widget directly (QR + code form)
+ *  and returns to the directory after enrolment, instead of the directory's own
+ *  server redirect landing on Settings. Routing only: the directory still runs
+ *  its SEC-PLAT-1 check on every request. False ⇒ byte-identical to before. */
 export function PlatformContextSwitchView({
   hasPlatformGrants,
+  operatorTotpPending = false,
   pathname,
 }: {
   hasPlatformGrants: boolean;
+  operatorTotpPending?: boolean;
   pathname: string | null;
 }) {
   if (!hasPlatformGrants) return null;
   const active = navContext(pathname);
+  const platformHref = platformToggleHref(operatorTotpPending);
 
   return (
     <nav
@@ -99,7 +110,7 @@ export function PlatformContextSwitchView({
         return (
           <Link
             key={id}
-            href={href}
+            href={id === "platform" ? platformHref : href}
             prefetch={false}
             aria-current={on ? "page" : undefined}
             aria-label={label}

@@ -13,7 +13,7 @@
  * Pure and import-free (client-safe).
  */
 
-export const PLATFORM_AI_SUBJECT_NOTICE = "Look customers up by their ID or email. Don't type customer names.";
+export const PLATFORM_AI_SUBJECT_NOTICE = "Look customers up by their ID or email. Don't type customer names or usernames.";
 
 /**
  * Show the notice when the customers pack is ON (the page reads the strict server flag) and the

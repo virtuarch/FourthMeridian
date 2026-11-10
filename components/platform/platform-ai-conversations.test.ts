@@ -708,7 +708,7 @@ console.log("\n12. v0 parity — flag on, conversations off: the same shell, a s
     && PLATFORM_AI_SESSION_NOT_SAVED.length > 0 && /PLATFORM_AI_SESSION_NOT_SAVED/.test(code(PRESENTATION)));
 
   // P5 (S2 09dp) — the customer-lookup notice: no name scrub; exact ID / email only, said in the UI where the pack is offered.
-  check("P5 notice text is defined once, in code (S2 09dp)", PLATFORM_AI_SUBJECT_NOTICE === "Look customers up by their ID or email. Don't type customer names.");
+  check("P5 notice text is defined once, in code (S2 09dp)", PLATFORM_AI_SUBJECT_NOTICE === "Look customers up by their ID or email. Don't type customer names or usernames.");
   const notice = PLATFORM_AI_SUBJECT_NOTICE.replace(/'/g, "&#x27;");
   check("P5 notice OFF by default: v0 empty state and composer carry no notice", !/data-platform-ai-subject-notice/.test(emptyV0));
   const emptyV0Notice = renderToStaticMarkup(createElement(PlatformAiSessionView, {
