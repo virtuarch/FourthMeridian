@@ -245,7 +245,10 @@ async function main() {
     check("boundary: a pack's areas are recorded from the call's SURVIVING (freshly rechecked) areas, right before it runs",
       /noteRan\(tool\.pack, surviving\);\s*if \(tool\.scope === "AGGREGATE"\)/.test(bsrc));
     const exp = code(read("lib/platform/intelligence/ai/conversations/export.ts"));
-    check("export unchanged by P4b (conversation-level held / lost areas, counts only for lost)", !/multi-area|answerReadable|widenConversationAccess/.test(exp));
+    // S2 09ed: the export applies the SAME lost-area rule (answerReadable) over the fresh per-area probe; it never widens a binding.
+    check("export (S2 09ed): the lost-area rule via answerReadable, never a widened binding; lost CREATION areas stay counts only",
+      /import \{ answerReadable \} from "\.\/multi-area";/.test(exp) && /answerReadable\(m\.evidenceRefs, answer, answerHeldAreas\)/.test(exp)
+        && !/widenConversationAccess|composePlatformAiBindings/.test(exp) && /else counts\.set\(c\.area, \(counts\.get\(c\.area\) \?\? 0\) \+ 1\);/.test(exp));
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

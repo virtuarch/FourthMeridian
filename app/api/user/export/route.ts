@@ -28,6 +28,7 @@ import { env } from "@/lib/env";
 import { dataExportedAlert } from "@/lib/email/security-alerts";
 import { AuditAction } from "@/lib/audit-actions";
 import { assembleUserExport } from "@/lib/export/assemble";
+import { conversationFreshHeldAreas } from "@/app/api/platform/ai/conversations/area-access";
 import { buildExportZip } from "@/lib/export/zip";
 import { createNotification } from "@/lib/notifications/create";
 
@@ -44,7 +45,8 @@ export async function POST() {
     if (limited) return limited;
 
     // Compose the bundle from the existing readers, then zip it.
-    const data = await assembleUserExport(user.id);
+    // S2 09ed: Platform AI answers follow the view's lost-area rule over the SAME fresh per-area probe.
+    const data = await assembleUserExport(user.id, { answerHeldAreas: (rows) => conversationFreshHeldAreas(rows, user.id) });
     const zip = await buildExportZip(data);
 
     // The user's email lives on the row, not the session.

@@ -26,6 +26,7 @@
  * areas: a refusal is left out of the binding, not recorded as an OBS-009 denial), the same scope
  * rule and the same binder, tokens minted from that guard. Composition and the lost-area rule are
  * PURE in lib/platform/intelligence/ai/conversations/multi-area.ts. The directory rows never grant.
+ * S2 09ed: the data EXPORT computes its held areas with the same probe (conversationFreshHeldAreas).
  */
 
 import "server-only";
@@ -37,7 +38,7 @@ import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/handlers";
-import { widenConversationAccess } from "@/lib/platform/intelligence/ai/conversations/multi-area";
+import { freshlyHeldAreas, widenConversationAccess } from "@/lib/platform/intelligence/ai/conversations/multi-area";
 import { platformAiAreasFor } from "@/lib/platform/intelligence/ai/core";
 import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
 import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
@@ -98,4 +99,14 @@ async function heldAreaAccess(area: PlatformArea, operatorId: string): Promise<A
 export function conversationHeldAccess(rows: readonly { area: string }[]): (own: AreaAccess, operatorId: string) => Promise<AreaAccess> {
   const areas = platformAiAreasFor(rows);
   return (own, operatorId) => widenConversationAccess(own, areas, (a) => heldAreaAccess(a, operatorId));
+}
+
+/**
+ * S2 09ed — the subject-access EXPORT's held areas for the lost-area rule: every area in THESE
+ * directory rows that passes `heldAreaAccess` NOW (the SAME fresh probe the view's widening uses; a
+ * refusal is not recorded as an OBS-009 denial). Wired by POST /api/user/export (the subject's own
+ * fresh session) into lib/export/assemble.ts.
+ */
+export function conversationFreshHeldAreas(rows: readonly { area: string }[], operatorId: string): Promise<ReadonlySet<PlatformArea>> {
+  return freshlyHeldAreas(platformAiAreasFor(rows), operatorId, (a) => heldAreaAccess(a, operatorId));
 }

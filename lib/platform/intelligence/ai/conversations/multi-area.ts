@@ -23,6 +23,10 @@
  * a guess per segment. Answers that only read held areas are unchanged. A pre-P4b answer only ever
  * read its conversation's own area, which is held whenever the conversation is reachable at all.
  *
+ * EXPORT (S2 09ed): the subject-access export applies the SAME rule (conversations/export.ts) over
+ * `freshlyHeldAreas` — each area through the same fresh probe — so an export never carries an
+ * answer the view would hide.
+ *
  * Nothing here imports a database, env, a guard or the provider.
  */
 
@@ -48,11 +52,8 @@ export async function widenConversationAccess(
   const parts: TurnAreaPart[] = [{ scope: own.scope, binding: own.binding }];
   for (const a of others) {
     if (parts.some((p) => p.scope.area === a)) continue;
-    let acc: AreaAccess | null = null;
-    try { acc = await accessFor(a); } catch { acc = null; }
-    // The other area's OWN guard result only: its scope, for exactly this area and this operator.
-    if (!acc?.scope || acc.area !== a || acc.scope.area !== a || acc.scope.operatorId !== own.scope.operatorId) continue;
-    parts.push({ scope: acc.scope, binding: acc.binding });
+    const part = await freshAreaPart(a, own.scope.operatorId, accessFor);
+    if (part) parts.push(part);
   }
   const heldAreas: ReadonlySet<PlatformArea> = new Set(parts.map((p) => p.scope.area));
   if (parts.length === 1) return { ...own, heldAreas };
@@ -66,6 +67,33 @@ export async function widenConversationAccess(
     turnAreas: parts,
     heldAreas,
   };
+}
+
+/**
+ * ONE area through ITS OWN fresh guard (`accessFor`): its part only when the guard's scope is for
+ * exactly this area and this operator. A refusal or a throw ⇒ null (that area is not held now).
+ */
+async function freshAreaPart(
+  a: PlatformArea, operatorId: string, accessFor: (area: PlatformArea) => Promise<AreaAccess | null>,
+): Promise<TurnAreaPart | null> {
+  let acc: AreaAccess | null = null;
+  try { acc = await accessFor(a); } catch { acc = null; }
+  if (!acc?.scope || acc.area !== a || acc.scope.area !== a || acc.scope.operatorId !== operatorId) return null;
+  return { scope: acc.scope, binding: acc.binding };
+}
+
+/**
+ * S2 09ed — the EXPORT's held areas for the lost-area rule: every area in `areas` that passes ITS
+ * OWN fresh guard NOW (the same `accessFor` probe and acceptance rule the view's widening uses).
+ * There is no conversation-own gate in an export, so each area — the conversation's own included —
+ * is probed. Never throws; nothing here grants anything.
+ */
+export async function freshlyHeldAreas(
+  areas: readonly PlatformArea[], operatorId: string, accessFor: (area: PlatformArea) => Promise<AreaAccess | null>,
+): Promise<ReadonlySet<PlatformArea>> {
+  const held = new Set<PlatformArea>();
+  for (const a of areas) if (!held.has(a) && (await freshAreaPart(a, operatorId, accessFor))) held.add(a);
+  return held;
 }
 
 /** The areas a stored answer read: its `{k:"a"}` provenance and every record span's own area. */
