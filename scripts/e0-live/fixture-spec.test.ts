@@ -13,7 +13,8 @@ import {
   buildFixturePlan, planRefusals, planCounts, failingFacts, customerSentinels, walletAddressSentinel, walletNicknameSentinel,
   placeholderSecret, payloadFor, payloadMarker, auditMarker, sentinelDomain, PAYLOAD_COLUMNS, CUSTOMER_COUNT, SENTINEL_FIRST, SENTINEL_LAST,
   LINK_EXIT_CODES_USED, LINK_EXIT_STAGES_USED, ADD_FAILURES_USED, MAPPED_INSTITUTION_IDS, WALLET_CHAINS_USED, CAUSE_CODES_USED,
-  LIVE_ONLY_FACTS, EXCLUDED_CUSTOMERS, EVIL_HOST, type FixturePlan, type ObservedFacts,
+  LIVE_ONLY_FACTS, EXCLUDED_CUSTOMERS, EVIL_HOST, safetyReport, safetyReportLines, manifestFromPlan, ITEM_STATUSES,
+  type FixturePlan, type ObservedFacts,
 } from "./fixture-spec";
 import { parseTag, tagWhere } from "./fixture-common";
 import { LINK_EXIT_ERROR_CODES } from "@/lib/analytics/link-error-codes";
@@ -21,6 +22,8 @@ import { CONNECTION_ADD_FAILURE_CODES, CONNECTION_ADD_FAILURE_STAGES } from "@/l
 import { CAUSE_CODES, RESOLUTION_REASON_CODES } from "@/lib/platform/incidents/codes";
 import { INSTITUTIONS, WALLET_NETWORKS } from "@/lib/platform/intelligence/ai/evidence/name-registry";
 import { isReservedTestEmail } from "@/lib/platform/customer/population";
+import { decideRecipient } from "@/lib/email/recipient-guard";
+import { DOMAIN_FACT_ACTIONS } from "@/lib/notifications/automations/facts";
 
 let failures = 0;
 let passed = 0;
@@ -219,6 +222,80 @@ check("a wrong import verdict ⇒ IMP.C17 fails", failingFacts(plan, wrongImport
 check("failing fact ids carry codes only (no ids, e-mails or payloads)",
   failingFacts(plan, missingReason).every((id) => /^[A-Z]+\.[A-Za-z0-9_.-]+$/.test(id) && !id.includes("@") && !id.includes("E0LINJ")));
 
+console.log("\ne0-live spec — S2 09eo: the safety report (pure over the plan; counts only)\n");
+const rep = safetyReport(plan, NOW);
+check("safety: the real plan is admitted (no refusals)", rep.refusals.length === 0, rep.refusals);
+check("safety (a): PlaidItem / Connection by status over the schema's four values, ACTIVE = 0 for both",
+  JSON.stringify(Object.keys(rep.plaidItemsByStatus)) === JSON.stringify(ITEM_STATUSES) && rep.plaidItemsByStatus.ACTIVE === 0 && rep.connectionsByStatus.ACTIVE === 0
+  && Object.values(rep.plaidItemsByStatus).reduce((a, b) => a + b, 0) === plan.plaidItems.length
+  && Object.values(rep.connectionsByStatus).reduce((a, b) => a + b, 0) === plan.connections.length, rep);
+const repActiveItem = safetyReport({ ...plan, plaidItems: [...plan.plaidItems, { ...plan.plaidItems[0], status: "ACTIVE" as never }] }, NOW);
+check("safety (a): an ACTIVE PlaidItem ⇒ counted and refused", repActiveItem.plaidItemsByStatus.ACTIVE === 1 && repActiveItem.refusals.some((r) => /PlaidItem ACTIVE/.test(r)));
+const repActiveConn = safetyReport({ ...plan, connections: [...plan.connections, { ...plan.connections[0], status: "ACTIVE" as never }] }, NOW);
+check("safety (a): an ACTIVE Connection ⇒ counted and refused", repActiveConn.connectionsByStatus.ACTIVE === 1 && repActiveConn.refusals.some((r) => /Connection ACTIVE/.test(r)));
+check("safety (a): a status outside the enum ⇒ refused", safetyReport({ ...plan, connections: [{ ...plan.connections[0], status: "PAUSED" as never }] }, NOW).refusals.some((r) => /outside the schema enum/.test(r)));
+
+check("safety (b): every session counted, every revokedAt set, max(revokedAt) < now",
+  rep.sessions.count === plan.sessions.length && rep.sessions.count > 0 && rep.sessions.revoked === rep.sessions.count && rep.sessions.maxRevokedAtBeforeNow === true, rep.sessions);
+const repNoRevoke = safetyReport({ ...plan, sessions: [...plan.sessions.slice(1), { ...plan.sessions[0], revokedAt: undefined as never }] }, NOW);
+check("safety (b): a session without revokedAt ⇒ refused, max(revokedAt)<now=false", repNoRevoke.refusals.some((r) => /no revokedAt/.test(r)) && repNoRevoke.sessions.maxRevokedAtBeforeNow === false && repNoRevoke.sessions.revoked === plan.sessions.length - 1);
+const repFuture = safetyReport({ ...plan, sessions: [...plan.sessions.slice(1), { ...plan.sessions[0], revokedAt: new Date(NOW.getTime() + 60_000) }] }, NOW);
+check("safety (b): a revokedAt in the future ⇒ refused, max(revokedAt)<now=false", repFuture.refusals.some((r) => /not in the past/.test(r)) && repFuture.sessions.maxRevokedAtBeforeNow === false);
+const repEqual = safetyReport({ ...plan, sessions: [{ ...plan.sessions[0], revokedAt: NOW }] }, NOW);
+check("safety (b): revokedAt = now is not in the past ⇒ refused", repEqual.refusals.some((r) => /not in the past/.test(r)));
+
+check("safety (c): balance ≠ 0, mask, availableBalance all 0; AccountConnection counted",
+  rep.financialAccounts.count === plan.financialAccounts.length && rep.financialAccounts.balanceNonZero === 0 && rep.financialAccounts.maskNonNull === 0
+  && rep.financialAccounts.availableBalanceNonNull === 0 && rep.accountConnections === plan.accountConnections.length, rep.financialAccounts);
+const fa0 = plan.financialAccounts[0];
+const repBal = safetyReport({ ...plan, financialAccounts: [{ ...fa0, balance: 12.5 }] }, NOW);
+check("safety (c): a non-zero balance ⇒ counted and refused", repBal.financialAccounts.balanceNonZero === 1 && repBal.refusals.some((r) => /balance other than 0/.test(r)));
+const repMask = safetyReport({ ...plan, financialAccounts: [{ ...fa0, mask: "0000" } as never] }, NOW);
+check("safety (c): a mask ⇒ counted and refused (read generically — not a declared column)", repMask.financialAccounts.maskNonNull === 1 && repMask.refusals.some((r) => /has a mask/.test(r)));
+const repAvail = safetyReport({ ...plan, financialAccounts: [{ ...fa0, availableBalance: 0 } as never] }, NOW);
+check("safety (c): any availableBalance (even 0) ⇒ counted and refused", repAvail.financialAccounts.availableBalanceNonNull === 1 && repAvail.refusals.some((r) => /availableBalance/.test(r)));
+
+check("safety (d): AuditLog counts by action code; exactly 2 E0LINJ-AUD-* rows",
+  rep.auditLogs.byAction.CONNECTION_LINK_EXITED === 5 && rep.auditLogs.byAction.CONNECTION_ADD_FAILED === 4 && Object.keys(rep.auditLogs.byAction).length === 2
+  && rep.auditLogs.markerRows === 2, rep.auditLogs);
+const markerIdx = plan.auditLogs.findIndex((a) => a.metadata.errorCode.startsWith("E0LINJ-AUD-"));
+const repOne = safetyReport({ ...plan, auditLogs: plan.auditLogs.filter((_, i) => i !== markerIdx) }, NOW);
+check("safety (d): one marker row ⇒ refused", repOne.auditLogs.markerRows === 1 && repOne.refusals.some((r) => /E0LINJ-AUD-/.test(r)));
+const repThree = safetyReport({ ...plan, auditLogs: [...plan.auditLogs, { ...plan.auditLogs[markerIdx], id: "cextra0000000000000000009" }] }, NOW);
+check("safety (d): three marker rows ⇒ refused", repThree.auditLogs.markerRows === 3 && repThree.refusals.some((r) => /E0LINJ-AUD-/.test(r)));
+
+const out = [...safetyReportLines(rep), ...safetyReportLines(repNoRevoke), ...safetyReportLines(repMask), ...safetyReportLines(repThree)].join("\n");
+const secrets = [
+  ...[plan.users, plan.policies, plan.sessions, plan.plaidItems, plan.connections, plan.financialAccounts, plan.accountConnections, plan.syncIssues, plan.betaRequests, plan.auditLogs].flat().map((r) => r.id),
+  ...plan.users.flatMap((u) => [u.email, u.username, u.name, u.firstName, u.lastName]), ...plan.betaRequests.map((b) => b.email),
+  ...plan.sessions.map((s) => s.sessionToken), ...plan.sessions.map((s) => s.sessionToken.split(":")[1]),
+  TAG, NONCE,
+];
+check("safety output: no id, e-mail, username, name, session token, tag or nonce", secrets.every((x) => !out.includes(x)) && !out.includes("@"), secrets.filter((x) => out.includes(x)).length);
+check("safety output: states that no session token is written to the manifest or any output", /no session token is written to the manifest or to any output/.test(out));
+check("safety output: prints the S2 09eo lines (by-status, sessions, accounts, audit)",
+  /PlaidItem by status\s+ACTIVE=0 /.test(out) && /Connection by status\s+ACTIVE=0 /.test(out) && /max\(revokedAt\)<now=true/.test(out)
+  && /balance≠0=0 mask-set=0 availableBalance-set=0/.test(out) && /AuditLog E0LINJ-AUD-\* rows\s+2/.test(out) && /safety refusals: none/.test(out));
+
+const man = manifestFromPlan(plan, { createdAt: NOW, repoSha: "a".repeat(40), targetHash: null }, { user: { [plan.users[0].id]: "h" } });
+const manJson = JSON.stringify(man);
+check("manifest: no session token (nor its hex) is written to it", plan.sessions.every((s) => !manJson.includes(s.sessionToken) && !manJson.includes(s.sessionToken.split(":")[1])) && !/sessionToken/.test(manJson));
+check("manifest: ids and hashes only — session ids listed, no e-mail / name", JSON.stringify(man.ids.userSession) === JSON.stringify(plan.sessions.map((s) => s.id))
+  && plan.users.every((u) => !manJson.includes(u.email) && !manJson.includes(u.name)) && man.auditLogIds.length === plan.auditLogs.length && man.hashes.user?.[plan.users[0].id] === "h");
+
+console.log("\ne0-live spec — S2 09ep (e): nothing can e-mail a fixture user on Preview\n");
+const fixtureAddresses = [...plan.users.map((u) => u.email), ...plan.betaRequests.map((b) => b.email)];
+check("every fixture address is on the reserved .invalid TLD", fixtureAddresses.every((e) => e.endsWith(".invalid") && isReservedTestEmail(e)));
+let otherN = 0;
+const otherRun = buildFixturePlan({ now: NOW, nonce: "0badc0de", newId: () => `cother${String(++otherN).padStart(19, "0")}`, passwordHash: "x", defaultPolicyGroup: "default", sessionTokenHex: (n) => String(n) });
+const previewEnv = { VERCEL: "1", VERCEL_ENV: "preview", EMAIL_NONPROD_ALLOWLIST: ["ops@example.com", ...otherRun.users.map((u) => u.email)].join(",") };
+check("the Preview recipient guard captures every fixture address (allowlist = exact addresses; a per-run nonce never matches)",
+  fixtureAddresses.every((e) => decideRecipient(e, previewEnv).deliver === false && decideRecipient(e, { VERCEL: "1", VERCEL_ENV: "preview" }).deliver === false));
+check("the plan writes no AuditLog action an automation can trigger on (DOMAIN_FACT_ACTIONS)",
+  plan.auditLogs.every((a) => !DOMAIN_FACT_ACTIONS.includes(a.action)) && DOMAIN_FACT_ACTIONS.length > 0);
+check("C30's deletion is scheduled beyond the same-day window (process-deletions cannot purge or mail it)",
+  (plan.users[29].deletionScheduledAt?.getTime() ?? 0) - NOW.getTime() > 24 * 3_600_000);
+
 console.log("\ne0-live spec — source pins (seed.ts, teardown.ts, fixture-db.ts, fixture-io.ts)\n");
 const FILES = ["scripts/e0-live/seed.ts", "scripts/e0-live/teardown.ts", "scripts/e0-live/fixture-db.ts", "scripts/e0-live/fixture-io.ts", "scripts/e0-live/fixture-spec.ts", "scripts/e0-live/fixture-common.ts"];
 const srcs = Object.fromEntries(FILES.map((f) => [f, strip(read(f))]));
@@ -243,6 +320,11 @@ check("seed: runGuards() and assertRepoBasis() run before the first dynamic impo
   && seed.indexOf("runGuards()") < seed.indexOf("loadPrisma("));
 check("seed: --plan returns before the guard and never constructs a client",
   seed.indexOf('if (MODE === "plan")') < seed.indexOf("runGuards()") && !/loadPrisma|await import\(/.test(seed.slice(seed.indexOf('if (MODE === "plan")'), seed.indexOf("runGuards()"))));
+check("seed: --plan prints the safety report and exits non-zero on a safety refusal",
+  (() => { const p = seed.slice(seed.indexOf('if (MODE === "plan")'), seed.indexOf("runGuards()")); return /safetyReport\(plan, new Date\(\)\)/.test(p) && /safetyReportLines\(safety\)/.test(p) && /safety\.refusals\.length \? 2 : 0/.test(p); })());
+check("seed: dry run / apply print the safety report and die on a refusal BEFORE the client and the transaction",
+  (() => { const i = seed.lastIndexOf("safetyReport(plan, new Date())"); const d = seed.indexOf("if (safety.refusals.length) die("); return i > seed.indexOf("runGuards()") && d > i && d < seed.indexOf("loadPrisma(") && d < seed.indexOf("prisma.$transaction("); })());
+check("seed: the manifest is built by manifestFromPlan (no column value; no session token)", /manifestFromPlan\(plan, \{ createdAt: now, repoSha: sha, targetHash: guard\.targetHash \}, \{\}\)/.test(seed) && !/\.sessionToken\b/.test(seed));
 check("seed: planRefusals() is enforced before the transaction", seed.indexOf("planRefusals(plan)") < seed.indexOf("prisma.$transaction("));
 check("seed: refuses a second fixture on the same UTC day and checks the migration ledger inside the transaction",
   /rows carrying today's e0-live tag already exist/.test(seed) && /migrationBasisRefusal\(localNewestMigration\(\)/.test(seed));

@@ -9,9 +9,18 @@
  * checked by the live run as the synthetic operator).
  *
  * Invariants (pinned by fixture-spec.test.ts):
- *   · R-4 — NO ACTIVE PlaidItem and NO ACTIVE WALLET Connection: the scheduled
- *     jobs (sync-banks, resume-stale-imports, the wallet jobs) select ACTIVE only,
- *     so no fixture row is ever picked up by a job or reaches a provider;
+ *   · R-4 — NO ACTIVE PlaidItem and NO ACTIVE WALLET Connection: sync-banks and
+ *     resume-stale-imports select ACTIVE items only, so no fixture item is picked
+ *     up by them. CORRECTION (S2 09ep): the wallet sweep (sync-crypto,
+ *     lib/crypto/wallet-refresh.ts listWallets) selects wallet ACCOUNTS by chain,
+ *     NOT by Connection status — if it is woken on Preview during a fixture window
+ *     it would attempt the fixture wallets: SOL / EVM stop at their address-shape
+ *     check (no provider call), but the BTC adapter has no shape check and would GET
+ *     the public explorer with the sentinel address; every attempt writes a
+ *     WALLET_SYNC_FAILED SyncIssue. The sustained-failure notice needs two failures
+ *     ≥ 24 h apart, which a same-day fixture cannot have, so no notice is sent.
+ *     Vercel crons do not fire on Preview: do not Run Now sync-crypto (or wake the
+ *     dispatcher without `?only=`) during a fixture window;
  *   · every encryptedToken / credential is a NON-DECRYPTABLE placeholder (no
  *     AES-GCM envelope shape); every wallet address sentinel is FORMAT-INVALID;
  *   · identities are sentinels on the reserved `.invalid` TLD (customers, beta
@@ -29,7 +38,7 @@
  * ⚠️ PURE: no I/O, no clock, no randomness of its own (ids and `now` are passed in).
  */
 
-import { makeTag, parseTag } from "./fixture-common";
+import { emptyIds, makeTag, parseTag, teardownDeadline, type E0LiveManifest } from "./fixture-common";
 
 // ── Sentinels (design §3.2) ──────────────────────────────────────────────────
 
@@ -594,5 +603,131 @@ export function planCounts(plan: FixturePlan): Record<string, number> {
     AccountConnection: plan.accountConnections.length, SyncIssue: plan.syncIssues.length, BetaAccessRequest: plan.betaRequests.length,
     "AuditLog (append-only; kept)": plan.auditLogs.length,
     "expected facts (self-check)": plan.expected.length, "live-only facts": plan.liveOnly.length,
+  };
+}
+
+// ── Safety report (S2 09eo) — printed by seed.ts in --plan AND before the dry-run / apply transaction ──
+//
+// A PURE function over the plan: counts and closed codes only — never an id, an e-mail, a name,
+// a token or a payload. Its refusals stop seed.ts (exit 2) BEFORE the first write in every mode.
+
+/** The schema's PlaidItemStatus / ConnectionStatus values (both enums are the same four). */
+export const ITEM_STATUSES = ["ACTIVE", "NEEDS_REAUTH", "ERROR", "REVOKED"] as const;
+/** The prefix of the two out-of-vocabulary AuditLog error codes (auditMarker); exactly two rows carry it. */
+export const AUDIT_MARKER_PREFIX = "E0LINJ-AUD-";
+export const EXPECTED_AUDIT_MARKER_ROWS = 2;
+
+export interface SafetyReport {
+  plaidItemsByStatus: Record<(typeof ITEM_STATUSES)[number], number>;
+  connectionsByStatus: Record<(typeof ITEM_STATUSES)[number], number>;
+  sessions: { count: number; revoked: number; maxRevokedAtBeforeNow: boolean };
+  financialAccounts: { count: number; balanceNonZero: number; maskNonNull: number; availableBalanceNonNull: number };
+  accountConnections: number;
+  auditLogs: { byAction: Record<string, number>; markerRows: number };
+  /** Empty ⇒ the report admits the run. */
+  refusals: string[];
+}
+
+function byStatus(rows: ReadonlyArray<{ status: string }>): Record<(typeof ITEM_STATUSES)[number], number> {
+  const out = Object.fromEntries(ITEM_STATUSES.map((s) => [s, 0])) as Record<(typeof ITEM_STATUSES)[number], number>;
+  for (const r of rows) {
+    const s = r.status as (typeof ITEM_STATUSES)[number];
+    out[s] = (out[s] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** A column the row shape may not declare: read generically, so a future addition is still caught. */
+function col(row: object, name: string): unknown {
+  return (row as Record<string, unknown>)[name] ?? null;
+}
+
+export function safetyReport(plan: FixturePlan, now: Date): SafetyReport {
+  const refusals: string[] = [];
+  const t = now.getTime();
+
+  // (a) — R-4: no ACTIVE PlaidItem / Connection.
+  const plaidItemsByStatus = byStatus(plan.plaidItems);
+  const connectionsByStatus = byStatus(plan.connections);
+  if (plaidItemsByStatus.ACTIVE !== 0) refusals.push("PlaidItem ACTIVE count is not 0 (R-4).");
+  if (connectionsByStatus.ACTIVE !== 0) refusals.push("Connection ACTIVE count is not 0 (R-4).");
+  const unknownStatus = [...plan.plaidItems, ...plan.connections].filter((r) => !(ITEM_STATUSES as readonly string[]).includes(r.status)).length;
+  if (unknownStatus) refusals.push("a PlaidItem / Connection carries a status outside the schema enum.");
+
+  // (b) — every session revoked, and revoked in the PAST.
+  const revokedAts = plan.sessions.map((s) => (s.revokedAt instanceof Date ? s.revokedAt.getTime() : NaN));
+  const revoked = revokedAts.filter((v) => Number.isFinite(v)).length;
+  const maxRevoked = revoked ? Math.max(...revokedAts.filter((v) => Number.isFinite(v))) : NaN;
+  const maxRevokedAtBeforeNow = revoked === plan.sessions.length && (plan.sessions.length === 0 || maxRevoked < t);
+  if (revoked !== plan.sessions.length) refusals.push("a UserSession has no revokedAt.");
+  if (!revokedAts.every((v) => Number.isFinite(v) && v < t)) refusals.push("a UserSession revokedAt is not in the past.");
+
+  // (c) — no balance, no mask, no available balance on any fixture account.
+  const fa = plan.financialAccounts;
+  const balanceNonZero = fa.filter((r) => { const b = col(r, "balance"); return b !== null && b !== 0; }).length;
+  const maskNonNull = fa.filter((r) => col(r, "mask") !== null).length;
+  const availableBalanceNonNull = fa.filter((r) => col(r, "availableBalance") !== null).length;
+  if (balanceNonZero) refusals.push("a FinancialAccount has a balance other than 0.");
+  if (maskNonNull) refusals.push("a FinancialAccount has a mask.");
+  if (availableBalanceNonNull) refusals.push("a FinancialAccount has an availableBalance.");
+
+  // (d) — AuditLog by action code; exactly two marker rows.
+  const byAction: Record<string, number> = {};
+  for (const a of plan.auditLogs) byAction[a.action] = (byAction[a.action] ?? 0) + 1;
+  const markerRows = plan.auditLogs.filter((a) => typeof a.metadata.errorCode === "string" && a.metadata.errorCode.startsWith(AUDIT_MARKER_PREFIX)).length;
+  if (markerRows !== EXPECTED_AUDIT_MARKER_ROWS) refusals.push(`AuditLog rows with an ${AUDIT_MARKER_PREFIX}* errorCode ≠ ${EXPECTED_AUDIT_MARKER_ROWS}.`);
+
+  return {
+    plaidItemsByStatus, connectionsByStatus,
+    sessions: { count: plan.sessions.length, revoked, maxRevokedAtBeforeNow },
+    financialAccounts: { count: fa.length, balanceNonZero, maskNonNull, availableBalanceNonNull },
+    accountConnections: plan.accountConnections.length,
+    auditLogs: { byAction, markerRows },
+    refusals,
+  };
+}
+
+/** The printable report: counts, booleans and closed codes only. */
+export function safetyReportLines(r: SafetyReport): string[] {
+  const kv = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k}=${v}`).join(" ");
+  return [
+    "SAFETY REPORT (S2 09eo; counts only):",
+    `  PlaidItem by status          ${kv(r.plaidItemsByStatus)}  (ACTIVE must be 0)`,
+    `  Connection by status         ${kv(r.connectionsByStatus)}  (ACTIVE must be 0)`,
+    `  UserSession                  count=${r.sessions.count} revokedAt-set=${r.sessions.revoked} max(revokedAt)<now=${r.sessions.maxRevokedAtBeforeNow}`,
+    "                               no session token is written to the manifest or to any output",
+    `  FinancialAccount             count=${r.financialAccounts.count} balance≠0=${r.financialAccounts.balanceNonZero} mask-set=${r.financialAccounts.maskNonNull} availableBalance-set=${r.financialAccounts.availableBalanceNonNull}  (all three must be 0)`,
+    `  AccountConnection            count=${r.accountConnections}`,
+    `  AuditLog by action           ${kv(r.auditLogs.byAction)}`,
+    `  ${`AuditLog ${AUDIT_MARKER_PREFIX}* rows`.padEnd(29)}${r.auditLogs.markerRows}  (expected ${EXPECTED_AUDIT_MARKER_ROWS})`,
+    r.refusals.length ? `SAFETY REFUSALS:\n  - ${r.refusals.join("\n  - ")}` : "safety refusals: none",
+  ];
+}
+
+// ── Manifest (pure; seed.ts adds the drift hashes it reads inside the transaction) ──
+
+/**
+ * The manifest seed.ts writes after commit: ids by table, the AuditLog ids, the tag, the repo SHA,
+ * the target hash and the drift hashes. It carries NO column value of any row — in particular no
+ * session token (pinned by fixture-spec.test.ts).
+ */
+export function manifestFromPlan(
+  plan: FixturePlan,
+  meta: { createdAt: Date; repoSha: string; targetHash: string | null },
+  hashes: E0LiveManifest["hashes"],
+): E0LiveManifest {
+  const ids = emptyIds();
+  ids.user = plan.users.map((r) => r.id);
+  ids.customerPolicyAssignment = plan.policies.map((r) => r.id);
+  ids.userSession = plan.sessions.map((r) => r.id);
+  ids.plaidItem = plan.plaidItems.map((r) => r.id);
+  ids.connection = plan.connections.map((r) => r.id);
+  ids.financialAccount = plan.financialAccounts.map((r) => r.id);
+  ids.accountConnection = plan.accountConnections.map((r) => r.id);
+  ids.syncIssue = plan.syncIssues.map((r) => r.id);
+  ids.betaAccessRequest = plan.betaRequests.map((r) => r.id);
+  return {
+    kind: "e0-live-fixture-manifest", tag: plan.tag, createdAt: meta.createdAt.toISOString(), repoSha: meta.repoSha, targetHash: meta.targetHash,
+    teardownDeadline: teardownDeadline(plan.tag), ids, hashes, auditLogIds: plan.auditLogs.map((a) => a.id),
   };
 }
