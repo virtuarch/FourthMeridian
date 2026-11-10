@@ -245,6 +245,9 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
         classification: conc.classification,
         topSymbol: conc.topSymbol,
         topWeightPct: pct1(conc.topWeight * 100),
+        // S2 O-2 — the part beside the whole. Without it the model wrote the
+        // holding as "$12,985 out of $12,985.14": the whole, twice.
+        topValue: money(conc.topWeight * conc.population.value),
         populationValue: money(conc.population.value),
         populationIsComplete: conc.population.isComplete,
       } } : {}),

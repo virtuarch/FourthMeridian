@@ -305,7 +305,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
   scenario('06-concentrated', 'one holding is ~45% of investments', (p) => {
     p.currentState.concentration = {
       classification: 'HIGHLY_CONCENTRATED', topSymbol: 'NVDA', topWeightPct: 45.2,
-      populationValue: 84300.10, populationIsComplete: true,
+      topValue: 38103.65, populationValue: 84300.10, populationIsComplete: true,
     };
   }, { mentionsAny: [/NVDA|concentrat/i] }),
 
@@ -315,7 +315,7 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
   scenario('06b-concentration-partial', 'one coin is ~100% of a partial population', (p) => {
     p.currentState.concentration = {
       classification: 'HIGHLY_CONCENTRATED', topSymbol: 'BTC', topWeightPct: 99.6,
-      populationValue: 28440.27, populationIsComplete: false,
+      topValue: 28326.51, populationValue: 28440.27, populationIsComplete: false,
     };
   }, { forbids: [
     /(portfolio|all (of )?your investments|your investments) (is|are) (now )?(highly |very |heavily )?concentrated|most of your investments/i,
