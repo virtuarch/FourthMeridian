@@ -16,8 +16,12 @@
  * impact line, timestamps, ongoing vs historical), then the primary guidance /
  * action (customer reconnect is guidance text, never a Resync), then DIAGNOSIS
  * (plain English, confirmed facts vs a labelled probable cause, the verified
- * code, attempts + recurrence summaries); attempts, timeline, recurrence
- * history and technical details sit behind disclosures.
+ * code, attempts + recurrence summaries), then LIFECYCLE (a milestone strip
+ * from lifecycle-model.ts: detected, acknowledged, recovering, needs
+ * verification, closed — a verified recovery is never confused with an
+ * operator dismissal — archived, the recurrence neighbours); attempts,
+ * timeline (key events first), recurrence history and technical details sit
+ * behind disclosures.
  *
  * Every row opens the detail drawer: verdict + why, the append-only timeline
  * (rendered in stored order, never rewritten), the evidence digest, affected
@@ -58,6 +62,7 @@ import {
   lifecycleBody, lifecycleFormValid, lifecyclePath, type LifecycleForm,
 } from "./incidents-model";
 import { incidentDiagnosisView } from "./diagnosis-model";
+import { incidentLifecycleView, type EpisodeLink } from "./lifecycle-model";
 
 const FIELD = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8";
 const ROW_BTN = "group flex min-h-11 w-full min-w-0 items-start gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
@@ -201,6 +206,23 @@ function LinkedRow({ id, r, prefix, onSelect }: { id: string; r: IncidentRowDTO 
   );
 }
 
+/** One recurrence neighbour in the Lifecycle section: opens in the drawer, like the recurrence list. */
+function EpisodeRow({ label, e, onSelect }: { label: string; e: EpisodeLink; onSelect: (id: string) => void }) {
+  const title = `${label}${e.generation ? ` · episode ${e.generation}` : ""}`;
+  if (!e.retained) return <li className="py-1.5 text-[11px] text-[var(--text-muted)]" data-lifecycle-episode={e.id}>{`${title} · ${e.outcome}`}</li>;
+  return (
+    <li className="min-w-0">
+      <button type="button" onClick={() => onSelect(e.id)} className={`${ROW_BTN} py-1.5`} data-lifecycle-episode={e.id}>
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-xs text-[var(--text-primary)]">{title}</span>
+          <span className="block break-words text-[10px] text-[var(--text-muted)]">{e.outcome}</span>
+        </span>
+        <ChevronRight size={12} aria-hidden className="mt-1 shrink-0 text-[var(--text-faint)]" />
+      </button>
+    </li>
+  );
+}
+
 /** A resolver href only: a same-origin relative path (the route already validated it; this refuses anything else). */
 const isRelativePath = (href: string) => href.startsWith("/") && !href.startsWith("//") && !href.includes("\\");
 
@@ -324,6 +346,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
   const closure = closureText(r);
   const lifecycle = d.lifecycleActions ?? [];
   const dv = incidentDiagnosisView(d);
+  const lv = incidentLifecycleView(d);
   const tone = DISPLAY_STATUS_TONE[s.displayStatus];
   // An ACTIVE connection whose code once asked the customer to act: say so, never re-ask.
   const healedNote = dx.providerErrorCode && ex.customerActionRequired && !s.customerActionRequired && s.displayStatus !== "resolved"
@@ -452,6 +475,43 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
         </Disclosure>
       </Section>
 
+      {/* 3 · LIFECYCLE — milestones first (lifecycle-model.ts); the full event list stays under Timeline. Dismiss ≠ resolved. */}
+      <Section title="Lifecycle">
+        <ol className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4" data-lifecycle-strip>
+          {lv.milestones.map((m) => (
+            <li key={m.key} className="flex min-w-0 gap-2" data-milestone={m.key}>
+              <Dot tone={m.tone} />
+              <span className="min-w-0">
+                <span className="block text-[10px] text-[var(--text-faint)]">{m.label}</span>
+                <span className="block truncate text-xs tabular-nums text-[var(--text-secondary)]">{m.when}</span>
+                {m.note && <span className="block break-words text-[10px] text-[var(--text-muted)]">{m.note}</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {lv.closure && (
+          <div className="min-w-0 text-xs" data-lifecycle-closure={lv.closure.outcome} data-verified-recovery={lv.closure.verifiedRecovery ? "yes" : "no"}>
+            <p className="break-words font-medium text-[var(--text-primary)]">{lv.closure.headline}</p>
+            {lv.closure.reason && <p className="break-words text-[11px] text-[var(--text-muted)]">{`Reason: ${lv.closure.reason}.`}</p>}
+            {lv.closure.unregisteredReason && <p className="text-[11px] text-[var(--text-muted)]">{"A reason was recorded with a code this view doesn't recognise (not shown)."}</p>}
+            {lv.closure.evidence && <p className="break-words text-[11px] text-[var(--text-muted)]">{`Evidence: ${lv.closure.evidence}.`}</p>}
+            {lv.closure.derived && <p className="text-[11px] text-[var(--text-faint)]">Derived at read time; not yet recorded on the incident.</p>}
+          </div>
+        )}
+        <div className="min-w-0 text-xs" data-lifecycle-recurrence={lv.recurrence.generation}>
+          <p className="break-words text-[11px] text-[var(--text-muted)]">{lv.recurrence.line}</p>
+          {(lv.recurrence.previous || lv.recurrence.next) && (
+            <ul className="flex min-w-0 flex-col">
+              {lv.recurrence.previous && <EpisodeRow label="Previous episode" e={lv.recurrence.previous} onSelect={onSelect} />}
+              {lv.recurrence.next && <EpisodeRow label="Next episode" e={lv.recurrence.next} onSelect={onSelect} />}
+            </ul>
+          )}
+        </div>
+        <p className="break-words text-[11px] text-[var(--text-muted)]" data-lifecycle-events={lv.events.total}>
+          {lv.events.total > 0 ? `${lv.events.line} — key events and the full list are under Timeline.` : lv.events.line}
+        </p>
+      </Section>
+
       {slots?.aiAssessment}
 
       <IncidentRelatedNavigation links={d.navigation ?? []} viewId={viewId} onOpenInPlace={onOpenInPlace} />
@@ -477,6 +537,20 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
         </Disclosure>
 
         <Disclosure title="Timeline" hint={d.timeline.events.length ? `${d.timeline.events.length} event${d.timeline.events.length === 1 ? "" : "s"}` : undefined} attr="timeline">
+          {lv.events.key.length > 0 && (
+            <div className="min-w-0" data-lifecycle-key-events>
+              <p className="text-[11px] text-[var(--text-faint)]">{lv.events.keyTruncated ? "Key events (newest)" : "Key events"}</p>
+              <ol className="flex min-w-0 flex-col">
+                {lv.events.key.map((k, i) => (
+                  <li key={`${k.at}:${i}`} className="flex min-w-0 flex-col border-l border-[var(--border-hairline)] py-1.5 pl-3">
+                    <span className="text-xs text-[var(--text-primary)]">{k.title}</span>
+                    <span className="break-words text-[10px] text-[var(--text-muted)]">{[k.when, ...k.parts].join(" · ")}</span>
+                  </li>
+                ))}
+              </ol>
+              <p className="text-[11px] text-[var(--text-faint)]">All events</p>
+            </div>
+          )}
           {d.timeline.events.length === 0 ? (
             <p className="text-[11px] text-[var(--text-muted)]">No lifecycle events recorded for this incident (rows before the timeline existed have none).</p>
           ) : (
