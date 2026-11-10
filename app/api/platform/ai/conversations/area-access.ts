@@ -29,7 +29,7 @@ import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/handlers";
-import { platformAiProbeRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
 import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
 
 /**
@@ -60,6 +60,6 @@ export async function conversationAreaAccess(area: PlatformArea, operatorId: str
   // probe check per record area per render, revalidate, T2 only with a fresh CS tier + the audit row).
   return {
     resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding),
-    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiProbeRecheck }),
+    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiRenderRecheck }),
   };
 }

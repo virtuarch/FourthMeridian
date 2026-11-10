@@ -147,17 +147,18 @@ async function main() {
     check("record-render: export never T2 (mode check in the T2 predicate) and the audit runs before any t2 read",
       /viewer\.mode !== "export"/.test(rr) && rr.indexOf("viewer.audit!(rows") < rr.indexOf("l.src.t2("));
     const ask = code(src("app/api/platform/ai/ask/route.ts"));
-    check("ask route: records = the boundary's lookup; renderRecords = recordTextRenderer(live, platformAiProbeRecheck), no audit writer yet",
-      /records: boundary\.recordRef/.test(ask) && /renderRecords: recordTextRenderer\(\{ operatorId: auth\.user\.id, mode: "live", recheck: platformAiProbeRecheck \}\)/.test(ask));
+    check("ask route: records = the boundary's lookup; renderRecords = recordTextRenderer(live, platformAiRenderRecheck), no audit writer yet",
+      /records: boundary\.recordRef/.test(ask) && /renderRecords: recordTextRenderer\(\{ operatorId: auth\.user\.id, mode: "live", recheck: platformAiRenderRecheck \}\)/.test(ask));
     const aa = code(src("app/api/platform/ai/conversations/area-access.ts"));
-    check("conversation area access: renderRecords = recordTextRenderer(history, platformAiProbeRecheck) for THIS operator",
-      /renderRecords: recordTextRenderer\(\{ operatorId, mode: "history", recheck: platformAiProbeRecheck \}\)/.test(aa));
+    check("conversation area access: renderRecords = recordTextRenderer(history, platformAiRenderRecheck) for THIS operator",
+      /renderRecords: recordTextRenderer\(\{ operatorId, mode: "history", recheck: platformAiRenderRecheck \}\)/.test(aa));
     const tr = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
     check("turn runner: records + remint from THIS turn's boundary", /records: boundary\.recordRef/.test(tr) && /remint: boundary\.remint/.test(tr));
-    const rs = code(src("lib/platform/intelligence/ai/authz/recheck.server.ts"));
+    const rs = code(src("lib/platform/intelligence/ai/authz/record-render.server.ts"));
+    const fresh = code(src("lib/platform/intelligence/ai/authz/recheck.server.ts"));
     check("the probe recheck is requireFreshPlatformAccess(area, \"READ\", { probe: true }) with the CS tier from its own guard",
       /requireFreshPlatformAccess\(area, "READ", \{ probe: true \}\)/.test(rs) && /incidentAudienceFor\(fresh\)/.test(rs));
-    check("the boundary's per-call recheck stays NON-probe (platformAiFreshRecheck)", /export async function platformAiFreshRecheck[\s\S]*?requireFreshPlatformAccess\(area, "READ"\);/.test(rs));
+    check("the boundary's per-call recheck stays NON-probe (platformAiFreshRecheck, a separate file with no probe)", /export async function platformAiFreshRecheck[\s\S]*?requireFreshPlatformAccess\(area, "READ"\);/.test(fresh) && !/probe/.test(fresh));
     const exp = code(src("lib/platform/intelligence/ai/conversations/export.ts"));
     check("export renders a record as its kind marker only (no renderer, no T2 path)", /recordReplayMarker\(s\.rk, null\)/.test(exp) && !/record-render|renderRecord/.test(exp));
     check("no ai/** file other than record-render reads a T2 value through a source (t2( call sites)",

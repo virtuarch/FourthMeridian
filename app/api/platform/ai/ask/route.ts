@@ -49,7 +49,8 @@ import { env } from "@/lib/env";
 import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import { createTurnBoundary, type ScopedArea } from "@/lib/platform/intelligence/ai/authz/boundary";
-import { platformAiFreshRecheck, platformAiProbeRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
 import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
@@ -145,7 +146,7 @@ export async function POST(req: NextRequest) {
     ...(boundary ? { invoke: boundary.invoke, records: boundary.recordRef, ...(boundary.tools ? { tools: boundary.tools } : {}) } : {}),
     // P4 — a placed record renders at READ time for this viewer (fresh probe check per area, revalidate;
     // T2 only with a fresh CS tier AND the audit row first — no writer until P5 ⇒ T2 always masked).
-    renderRecords: recordTextRenderer({ operatorId: auth.user.id, mode: "live", recheck: platformAiProbeRecheck }),
+    renderRecords: recordTextRenderer({ operatorId: auth.user.id, mode: "live", recheck: platformAiRenderRecheck }),
     model,
     reasoningModel: reasoning,
     now: () => new Date(),
