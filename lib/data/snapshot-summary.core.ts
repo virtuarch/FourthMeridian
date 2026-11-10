@@ -50,8 +50,10 @@ import { canonicalWindowChange, type CanonicalWindowChange } from "@/lib/data/sn
 import type { ConversionContext } from "@/lib/money/types";
 // PB-8c — the launcher's 1M change obeys the SAME partial-history floor as the
 // inside-Space hero (PB-8b): one rule, `changeComparability`, via gateWindowChange.
+// B13 — and the launcher SPARKLINE starts at the same coverage floor as the
+// inside-Space chart (B12 O-3): one clip, `clipToBalanceCoverage`.
 import {
-  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverageRead, type WithheldChange,
+  balanceCoverageSidesFor, clipToBalanceCoverage, gateWindowChange, type BalanceCoverageRead, type WithheldChange,
 } from "@/lib/connections/balance-coverage.core";
 
 /** The stored columns the row authority reads. Structural — no Prisma import. */
@@ -211,6 +213,26 @@ export function admissibleNetWorthSeries(
 /** How many trailing admissible points feed the card SPARKLINE (shape only). */
 export const LAUNCHER_SPARKLINE_POINTS = 14;
 
+/**
+ * B13 — the card sparkline's values. The trailing window is clipped to the
+ * balance-coverage floor with the SAME rule the inside-Space Net Worth chart
+ * uses by default (`clipToBalanceCoverage`, B12 O-3): on a day-one connection
+ * the partial days before the floor no longer draw a "cliff" down to today.
+ *   · coverage null / UNAVAILABLE (failed read) / window already on or after
+ *     the floor ⇒ no floor is known or nothing is hidden ⇒ unclipped, exactly
+ *     as before;
+ *   · the window lies wholly before the floor (the latest admissible point is
+ *     itself partial) ⇒ the latest point only — one value draws no line, and
+ *     the card keeps its figure (`hasFigure` reads trend.length > 0); a
+ *     partial point is never drawn as a shape, and nothing is filled or zeroed.
+ * Values are never changed; only where the sparkline begins.
+ */
+function launcherSparkline(points: readonly AdmissibleNetWorthPoint[], balanceCoverage: BalanceCoverageRead): number[] {
+  const tail = points.slice(-LAUNCHER_SPARKLINE_POINTS).map((p) => ({ date: p.date.toISOString().slice(0, 10), value: p.value }));
+  const clipped = clipToBalanceCoverage(tail, balanceCoverage, balanceCoverageSidesFor("netWorth"), false);
+  return (clipped.length > 0 ? clipped : tail.slice(-1)).map((p) => p.value);
+}
+
 export interface NetWorthSeriesSummary {
   netWorth: number;
   trend:    number[];
@@ -233,6 +255,9 @@ export interface NetWorthSeriesSummary {
  * Rule 6 (PB-8c): the 1M change is never measured across the balance-history
  * floor — withheld with its reason, or marked estimated (gateWindowChange).
  * No coverage ⇒ byte-identical to before; UNAVAILABLE (failed read) ⇒ withheld (S2 sweep).
+ *
+ * Rule 7 (B13): the sparkline starts at the coverage floor (`launcherSparkline`);
+ * no coverage / UNAVAILABLE ⇒ the sparkline is unclipped, as before.
  */
 export function summarizeNetWorthSeries(
   points: readonly AdmissibleNetWorthPoint[],
@@ -249,7 +274,7 @@ export function summarizeNetWorthSeries(
   });
   return {
     netWorth:  latest?.value ?? 0,
-    trend:     points.slice(-LAUNCHER_SPARKLINE_POINTS).map((p) => p.value),
+    trend:     launcherSparkline(points, balanceCoverage),
     asOf:      latest?.date.toISOString() ?? null,
     estimated: latest?.estimated ?? false,
     change:    gated.change,
