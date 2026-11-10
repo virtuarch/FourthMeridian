@@ -60,7 +60,10 @@ async function main() {
   {
     assert.equal(DATA_HEALTH_FETCH_TIMEOUT_MS, 15_000, "15 s, consistent with the repo's other per-request read timeouts");
     const pes = readFileSync(new URL("../../components/space/PerspectiveEmptyState.tsx", import.meta.url), "utf8");
-    assert.ok(/credentials: "same-origin", signal: AbortSignal\.timeout\(timeoutMs\) \}\)/.test(pes), "the read carries the timeout signal");
+    assert.ok(/typeof AbortSignal !== "undefined" && typeof AbortSignal\.timeout === "function"/.test(pes), "AbortSignal.timeout is feature-detected");
+    assert.ok(/const t = dataHealthTimeout\(timeoutMs\);/.test(pes) && /\.\.\.\(t\.signal \? \{ signal: t\.signal \} : \{\}\)/.test(pes), "the read carries the timeout signal");
+    assert.ok(/p = Promise\.resolve\(\)\s*\.then\(\(\) => \{\s*const t = dataHealthTimeout/.test(pes), "signal + fetch are built INSIDE the chain (no synchronous throw)");
+    assert.ok(/\.finally\(\(\) => clear\(\)\)/.test(pes), "the fallback timer is cleared when the read settles");
     assert.ok(/timeoutMs: number = DATA_HEALTH_FETCH_TIMEOUT_MS/.test(pes), "the default is the constant");
     assert.ok(/void loadPayload\(spaceId\)\.then/.test(pes), "the hook uses the default timeout");
     ok("§1 loadPayload carries AbortSignal.timeout(DATA_HEALTH_FETCH_TIMEOUT_MS = 15 s)");
@@ -99,6 +102,62 @@ async function main() {
     assert.ok(seenSignal instanceof AbortSignal && !seenSignal.aborted, "the signal is present but never fires on a healthy read");
     assert.deepEqual(payload, { sources: [], valuationCoverage: null, balanceCoverage: COV }, "the payload is untouched");
     ok("§3 healthy read: payload unchanged; the timeout never fires");
+  }
+
+  // ── §4 R1 — no AbortSignal.timeout (Safari < 16 / older iOS WebViews) ─────────
+  {
+    const realTimeout = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
+    Object.defineProperty(AbortSignal, "timeout", { value: undefined, configurable: true, writable: true });
+    try {
+      assert.equal(typeof AbortSignal.timeout, "undefined", "stubbed: AbortSignal.timeout is missing");
+
+      // a) healthy read ⇒ OK, via the AbortController fallback (signal present, never fired)
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        seenSignal = init?.signal ?? undefined;
+        return new Response(JSON.stringify({ sources: [], valuationCoverage: null, balanceCoverage: COV }), { status: 200 });
+      }) as typeof fetch;
+      const healthy = await loadPayload("space-fallback-ok", 1_000);
+      assert.deepEqual(healthy, { sources: [], valuationCoverage: null, balanceCoverage: COV }, "healthy read ⇒ OK without AbortSignal.timeout");
+      assert.ok(seenSignal instanceof AbortSignal && !seenSignal.aborted, "the fallback controller's signal rides the fetch, unfired");
+
+      // b) stalled read ⇒ FAILED, via the fallback timer
+      globalThis.fetch = stalledFetch;
+      const keepAlive = realSetTimeout(() => {}, 10_000);
+      const started = Date.now();
+      const stalled = await loadPayload("space-fallback-stall", 25);
+      clearTimeout(keepAlive);
+      assert.ok(seenSignal instanceof AbortSignal && seenSignal.aborted, "the fallback timer aborted the controller");
+      assert.ok(Date.now() - started < 5_000, "settled on the fallback timer");
+      assert.equal(stalled, FAILED_DATA_HEALTH, "stalled read ⇒ FAILED_DATA_HEALTH via the fallback");
+      assert.equal(balanceChartPending(balanceCoverageState("space-fallback-stall", stalled), SIDES, false), false, "the hold ends");
+
+      // c) a synchronous throw while building the request ⇒ FAILED, never a synchronous throw
+      const realAC = globalThis.AbortController;
+      globalThis.AbortController = function Broken() { throw new TypeError("AbortController is not a constructor"); } as unknown as typeof AbortController;
+      globalThis.fetch = (() => { throw new TypeError("fetch threw synchronously"); }) as unknown as typeof fetch;
+      let p: Promise<unknown> | undefined;
+      try {
+        assert.doesNotThrow(() => { p = loadPayload("space-fallback-throw", 25); }, "loadPayload never throws synchronously");
+        assert.equal(await p, FAILED_DATA_HEALTH, "a synchronous throw during construction ⇒ FAILED_DATA_HEALTH");
+      } finally {
+        globalThis.AbortController = realAC;
+      }
+      // …and a fetch that throws synchronously with no AbortController at all (no signal path).
+      const noAC = globalThis.AbortController;
+      // @ts-expect-error — simulate an environment without AbortController
+      delete globalThis.AbortController;
+      try {
+        let q: Promise<unknown> | undefined;
+        assert.doesNotThrow(() => { q = loadPayload("space-fallback-nosignal", 25); });
+        assert.equal(await q, FAILED_DATA_HEALTH, "no AbortController ⇒ no signal; a throwing fetch still ⇒ FAILED");
+      } finally {
+        globalThis.AbortController = noAC;
+      }
+    } finally {
+      if (realTimeout) Object.defineProperty(AbortSignal, "timeout", realTimeout);
+    }
+    assert.equal(typeof AbortSignal.timeout, "function", "restored");
+    ok("§4 without AbortSignal.timeout: healthy ⇒ OK, stalled ⇒ FAILED via fallback timer, synchronous throw ⇒ FAILED (never thrown)");
   }
 }
 

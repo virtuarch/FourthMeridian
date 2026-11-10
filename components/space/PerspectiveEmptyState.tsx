@@ -84,11 +84,44 @@ function coverageReadFailed(): void {
  */
 export const DATA_HEALTH_FETCH_TIMEOUT_MS = 15_000;
 
-/** Exported for tests only (`timeoutMs` too); components use the hooks below. */
+/**
+ * B13 R1 — the timeout signal, feature-detected. `AbortSignal.timeout` is missing on
+ * Safari < 16 / older iOS WebViews (no browserslist here): there it falls back to an
+ * AbortController + timer (`clear` stops the timer once the read settles); with no
+ * AbortController at all, no signal (the read is then un-timed, as before B13).
+ */
+function dataHealthTimeout(ms: number): { signal?: AbortSignal; clear: () => void } {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return { signal: AbortSignal.timeout(ms), clear: () => {} };
+  }
+  if (typeof AbortController === "function") {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return { signal: ctrl.signal, clear: () => clearTimeout(timer) };
+  }
+  return { clear: () => {} };
+}
+
+/**
+ * Exported for tests only (`timeoutMs` too); components use the hooks below.
+ * ALWAYS returns a promise that settles and NEVER throws synchronously: the signal
+ * and the fetch are built inside the chain, so a throw there (a missing API, a
+ * fetch that throws before returning a promise) reaches the same `.catch` ⇒
+ * FAILED_DATA_HEALTH — otherwise useDataHealth would never set a payload and the
+ * chart hold (balanceChartPending) would last forever.
+ */
 export function loadPayload(spaceId: string, timeoutMs: number = DATA_HEALTH_FETCH_TIMEOUT_MS): Promise<DataHealthPayload | null> {
   let p = cache.get(spaceId);
   if (!p) {
-    p = fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, { cache: "no-store", credentials: "same-origin", signal: AbortSignal.timeout(timeoutMs) })
+    let clear = () => {};
+    p = Promise.resolve()
+      .then(() => {
+        const t = dataHealthTimeout(timeoutMs);
+        clear = t.clear;
+        return fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, {
+          cache: "no-store", credentials: "same-origin", ...(t.signal ? { signal: t.signal } : {}),
+        });
+      })
       .then(async (r) => {
         if (!r.ok) { coverageReadFailed(); return FAILED_DATA_HEALTH; }
         const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null; balanceCoverage?: unknown };
@@ -96,7 +129,8 @@ export function loadPayload(spaceId: string, timeoutMs: number = DATA_HEALTH_FET
         if (isBalanceCoverageUnavailable(balanceCoverage)) coverageReadFailed();
         return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null, balanceCoverage };
       })
-      .catch(() => { coverageReadFailed(); return FAILED_DATA_HEALTH; });
+      .catch(() => { coverageReadFailed(); return FAILED_DATA_HEALTH; })
+      .finally(() => clear());
     cache.set(spaceId, p);
     // A short-lived memo: perspectives mounting together share one read.
     setTimeout(() => cache.delete(spaceId), 30_000);
