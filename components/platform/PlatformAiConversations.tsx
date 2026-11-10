@@ -84,6 +84,7 @@ import { PanelContent, PanelHeader } from "@/components/atlas/panels/PanelParts"
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
 import { PlatformAiMemoryConfirmCard, PlatformAiMemoryPanel } from "./PlatformAiMemory";
 import { parseProposal, type ClientMemoryProposal } from "./platform-ai-memory-model";
+import { usePeoplePicker, type PeoplePickerBinding } from "./platform-ai-people-picker";
 import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiNotice, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, DELETE_CONFIRM_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_PROBLEM,
@@ -324,6 +325,10 @@ export interface PlatformAiConversationsViewProps {
   onMemoryDone?: (saved: boolean) => void;
   memoryOpen?: boolean;
   onMemoryOpen?: (open: boolean) => void;
+  /** The @ people picker (offered with the customer notice). */
+  picker?: PeoplePickerBinding;
+  /** The server's USE_PEOPLE_PICKER refusal, inline under the kept draft. */
+  guardNotice?: string | null;
 }
 
 /** Header action: the same quiet "New chat" control Personal Space AI shows. */
@@ -429,7 +434,8 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
             <PlatformAiMemoryConfirmCard key={p.memoryProposal.token} proposal={p.memoryProposal} onDone={(saved) => p.onMemoryDone?.(saved)} />
           ) : null}
           <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
-            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} memory={p.memory === true} subjectNotice={p.subjectNotice === true} />
+            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} memory={p.memory === true} subjectNotice={p.subjectNotice === true}
+            {...(p.picker ? { picker: p.picker } : {})} guardNotice={p.guardNotice ?? null} />
         </>
       )}
     </>
@@ -494,7 +500,8 @@ async function call(url: string, init?: RequestInit): Promise<CallResult> {
 const postJson = (url: string, payload: unknown) =>
   call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
 
-interface PendingSend { conversationId: string | null; clientRequestId: string; question: string }
+/** `question` = what is SENT (chips as tokens); `display` = this operator's own draft (chips as `@label`, memory only). */
+interface PendingSend { conversationId: string | null; clientRequestId: string; question: string; display?: string }
 
 /** Collapsed unless this viewer opened it before ("0"); storage unavailable ⇒ the default (collapsed). */
 function readRailCollapsed(): boolean {
@@ -543,6 +550,9 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
   const [selected, setSelected] = useState<{ conversation: ClientConversation; messages: ClientMessage[] } | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const [draft, setDraft] = useState("");
+  const [guardNotice, setGuardNotice] = useState<string | null>(null);
+  // The @ people picker: offered exactly where the customer notice is (the page decides, server-side).
+  const people = usePeoplePicker({ enabled: subjectNotice, draft, setDraft });
   const [sending, setSending] = useState<PendingSend | null>(null);
   const [retry, setRetry] = useState<PendingSend | null>(null);
   const [problem, setProblem] = useState<SendProblem | null>(null);
@@ -624,7 +634,7 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
   }, [applyParam]);
 
   async function send(s: PendingSend) {
-    setSending(s); setProblem(null); setRetry(null); setMemoryProposal(null);
+    setSending(s); setProblem(null); setRetry(null); setMemoryProposal(null); setGuardNotice(null);
     const r = s.conversationId
       ? await postJson(conversationMessagesUrl(s.conversationId), { clientRequestId: s.clientRequestId, question: s.question })
       : await postJson(PLATFORM_AI_CONVERSATIONS_URL, { clientRequestId: s.clientRequestId, question: s.question });
@@ -634,8 +644,15 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
       setRetry(s); setProblem({ kind: "NETWORK", text: "Couldn’t reach Platform AI." });
       return;
     }
+    if (people.isGuardRefusal(r.body)) {
+      // S2 09fc — nothing was stored and no turn ran: give the draft back (with its chips) and say why inline.
+      setDraft((d) => (d.length === 0 ? (s.display ?? s.question) : d));
+      setGuardNotice(people.guardReminder);
+      return;
+    }
     const pair = r.status === 200 || r.status === 201 ? parsePair(r.body) : null;
     if (pair) {
+      if (s.display !== undefined) people.reset();
       setNow(new Date());
       if (memory) setMemoryProposal(parseProposal((r.body as { memoryProposal?: unknown } | null)?.memoryProposal));
       if (!s.conversationId) setNoticeOpen(null); // a new conversation exists: back to the default (collapsed)
@@ -656,7 +673,7 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
     const pr = problemFor(r.status, r.body);
     setProblem(pr);
     // A refusal stores nothing (§5.3): give the question back to the operator.
-    if (pr.kind === "REFUSED" || pr.kind === "LIMIT" || pr.kind === "FULL") setDraft((d) => (d.length === 0 ? s.question : d));
+    if (pr.kind === "REFUSED" || pr.kind === "LIMIT" || pr.kind === "FULL") setDraft((d) => (d.length === 0 ? (s.display ?? s.question) : d));
     if (pr.kind === "FULL") setSelected((cur) => (cur ? { ...cur, conversation: { ...cur.conversation, full: true } } : cur));
     if (pr.kind === "IN_FLIGHT" && s.conversationId) void openConversation(s.conversationId);
     if (pr.kind === "NOT_FOUND") { showNotFound(s.conversationId); void loadList(false); }
@@ -666,11 +683,15 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
     if (ask(draft)) setDraft("");
   }
 
-  /** A fresh question — typed (onSend) or a starter chip: ONE path, a NEW clientRequestId. */
+  /**
+   * A fresh question — typed (onSend) or a starter chip: ONE path, a NEW clientRequestId. The @ picker's chips
+   * are serialised to `[[cust:…]]` tokens HERE (the label is never sent); `display` keeps this operator's own text.
+   */
   function ask(question: string): boolean {
     const q = question.trim();
     if (!q || sending) return false;
-    void send({ conversationId: selected?.conversation.id ?? null, clientRequestId: crypto.randomUUID(), question: q });
+    const wire = people.serializeText(q);
+    void send({ conversationId: selected?.conversation.id ?? null, clientRequestId: crypto.randomUUID(), question: wire, ...(wire !== q ? { display: q } : {}) });
     return true;
   }
 
@@ -705,9 +726,9 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
       areaLabel={areaLabel} now={now} subjectNotice={subjectNotice}
       conversations={conversations} limits={limits} listError={listError}
       selected={selected} threadLoading={threadLoading}
-      draft={draft} sendingQuestion={sending?.question ?? null} problem={problem} canRetrySend={retry !== null}
+      draft={draft} sendingQuestion={sending ? (sending.display ?? sending.question) : null} problem={problem} canRetrySend={retry !== null}
       sheetOpen={sheetOpen} railCollapsed={railCollapsed} confirmDelete={confirmDelete} deleting={deleting}
-      onDraft={setDraft}
+      onDraft={(v) => { setDraft(v); if (guardNotice) setGuardNotice(null); }}
       onSend={onSend}
       onStarter={(q) => { ask(q); }}
       onRetrySend={() => { if (retry) void send(retry); }}
@@ -723,6 +744,7 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
       noticeOpen={noticeOpen} onNotice={setNoticeOpen}
       memory={memory} memoryProposal={memoryProposal} onMemoryDone={() => setMemoryProposal(null)}
       memoryOpen={memoryOpen} onMemoryOpen={setMemoryOpen}
+      picker={people.binding} guardNotice={guardNotice}
     />
   );
 }

@@ -428,6 +428,15 @@ export const AuditAction = {
   // (else PLATFORM_AI_SUBJECT = the keyed hash); detail = { surface, idKind, outcome, keyHash }
   // only — never the identifier.
   PLATFORM_AI_SUBJECT_LOOKUP:          "PLATFORM_AI_SUBJECT_LOOKUP",
+  // Platform AI @ people picker (owner 2026-11-10; S2 09fc P4). One row per picker search, written
+  // BEFORE any label leaves the server (a failed write ⇒ the uniform empty response). Target
+  // PLATFORM_AI_SUBJECT "people-search"; detail = { surface, queryLength, resultCount, fingerprint? }
+  // only — the fingerprint is a KEYED HMAC with its own purpose label; never the query.
+  PLATFORM_AI_PEOPLE_SEARCH:           "PLATFORM_AI_PEOPLE_SEARCH",
+  // Platform AI bare-username guard (S2 09fc G2). One CODE-ONLY row per refused question (no provider
+  // call, no turn): target PLATFORM_AI_SUBJECT "people-guard"; detail = { surface, code:
+  // USE_PEOPLE_PICKER, kind: USERNAME | EMAIL | LIMITED | UNAVAILABLE } — never a token, username or email.
+  PLATFORM_AI_PEOPLE_GUARD:            "PLATFORM_AI_PEOPLE_GUARD",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link

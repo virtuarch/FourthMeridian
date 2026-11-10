@@ -13,7 +13,7 @@
  * `onSubmit` / `onStop`; it never fetches.
  */
 
-import { useId, type ReactNode, type Ref } from "react";
+import { useId, type AriaAttributes, type AriaRole, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { Textarea } from "@/components/atlas/fields";
 import { isSendKey } from "@/components/ai/conversation-surface";
@@ -50,6 +50,17 @@ export interface ComposerFrameProps {
   /** Rendered beneath the input pill. */
   footer?: ReactNode;
   textareaRef?: Ref<HTMLTextAreaElement>;
+  /**
+   * A key handler that runs BEFORE Enter-to-send, in the capture phase (a suggestion list's arrows / Enter / Escape).
+   * Return true when it handled the key: propagation stops, so Enter-to-send never sees it.
+   */
+  onKeyIntercept?: (e: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+  /** Caret moves (click / keys) — for a caret-anchored suggestion list. */
+  onCaret?: (caret: number) => void;
+  /** Extra ARIA on the input (a combobox: role, aria-expanded, aria-controls, aria-activedescendant…). */
+  inputAria?: Readonly<AriaAttributes & { role?: AriaRole }>;
+  /** Rendered above the pill, inside the form (e.g. a suggestion list). */
+  overlay?: ReactNode;
 }
 
 /**
@@ -72,6 +83,10 @@ export function ComposerFrame({
   trailing,
   footer,
   textareaRef,
+  onKeyIntercept,
+  onCaret,
+  inputAria,
+  overlay,
 }: ComposerFrameProps) {
   const ownId = useId();
   const inputId = inputIdProp ?? `${ownId}-input`;
@@ -85,13 +100,18 @@ export function ComposerFrame({
       }}
     >
       <label htmlFor={inputId} className="sr-only">{label}</label>
+      {overlay ? <div className="relative">{overlay}</div> : null}
       <div className="flex items-end gap-2 rounded-[22px] border border-[var(--border-hairline-strong)] bg-[var(--surface-inset)] p-2 pl-4 shadow-[0_10px_30px_-18px_rgba(0,0,0,0.6)] transition-[border-color,box-shadow] focus-within:border-[var(--accent-info)] focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent-info)_18%,transparent)]">
         <Textarea
           ref={textareaRef}
           id={inputId}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => { onChange(e.target.value); onCaret?.(e.target.selectionStart ?? e.target.value.length); }}
           onFocus={onFocus}
+          onSelect={onCaret ? (e) => onCaret(e.currentTarget.selectionStart ?? 0) : undefined}
+          {...(inputAria ?? {})}
+          // A suggestion list's keys run first (capture phase); a handled key never reaches Enter-to-send.
+          onKeyDownCapture={onKeyIntercept ? (e) => { if (onKeyIntercept(e)) e.stopPropagation(); } : undefined}
           onKeyDown={(e) => {
             if (isSendKey({ key: e.key, shiftKey: e.shiftKey, isComposing: e.nativeEvent.isComposing })) {
               e.preventDefault();

@@ -1436,6 +1436,32 @@ export interface PlatformAiAskDeps {
    * `[customer h_…]` or the one `[customer not resolved]` literal. Absent ⇒ exactly as before.
    */
   subjects?: { resolve(ids: readonly SubjectIdentifier[]): Promise<SubjectResult> };
+  /**
+   * The bare-username guard (authz/people.ts runPickerGuard; S2 09fc G1–G6) on the RAW question, after the
+   * admission gates and BEFORE the spend reservation, the scrub, the subject slots and any provider call.
+   * A refusal ⇒ 422 USE_PEOPLE_PICKER: no turn, no provider call. Every route passes it.
+   */
+  guard?(rawQuestion: string): Promise<PlatformAiGuardVerdict>;
+}
+
+/** The guard's one refusal (S2 09fc G2): code only — never says which token, never echoes the question. */
+/**
+ * The guard's verdict, declared structurally (authz/people.ts PickerGuardVerdict is assignable to it): core.ts imports
+ * nothing new (its import list is pinned). The body's copy equals authz/people-chip.ts PEOPLE_PICKER_REMINDER (pinned in people.test.ts).
+ */
+export type PlatformAiGuardVerdict = { readonly pass: true } | { readonly pass: false; readonly kind: string };
+export const USE_PEOPLE_PICKER_BODY = Object.freeze({
+  error: "Looks like you typed a customer's username or email. Use @ to pick the customer so their details stay private.",
+  code: "USE_PEOPLE_PICKER", reason: "USE_PEOPLE_PICKER",
+});
+export const USE_PEOPLE_PICKER_STATUS = 422;
+
+/** Run the injected guard; a throw refuses (fail closed). null ⇒ admitted. */
+export async function pickerGuardRefusal(guard: PlatformAiAskDeps["guard"], raw: string): Promise<PlatformAiHttp | null> {
+  if (!guard) return null;
+  let v: PlatformAiGuardVerdict;
+  try { v = await guard(raw); } catch { v = { pass: false, kind: "UNAVAILABLE" }; }
+  return v.pass ? null : { status: USE_PEOPLE_PICKER_STATUS, body: { ...USE_PEOPLE_PICKER_BODY } };
 }
 
 /**
@@ -1499,7 +1525,8 @@ export function parseAskBody(body: unknown): string | null {
 
 /**
  * ORDER: the flag (nothing else runs when it is off) → the body → the binding →
- * the kill switch → the global cost freeze → the daily turn cap → the daily $ caps
+ * the kill switch → the global cost freeze → the daily turn cap → the bare-username guard
+ * (authz/people.ts, on the RAW question; 422 USE_PEOPLE_PICKER, not a turn) → the daily $ caps
  * (operator, then platform; P2b — a reservation released after the turn) → the turn.
  * Every refusal happens BEFORE `generate` is called.
  */
@@ -1524,6 +1551,9 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       ? refuse(429, "DAILY_TURNS", { "Retry-After": String(secondsToUtcMidnight(now)) })
       : refuse(503, "ALLOWANCE_UNAVAILABLE");
   }
+  // S2 09fc G6 — the bare-username guard on the RAW question: before the spend, the scrub, the slots and the provider.
+  const guarded = await pickerGuardRefusal(deps.guard, question);
+  if (guarded) return guarded;
   const held = await admitPlatformAiSpend(deps.spend, deps.operatorId, now);
   if (held.refusal) {
     return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);

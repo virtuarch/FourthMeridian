@@ -37,7 +37,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import { admitPlatformAiSpend, type PlatformAiBinding, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
+import { admitPlatformAiSpend, pickerGuardRefusal, type PlatformAiBinding, type PlatformAiGuardVerdict, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
 import { RECORD_GONE_TEXT } from "../compose/record";
 import type { StoredAnswer, StoredRecordSegment } from "./answer";
 import {
@@ -137,6 +137,12 @@ export interface TurnRunDeps {
    * Absent ⇒ every slot stores `[customer]` (P5 behaviour).
    */
   subjectFlags?(): SubjectFlags;
+  /**
+   * S2 09fc G6 — the bare-username guard (authz/people.ts runPickerGuard) on the RAW question of EVERY turn
+   * (create and follow-up), after the admission gates and BEFORE the spend, the scrub, anything stored and
+   * the provider. A refusal ⇒ 422 USE_PEOPLE_PICKER: nothing stored, no turn. Every route passes it.
+   */
+  guard?(v: Viewer, rawQuestion: string): Promise<PlatformAiGuardVerdict>;
 }
 
 /** P5 — the subject slots of one question (authz/subject.ts). Never stored, never logged. */
@@ -461,6 +467,9 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
   }
   const refused = await admit(v, deps);
   if (refused) return refused;
+  // S2 09fc G6 — the bare-username guard on the RAW question, before the spend, the scrub and anything stored.
+  const guarded = await pickerGuardRefusal(deps.guard ? (raw) => deps.guard!(v, raw) : undefined, parsed.question);
+  if (guarded) return guarded;
   const cost = await holdSpend(v, deps);
   if (cost.refused) return cost.refused;
   try {
@@ -525,6 +534,9 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   if (prior) return pairResponse(200, null, prior, await heldAccessFor(deps, access, v.operatorId));
   const refused = await admit(v, deps);
   if (refused) return refused;
+  // S2 09fc G6 — the bare-username guard on the RAW question, before the spend, the scrub and anything stored.
+  const guarded = await pickerGuardRefusal(deps.guard ? (raw) => deps.guard!(v, raw) : undefined, parsed.question);
+  if (guarded) return guarded;
   const cost = await holdSpend(v, deps);
   if (cost.refused) return cost.refused;
   try {

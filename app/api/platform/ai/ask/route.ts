@@ -17,7 +17,8 @@
  *      the same way, on its own; a refused area is left out of the binding)
  *   4. the #352 per-operator limiter (limitPlatformMutation)  → 429
  *   5. handlePlatformAiAsk: body → kill switch → global cost freeze → the
- *      per-operator daily turn cap → the turn                 → 400 / 503 / 429
+ *      per-operator daily turn cap → the bare-username guard (authz/people.ts, on the RAW
+ *      question; 422 USE_PEOPLE_PICKER, no turn) → the $ caps → the turn → 400 / 503 / 429 / 422
  *   6. P2 — EVERY tool call of the turn through the turn boundary
  *      (authz/boundary.ts invokeTool): pack flag, strict args, the held areas, a FRESH
  *      requireFreshPlatformAccess per call (authz/recheck.server.ts — a mid-turn
@@ -60,6 +61,7 @@ import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-
 import { platformAiRenderAudit, platformAiToolAudit } from "@/lib/platform/intelligence/ai/authz/audit";
 import { resolveSubjects } from "@/lib/platform/intelligence/ai/authz/subject";
 import { isSubjectResolutionEnabled, platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subject.server";
+import { platformAiPickerGuard } from "@/lib/platform/intelligence/ai/authz/people.server";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
@@ -162,6 +164,8 @@ export async function POST(req: NextRequest) {
     // T2 only with a fresh CS tier AND the PLATFORM_AI_RECORD_VIEWED row written first — P5 writer, fail closed ⇒ masked).
     renderRecords: recordTextRenderer({ operatorId: auth.user.id, mode: "live", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit() }),
     ...(subjects ? { subjects } : {}),
+    // S2 09fc — the bare-username guard on the RAW question (P5 callers: exact username lookup; others: emails refused).
+    guard: platformAiPickerGuard({ operatorId: auth.user.id, primaryArea: area }),
     model,
     reasoningModel: reasoning,
     now: () => new Date(),
