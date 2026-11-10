@@ -54,8 +54,8 @@ export function PeriodCorrections({ segments }: { segments: readonly { kind: str
 }
 
 /**
- * F-1 (S2, 2026-11-08): the server's WINDOW NOTE segments ("Note: <metric> covers <its
- * window>, not the <asked> you asked about.") — code-written, never model text. Their own
+ * F-1 (S2, 2026-11-08): the server's WINDOW NOTE segments ("Note: You asked about <asked>;
+ * <metric> covers <served window> instead." — G1b-1) — code-written, never model text. Their own
  * QUIET note above the answer (role="note", aria-label "Note"): a hairline callout in
  * secondary text, quieter than the correction, never inline in the prose.
  */

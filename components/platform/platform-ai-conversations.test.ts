@@ -823,7 +823,7 @@ console.log("\n11. history (parity PR4) — ?c= deep link, grouping, delete-next
 // ── 13. F-1 window note + F-2 section labels / one nesting level (2026-11-08) ──
 console.log("\n13. F-1 the window note is its own quiet note ABOVE the answer · F-2 section labels and one nested list level");
 {
-  const NOTE = "Note: Estimated operating cost this cycle (by category) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about.";
+  const NOTE = "Note: You asked about the past 30 days; Estimated operating cost this cycle (by category) covers 1–10 Nov 2026 (month to date, UTC) instead.";
   const PROSE = "The largest measured cost is AI.";
   for (const [name, html] of [
     ["conversations", renderToStaticMarkup(createElement(TypedAnswerSegments, { segments: [{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }] }))],
@@ -832,11 +832,11 @@ console.log("\n13. F-1 the window note is its own quiet note ABOVE the answer ·
     const block = /<div role="note" aria-label="Note" data-platform-ai-window-note=""[^>]*>([\s\S]*?)<\/div><\/div>/.exec(html);
     check(`F-1 ${name}: the window note renders in its OWN role="note" callout (aria-label Note), once, ABOVE the body; the body holds only model text`,
       !!block && block[1].includes(NOTE) && html.indexOf("data-platform-ai-window-note") < html.indexOf("data-platform-ai-body")
-      && !/data-platform-ai-body[^]*you asked about/.test(html) && html.includes(PROSE) && (html.match(/you asked about/g) ?? []).length === 1, html);
+      && !/data-platform-ai-body[^]*you asked about/i.test(html) && html.includes(PROSE) && (html.match(/you asked about/gi) ?? []).length === 1, html);
     check(`F-1 ${name}: quiet (hairline border, secondary text, no accent rule, not medium weight) — distinct from the correction`,
       /border-\[var\(--border-hairline\)\]/.test(block?.[0] ?? "") && /text-\[var\(--text-secondary\)\]/.test(block?.[0] ?? "") && !/border-l-\[var\(--accent-info\)\]|font-medium/.test(block?.[0] ?? "x"), block?.[0]);
   }
-  check("F-1: answerBlocks never puts a note in the body", !JSON.stringify(answerBlocks([{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }])).includes("you asked about"));
+  check("F-1: answerBlocks never puts a note in the body", !JSON.stringify(answerBlocks([{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }])).includes("You asked about"));
   const parsedNote = parseMessage({ id: "m10", role: "ASSISTANT", status: "COMPLETE", createdAt: H3, completedAt: H3, failureCode: null, unavailable: false, stale: true,
     content: [{ kind: "note", text: NOTE }, { kind: "text", text: PROSE }], citations: [], notes: [] });
   check("F-1: the client keeps a stored note segment typed (parseMessage)", Array.isArray(parsedNote?.content) && (parsedNote!.content as ClientSegment[])[0]?.kind === "note");
