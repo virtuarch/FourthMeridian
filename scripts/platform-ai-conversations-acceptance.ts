@@ -729,29 +729,32 @@ rollback;
     const bOut = boundary.out.split("\n");
     // Every policy that can grant fm_app a read (SELECT or ALL, to fm_app or PUBLIC) plus the UPDATE USING:
     // name|cmd|uses timestamp '>'|uses timestamp '>='|deparsed USING.
-    const pol = psql(owner, `select p.polname || '|' || p.polcmd || '|' || (p.polqual::text ~ (':opno ' || gt.oid || ' '))::text
-        || '|' || (p.polqual::text ~ (':opno ' || ge.oid || ' '))::text || '|' || replace(pg_get_expr(p.polqual, p.polrelid), E'\\n', ' ')
+    const pol = psql(owner, `select p.polname::text || '|' || p.polcmd::text || '|' || (p.polqual::text ~ (':opno ' || gt.oid::text || ' '))::text
+        || '|' || (p.polqual::text ~ (':opno ' || ge.oid::text || ' '))::text || '|' || replace(pg_get_expr(p.polqual, p.polrelid)::text, E'\\n', ' ')
       from pg_policy p,
         (select oid from pg_operator where oprname = '>'  and oprleft = 'timestamp'::regtype and oprright = 'timestamp'::regtype) gt,
         (select oid from pg_operator where oprname = '>=' and oprleft = 'timestamp'::regtype and oprright = 'timestamp'::regtype) ge
       where p.polrelid = 'public."PlatformAiMessage"'::regclass and p.polcmd in ('r', 'w', '*')
-        and ('fm_app'::regrole = any(p.polroles) or 0::oid = any(p.polroles))
+        and ('fm_app'::regrole::oid = any(p.polroles) or 0::oid = any(p.polroles))
       order by p.polname;`);
     const polRows = pol.out.split("\n").filter(Boolean).map((l) => { const [name, cmd, gtUsed, geUsed, ...rest] = l.split("|"); return { name, cmd, gtUsed, geUsed, qual: rest.join("|") }; });
-    // PG16 deparses AT TIME ZONE as timezone('UTC'::text, now()); PG17+ as (now() AT TIME ZONE 'UTC'::text).
-    const CMP = /"purgeAfter" > (?:timezone\('UTC'::text, now\(\)\)|\(now\(\) AT TIME ZONE 'UTC'::text\))/;
+    // Deparse forms: (now() AT TIME ZONE 'UTC'::text) (PG14+ SQL-syntax deparse) or timezone('UTC'::text, now())
+    // (older); tolerant of whitespace, an optional pg_catalog. prefix and an optional ::text on the zone literal.
+    const NOW = String.raw`(?:pg_catalog\.)?now\(\)`;
+    const CMP = new RegExp(String.raw`"purgeAfter"\s*>\s*(?:(?:pg_catalog\.)?timezone\(\s*'UTC'(?:::text)?\s*,\s*${NOW}\s*\)|\(\s*${NOW}\s+AT\s+TIME\s+ZONE\s+'UTC'(?:::text)?\s*\))`, "i");
     const strictPolicy = (p: (typeof polRows)[number]) => p.gtUsed === "true" && p.geUsed === "false" && CMP.test(p.qual)
       && (p.qual.match(/"purgeAfter"/g) ?? []).length === 1;
     const reads = polRows.filter((p) => p.cmd === "r" || p.cmd === "*");
     const updPol = polRows.find((p) => p.name === "fm_app_upd");
     const cmpText = reads[0]?.qual.match(CMP)?.[0] ?? "";
-    const at = (purge: string) => cmpText.replace('"purgeAfter"', `'${purge}'::timestamp(3)`).replace("now()", "'2026-01-01 00:00:00.123+00'::timestamptz");
+    const at = (purge: string) => cmpText.replace('"purgeAfter"', `'${purge}'::timestamp(3)`).replace(new RegExp(NOW, "i"), "'2026-01-01 00:00:00.123+00'::timestamptz");
     const evalEq = cmpText ? psql(owner, `select (${at("2026-01-01 00:00:00.123")})::text || '|' || (${at("2026-01-01 00:00:00.124")})::text;`) : { ok: false, out: "", err: "no strict comparison in the read policy" };
     check(96, "read boundary is STRICT ('>'): fm_app_sel (the only fm_app read policy) and fm_app_upd USING use timestamp '>' (never '>='); that comparison at purgeAfter = now() exactly ⇒ false, +1 ms ⇒ true; as fm_app under the real policy (one now()): purgeAfter = ms-floor(now()) + 1 ms ⇒ visible, ms-floor(now()) (≤ now()) ⇒ hidden",
       boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`)
         && pol.ok && reads.length === 1 && reads[0].name === "fm_app_sel" && reads[0].cmd === "r" && strictPolicy(reads[0]) && !!updPol && strictPolicy(updPol)
         && evalEq.ok && evalEq.out === "false|true",
-      `${boundary.out.slice(0, 200)} ${errLine(boundary)} | ${pol.out.slice(0, 400)} ${errLine(pol)} | eval=${evalEq.out || evalEq.err}`);
+      `${boundary.out.slice(0, 200)} ${errLine(boundary)} | policies=${JSON.stringify(polRows.map((p) => ({ name: p.name, cmd: p.cmd, gt: p.gtUsed, ge: p.geUsed, using: p.qual })))} ${errLine(pol)}`
+        + ` | matched=${JSON.stringify(cmpText)} | eval=${evalEq.out || evalEq.err}`);
   }
 
   // ── [retention-7d] 20261108120000 (owner 2026-11-08): the clamp of existing rows ──
