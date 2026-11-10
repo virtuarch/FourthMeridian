@@ -22,6 +22,7 @@ import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { totpEnrollmentPathFor } from "@/lib/admin-totp-enrollment";
+import { hasActivePlatformGrants } from "@/lib/platform/directory.server";
 import {
   getPreferenceMatrix,
   type PreferenceMatrixRow,
@@ -116,6 +117,9 @@ export async function getAccount(): Promise<AccountData> {
 
 export interface SecurityData {
   email: string;
+  /** Owner D4 — holds ANY active PlatformGrant (the toggle's own fail-closed
+   *  count). Wording + return path for the enrolment widget only. */
+  operator: boolean;
 }
 
 export async function getSecurity(): Promise<SecurityData> {
@@ -127,7 +131,7 @@ export async function getSecurity(): Promise<SecurityData> {
     select: { email: true },
   });
   if (!user) return redirectToLogin();
-  return { email: user.email };
+  return { email: user.email, operator: await hasActivePlatformGrants(userId) };
 }
 
 // ── Preferences ───────────────────────────────────────────────────────────────

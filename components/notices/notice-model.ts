@@ -12,6 +12,10 @@
  *                  is forgotten when maintenance ends, so a later window shows
  *                  in full again. Display only: enforcement never reads this.
  *   two-factor   — "Protect your account with 2FA." for a user without 2FA.
+ *                  Owner D4: for an appointed operator (server flag
+ *                  `twoFactorOperator`) it reads "2FA is required to use the
+ *                  platform operator tools." and opens enrolment directly
+ *                  (lib/auth/operator-2fa-prompt.ts twoFactorNoticeCopy).
  *                  Dismissing hides it for this browser session (and a
  *                  dismissal made in the old per-browser nudge is honoured).
  *                  Not shown on the AI conversation surface (AI-4, unchanged).
@@ -22,10 +26,14 @@
  *                  invitation) or on the AI conversation surface.
  */
 
+import { twoFactorAudience, twoFactorNoticeCopy } from "@/lib/auth/operator-2fa-prompt";
+
 /** The one status read: `maintenance` null = could not tell (show nothing). */
 export interface AppNoticeStatus {
   maintenance: boolean | null;
   twoFactorReminder: boolean;
+  /** Owner D4 — present (true) only for a user without 2FA who holds an active PlatformGrant. Wording only. */
+  twoFactorOperator?: boolean;
   /** Connections pass PR 2 — present (true) only when the invitation applies. */
   connectInvitation?: boolean;
 }
@@ -82,7 +90,9 @@ export function visibleNotices(
     });
   }
   if (status.twoFactorReminder && !dismissals.twoFactorDismissed && !opts.conversationSurface) {
-    out.push({ id: "two-factor", mode: "full", title: TWO_FACTOR_TEXT, actionLabel: TWO_FACTOR_ACTION, href: TWO_FACTOR_HREF });
+    // Ordinary users: exactly TWO_FACTOR_TEXT / _ACTION / _HREF (pinned equal in
+    // lib/auth/operator-2fa-prompt.test.ts). Operators: the required wording.
+    out.push({ id: "two-factor", mode: "full", ...twoFactorNoticeCopy(twoFactorAudience(status.twoFactorOperator === true)) });
   }
   if (status.connectInvitation === true && !dismissals.connectDismissed && !opts.conversationSurface && !opts.connectionsSurface) {
     out.push({ id: "connect", mode: "full", title: CONNECT_TEXT, actionLabel: CONNECT_ACTION, href: CONNECT_HREF });
@@ -103,5 +113,9 @@ export function readNoticeStatus(body: unknown): AppNoticeStatus | null {
   if (typeof body !== "object" || body === null) return null;
   const b = body as Record<string, unknown>;
   const maintenance = b.maintenance === true ? true : b.maintenance === false ? false : null;
-  return { maintenance, twoFactorReminder: b.twoFactorReminder === true, ...(b.connectInvitation === true ? { connectInvitation: true } : {}) };
+  return {
+    maintenance, twoFactorReminder: b.twoFactorReminder === true,
+    ...(b.connectInvitation === true ? { connectInvitation: true } : {}),
+    ...(b.twoFactorOperator === true ? { twoFactorOperator: true } : {}),
+  };
 }
