@@ -8,12 +8,14 @@
  * enum or bound fails this test; update it DELIBERATELY (and say so in the PR) with
  *   UPDATE_PLATFORM_AI_TOOL_SNAPSHOT=1 npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/intelligence/ai/tools/registry.test.ts
  *
- * 1. the registry declares exactly the six existing tools, each passing contractProblems;
+ * 1. the registry declares exactly the six existing tools (+ P5: the customers pack, section 7), each passing contractProblems;
  * 2. each contract agrees with the serialised schema (names, required, enums, bounds);
  * 3. the contract parse is never weaker than the executor's own argument checks
  *    (and agrees exactly for the five tools whose checks live in the executor);
  * 4. run() delegates to the executor unchanged (same result, same trace);
- * 5. the snapshot; 6. static purity of tools/*.
+ * 5. the snapshot (P5: + every pack tool's contract schema); 6. static purity of tools/*;
+ * 7. P5 — the customers pack: CS-tier customer-linkable RECORD tools with an AuditSpec, a closed
+ *    record schema (no T2 field, t2Fields names only), handle args bound to CUSTOMER, cost 1.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -22,7 +24,7 @@ import {
   NOT_FOUND, PLATFORM_AI_MEMORY_TOOLS, PLATFORM_AI_TOOLS, executePlatformAiTool, platformAiToolSchemas,
   type PlatformAiBinding, type PlatformAiMemoryHooks, type ToolEvidence,
 } from "../core";
-import { contractProblems, parseClosedArgs } from "./contract";
+import { contractProblems, contractToolSchema, parseClosedArgs } from "./contract";
 import { CORE_TOOL_NAMES, PLATFORM_AI_REGISTERED_TOOLS, PLATFORM_AI_TOOL_REGISTRY, platformAiRegistrySchemas, platformAiTool } from "./registry";
 
 let failures = 0;
@@ -48,19 +50,24 @@ const memoryHooks: PlatformAiMemoryHooks = {
   contextMessage: null, recall: () => ({ items: [] }), propose: () => NOT_FOUND, renderPlaceholder: () => null, subjects: () => [],
 };
 
+/** The six pre-existing (core) tools — sections 1–4 are about them; the packs (P5+) are section 7. */
+const LEGACY = PLATFORM_AI_TOOL_REGISTRY.filter((t) => CORE_TOOL_NAMES.includes(t.name));
+const PACK_TOOLS = PLATFORM_AI_TOOL_REGISTRY.filter((t) => !CORE_TOOL_NAMES.includes(t.name));
+
 async function main() {
   console.log("1. the six existing tools, each a valid declaration");
-  check("the registry declares exactly the core's tools (4 + 2 memory), in the order offered",
-    PLATFORM_AI_REGISTERED_TOOLS.join() === CORE_TOOL_NAMES.join() && CORE_TOOL_NAMES.join() === [...PLATFORM_AI_TOOLS, ...PLATFORM_AI_MEMORY_TOOLS].join() && PLATFORM_AI_TOOL_REGISTRY.length === 6,
+  check("the registry declares the core's tools (4 + 2 memory) first, in the order offered, then the pack tools",
+    PLATFORM_AI_REGISTERED_TOOLS.slice(0, 6).join() === CORE_TOOL_NAMES.join() && CORE_TOOL_NAMES.join() === [...PLATFORM_AI_TOOLS, ...PLATFORM_AI_MEMORY_TOOLS].join() && LEGACY.length === 6
+    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile",
     PLATFORM_AI_REGISTERED_TOOLS);
   for (const t of PLATFORM_AI_TOOL_REGISTRY) check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
   check("packs: metrics = list_metrics/get_metric · navigation = find_page/open_page · memory = recall/propose",
-    PLATFORM_AI_TOOL_REGISTRY.map((t) => `${t.pack}:${t.name}`).join() === "metrics:list_metrics,metrics:get_metric,navigation:find_page,navigation:open_page,memory:recall_memory,memory:propose_memory");
+    LEGACY.map((t) => `${t.pack}:${t.name}`).join() === "metrics:list_metrics,metrics:get_metric,navigation:find_page,navigation:open_page,memory:recall_memory,memory:propose_memory");
   check("none returns records: AGGREGATE, customerLinkable false, no audit, pii 0, tier OPS, READ, 1 call each",
-    PLATFORM_AI_TOOL_REGISTRY.every((t) => t.scope === "AGGREGATE" && t.customerLinkable === false && t.audit === undefined && t.pii === 0
+    LEGACY.every((t) => t.scope === "AGGREGATE" && t.customerLinkable === false && t.audit === undefined && t.pii === 0
       && t.requires.tier === "OPS" && t.requires.level === "READ" && t.cost.toolCalls === 1));
   check("requires.areas lists every Platform area explicitly (each area's binding scopes them)",
-    PLATFORM_AI_TOOL_REGISTRY.every((t) => [...t.requires.areas].sort().join() === "CUSTOMER_SUCCESS,GROWTH_REVENUE,MERCHANT_OPS,PLATFORM_OPS,SECURITY_OPS"));
+    LEGACY.every((t) => [...t.requires.areas].sort().join() === "CUSTOMER_SUCCESS,GROWTH_REVENUE,MERCHANT_OPS,PLATFORM_OPS,SECURITY_OPS"));
   check("an unknown tool has no declaration", platformAiTool("get_customer") === null && platformAiTool("") === null && platformAiTool("get_metric")?.name === "get_metric");
 
   console.log("\n2. each contract agrees with the serialised schema the model sees");
@@ -69,7 +76,7 @@ async function main() {
     JSON.stringify(schemas) === JSON.stringify(platformAiToolSchemas(PARAM_KEYS, { memory: true }))
     && JSON.stringify(platformAiRegistrySchemas(PARAM_KEYS)) === JSON.stringify(platformAiToolSchemas(PARAM_KEYS)));
   check("memory off ⇒ the four non-memory tools only", (platformAiRegistrySchemas(PARAM_KEYS) as Fn[]).map((s) => s.function.name).join() === PLATFORM_AI_TOOLS.join());
-  for (const t of PLATFORM_AI_TOOL_REGISTRY) {
+  for (const t of LEGACY) {
     const s = schemas.find((x) => x.function.name === t.name);
     if (!s) { check(`${t.name}: present in the schema`, false); continue; }
     const p = s.function.parameters;
@@ -107,7 +114,7 @@ async function main() {
       `{"factType":"WATCHING_ISSUE","subjectRef":"x@1","note":"${"n".repeat(141)}"}`],
   };
   const generic = [`[]`, `null`, `nope`, `"str"`, `{"__proto__":{"x":1}}`];
-  for (const t of PLATFORM_AI_TOOL_REGISTRY) {
+  for (const t of LEGACY) {
     const rows: { raw: string; contract: boolean; executor: boolean }[] = [];
     for (const raw of [...corpus[t.name], ...generic]) {
       const e = ev();
@@ -139,6 +146,8 @@ async function main() {
       paramKeys: PARAM_KEYS,
       memoryOff: platformAiRegistrySchemas(PARAM_KEYS),
       memoryOn: platformAiRegistrySchemas(PARAM_KEYS, { memory: true }),
+      // P5+: each pack tool's contract schema (tools/contract.ts contractToolSchema — what the router offers).
+      packs: PACK_TOOLS.map((t) => ({ pack: t.pack, schema: contractToolSchema(t as never, PARAM_KEYS) })),
     }, null, 2) + "\n";
     if (process.env.UPDATE_PLATFORM_AI_TOOL_SNAPSHOT === "1") { writeFileSync(SNAPSHOT, current); console.log(`  (snapshot written: ${path.relative(ROOT, SNAPSHOT)})`); }
     const pinned = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, "utf8") : null;
@@ -157,6 +166,30 @@ async function main() {
         !/metricAccessFor\(|incidentAudienceFor\(|retrieveMetric\(|retrieveWith\(|atSurface\(|listNavigationTargets\(|resolveNavigationTarget\(|require(?:Fresh)?PlatformAccess\(/.test(s));
     }
     check("core.ts does not import the registry (no cycle; the live loop is unchanged in P1b)", !/tools\/registry|tools\/contract/.test(readFileSync(path.join(ROOT, "lib/platform/intelligence/ai/core.ts"), "utf8")));
+  }
+
+  console.log("\n7. P5 — the customers pack");
+  {
+    const { validateRecordSchema, T2_FIELD_NAMES } = await import("../evidence/record-envelope");
+    check("customers pack = list_customer_attention, list_recently_joined, get_customer_profile", PACK_TOOLS.map((t) => `${t.pack}:${t.name}`).join() === "customers:list_customer_attention,customers:list_recently_joined,customers:get_customer_profile");
+    for (const t of PACK_TOOLS) {
+      check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
+      check(`${t.name}: RECORD, customerLinkable, AuditSpec (surface platform-ai, kind CUSTOMER), tier CUSTOMER_SUCCESS, areas exactly [CUSTOMER_SUCCESS], READ, pii 2, 1 call`,
+        t.scope === "RECORD" && t.customerLinkable === true && !!t.audit && t.audit.detail.surface === "platform-ai" && t.audit.detail.recordKind === "CUSTOMER"
+        && t.requires.tier === "CUSTOMER_SUCCESS" && t.requires.areas.join() === "CUSTOMER_SUCCESS" && t.requires.level === "READ" && t.pii === 2 && t.cost.toolCalls === 1);
+      check(`${t.name}: a closed record schema of kind CUSTOMER — no T2-named field, t2Fields = [name, email] (names only)`,
+        !!t.recordSchema && t.recordSchema.kind === "CUSTOMER" && validateRecordSchema(t.recordSchema).length === 0
+        && Object.keys(t.recordSchema.fields).every((k) => !(T2_FIELD_NAMES as readonly string[]).includes(k) && !/user|id$|email|name|institution|label|note|message|error/i.test(k))
+        && (t.recordSchema.t2Fields ?? []).join() === "name,email");
+      check(`${t.name}: no free-string argument (only enum / bounded int / CUSTOMER handle)`,
+        Object.values(t.args.properties).every((a) => a.kind === "enum" || a.kind === "int" || (a.kind === "handle" && a.recordKind === "CUSTOMER")));
+    }
+    check("get_customer_profile takes a CUSTOMER handle, revalidates it, and audits CUSTOMER_PROFILE_VIEWED; the lists audit PLATFORM_AI_RECORD_VIEWED",
+      platformAiTool("get_customer_profile")?.args.properties.customer?.kind === "handle" && typeof platformAiTool("get_customer_profile")?.revalidate === "function"
+      && platformAiTool("get_customer_profile")?.audit?.action === "CUSTOMER_PROFILE_VIEWED"
+      && platformAiTool("list_customer_attention")?.audit?.action === "PLATFORM_AI_RECORD_VIEWED" && platformAiTool("list_recently_joined")?.audit?.action === "PLATFORM_AI_RECORD_VIEWED");
+    check("the core serialisation is unchanged by the pack (core.ts schemas carry no pack tool)",
+      !(platformAiRegistrySchemas(PARAM_KEYS, { memory: true }) as Fn[]).some((s) => PACK_TOOLS.some((t) => t.name === s.function.name)));
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

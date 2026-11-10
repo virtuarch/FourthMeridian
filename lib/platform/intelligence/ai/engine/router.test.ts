@@ -68,7 +68,17 @@ async function main() {
     && !platformAiPackEnabled("metrics", fakeEnv(false, false)) && !platformAiPackEnabled("navigation", fakeEnv(false, true)));
   check("memory follows the existing memory flag (and the master)",
     platformAiPackEnabled("memory", fakeEnv(true, true)) && !platformAiPackEnabled("memory", fakeEnv(true, false)) && !platformAiPackEnabled("memory", fakeEnv(false, true)));
-  check("an undeclared pack ⇒ OFF", !platformAiPackEnabled("customers" as never, fakeEnv(true, true)));
+  check("an undeclared pack ⇒ OFF", !platformAiPackEnabled("merchants" as never, fakeEnv(true, true)));
+  // P5 (PACK-PR-CONDITIONS 3): customers is wired to ITS strict getter (master AND PLATFORM_AI_PACK_CUSTOMERS_ENABLED).
+  const withCustomers = (master: boolean, pack: boolean | undefined) => ({ ...fakeEnv(master, false), ...(pack === undefined ? {} : { isPlatformAiPackCustomersEnabled: pack }) });
+  check("customers pack flag = isPlatformAiPackCustomersEnabled (and the master); absent getter ⇒ OFF",
+    platformAiPackEnabled("customers", withCustomers(true, true)) && !platformAiPackEnabled("customers", withCustomers(true, false))
+    && !platformAiPackEnabled("customers", withCustomers(false, true)) && !platformAiPackEnabled("customers", withCustomers(true, undefined)));
+  check("customers pack flag over the LIVE env: PLATFORM_AI_PACK_CUSTOMERS_ENABLED=\"true\" here ⇒ ON (the getter, not another variable)",
+    platformAiPackEnabled("customers") === env.isPlatformAiPackCustomersEnabled && env.isPlatformAiPackCustomersEnabled === true);
+  const routerSrc = readFileSync(path.join(process.cwd(), "lib/platform/intelligence/ai/engine/router.ts"), "utf8");
+  check("PACK_FLAG.customers reads exactly e.isPlatformAiPackCustomersEnabled (source pin)",
+    /customers: \(e\) => e\.isPlatformAiEnabled === true && e\.isPlatformAiPackCustomersEnabled === true,/.test(routerSrc));
   const OPS: PlatformArea[] = ["PLATFORM_OPS"];
   const r = (memory: boolean, e: ReturnType<typeof fakeEnv>, q: string | null = null, areas: PlatformArea[] = OPS) => routePlatformAiPacks({ question: q, areas, memory }, e).join();
   check("core routing: memory only with the turn's memory hooks",

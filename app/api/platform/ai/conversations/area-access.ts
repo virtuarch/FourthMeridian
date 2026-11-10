@@ -31,6 +31,7 @@ import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/s
 import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
 import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
+import { platformAiRenderAudit } from "@/lib/platform/intelligence/ai/authz/audit";
 
 /**
  * B11 turn integration: the access for ONE area from THIS function's own guard
@@ -60,6 +61,7 @@ export async function conversationAreaAccess(area: PlatformArea, operatorId: str
   // probe check per record area per render, revalidate, T2 only with a fresh CS tier + the audit row).
   return {
     resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding),
-    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiRenderRecheck }),
+    // P5: T2 only after the PLATFORM_AI_RECORD_VIEWED row (authz/audit.ts, fail closed ⇒ masked).
+    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit() }),
   };
 }

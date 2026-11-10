@@ -41,7 +41,8 @@ import { env } from "@/lib/env";
 import { PlatformAiPlaceholder } from "@/components/platform/PlatformAiPlaceholder";
 import { PlatformAiAsk } from "@/components/platform/PlatformAiAsk";
 import { PlatformAiConversations } from "@/components/platform/PlatformAiConversations";
-import { platformAiAreaFor, platformAiAreaLabel } from "@/lib/platform/intelligence/ai/core";
+import { platformAiAreaFor, platformAiAreaLabel, platformAiAreasFor } from "@/lib/platform/intelligence/ai/core";
+import { showsSubjectNotice } from "@/lib/platform/intelligence/ai/authz/subject-notice";
 import { isMemoryEffective } from "@/lib/platform/intelligence/ai/memory/gate";
 
 export const runtime = "nodejs";
@@ -60,6 +61,8 @@ export default async function PlatformAiPage() {
   if (!area) redirect("/dashboard/spaces");
   // Platform AI operational memory (design v2 §6): ONLY when isMemoryEffective — decided HERE, server-side,
   // after every gate. Off ⇒ the conversations page exactly as before (the original short line, no panel, no card).
-  if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} />;
-  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;
+  // P5 (S2 09dp): the customer-lookup notice wherever the customers pack is offered (strict flag + a CS grant).
+  const subjectNotice = showsSubjectNotice({ customersPackOn: env.isPlatformAiPackCustomersEnabled, areas: platformAiAreasFor(spaces) });
+  if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} subjectNotice={subjectNotice} />;
+  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} subjectNotice={subjectNotice} />;
 }

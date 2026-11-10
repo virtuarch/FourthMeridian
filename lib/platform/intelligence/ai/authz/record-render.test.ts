@@ -110,7 +110,7 @@ async function main() {
     const unknownKind = world();
     check("an unknown record kind / a non-area ⇒ \"[no longer available]\"",
       (await renderRecordSegments([seg("ref", { rk: "OTHER" }), seg("ref", { a: "ALL" })], unknownKind.viewer())).every((x) => x.text === RECORD_GONE_TEXT));
-    check("the production registry has NO record source in P4 ⇒ every record renders gone", Object.keys(PLATFORM_AI_RECORD_SOURCES).length === 0
+    check("the production registry has exactly the CUSTOMER source (P5) ⇒ a record of any other kind renders gone", Object.keys(PLATFORM_AI_RECORD_SOURCES).join() === "CUSTOMER"
       && (await renderRecordSegments([seg("name")], { operatorId: OP, mode: "history", recheck: world().viewer().recheck })).every((x) => x.text === RECORD_GONE_TEXT));
     const foreign = world();
     const foreignViewer: RecordRenderViewer = { ...foreign.viewer(), operatorId: "cop0000000000000000000002" };
@@ -143,15 +143,16 @@ async function main() {
   console.log("\n4. production wiring pins");
   {
     const rr = code(src("lib/platform/intelligence/ai/authz/record-render.ts"));
-    check("record-render: the sources registry is EMPTY in P4 (each pack PR registers its own)", /PLATFORM_AI_RECORD_SOURCES[^=]*= Object\.freeze\(\{\}\)/.test(rr));
+    check("record-render: the sources registry holds only the reviewed pack sources (P5: CUSTOMER = customerRecordSource())",
+      /PLATFORM_AI_RECORD_SOURCES[^=]*= Object\.freeze\(\{\s*CUSTOMER: customerRecordSource\(\),\s*\}\)/.test(rr));
     check("record-render: export never T2 (mode check in the T2 predicate) and the audit runs before any t2 read",
       /viewer\.mode !== "export"/.test(rr) && rr.indexOf("viewer.audit!(rows") < rr.indexOf("l.src.t2("));
     const ask = code(src("app/api/platform/ai/ask/route.ts"));
-    check("ask route: records = the boundary's lookup; renderRecords = recordTextRenderer(live, platformAiRenderRecheck), no audit writer yet",
-      /records: boundary\.recordRef/.test(ask) && /renderRecords: recordTextRenderer\(\{ operatorId: auth\.user\.id, mode: "live", recheck: platformAiRenderRecheck \}\)/.test(ask));
+    check("ask route: records = the boundary's lookup; renderRecords = recordTextRenderer(live, platformAiRenderRecheck, the P5 fail-closed audit writer)",
+      /records: boundary\.recordRef/.test(ask) && /renderRecords: recordTextRenderer\(\{ operatorId: auth\.user\.id, mode: "live", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit\(\) \}\)/.test(ask));
     const aa = code(src("app/api/platform/ai/conversations/area-access.ts"));
     check("conversation area access: renderRecords = recordTextRenderer(history, platformAiRenderRecheck) for THIS operator",
-      /renderRecords: recordTextRenderer\(\{ operatorId, mode: "history", recheck: platformAiRenderRecheck \}\)/.test(aa));
+      /renderRecords: recordTextRenderer\(\{ operatorId, mode: "history", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit\(\) \}\)/.test(aa));
     const tr = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
     check("turn runner: records + remint from THIS turn's boundary", /records: boundary\.recordRef/.test(tr) && /remint: boundary\.remint/.test(tr));
     const rs = code(src("lib/platform/intelligence/ai/authz/record-render.server.ts"));

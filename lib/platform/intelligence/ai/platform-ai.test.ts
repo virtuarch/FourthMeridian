@@ -1845,8 +1845,9 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   const coreImports = [...src(`${dir}/core.ts`).matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
+  // P5: and the PURE subject extraction / fill (authz/subject.ts — pinned pure in authz/subject.test.ts).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./authz/subject", "./briefing", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
@@ -1886,7 +1887,7 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
   check("the route and the page both use platformAiAreaFor; the page passes the registry label",
     /const area = platformAiAreaFor\(rows\);/.test(code(src("app/api/platform/ai/ask/route.ts")))
     && /const area = platformAiAreaFor\(spaces\);/.test(code(src("app/(shell)/dashboard/platform/ai/page.tsx")))
-    && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
+    && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} subjectNotice=\{subjectNotice\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
   check("the label is the registry's display label (PLATFORM_AREAS), the same one the route's binding reports",
     platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("lib/platform/intelligence/ai/authz/scope.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("lib/platform/intelligence/ai/authz/scope.ts")));
   // Personal parity PR6 (owner 2026-11-08): the area is the shell header's context label, announced "Answering from: <label>".

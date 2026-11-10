@@ -160,6 +160,18 @@ export interface TurnBoundary {
   recordRef(handle: string): TurnRecordRef | null;
   /** P4 — replay re-authz: one handle of THIS turn (or null) per prior record ref, in order. */
   remint(refs: readonly { rk: string; rid: string; a: string }[]): Promise<(string | null)[]>;
+  /**
+   * P5 — subject resolution (authz/subject.ts): a FRESH decision for the subject's eligibility —
+   * the CUSTOMER_SUCCESS area first (its CS tier), else any other area still in scope (the audit
+   * actor; csTier false). Each is a per-call recheck (a refusal removes the area). null ⇒ none survives.
+   */
+  subjectEligibility(): Promise<{ csTier: boolean; area: PlatformArea } | null>;
+  /**
+   * P5 — a handle of THIS turn for a subject the server resolved (never for model input): the
+   * kind's source must exist, the area be in scope and pass a FRESH recheck with the CS tier, and
+   * the source must re-validate the record for that guard. Anything else ⇒ null.
+   */
+  adoptSubject(subject: { rk: string; rid: string; area: PlatformArea }): Promise<string | null>;
 }
 
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
@@ -252,7 +264,8 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
 
     const binding = bindingFor(surviving);
     if (!binding) return refuse("RECHECK_REFUSED");
-    const ctx: LegacyToolContext = { binding, ev: c.ev, paramKeys: c.paramKeys, asked: c.asked, ...(c.memory ? { memory: c.memory } : {}) };
+    // P5: a RECORD tool reads through THIS call's fresh guards (the token minted from them); never kept past the call.
+    const ctx: LegacyToolContext = { binding, ev: c.ev, paramKeys: c.paramKeys, asked: c.asked, ...(c.memory ? { memory: c.memory } : {}), ...(tool.scope === "RECORD" ? { fresh } : {}) };
 
     // 7. record-level revalidation.
     if (tool.revalidate) {
@@ -409,8 +422,32 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     return out;
   }
 
+  async function subjectEligibility(): Promise<{ csTier: boolean; area: PlatformArea } | null> {
+    const order = [...scope.areas()].sort((a, b) => (a === "CUSTOMER_SUCCESS" ? -1 : b === "CUSTOMER_SUCCESS" ? 1 : 0));
+    for (const a of order) {
+      const g = await scope.recheck(a);
+      if (g) return { csTier: a === "CUSTOMER_SUCCESS" && g.csTier === true, area: a };
+    }
+    return null;
+  }
+
+  async function adoptSubject(subject: { rk: string; rid: string; area: PlatformArea }): Promise<string | null> {
+    const src = Object.prototype.hasOwnProperty.call(recordSources, subject.rk) ? recordSources[subject.rk] : undefined;
+    if (!src || typeof subject.rid !== "string" || subject.rid.length === 0 || !scope.has(subject.area)) return null;
+    const guard = await scope.recheck(subject.area);
+    if (!guard || guard.csTier !== true) return null;
+    let tier: ToolTier | null = null;
+    try { tier = await src.revalidate(subject.rid, subject.area, guard); } catch { tier = null; }
+    if (tier !== "CUSTOMER_SUCCESS" && tier !== "OPS") return null;
+    const handle = handles.mint({ kind: subject.rk, area: subject.area, tier, recordId: subject.rid });
+    recordRefs.set(handle, Object.freeze({ rk: subject.rk, rid: subject.rid, a: subject.area, fields: Object.freeze([RECORD_REF_FIELD, ...src.t2Fields]) }));
+    return handle;
+  }
+
   return {
     invoke,
+    subjectEligibility,
+    adoptSubject,
     recordRef: (handle) => (typeof handle === "string" && handles.owns(handle) ? recordRefs.get(handle) ?? null : null),
     remint,
     trace: () => [...trace],

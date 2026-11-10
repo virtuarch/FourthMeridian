@@ -26,6 +26,7 @@
 import "server-only";
 
 import type { PlatformArea } from "@prisma/client";
+import type { CsToken, OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { inScope, isScopedArea, type ScopeAuth, type ScopedArea } from "./scope";
 
 /** One fresh guard result for one area (from the injected recheck). */
@@ -33,6 +34,12 @@ export interface FreshGuard {
   readonly auth: ScopeAuth;
   /** incidentAudienceFor(fresh auth).audience === "CUSTOMER_SUCCESS", decided by the guarded caller. */
   readonly csTier: boolean;
+  /**
+   * P5 — the incident audience token the guarded caller minted from THIS fresh guard result
+   * (authz/recheck.server.ts: incidentAudienceFor(fresh)). A CS-tier pack reader (tools/packs/
+   * customers.server.ts) reads the incident module only with it. Absent ⇒ no CS-tier read.
+   */
+  readonly incidentToken?: CsToken | OpsToken | null;
 }
 
 /** Injected from the route: requireFreshPlatformAccess(area, "READ"); null on any refusal. */
@@ -69,7 +76,7 @@ export function createTurnScope(input: { operatorId: string; scopes: readonly Sc
       let fresh: FreshGuard | null;
       try { fresh = await input.recheck(area); } catch { fresh = null; }
       if (!fresh || !inScope(fresh.auth, area, input.operatorId)) { remove(area); return null; }
-      return { auth: fresh.auth, csTier: fresh.csTier === true };
+      return { auth: fresh.auth, csTier: fresh.csTier === true, ...(fresh.incidentToken ? { incidentToken: fresh.incidentToken } : {}) };
     },
   };
 }

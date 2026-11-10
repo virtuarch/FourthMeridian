@@ -49,13 +49,16 @@ import { isMemoryEffective } from "../memory/gate";
 import { TOOL_PACKS, contractToolSchema, type PlatformAiToolContract, type ToolPack } from "../tools/contract";
 import { CORE_TOOL_NAMES, PLATFORM_AI_TOOL_REGISTRY, platformAiRegistrySchemas } from "../tools/registry";
 
-/** The env getters the pack flags read (a test passes its own). */
-export type PackFlagEnv = Pick<typeof liveEnv, "isPlatformAiEnabled" | "isPlatformAiMemoryEnabled">;
+/** The env getters the pack flags read (a test passes its own; an absent pack getter is OFF). */
+export type PackFlagEnv = Pick<typeof liveEnv, "isPlatformAiEnabled" | "isPlatformAiMemoryEnabled">
+  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled">>;
 
 const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   metrics: (e) => e.isPlatformAiEnabled === true,
   navigation: (e) => e.isPlatformAiEnabled === true,
   memory: (e) => e.isPlatformAiEnabled === true && isMemoryEffective(e),
+  // P5 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_CUSTOMERS_ENABLED === "true"; default OFF).
+  customers: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackCustomersEnabled === true,
 };
 
 /** Is this pack's server flag ON? Unknown pack ⇒ false. */

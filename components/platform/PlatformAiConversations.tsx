@@ -283,6 +283,8 @@ export function ConversationList({ conversations, selectedId, now, limits, error
 export interface PlatformAiConversationsViewProps {
   /** The area a NEW conversation answers from (platformAiAreaFor, decided by the page). */
   areaLabel: string;
+  /** P5 (S2 09dp) — the customers pack is offered (the page decides): the customer-lookup notice. */
+  subjectNotice?: boolean;
   now: Date;
   conversations: readonly ClientConversation[] | null;
   limits: ClientLimits | null;
@@ -401,7 +403,7 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
   const lead = (
     <>
       {noticeIn === "lead" ? <div data-platform-ai-notice-lead="" className="mx-auto mb-6 w-full min-w-0 max-w-xl"><PlatformAiNotice open={noticeOpen} saved /></div> : null}
-      <PlatformAiLead />
+      <PlatformAiLead subjectNotice={p.subjectNotice === true} />
     </>
   );
 
@@ -427,7 +429,7 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
             <PlatformAiMemoryConfirmCard key={p.memoryProposal.token} proposal={p.memoryProposal} onDone={(saved) => p.onMemoryDone?.(saved)} />
           ) : null}
           <PlatformAiComposer value={p.draft} onChange={p.onDraft} onSubmit={p.onSend} busy={busy} disabled={pending || atLimit || loading}
-            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} memory={p.memory === true} />
+            noticeOpen={noticeOpen} onNotice={p.onNotice} noticeIn={noticeIn} memory={p.memory === true} subjectNotice={p.subjectNotice === true} />
         </>
       )}
     </>
@@ -521,6 +523,8 @@ export interface PlatformAiConversationsProps {
   areaLabel: string;
   /** Platform AI memory is effective (decided by the page, server-side, after every gate). */
   memory?: boolean;
+  /** P5 (S2 09dp) — the customers pack is offered (decided by the page, server-side). */
+  subjectNotice?: boolean;
   /**
    * Test seam only (the page never passes it): the presentation the state is
    * handed to. Defaults to PlatformAiConversationsView; the history test passes
@@ -529,7 +533,7 @@ export interface PlatformAiConversationsProps {
   View?: ComponentType<PlatformAiConversationsViewProps>;
 }
 
-export function PlatformAiConversations({ areaLabel, memory = false, View = PlatformAiConversationsView }: PlatformAiConversationsProps) {
+export function PlatformAiConversations({ areaLabel, memory = false, subjectNotice = false, View = PlatformAiConversationsView }: PlatformAiConversationsProps) {
   const [memoryProposal, setMemoryProposal] = useState<ClientMemoryProposal | null>(null);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [now, setNow] = useState(() => new Date());
@@ -698,7 +702,7 @@ export function PlatformAiConversations({ areaLabel, memory = false, View = Plat
 
   return (
     <View
-      areaLabel={areaLabel} now={now}
+      areaLabel={areaLabel} now={now} subjectNotice={subjectNotice}
       conversations={conversations} limits={limits} listError={listError}
       selected={selected} threadLoading={threadLoading}
       draft={draft} sendingQuestion={sending?.question ?? null} problem={problem} canRetrySend={retry !== null}

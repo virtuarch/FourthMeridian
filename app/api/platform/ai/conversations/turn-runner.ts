@@ -32,6 +32,10 @@ import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { createTurnBoundary } from "@/lib/platform/intelligence/ai/authz/boundary";
 import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
+import { platformAiToolAudit } from "@/lib/platform/intelligence/ai/authz/audit";
+import { fillSubjectSlots, resolveSubjects } from "@/lib/platform/intelligence/ai/authz/subject";
+import { platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subject.server";
+import { STORED_NOTES_MAX } from "@/lib/platform/intelligence/ai/conversations/answer";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -55,7 +59,7 @@ async function memoryTurnFor(operatorId: string, question: string, access: AreaA
   });
 }
 
-export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ operatorId, conversationId, question, access }) => {
+export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ operatorId, conversationId, question, access, subjects }) => {
   const history = (await store.loadConversationHistory(operatorId, conversationId)) ?? [];
   const { model, reasoning } = platformAiModel();
   let memory: MemoryTurn | undefined;
@@ -74,9 +78,20 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     router: platformAiTurnRouter({ memory: !!memory }),
     packEnabled: (p) => platformAiPackEnabled(p),
     onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${ROUTE_KEY})`),
+    // P5 — THE fail-closed audit writer for customer-linkable RECORD tools (actor = this call's fresh guard).
+    audit: platformAiToolAudit(),
   });
+  // P5 — exact customer identifiers (cut out before the scrub by the handler) resolved through THIS turn's
+  // boundary: the model sees `[customer h_…]` or the one `[customer not resolved]`; the stored text keeps `[customer]`.
+  let modelQuestion = question;
+  let subjectNote: string | null = null;
+  if (subjects && access.area) {
+    const r = await resolveSubjects(subjects.ids, platformAiSubjectDeps({ operatorId, primaryArea: access.area, boundary }));
+    modelQuestion = fillSubjectSlots(subjects.slotted, r.fills);
+    subjectNote = r.note;
+  }
   const run = await runConversationTurn({
-    conversationId, question, binding: access.binding, history,
+    conversationId, question: modelQuestion, binding: access.binding, history,
     ...(memory ? {
       memory,
       onMemoryRefusals: (codes: readonly string[]) => { void memoryStore.recordProposalRefusals(operatorId, access.area!, codes).catch(() => {}); },
@@ -93,5 +108,9 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     onTrace: (line) => console.info(`[platform-ai] turn ${line} (${ROUTE_KEY})`),
   });
   if (run.outcome.status === "FAILED") console.warn(`[platform-ai] turn failed: code=${run.outcome.failureCode} (${ROUTE_KEY})`);
+  // P5: the one uniform server note for any unresolved subject (code-written; never says why).
+  if (subjectNote && run.outcome.status === "COMPLETE" && !run.outcome.answer.notes.includes(subjectNote) && run.outcome.answer.notes.length < STORED_NOTES_MAX) {
+    return { ...run.outcome, answer: { ...run.outcome.answer, notes: [...run.outcome.answer.notes, subjectNote] } };
+  }
   return run.outcome;
 };
