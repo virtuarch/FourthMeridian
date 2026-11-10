@@ -43,7 +43,9 @@ function check(name: string, ok: boolean, detail?: string): void {
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
 
-const ADDRESS = "bc1qdogfoodstubaddress";
+// BIP173 spec test vector (P2WSH) — public test material, not a wallet. It must
+// be checksum-valid: S2 09eq P1 refuses a malformed address before any explorer call.
+const ADDRESS = "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3";
 const ACCOUNT = "acc-btc-dogfood";
 const SATS = 24_060_252;          // the live cold wallet's figure
 const BTC = SATS / 100_000_000;
