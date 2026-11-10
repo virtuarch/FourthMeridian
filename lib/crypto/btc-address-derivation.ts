@@ -22,7 +22,7 @@
  */
 
 import { HDKey } from "@scure/bip32";
-import { base58check, bech32 } from "@scure/base";
+import { base58check, bech32, bech32m } from "@scure/base";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ripemd160 } from "@noble/hashes/legacy.js";
 
@@ -57,6 +57,59 @@ export function isExtendedKey(input: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * S2 09eq P1 — is `input` a well-formed single Bitcoin ADDRESS?
+ *
+ * Checked before a single-address wallet's sync makes any explorer call, the way
+ * SOL (`isSolAddressShape`) and EVM (`isEthAddressShape`) check theirs. A string
+ * that fails here can never be read: the balance authority (Esplora) answers
+ * 400 for it. So refusing it locally rejects nothing that could ever sync, and
+ * the malformed value never reaches a third party.
+ *
+ * Accepts every standard form, mainnet and testnet, verified by CHECKSUM:
+ *   - base58check P2PKH / P2SH: version 0x00 "1…", 0x05 "3…" (testnet 0x6f
+ *     "m…/n…", 0xc4 "2…"), 20-byte hash;
+ *   - segwit v0 bech32 (BIP173) "bc1q…"/"tb1q…": a 20- or 32-byte program;
+ *   - segwit v1–v16 bech32m (BIP350), taproot "bc1p…" included: 2–40 bytes.
+ * Bech32 may be all-lower or all-upper case (BIP173); mixed case is invalid.
+ */
+const BASE58_ADDRESS_VERSIONS: ReadonlySet<number> = new Set([0x00, 0x05, 0x6f, 0xc4]);
+const SEGWIT_HRPS: ReadonlySet<string> = new Set(["bc", "tb"]);
+
+export function isBtcAddress(input: string): boolean {
+  if (typeof input !== "string") return false;
+  const s = input.trim();
+  if (s.length < 14 || s.length > 90) return false;
+  return isBase58Address(s) || isSegwitAddress(s);
+}
+
+function isBase58Address(s: string): boolean {
+  try {
+    const raw = b58c.decode(s);
+    return raw.length === 21 && BASE58_ADDRESS_VERSIONS.has(raw[0]);
+  } catch {
+    return false;
+  }
+}
+
+function isSegwitAddress(s: string): boolean {
+  for (const [codec, isM] of [[bech32, false], [bech32m, true]] as const) {
+    let decoded: { prefix: string; words: number[] };
+    try { decoded = codec.decode(s as `${string}1${string}`, 90); } catch { continue; }
+    if (!SEGWIT_HRPS.has(decoded.prefix.toLowerCase())) return false;
+    const [version, ...data] = decoded.words;
+    if (version === undefined || version > 16) return false;
+    // v0 is bech32 only; v1+ is bech32m only (BIP350).
+    if ((version === 0) === isM) return false;
+    let program: Uint8Array;
+    try { program = codec.fromWords(data); } catch { return false; }
+    if (program.length < 2 || program.length > 40) return false;
+    if (version === 0 && program.length !== 20 && program.length !== 32) return false;
+    return true;
+  }
+  return false;
 }
 
 interface ParsedExtendedKey {

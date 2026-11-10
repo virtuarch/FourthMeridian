@@ -61,6 +61,7 @@ import {
   parseExtendedKey,
   deriveAddressAt,
   isExtendedKey,
+  isBtcAddress,
 } from "@/lib/crypto/btc-address-derivation";
 import {
   readDiscoveryCursor,
@@ -105,7 +106,7 @@ export interface BtcWalletSyncResult {
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
   // ("price" is no longer returned — a missing close is `valuation: UNAVAILABLE`
   // on an ok run — and stays in the union only for readers of old results.)
-  stage?: "load" | "discovery" | "balance" | "price" | "transactions" | "capture";
+  stage?: "load" | "address" | "discovery" | "balance" | "price" | "transactions" | "capture";
   reason?: string;
   /**
    * V26-S3-LEDGER — does the imported movement ledger account for the observed
@@ -209,7 +210,7 @@ export interface BtcSyncDeps {
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
 async function recordWalletSyncIssue(
   financialAccountId: string,
-  stage: "discovery" | "balance" | "price" | "transactions" | "capture",
+  stage: "address" | "discovery" | "balance" | "price" | "transactions" | "capture",
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
@@ -873,6 +874,21 @@ export async function syncBtcWallet(
   if (addresses.length === 0 && !isXpub) addresses = [account.walletAddress];
   if (addresses.length === 0) {
     return { accountId, ok: false, stage: "load", reason: "no addresses to sync" };
+  }
+
+  // S2 09eq P1 — ADDRESS GUARD, before any explorer call, exactly as SOL
+  // (isSolAddressShape) and EVM (isEthAddressShape) refuse theirs: stage
+  // "address", one SyncIssue, no network. The dispatcher maps the stage to
+  // INVALID_WALLET_ADDRESS (walletSyncErrorCode). A single-address wallet's
+  // address is customer input the create route stores as given, so a malformed
+  // or sentinel value used to be sent to the public explorer, which can only
+  // answer 400. An xpub wallet's addresses are DERIVED (valid by construction)
+  // and its descriptor is already refused at discovery (INVALID_XPUB), so the
+  // guard covers the single-address path. The reason never echoes the address.
+  if (!isXpub && !addresses.every(isBtcAddress)) {
+    const reason = "This does not look like a Bitcoin address (expected a legacy 1…/3… or bech32 bc1… address).";
+    await recordWalletSyncIssue(accountId, "address", reason, { addresses: addresses.length });
+    return { accountId, ok: false, stage: "address", reason };
   }
 
   // CRYPTO-LATCH-1 — the default authority carries its own archive maintenance.

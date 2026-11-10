@@ -16,6 +16,7 @@ import {
   scriptTypeForPurpose,
   purposeFromPath,
   normalizeExtendedKeyInput,
+  isBtcAddress,
 } from "@/lib/crypto/btc-address-derivation";
 
 let failures = 0;
@@ -98,6 +99,43 @@ check("normalizeExtendedKeyInput: Ledger native-segwit JSON derives bc1 (matches
 // A genuinely-legacy JSON (44' path) stays legacy.
 check("normalizeExtendedKeyInput: 44' path keeps xpub/legacy",
   detectExtendedKeyType(normalizeExtendedKeyInput(JSON.stringify({ xpub: XPUB, derivationPath: "44'/0'/0'" }))) === "p2pkh");
+
+// ── S2 09eq P1 — isBtcAddress: the pre-explorer guard for single-address syncs ──
+// Accept: every form a customer could hold (BIP173/BIP350 spec vectors + the
+// addresses this module derives). Reject: anything the explorer could only 400.
+const VALID_ADDRESSES: Array<[string, string]> = [
+  ["legacy P2PKH 1…",           "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"],
+  ["legacy P2PKH (fixture)",    "1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1D"],
+  ["P2SH 3…",                   "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"],
+  ["bech32 P2WPKH bc1q…",       "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"],
+  ["bech32 upper-case",         "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4"],
+  ["bech32 P2WSH bc1q… (32B)",  "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3"],
+  ["bech32m taproot bc1p…",     "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"],
+  ["bech32m v1 40-byte",        "bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y"],
+  ["testnet bech32 tb1q…",      "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"],
+  ["testnet P2PKH m…",          "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"],
+  ["testnet P2SH 2…",           "2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc"],
+  ["derived BIP84 (this module)", rcv(ZPUB)[0]],
+  ["derived BIP49 (this module)", rcv(YPUB)[0]],
+  ["derived BIP44 (this module)", rcv(XPUB)[0]],
+  ["surrounding whitespace",    "  bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 "],
+];
+for (const [label, a] of VALID_ADDRESSES) check(`isBtcAddress accepts ${label}`, isBtcAddress(a), a);
+
+const INVALID_ADDRESSES: Array<[string, string]> = [
+  ["e0-live fixture sentinel",          "e0lADDR3fa9c2d11"],
+  ["bech32-looking stub",               "bc1qunitstubaddress"],
+  ["bech32 bad checksum",               "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5"],
+  ["bech32 mixed case",                 "bc1qW508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"],
+  ["taproot encoded as bech32 (BIP350)", "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd"],
+  ["v0 encoded as bech32m (BIP350)",    "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kemeawh"],
+  ["unknown HRP",                       "ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9"],
+  ["legacy bad checksum",               "1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1E"],
+  ["an xpub is not an address",         XPUB],
+  ["EVM address",                       "0x52908400098527886E0F7030069857D2E4169EE7"],
+  ["empty",                             ""],
+];
+for (const [label, a] of INVALID_ADDRESSES) check(`isBtcAddress rejects ${label}`, !isBtcAddress(a), a);
 
 console.log(`\nbtc-address-derivation: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);
