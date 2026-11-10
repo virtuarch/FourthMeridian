@@ -44,7 +44,7 @@ import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailure
 import { PLATFORM_AI_ASK_SURFACE } from "@/lib/platform/intelligence/ai/core";
 import type { TodaySpendGroup } from "@/lib/ai/allowance-core";
 import {
-  platformAiReserveUsd, platformAiSpendDecision, resolvePlatformAiSpendCaps,
+  envOnlyCapsInput, platformAiReserveUsd, platformAiSpendDecision, resolvePlatformAiCaps, toResolvedCaps,
   type CapInputs, type PlatformAiSpendVerdict,
 } from "@/lib/platform/ai/platform-ai-spend.core";
 
@@ -108,7 +108,8 @@ const logRefusal = (v: PlatformAiSpendVerdict) => {
  * locks and, when admitted, reserve it. Never throws: any failure is a refusal.
  */
 export async function reservePlatformAiSpend(operatorId: string, now: Date, opts: ReserveOptions): Promise<SpendReservation> {
-  const caps = resolvePlatformAiSpendCaps(opts.caps ?? env.platformAiSpendCapInputs);
+  // D5 PR1: the one caps resolver, env only (override + settings null), so the result is as before.
+  const caps = toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(opts.caps ?? env.platformAiSpendCapInputs)));
   if (caps.state === "REFUSE") {
     const verdict: PlatformAiSpendVerdict = { allowed: false, detail: "UNAVAILABLE", cause: caps.cause };
     logRefusal(verdict);
