@@ -879,7 +879,8 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).
   const today = await ask("How are we looking today?", "Right now {{m:incident-broken-now@1}} incidents are broken and {{m:provider-outcome@1|part=failing}} provider is failing; AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} over the trailing window.",
     [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "provider-outcome" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }]);
-  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 (in the last 7 days) provider is failing; AI spend is about $12.50 (in the last 24 hours, estimated)"), segmentsText(today.result.answer));
+  // G1b-1: "today" is answered by the current-state and 24 h figures; the 7-day provider window is DISCLOSED (one note, first).
+  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Note: You asked about today; Provider outcome verdict covers the last 7 days instead. Right now 3 incidents are broken and 1 (in the last 7 days) provider is failing; AI spend is about $12.50 (in the last 24 hours, estimated)"), segmentsText(today.result.answer));
   const most = await ask("What's costing me the most money?", "AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} across {{m:ai-fleet-spend-status@1|part=invocations}} customer calls, {{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold.");
   check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (in the last 24 hours, estimated) across 40 (in the last 24 hours) customer calls, about 25% (in the last 24 hours, estimated) of the threshold.", segmentsText(most.result.answer));
   const q30 = "What's costing me the most money in the past 30 days";
@@ -938,7 +939,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     && /matchPlaceholderEnvelope\(envelopes, key, fixedWindowOption\(envelopes, key, opts\.window, askedDays\)\)/.test(src("lib/platform/intelligence/ai/compose/placeholders.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts")) + code(src("lib/platform/intelligence/ai/compose/placeholders.ts"))));
 
   // Through real turns (fake model).
-  const one = await turn("AI spend this week?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  const one = await turn("AI spend over the past 7 days?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
   check("SINGLE read, placeholder WITHOUT a window ⇒ resolves, and the figure states the envelope's window (server text)",
     one.result.grounding.verdict === "RESOLVED" && /^Estimated AI spend: about \$[\d,.]+ \(in the last 7 days, estimated\)\.$/.test(txt(one)), txt(one));
   const twoW = await turn("AI spend?", [[gm("economics-ai-cost", 7), gm("economics-ai-cost", 30)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
@@ -993,14 +994,16 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const ct = txt(cycleAsked);
   check("asked 30 days + a billing-cycle metric ⇒ answer KEPT (RESOLVED_WITH_WINDOW_NOTE), the cycle stated inline, ONE note",
     !cycleAsked.result.grounding.replaced && cycleAsked.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
-    && /^Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\. AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(ct)
+    && /^Note: You asked about the past 30 days; Estimated operating cost this cycle \(by category\) covers 1–\d{1,2} Nov 2026 \(month to date, UTC\) instead\. AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(ct)
     && notes(ct) === 1, ct);
   check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE period_mismatch=0") && !/billing|Note/.test(traceLine(cycleAsked.result)));
   const thirtyAsked = await turn(q30, [[gm("economics-ai-cost")]], "Estimated AI spend in the past 30 days: {{m:economics-ai-cost@1|part=spendUsd}}.");
   check("asked 30 days + a 30-day metric ⇒ no note (RESOLVED)", thirtyAsked.result.grounding.verdict === "RESOLVED" && notes(txt(thirtyAsked)) === 0 && /\(in the last 30 days, estimated\)\.$/.test(txt(thirtyAsked)), txt(thirtyAsked));
   const noneMatch = await turn(q30, [[gm("economics-operating-cost"), gm("ai-fleet-spend-status")]], "Cycle total {{m:economics-operating-cost@1|part=totalUsd}}; fleet spend {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
-  check("…no placed figure matches the asked window ⇒ still KEPT, one note per affected metric (two)",
-    !noneMatch.result.grounding.replaced && notes(txt(noneMatch)) === 2 && /covers the last 24 hours, not the 30 days you asked about\./.test(txt(noneMatch)), txt(noneMatch));
+  // G1b-1: mixed served windows ⇒ ONE note naming each affected metric with its own window.
+  check("…no placed figure matches the asked window ⇒ still KEPT, ONE note naming both affected metrics",
+    !noneMatch.result.grounding.replaced && notes(txt(noneMatch)) === 1 && noneMatch.result.answer[0]?.kind === "note"
+    && /^Note: You asked about the past 30 days; these figures cover other periods instead: Estimated operating cost this cycle \(by category\) covers 1–\d{1,2} Nov 2026 \(month to date, UTC\); AI fleet spend vs budget \(24 h\) covers the last 24 hours\. /.test(txt(noneMatch)), txt(noneMatch));
 
   // OWNER REPLAYS — the exact tool sequences seen on Preview, with realistic model output.
   const ls = [{ name: "list_metrics", args: { domain: "economics" } }];
@@ -1027,8 +1030,11 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
     `This billing cycle AI is {{m:economics-operating-cost@1|part=aiUsd}} and providers (Plaid) are {{m:economics-provider-cost@1|part=costUsd}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}. The provider figure is a lower bound, so a full ranking can't be verified. Over the recent window AI spend is {{m:economics-ai-cost@1|part=spendUsd}}.`);
   const cT = txt(C);
+  // G1b-1: "this month" is answered by the month-to-date figures; the 30-day AI-cost window is DISCLOSED.
   check("OWNER C replay (operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, each figure with its window",
-    !C.result.grounding.replaced && C.result.grounding.verdict === "RESOLVED" && C.result.citations.find((c) => c.metric === "economics-provider-cost@1")?.status === "PARTIAL"
+    !C.result.grounding.replaced && C.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
+    && cT.startsWith("Note: You asked about this month; Estimated AI cost (7 / 30 / 90 d) covers the last 30 days instead. This billing cycle")
+    &&C.result.citations.find((c) => c.metric === "economics-provider-cost@1")?.status === "PARTIAL"
     && /providers \(Plaid\) are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(cT) && /infrastructure is unavailable\./.test(cT)
     && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(cT), cT);
 
@@ -1253,7 +1259,7 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
   const fxT = segmentsText(fx.result.answer);
   check("FIXED-window + window arg ⇒ the REAL read (PARTIAL, no UNAVAILABLE), the figure states its own window, and the window NOTE states the mismatch",
     fx.result.trace[0]?.outcome === "PARTIAL" && fx.result.trace[0]?.windowIgnored === true && fx.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
-    && /^Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\. Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(fxT), fxT);
+    && /^Note: You asked about the past 30 days; Estimated operating cost this cycle \(by category\) covers 1–\d{1,2} Nov 2026 \(month to date, UTC\) instead\. Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(fxT), fxT);
   check("…traceLine flags it (+windowIgnored, a flag — never the value the model sent)",
     traceLine(fx.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored ") && !/=30\b|window=/.test(traceLine(fx.result).split(" ")[0]), traceLine(fx.result));
   const fxTool = JSON.parse((fx.transcript.find((m) => (m as { role: string }).role === "tool") as { content: string }).content) as MetricEnvelope;
@@ -1386,7 +1392,8 @@ console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qual
 
   // ── S2 F-C1 / F-C2 (2026-11-07): owner Question C ──────────────────────────
   const Q_C = "What's costing me the most money in the past 30 days?";
-  const NOTE_C = "Note: Estimated operating cost this cycle (by category) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about.";
+  // G1b-1 (S2 P2): the explicit substitution disclosure — asked period, served span (reader start → as-of), instead.
+  const NOTE_C = "Note: You asked about the past 30 days; Estimated operating cost this cycle (by category) covers 1–4 Nov 2026 (month to date, UTC) instead.";
   const toolResults = (t: { transcript: unknown[] }) => t.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
 
   // F-C1 contract: the model is handed the TRUE window as a quotable phrase, and whether the asked period is offered.
@@ -1827,7 +1834,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
   // P1a: the answer-composition code moved to compose/*; the same purity scans cover it, and compose/* never imports core.ts (no cycle).
   const composeFiles = readdirSync(path.join(ROOT, dir, "compose")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/compose/${f}`);
-  check("compose/* (P1a) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "sanitise", "segments", "stale", "verdicts", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
+  check("compose/* (P1a) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
   for (const f of composeFiles) check(`${f}: never imports core.ts`, !/from "\.\.\/core"|intelligence\/ai\/core"/.test(src(f)));
   for (const f of [...files, ...composeFiles]) {
     const s = code(src(f));
@@ -1839,7 +1846,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
@@ -2037,7 +2044,7 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
     typeof opResult?.window_ignored === "string" && /take no \|window/.test(opResult.window_ignored) && !/\|window=/.test(JSON.stringify(opResult.placeholders)) && toolResults(preview).find((x) => x.metric === "economics-ai-cost@1")?.window_ignored === undefined);
   const plain = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
   check("Question C, placeholders copied verbatim ⇒ answer kept with the window note (unchanged behaviour)",
-    !plain.result.grounding.replaced && plain.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /^Note: .*not the 30 days you asked about\./.test(txt(plain)), txt(plain));
+    !plain.result.grounding.replaced && plain.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /^Note: You asked about the past 30 days; .* covers .* \(month to date, UTC\) instead\./.test(txt(plain)), txt(plain));
   // The relaxation is narrow: only a fixed-window key, only the asked period.
   const notAsked = await runModel(QC, b, script([{ calls: [gm("economics-operating-cost")] }, { content: "Total {{m:economics-operating-cost@1|part=totalUsd|window=7}}." }]));
   check("…|window=N that the operator did NOT ask for, on a fixed-window metric ⇒ still WINDOW_MISMATCH (fallback)", notAsked.result.grounding.verdict === "WINDOW_MISMATCH" && txt(notAsked).startsWith(UNVERIFIED_FALLBACK));
@@ -2147,11 +2154,11 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
   const c = await runModel(QC, b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "The largest measured cost is {{l:economics-operating-cost@1|part=largestMeasuredCategory}} at {{m:economics-operating-cost@1|part=largestMeasuredCategory}}." }]));
   const kinds = c.result.answer.map((x) => x.kind);
   check("F-1 Question C: the content starts with the note segment; no model text segment contains the note wording",
-    kinds[0] === "note" && /^Note: .* covers .*, not the 30 days you asked about\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/you asked about|^Note:/.test(x.text)), c.result.answer);
+    kinds[0] === "note" && /^Note: You asked about the past 30 days; .* covers .* instead\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/You asked about|^Note:/.test(x.text)), c.result.answer);
   const stored = storedAnswerOf(c.result, c.record);
   check("F-1: stored typed as { kind: \"note\" } (valid StoredAnswerV1), replayed and exported as its own block",
-    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => /you asked about/.test(x.text))
-    && /^Note: .*you asked about\. The largest/.test(replayAnswer(stored, NOW)) && /^Note: .*you asked about\. The largest/.test(renderAnswerText(stored)), stored.segments);
+    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => /You asked about/.test(x.text))
+    && /^Note: You asked about .* instead\. The largest/.test(replayAnswer(stored, NOW)) && /^Note: You asked about .* instead\. The largest/.test(renderAnswerText(stored)), stored.segments);
   check("F-1: a note segment with an extra key is not a valid stored answer", !isStoredAnswer({ ...stored, segments: [{ kind: "note", text: "x", href: "/y" }] }));
 
   // F-3: exact counts render without "at least"; a capped scan keeps it.
@@ -2437,7 +2444,7 @@ console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · co
 
   const qc = await runComposed(QC, opsBinding(OPS), frame(JSON.stringify({ framing: "Costs are led by one category this month.", next_actions: [] })));
   check("(ii) Question C composed: the window NOTE first (cycle, not the asked 30 days), leader + total typed from THIS turn's envelope, PARTIAL ⇒ 'at least', estimated wording",
-    qc.result.briefing?.kind === "COST_RANKING" && qc.result.answer[0].kind === "note" && /^Note: .* covers this UTC calendar month to date, since \d{4}-\d{2}-\d{2}, not the 30 days you asked about\.$/.test(qc.result.answer[0].text)
+    qc.result.briefing?.kind === "COST_RANKING" && qc.result.answer[0].kind === "note" && /^Note: You asked about the past 30 days; Estimated operating cost this cycle \(by category\) covers 1–\d{1,2} Nov 2026 \(month to date, UTC\) instead\.$/.test(qc.result.answer[0].text)
     && qc.record.typed.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2
     && /So far this month \(since \d{4}-\d{2}-\d{2}\), the largest measured cost is AI, at least \$[\d.,]+ \(estimated\); ranking among measured categories; some categories are incomplete\. The operating cost is at least \$[\d.,]+ \(estimated\)\./.test(txt(qc))
     && !qc.result.grounding.replaced, { b: qc.result.briefing, t: txt(qc) });

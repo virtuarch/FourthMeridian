@@ -17,6 +17,10 @@
  *   headline states an unlicensed figure → refused (UNLICENSED_HEADLINE)
  *   an observation states one    → that observation is dropped (UNLICENSED_FIGURE)
  *   an observation cites nothing real → dropped (NO_EVIDENCE); bad paths stripped
+ *   a part, its whole and the share between them disagree ("57% … $12,985 out of
+ *     $12,985.14") → the observation is dropped (INCONSISTENT_SHARE); in the
+ *     headline the Brief is refused (INCONSISTENT_SHARE_HEADLINE). Every figure
+ *     was licensed; the sentence was false. Codes only are recorded (S2 O-2).
  *   SPENDING citing a debt payment or own-account transfer → dropped (MISLABELED_MOVEMENT)
  *   debt-reduction wording resting only on non-payment movements (an own-accounts
  *     transfer, an unclassified movement) → dropped (MISLABELED_MOVEMENT, v2.7-P0)
@@ -55,6 +59,7 @@ import {
   resolveEvidencePath, validateNarration,
 } from './contract';
 import { licenceFromPackage, unlicensedFigures } from './licence';
+import { inconsistentShares, type ShareProblemCode } from './share-consistency';
 import {
   GENERATION_CALL_BUDGET_MS, GENERATION_MAX_RATE_LIMIT_RETRIES, GENERATION_MIN_ATTEMPT_MS,
 } from './policy';
@@ -72,8 +77,11 @@ export type StructuredCall = <T>(
 export interface DroppedObservation {
   index:  number;
   kind:   string;
-  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT' | 'SHOWN_ON_PAGE' | 'UNCONNECTED_MOVEMENT';
+  reason: 'NO_EVIDENCE' | 'UNLICENSED_FIGURE' | 'MISLABELED_MOVEMENT' | 'SHOWN_ON_PAGE' | 'UNCONNECTED_MOVEMENT'
+    | 'INCONSISTENT_SHARE';
   figures?: string[];
+  /** INCONSISTENT_SHARE only: which share check failed. Codes, never amounts or names. */
+  checks?: ShareProblemCode[];
 }
 
 export interface BriefValidationReport {
@@ -85,7 +93,7 @@ export interface BriefValidationReport {
 
 export type AcceptanceResult =
   | { ok: true; narration: BriefNarration; validation: BriefValidationReport }
-  | { ok: false; reason: 'MALFORMED_OUTPUT' | 'UNLICENSED_HEADLINE'; detail: string[] };
+  | { ok: false; reason: 'MALFORMED_OUTPUT' | 'UNLICENSED_HEADLINE' | 'INCONSISTENT_SHARE_HEADLINE'; detail: string[] };
 
 /**
  * Pure: the model's raw narration against the package it was given.
@@ -99,6 +107,11 @@ export function acceptNarration(pkg: BriefPackage, raw: unknown): AcceptanceResu
   const headlineFigures = unlicensedFigures(shape.value.headline, licence);
   if (headlineFigures.length > 0) {
     return { ok: false, reason: 'UNLICENSED_HEADLINE', detail: headlineFigures.map((f) => f.text) };
+  }
+  // S2 O-2 — the detail is codes only: the lifecycle logs it.
+  const headlineShares = inconsistentShares(shape.value.headline);
+  if (headlineShares.length > 0) {
+    return { ok: false, reason: 'INCONSISTENT_SHARE_HEADLINE', detail: headlineShares };
   }
 
   const validation: BriefValidationReport = { droppedObservations: [], strippedEvidence: [], quietCorrected: false };
@@ -124,6 +137,13 @@ export function acceptNarration(pkg: BriefPackage, raw: unknown): AcceptanceResu
     if (figures.length > 0) {
       validation.droppedObservations.push({ index, kind: ob.kind, reason: 'UNLICENSED_FIGURE',
         figures: figures.map((f) => f.text) });
+      return;
+    }
+    // S2 O-2 — every figure is licensed, but a part, its whole and the share
+    // between them must also agree. Title and body are separate texts.
+    const shares = [...inconsistentShares(ob.title), ...inconsistentShares(ob.body)];
+    if (shares.length > 0) {
+      validation.droppedObservations.push({ index, kind: ob.kind, reason: 'INCONSISTENT_SHARE', checks: shares });
       return;
     }
     const candidate: BriefObservation = { ...ob, evidence };
@@ -177,7 +197,8 @@ export type BriefGenerationResult =
   | { ok: true; brief: DailyBrief; validation: BriefValidationReport; meta: BriefGenerationMeta }
   | {
       ok: false;
-      reason: 'TIMEOUT' | 'REFUSED' | 'PROVIDER_ERROR' | 'MALFORMED_OUTPUT' | 'UNLICENSED_HEADLINE';
+      reason: 'TIMEOUT' | 'REFUSED' | 'PROVIDER_ERROR' | 'MALFORMED_OUTPUT' | 'UNLICENSED_HEADLINE'
+        | 'INCONSISTENT_SHARE_HEADLINE';
       detail: string[];
       meta: BriefGenerationMeta;
       /** The model's narration when one arrived — for diagnosis, never for display. */

@@ -34,7 +34,7 @@ const answer = (id: string, correction: boolean): ClientMessage => ({
 // CORRECTION (Question C wording), the quiet WINDOW NOTE (F-1), and a briefing answer with a
 // section label + one nested list level (F-2) — as the shared typed renderer lays them out.
 const CORRECTION_TEXT = 'Correction: the figures for Estimated operating cost this cycle (by category) cover so far this month (since 2026-01-01), not the past 30 days you asked about; that period cannot be measured for them.';
-const NOTE_TEXT = 'Note: Estimated operating cost this cycle (by category) covers this UTC calendar month to date, since 2026-01-01, not the 30 days you asked about.';
+const NOTE_TEXT = 'Note: You asked about the past 30 days; Estimated operating cost this cycle (by category) covers 1–10 Jan 2026 (month to date, UTC) instead.';
 const CALLOUTS: ClientMessage[] = [
   user('cu1', "What's costing me the most money in the past 30 days?"),
   {id: 'ca1', role: 'ASSISTANT', status: 'COMPLETE', createdAt: at(1), completedAt: at(1), content: [
