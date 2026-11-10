@@ -46,8 +46,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PLATFORM_AI_RETENTION_DAYS } from "../lib/platform/intelligence/ai/conversations/constants";
 import { prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, deniedByGrant, deniedByRls } from "./lib/rls-harness";
@@ -700,34 +699,59 @@ async function main(): Promise<number> {
         && across.ok && across.out === "" && acrossRead === null,
       `inside=${inside.out || inside.err} read=${insideRead?.messages.length} across=${across.out || across.err} read=${acrossRead === null ? "null" : acrossRead.messages.length}`);
 
-    // (b) The read boundary is STRICT: purgeAfter = now() + 1 ms visible, purgeAfter = now() hidden. purgeAfter is
-    // timestamp(3) and now() carries microseconds, so storing now() would round; the fixture waits (one psql session,
-    // a fresh transaction per try) for a transaction whose now() falls exactly on a millisecond, then — in THAT
-    // transaction, so both sides read the one now() — sets both rows, proves the stored values equal now() and
-    // now() + 1 ms, and reads as fm_app (SET LOCAL ROLE) under the real policy. Rolled back: nothing persists.
+    // (b) The read boundary is STRICT ('>'): equal ⇒ hidden, +1 ms ⇒ visible. Deterministic, in two halves (the
+    // earlier fixture waited for a transaction whose now() fell exactly on a millisecond — purgeAfter is
+    // timestamp(3), now() carries microseconds — and on some CI runners no aligned now() was ever observed in
+    // 20000 tries, so the check failed 'nohit' with correct code).
+    //  · BEHAVIOUR, real policy as fm_app, one transaction (one now()), rolled back: with F = now() truncated to the
+    //    millisecond (so F <= now() < F + 1 ms, exactly storable in timestamp(3)), purgeAfter = F + 1 ms ⇒ visible
+    //    and purgeAfter = F ⇒ hidden — i.e. the policy flips inside the one-millisecond window around now().
+    //  · EXACT EQUALITY, from the catalog: the ONLY read policy fm_app gets on the table (fm_app_sel; the UPDATE
+    //    USING too) compares "purgeAfter" with the timestamp '>' operator (opno in the stored node tree; never
+    //    '>='), and that very deparsed comparison, evaluated with purgeAfter = now() substituted as one literal
+    //    instant, is false — and true at +1 ms. Together these replace "observe an aligned now()" without luck.
     const bnd = await store.createConversation({ operatorId: E, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "BOUNDARY-QUESTION" });
     if (bnd.kind !== "CREATED") throw new Error(`expiry boundary fixture: create ${bnd.kind}`);
-    const bu = bnd.pair.user.id, ba = bnd.pair.assistant.id; // bu ⇒ now() + 1 ms, ba ⇒ now()
-    const body = `alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
-update "PlatformAiMessage" set "purgeAfter" = (now() at time zone 'UTC') + interval '1 millisecond' where id = '${bu}';
-update "PlatformAiMessage" set "purgeAfter" = (now() at time zone 'UTC') where id = '${ba}';
+    const bu = bnd.pair.user.id, ba = bnd.pair.assistant.id; // bu ⇒ F + 1 ms, ba ⇒ F (F = date_trunc('milliseconds', now()))
+    const F = `date_trunc('milliseconds', (now() at time zone 'UTC'))`;
+    const boundary = psql(owner, `begin;
+alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
+update "PlatformAiMessage" set "purgeAfter" = ${F} + interval '1 millisecond' where id = '${bu}';
+update "PlatformAiMessage" set "purgeAfter" = ${F} where id = '${ba}';
 alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
-select 'stored|' || bool_and(case id when '${bu}' then "purgeAfter" = (now() at time zone 'UTC') + interval '1 millisecond' else "purgeAfter" = (now() at time zone 'UTC') end)::text from "PlatformAiMessage" where id in ('${bu}','${ba}');
+select 'stored|' || bool_and(case id when '${bu}' then "purgeAfter" = ${F} + interval '1 millisecond' and "purgeAfter" > (now() at time zone 'UTC')
+  else "purgeAfter" = ${F} and "purgeAfter" <= (now() at time zone 'UTC') end)::text from "PlatformAiMessage" where id in ('${bu}','${ba}');
 set local role fm_app;
 set local app.user_id = '${E}';
 select 'visible|' || coalesce(string_agg(id, ',' order by id), '') from "PlatformAiMessage" where "conversationId" = '${bnd.conversation.id}';
 rollback;
-`;
-    const bodyDir = mkdtempSync(path.join(tmpdir(), "aiconv-boundary-"));
-    const bodyFile = path.join(bodyDir, "boundary.sql");
-    writeFileSync(bodyFile, body);
-    // Each try is its own transaction (its own now()); on the first millisecond-aligned now() the body runs and psql quits.
-    const attempt = `begin;\nselect (extract(microseconds from now())::bigint % 1000 = 0) as hit \\gset\n\\if :hit\n\\i ${bodyFile}\n\\q\n\\endif\nrollback;\n`;
-    const boundary = psql(owner, attempt.repeat(20000) + "select 'nohit';\n");
-    rmSync(bodyDir, { recursive: true, force: true });
+`);
     const bOut = boundary.out.split("\n");
-    check(96, "read boundary is STRICT ('>'), one DB now(): purgeAfter = now() + 1 ms ⇒ visible to fm_app; purgeAfter = now() exactly ⇒ hidden",
-      boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`) && !bOut.includes("nohit"), `${boundary.out.slice(0, 200)} ${errLine(boundary)}`);
+    // Every policy that can grant fm_app a read (SELECT or ALL, to fm_app or PUBLIC) plus the UPDATE USING:
+    // name|cmd|uses timestamp '>'|uses timestamp '>='|deparsed USING.
+    const pol = psql(owner, `select p.polname || '|' || p.polcmd || '|' || (p.polqual::text ~ (':opno ' || gt.oid || ' '))::text
+        || '|' || (p.polqual::text ~ (':opno ' || ge.oid || ' '))::text || '|' || replace(pg_get_expr(p.polqual, p.polrelid), E'\\n', ' ')
+      from pg_policy p,
+        (select oid from pg_operator where oprname = '>'  and oprleft = 'timestamp'::regtype and oprright = 'timestamp'::regtype) gt,
+        (select oid from pg_operator where oprname = '>=' and oprleft = 'timestamp'::regtype and oprright = 'timestamp'::regtype) ge
+      where p.polrelid = 'public."PlatformAiMessage"'::regclass and p.polcmd in ('r', 'w', '*')
+        and ('fm_app'::regrole = any(p.polroles) or 0::oid = any(p.polroles))
+      order by p.polname;`);
+    const polRows = pol.out.split("\n").filter(Boolean).map((l) => { const [name, cmd, gtUsed, geUsed, ...rest] = l.split("|"); return { name, cmd, gtUsed, geUsed, qual: rest.join("|") }; });
+    // PG16 deparses AT TIME ZONE as timezone('UTC'::text, now()); PG17+ as (now() AT TIME ZONE 'UTC'::text).
+    const CMP = /"purgeAfter" > (?:timezone\('UTC'::text, now\(\)\)|\(now\(\) AT TIME ZONE 'UTC'::text\))/;
+    const strictPolicy = (p: (typeof polRows)[number]) => p.gtUsed === "true" && p.geUsed === "false" && CMP.test(p.qual)
+      && (p.qual.match(/"purgeAfter"/g) ?? []).length === 1;
+    const reads = polRows.filter((p) => p.cmd === "r" || p.cmd === "*");
+    const updPol = polRows.find((p) => p.name === "fm_app_upd");
+    const cmpText = reads[0]?.qual.match(CMP)?.[0] ?? "";
+    const at = (purge: string) => cmpText.replace('"purgeAfter"', `'${purge}'::timestamp(3)`).replace("now()", "'2026-01-01 00:00:00.123+00'::timestamptz");
+    const evalEq = cmpText ? psql(owner, `select (${at("2026-01-01 00:00:00.123")})::text || '|' || (${at("2026-01-01 00:00:00.124")})::text;`) : { ok: false, out: "", err: "no strict comparison in the read policy" };
+    check(96, "read boundary is STRICT ('>'): fm_app_sel (the only fm_app read policy) and fm_app_upd USING use timestamp '>' (never '>='); that comparison at purgeAfter = now() exactly ⇒ false, +1 ms ⇒ true; as fm_app under the real policy (one now()): purgeAfter = ms-floor(now()) + 1 ms ⇒ visible, ms-floor(now()) (≤ now()) ⇒ hidden",
+      boundary.ok && bOut.includes("stored|true") && bOut.includes(`visible|${bu}`)
+        && pol.ok && reads.length === 1 && reads[0].name === "fm_app_sel" && reads[0].cmd === "r" && strictPolicy(reads[0]) && !!updPol && strictPolicy(updPol)
+        && evalEq.ok && evalEq.out === "false|true",
+      `${boundary.out.slice(0, 200)} ${errLine(boundary)} | ${pol.out.slice(0, 400)} ${errLine(pol)} | eval=${evalEq.out || evalEq.err}`);
   }
 
   // ── [retention-7d] 20261108120000 (owner 2026-11-08): the clamp of existing rows ──
