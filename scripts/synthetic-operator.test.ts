@@ -13,9 +13,10 @@ import path from "node:path";
 import {
   decideSyntheticOperator, isSyntheticEmailAllowed, isGrantAllowed, isRevocableArea, SYNTHETIC_GRANTS, SYNTHETIC_EMAIL,
   SYNTHETIC_ROLE, FORBIDDEN_AREAS, computeCleanupDeadline, HARD_DEADLINE, CLEANUP_WINDOW_MS, privateDirFor, recordDirRefusal,
-  passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord, utcStamp,
+  passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord, utcStamp, providerConnectionBlocksCleanup,
 } from "./lib/synthetic-operator.core";
 import { createPrivateDir, writePrivateJson, shredFile } from "./lib/synthetic-operator.files";
+import { PlaidItemStatus } from "@prisma/client";
 
 let failures = 0;
 let passed = 0;
@@ -188,6 +189,19 @@ check("the role written is SYNTHETIC_ROLE and no SYSTEM_ADMIN appears", /role: S
 check("no session-level SET is issued", !/\bSET\s+(SESSION|LOCAL|default_transaction|role)/i.test(src));
 check("stdout never prints the password, TOTP seed or otpauth URI",
   !/console\.(log|error)\([^)]*(password|totpSeed|otpauth)/i.test(src));
+// Cleanup provider-connection guard: only REVOKED (disconnected) items are ignored.
+check("cleanup guard: ACTIVE item blocks", providerConnectionBlocksCleanup([PlaidItemStatus.ACTIVE]));
+for (const st of Object.values(PlaidItemStatus).filter((v) => v !== PlaidItemStatus.REVOKED)) {
+  check(`cleanup guard: ${st} item blocks`, providerConnectionBlocksCleanup([st]));
+}
+check("cleanup guard: REVOKED-only items do not block",
+  !providerConnectionBlocksCleanup([PlaidItemStatus.REVOKED]) && !providerConnectionBlocksCleanup([PlaidItemStatus.REVOKED, PlaidItemStatus.REVOKED]));
+check("cleanup guard: no items does not block", !providerConnectionBlocksCleanup([]));
+check("cleanup guard: mixed REVOKED + ACTIVE blocks", providerConnectionBlocksCleanup([PlaidItemStatus.REVOKED, PlaidItemStatus.ACTIVE]));
+check("cleanup guard: the script queries item statuses and refuses through the helper",
+  /db\.plaidItem\.findMany\(\{ where: \{ userId: u\.id \}, select: \{ status: true \} \}\)/.test(src)
+    && /if \(providerConnectionBlocksCleanup\(plaidItems\.map\(\(i\) => i\.status\)\)\) \{/.test(src)
+    && /an active \(not disconnected\) provider connection/.test(src));
 const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
 check("package.json exposes ops:synthetic-operator", /scripts\/synthetic-operator\.ts/.test(pkg.scripts?.["ops:synthetic-operator"] ?? ""));
 check("the purge function the cleanup uses is the one process-deletions calls",

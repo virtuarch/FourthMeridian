@@ -21,6 +21,7 @@
  */
 
 import path from "node:path";
+import type { PlaidItemStatus } from "@prisma/client";
 import { decideRepairEnvGuard } from "./repair-env-guard";
 
 // ── Identity (fabricated) ────────────────────────────────────────────────────
@@ -225,4 +226,21 @@ export function cleanupCountsRecord(env: string, before: CleanupCounts, after: C
     },
     remaining: { ...after },
   };
+}
+
+// ── Cleanup provider-connection guard ────────────────────────────────────────
+
+/** The only PlaidItem status that does NOT block cleanup. */
+export const CLEANUP_IGNORED_ITEM_STATUS = "REVOKED" as const satisfies PlaidItemStatus;
+
+/**
+ * True when the synthetic operator's PlaidItem statuses must refuse cleanup.
+ * REVOKED (disconnected) items are removed by the user purge's cascade
+ * (PlaidItem.user onDelete: Cascade), and purgeUser only calls Plaid itemRemove
+ * for ACTIVE items (lib/account-deletion/purge.ts), so the script's throwing
+ * itemRemove stub stays unreachable. ACTIVE, ERROR or any other non-REVOKED
+ * item still refuses.
+ */
+export function providerConnectionBlocksCleanup(statuses: readonly PlaidItemStatus[]): boolean {
+  return statuses.some((s) => s !== CLEANUP_IGNORED_ITEM_STATUS);
 }
