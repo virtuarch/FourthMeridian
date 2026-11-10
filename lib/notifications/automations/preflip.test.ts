@@ -83,7 +83,7 @@ async function main(): Promise<void> {
 
   const ACTOR = "u_actor";
   function user(id: string): void {
-    fake.seed("User", { id, email: `${id}@example.invalid`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * DAY) });
+    fake.seed("User", { id, email: `${id}@example.com`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * DAY) });
   }
   function reset(): void { fake.reset(); clock = T0; user(ACTOR); }
   function space(id: string): void { if (!fake.one("Space", { id })) fake.seed("Space", { id, name: `Space ${id}` }); }
@@ -241,7 +241,7 @@ async function main(): Promise<void> {
   // ── R4 ───────────────────────────────────────────────────────────────────
   console.log("R4. EMAIL: a retry refused as an idempotency conflict is SENT (uncertain), never DEAD");
   {
-    const MSG = { to: "a@example.invalid", from: "FM <x@example.invalid>", subject: "s", text: "t" };
+    const MSG = { to: "a@example.com", from: "FM <x@example.com>", subject: "s", text: "t" };
     const conflict: ResendLikeClient = { emails: { send: async () => ({ data: null, error: { name: "invalid_idempotent_request", statusCode: 409, message: "Same idempotency key used with a different request payload" } }) } };
     const other: ResendLikeClient = { emails: { send: async () => ({ data: null, error: { name: "validation_error", statusCode: 422, message: "bad" } }) } };
     const withKey = await createResendAdapter(() => conflict).send({ ...MSG, idempotencyKey: "item_1" });

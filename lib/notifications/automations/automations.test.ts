@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   // ── the world ──────────────────────────────────────────────────────────────
   const hash = await bcrypt.hash("pw", 4);
   const op = async (id: string, level: string | null, role = "USER") => {
-    fake.seed("User", { id, email: `${id}@example.invalid`, username: id, passwordHash: hash, emailVerifiedAt: new Date(), role, totpEnabled: true, totpSecret: "x" });
+    fake.seed("User", { id, email: `${id}@example.com`, username: id, passwordHash: hash, emailVerifiedAt: new Date(), role, totpEnabled: true, totpSecret: "x" });
     if (level) fake.seed("PlatformGrant", { userId: id, area: "CUSTOMER_SUCCESS", level, status: "ACTIVE" });
     return (await signIn(fake, id)).cookie;
   };
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
 
   // ── 4. dry run ─────────────────────────────────────────────────────────────
   console.log("4. dry run (v1.1 §6.8): sends nothing, claims nothing, writes no ledger row; echoes the window");
-  fake.seed("User", { id: "cust_1", email: "cust_1@example.invalid", username: "cust1", emailVerifiedAt: new Date(), createdAt: new Date(Date.now() - 90 * 86_400_000) });
+  fake.seed("User", { id: "cust_1", email: "cust_1@example.com", username: "cust1", emailVerifiedAt: new Date(), createdAt: new Date(Date.now() - 90 * 86_400_000) });
   fake.seed("AuditLog", { action: "MEMBER_ROLE_CHANGED", userId: "op_write", spaceId: "sp_1", createdAt: new Date(Date.now() - 86_400_000), metadata: { targetUserId: "cust_1", targetName: "Name", oldRole: "MEMBER", newRole: "ADMIN" } });
   const before = { notes: fake.rows("Notification").length, ledger: fake.rows("CommsDelivery").length, items: fake.rows("AutomationRunItem").length };
   const readDry = await call(DRY.POST, `/automations/${id}/dry-run`, C.read, "POST", { reason: REASON, body: { window: "30d" } }, { id });
@@ -422,7 +422,7 @@ async function main(): Promise<void> {
   const capture = { name: "capture", send: async (m: EmailMessage) => { outbox.push(m); return { status: "captured" as const, provider: "capture" }; } };
   const ledger = async (row: any) => { await (fake.delegate("CommsDelivery") as any).createMany({ data: [row] }); };
   let env: Record<string, string> = { VERCEL: "1", VERCEL_ENV: "production" };
-  let self: { email: string | null; verified: boolean } | null = { email: "op_write@example.invalid", verified: true };
+  let self: { email: string | null; verified: boolean } | null = { email: "op_write@example.com", verified: true };
   let stormReads = 0;
   const svc = () => ({
     ...automationServices,
@@ -445,16 +445,16 @@ async function main(): Promise<void> {
   check("Preview, own address NOT on EMAIL_NONPROD_ALLOWLIST ⇒ 422 GUARD_REFUSED guard NONPROD_ALLOWLIST, nothing rendered, sent or audited",
     nonprod.status === 422 && nonprod.body.code === "GUARD_REFUSED" && nonprod.body.guard === "NONPROD_ALLOWLIST" && outbox.length === 0 && tsAudits() === a0, nonprod.body);
   check("…and the refusal reveals nothing about the allowlist", !/allowlist(ed)? (has|contains|size|entries)|@/.test(nonprod.body.error));
-  env = { VERCEL: "1", VERCEL_ENV: "preview", EMAIL_NONPROD_ALLOWLIST: "op_write@example.invalid" };
+  env = { VERCEL: "1", VERCEL_ENV: "preview", EMAIL_NONPROD_ALLOWLIST: "op_write@example.com" };
   const allowed = await ts(tsBody({}));
-  check("Preview, own address allowlisted ⇒ sent to THAT address only", allowed.status === 200 && outbox.length === 1 && outbox[0].to === "op_write@example.invalid", allowed.body);
+  check("Preview, own address allowlisted ⇒ sent to THAT address only", allowed.status === 200 && outbox.length === 1 && outbox[0].to === "op_write@example.com", allowed.body);
   env = { VERCEL: "1", VERCEL_ENV: "production" };
-  self = { email: "op_write@example.invalid", verified: false };
+  self = { email: "op_write@example.com", verified: false };
   const unverified = await ts(tsBody({}));
   check("an UNVERIFIED own address ⇒ 422 guard SELF_UNVERIFIED", unverified.status === 422 && unverified.body.guard === "SELF_UNVERIFIED" && outbox.length === 1);
-  self = { email: "op_write@example.invalid", verified: true };
+  self = { email: "op_write@example.com", verified: true };
   for (const k of ["to", "recipient", "address", "userId"]) {
-    const r = await ts({ reason: REASON, body: { key: "SYNC_FAILED", channel: "EMAIL", [k]: "victim@example.invalid" } });
+    const r = await ts({ reason: REASON, body: { key: "SYNC_FAILED", channel: "EMAIL", [k]: "victim@example.com" } });
     check(`a "${k}" field ⇒ 400: there is no way to name another recipient`, r.status === 400 && outbox.length === 1);
   }
   const noR = await ts({ body: { key: "SYNC_FAILED", channel: "EMAIL" } });
@@ -463,7 +463,7 @@ async function main(): Promise<void> {
   const prodSend = await ts(tsBody({}));
   const last = outbox[outbox.length - 1];
   check("Production, verified: sent to the operator's OWN address, subject \"[TEST] …\", ledger mode TEST, the storm limit not consulted (OPERATOR-class), audited with the reason",
-    prodSend.status === 200 && prodSend.body.result.status === "ACCEPTED" && last.to === "op_write@example.invalid" && last.subject.startsWith("[TEST] ")
+    prodSend.status === 200 && prodSend.body.result.status === "ACCEPTED" && last.to === "op_write@example.com" && last.subject.startsWith("[TEST] ")
     && fake.rows("CommsDelivery", { messageKey: prodSend.body.result.deliveryId, mode: "TEST" }).length === 1 && stormReads === 0
     && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).reason.code === "DOGFOOD" && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).recipient === "SELF", { b: prodSend.body, subject: last.subject });
   {
@@ -485,7 +485,7 @@ async function main(): Promise<void> {
   check("versionId on a PROTECTED key ⇒ 409 PROTECTED", prot2.status === 409 && prot2.body.code === "PROTECTED");
   const protCode = await ts({ reason: REASON, body: { key: "PASSWORD_RESET_LINK_SENT", channel: "EMAIL" } });
   check("a protected key's CODE content may be test-sent (synthetic, non-redeemable token, to self, [TEST])",
-    protCode.status === 200 && outbox.at(-1)!.to === "op_write@example.invalid" && outbox.at(-1)!.subject.startsWith("[TEST] ") && outbox.at(-1)!.text.includes("preview-not-redeemable"), protCode.body);
+    protCode.status === 200 && outbox.at(-1)!.to === "op_write@example.com" && outbox.at(-1)!.subject.startsWith("[TEST] ") && outbox.at(-1)!.text.includes("preview-not-redeemable"), protCode.body);
   const inApp = await ts({ reason: REASON, body: { key: "MEMBER_ROLE_CHANGED", channel: "IN_APP" } });
   const bell = fake.rows("Notification", { userId: "op_write", type: "MEMBER_ROLE_CHANGED" })[0] as any;
   check("IN_APP test send: a bell in the OPERATOR's own inbox, metadata._commsTest, expires in 24 h, ledger mode TEST, no email",

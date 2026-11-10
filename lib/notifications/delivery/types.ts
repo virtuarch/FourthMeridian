@@ -34,6 +34,9 @@ export const SUPPRESSION_REASONS = [
   "ADMISSION_REFUSED", "ACCOUNT_RESTRICTED",
   "BETA_LIFECYCLE", "ENTITLEMENT", "PROVIDER_FREEZE",
   "ENVIRONMENT_GUARD",
+  // S2 ruling 09eq P2 — CAPTURED in every environment: the recipient's domain is an
+  // RFC 2606/6761 reserved TLD (lib/email/recipient-guard.ts isReservedDomainRecipient).
+  "RESERVED_DOMAIN",
   "AUTOMATION_PAUSED", "STORM_BREAKER",
   // Comms Center A-2b (O-10): the per-recipient email storm limit
   // (lib/notifications/delivery/storm.ts) — over the limit, or the count unreadable.

@@ -125,10 +125,10 @@ async function main(): Promise<void> {
     clock = T0; freeze = judgeGlobalCostFreeze(null); states = {}; calls.length = 0; delivered.length = 0; idem.clear();
     admission = () => ({ admitted: true, reason: null });
     providerAnswer = () => ({ status: "sent", id: `re_${delivered.length}`, provider: "resend" });
-    fake.seed("User", { id: ACTOR, email: "actor@example.invalid", username: "actor", emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 400 * DAY) });
+    fake.seed("User", { id: ACTOR, email: "actor@example.com", username: "actor", emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 400 * DAY) });
   }
   function user(id: string): void {
-    fake.seed("User", { id, email: `${id}@example.invalid`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * DAY) });
+    fake.seed("User", { id, email: `${id}@example.com`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * DAY) });
   }
   function emailOn(id: string): void { fake.seed("NotificationPreference", { userId: id, category: "SPACES", channel: "EMAIL", enabled: true }); }
   function space(id: string): void { if (!fake.one("Space", { id })) fake.seed("Space", { id, name: `Space ${id}` }); }

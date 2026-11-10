@@ -57,8 +57,8 @@ process.on("unhandledRejection", (err) => {
 });
 
 const NOW = new Date("2026-10-31T12:00:00.000Z");
-const ADDRESS = "Person.Private@example.invalid";
-const SECRET_URL = "https://app.example.invalid/reset?token=0123456789abcdef0123456789abcdef0123";
+const ADDRESS = "Person.Private@example.com";
+const SECRET_URL = "https://app.example.com/reset?token=0123456789abcdef0123456789abcdef0123";
 const SALT = "unit-test-salt";
 
 function sink() {
@@ -122,9 +122,9 @@ async function outcomes(): Promise<void> {
   }
   {
     const { rows, writer } = sink();
-    await sender(PROD, provider({ status: "error", provider: "resend", error: "Resend send timed out after 10000 ms — delivery unknown." }), writer)("platform-alert", "ops@example.invalid", {}, { key: "PLATFORM_ALERT", recipientUserId: null });
+    await sender(PROD, provider({ status: "error", provider: "resend", error: "Resend send timed out after 10000 ms — delivery unknown." }), writer)("platform-alert", "ops@example.com", {}, { key: "PLATFORM_ALERT", recipientUserId: null });
     check("timeout → FAILED TIMEOUT (whatever the render outcome, one row)", rows.length === 1 && rows[0].status === "FAILED" && (rows[0].errorCode === "TIMEOUT" || rows[0].errorCode === "RENDER"), rows[0]);
-    const row = emailLedgerRow({ template: "platform-alert", to: "ops@example.invalid", result: { status: "error", provider: "resend", error: "Resend send timed out after 10000 ms — delivery unknown." }, ctx: { key: "PLATFORM_ALERT", recipientUserId: null }, env: PROD, now: NOW });
+    const row = emailLedgerRow({ template: "platform-alert", to: "ops@example.com", result: { status: "error", provider: "resend", error: "Resend send timed out after 10000 ms — delivery unknown." }, ctx: { key: "PLATFORM_ALERT", recipientUserId: null }, env: PROD, now: NOW });
     check("…the timeout text classifies as TIMEOUT; NO_TRANSPORT for a missing key",
       row.errorCode === "TIMEOUT" && emailLedgerRow({ template: "platform-alert", to: "a@b.c", result: { status: "error", provider: "resend", error: "RESEND_API_KEY is not set — cannot send via Resend." }, ctx: undefined, env: PROD, now: NOW }).errorCode === "NO_TRANSPORT");
     check("an operator-inbox leg records channel OPERATOR_EMAIL", row.channel === "OPERATOR_EMAIL");
@@ -187,19 +187,19 @@ async function privacy(): Promise<void> {
   const { rows, writer } = sink();
   const s = sender(PROD, provider({ status: "sent", provider: "resend", id: "x" }), writer);
   await s("password-reset", ADDRESS, { resetUrl: SECRET_URL }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: "u" });
-  await s("beta-request", "inbox@example.invalid", { applicantEmail: ADDRESS, note: "a private note", queueUrl: SECRET_URL }, { key: "BETA_REQUEST_RECEIVED", recipientUserId: null });
+  await s("beta-request", "inbox@example.com", { applicantEmail: ADDRESS, note: "a private note", queueUrl: SECRET_URL }, { key: "BETA_REQUEST_RECEIVED", recipientUserId: null });
   await s("security-alert", ADDRESS, { title: "Your password was changed", message: "A secret message body" }, { key: "ACCOUNT_DELETED", recipientUserId: null, hashRecipient: false });
   const text = JSON.stringify(rows).toLowerCase();
-  for (const needle of [ADDRESS.toLowerCase(), "person.private", "example.invalid", "token=", "0123456789abcdef", "reset your", "a private note", "secret message", "your password was changed", "subject", "body", "html"]) {
+  for (const needle of [ADDRESS.toLowerCase(), "person.private", "example.com", "token=", "0123456789abcdef", "reset your", "a private note", "secret message", "your password was changed", "subject", "body", "html"]) {
     check(`no row carries ${JSON.stringify(needle)}`, !text.includes(needle));
   }
   const columns = new Set(rows.flatMap((r) => Object.keys(r)));
   check("the row has exactly the ledger columns — no address/subject/body/open/click field",
     [...columns].sort().join() === "acceptedAt,attempt,channel,definitionKey,definitionVersion,environment,errorCode,messageKey,notificationId,provider,providerMessageId,reason,recipientHash,recipientUserId,status,templateVersion", [...columns]);
   const inbox = rows[1];
-  const expected = createHmac("sha256", SALT).update("inbox@example.invalid").digest("hex");
+  const expected = createHmac("sha256", SALT).update("inbox@example.com").digest("hex");
   check("no userId (an operator inbox) → recipientHash = HMAC-SHA256(salt, normalised address), 64 hex", inbox.recipientUserId === null && inbox.recipientHash === expected && /^[0-9a-f]{64}$/.test(inbox.recipientHash!));
-  check("…case/space-insensitive, and never an unsalted SHA-256", recipientHash(" INBOX@example.invalid ", PROD) === expected && recipientHash("inbox@example.invalid", { ...PROD, COMMS_RECIPIENT_HASH_SALT: "" }) === null);
+  check("…case/space-insensitive, and never an unsalted SHA-256", recipientHash(" INBOX@example.com ", PROD) === expected && recipientHash("inbox@example.com", { ...PROD, COMMS_RECIPIENT_HASH_SALT: "" }) === null);
   check("the post-purge goodbye stores neither userId nor hash", rows[2].recipientUserId === null && rows[2].recipientHash === null);
   check("every row written during this file is free of the test address", allWritten.every((w) => !w.toLowerCase().includes("person.private")));
 }

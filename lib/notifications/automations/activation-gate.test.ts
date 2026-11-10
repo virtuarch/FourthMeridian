@@ -131,7 +131,7 @@ async function main(): Promise<void> {
   const provider: EmailProvider = { name: "resend", send: async (m) => { calls.push(m); return { status: "sent", id: `re_${calls.length}`, provider: "resend" }; } };
   const capture: EmailProvider = { name: "capture", send: async (m) => ({ status: "captured", provider: "capture", id: m.to }) };
   /** The REAL chokepoint on Vercel Preview: the recipient guard admits only EMAIL_NONPROD_ALLOWLIST. */
-  const previewEnv = { VERCEL: "1", VERCEL_ENV: "preview", RESEND_API_KEY: "re_test_not_real", NODE_ENV: "production", EMAIL_NONPROD_ALLOWLIST: "allowed@example.invalid" };
+  const previewEnv = { VERCEL: "1", VERCEL_ENV: "preview", RESEND_API_KEY: "re_test_not_real", NODE_ENV: "production", EMAIL_NONPROD_ALLOWLIST: "allowed@example.com" };
   const previewSend = createEmailSender({ env: previewEnv as any, provider, capture, ledger, pending: new PendingSends(), now: () => clock, log: () => {} });
   let open = true;
   let freeze = judgeGlobalCostFreeze(null);
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
   const BUDGET = { maxAutomations: 50, maxFactsPerAutomation: 100, maxItems: 200, timeBudgetMs: 60_000 };
   const run = (d = deps()) => quiet(() => E.runAutomationEngine(d, BUDGET));
   const ACTOR = "u_actor";
-  const user = (id: string, email = `${id}@example.invalid`) =>
+  const user = (id: string, email = `${id}@example.com`) =>
     fake.seed("User", { id, email, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * DAY) });
   function reset(): void {
     fake.reset(); clock = T0; calls.length = 0; open = true; freeze = judgeGlobalCostFreeze(null); admitted = true;
@@ -239,7 +239,7 @@ async function main(): Promise<void> {
   console.log("G4. defence in depth: the recipient guard still decides every automation email");
   {
     reset();
-    user("u_ok", "allowed@example.invalid"); user("u_no", "someone@example.invalid"); emailOn("u_ok"); emailOn("u_no");
+    user("u_ok", "allowed@example.com"); user("u_no", "someone@example.com"); emailOn("u_ok"); emailOn("u_no");
     automation({ channels: ["EMAIL"] });
     roleChanged("u_ok", new Date(T0.getTime() - 5 * MIN)); roleChanged("u_no", new Date(T0.getTime() - 4 * MIN));
     await run();
@@ -248,18 +248,18 @@ async function main(): Promise<void> {
     const okRow = fake.rows("CommsDelivery", { automationRunItemId: ok?.id }) as any[];
     const noRow = fake.rows("CommsDelivery", { automationRunItemId: no?.id }) as any[];
     check("Preview, gate OPEN: the allowlisted recipient reaches the provider ONCE (ledger ACCEPTED, item SENT / ACCEPTED)",
-      calls.length === 1 && calls[0].to === "allowed@example.invalid" && ok?.status === "SENT" && ok?.lastDeliveryStatus === "ACCEPTED" && okRow.some((r) => r.status === "ACCEPTED"),
+      calls.length === 1 && calls[0].to === "allowed@example.com" && ok?.status === "SENT" && ok?.lastDeliveryStatus === "ACCEPTED" && okRow.some((r) => r.status === "ACCEPTED"),
       { calls: calls.map((c) => c.to), ok: ok && [ok.status, ok.lastDeliveryStatus], okRow: okRow.map((r) => r.status) });
     check("…the NON-allowlisted recipient is CAPTURED by the guard (ENVIRONMENT_GUARD): the provider is never called for them",
-      !calls.some((c) => c.to === "someone@example.invalid") && no?.lastDeliveryStatus === "CAPTURED" && noRow.some((r) => r.status === "CAPTURED" && r.reason === "ENVIRONMENT_GUARD"),
+      !calls.some((c) => c.to === "someone@example.com") && no?.lastDeliveryStatus === "CAPTURED" && noRow.some((r) => r.status === "CAPTURED" && r.reason === "ENVIRONMENT_GUARD"),
       { no: no && [no.status, no.lastDeliveryStatus], noRow: noRow.map((r) => [r.status, r.reason]) });
   }
   {
     const base = { name: "x", recipient: { kind: "EVENT_SUBJECT_USER" } };
     const widen = ["to", "addresses", "recipients", "allowlist", "emailAllowlist", "EMAIL_NONPROD_ALLOWLIST", "cc", "bcc", "replyTo", "recipientEmail"];
-    const refused = widen.filter((k) => !R.validateAutomationInput({ ...base, [k]: ["someone@example.invalid"] }, { def: DEF, trigger: "space.member.role_changed" }).ok);
+    const refused = widen.filter((k) => !R.validateAutomationInput({ ...base, [k]: ["someone@example.com"] }, { def: DEF, trigger: "space.member.role_changed" }).ok);
     check("no automation field can name or widen a recipient address (every such field is refused at write)", refused.length === widen.length, widen.filter((k) => !refused.includes(k)));
-    const byEmail = R.validateAutomationInput({ ...base, recipient: { kind: "EMAIL_ADDRESS", email: "someone@example.invalid" } }, { def: DEF, trigger: "space.member.role_changed" });
+    const byEmail = R.validateAutomationInput({ ...base, recipient: { kind: "EMAIL_ADDRESS", email: "someone@example.com" } }, { def: DEF, trigger: "space.member.role_changed" });
     check("…nor a recipient resolver by address", !byEmail.ok, byEmail);
     const eng = strip(readFileSync("lib/notifications/automations/engine.ts", "utf8"));
     check("the engine's ONLY email path is deps.sendEmail to the account's own address, with no allowlist / guard knob",
