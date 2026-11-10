@@ -32,7 +32,7 @@ import { incidentDetailDTO, type IncidentDetailDTO, type IncidentRowDTO } from "
 import type { IncidentTimelineEvent } from "./intelligence/types";
 import { IncidentDetailSurface } from "@/components/platform/incidents/IncidentsLead";
 import {
-  DISMISSED_HEADLINE, LEGACY_HEADLINE, OPERATOR_FIXED_HEADLINE, STALE_NOTE, SUBJECT_REMOVED_HEADLINE, VERIFIED_RECOVERY_HEADLINE,
+  DISMISSED_HEADLINE, LEGACY_HEADLINE, OPERATOR_CLOSED_HEADLINE, OPERATOR_FIXED_HEADLINE, STALE_NOTE, SUBJECT_REMOVED_HEADLINE, VERIFIED_RECOVERY_HEADLINE,
   incidentLifecycleView, type LifecycleView,
 } from "@/components/platform/incidents/lifecycle-model";
 
@@ -178,8 +178,15 @@ async function main(): Promise<void> {
     check("legacy ⇒ closed, recovery not verified", legacy.closure?.outcome === "legacy" && !legacy.closure.verifiedRecovery && legacy.closure.headline === LEGACY_HEADLINE);
     const unreg = incidentLifecycleView(resolvedBase("operator", "NOT_A_REGISTERED_REASON"));
     check("unregistered reason code ⇒ flagged, never echoed", unreg.closure?.unregisteredReason === true && unreg.closure.reason === null && !JSON.stringify(unreg).includes("NOT_A_REGISTERED_REASON"));
+    check("unregistered reason code ⇒ 'operator-closed' (not operator-fixed), generic headline, not a recovery", unreg.closure?.outcome === "operator-closed" && unreg.closure.headline === OPERATOR_CLOSED_HEADLINE && !unreg.closure.verifiedRecovery && ms(unreg, "closed")?.label === "Closed", unreg.closure);
+    const absent = incidentLifecycleView(resolvedBase("operator", null));
+    check("absent reason code ⇒ 'operator-closed', generic headline, not a recovery, not flagged unregistered", absent.closure?.outcome === "operator-closed" && absent.closure.headline === OPERATOR_CLOSED_HEADLINE && !absent.closure.verifiedRecovery && absent.closure.reason === null && !absent.closure.unregisteredReason && ms(absent, "closed")?.label === "Closed", absent.closure);
+    const hAbsent = lifecycleHtml(render(resolvedBase("operator", null)));
+    const hFixed = lifecycleHtml(render(resolvedBase("operator", "OPERATOR_FIXED")));
+    check("rendered: operator-closed vs operator-fixed are distinguishable", hAbsent.includes('data-lifecycle-closure="operator-closed"') && hAbsent.includes('data-verified-recovery="no"') && hAbsent.includes(OPERATOR_CLOSED_HEADLINE)
+      && hFixed.includes('data-lifecycle-closure="operator-fixed"') && hFixed.includes('data-verified-recovery="no"') && hFixed.includes(OPERATOR_FIXED_HEADLINE));
     const proto = incidentLifecycleView(resolvedBase("operator", "toString"));
-    check("a prototype key is not a reason code", proto.closure?.reason === null && proto.closure.unregisteredReason);
+    check("a prototype key is not a reason code", proto.closure?.reason === null && proto.closure.unregisteredReason && proto.closure.outcome === "operator-closed");
     const hDis = lifecycleHtml(render(resolvedBase("operator", "OPERATOR_NOT_ACTIONABLE")));
     const hRec = lifecycleHtml(render(resolvedBase("recovered", "TRANSACTIONS_SYNC_SUCCEEDED", { evidence: evd })));
     check("rendered: dismissed vs recovered are distinguishable", hDis.includes('data-lifecycle-closure="dismissed"') && hDis.includes('data-verified-recovery="no"') && hDis.includes(DISMISSED_HEADLINE)
