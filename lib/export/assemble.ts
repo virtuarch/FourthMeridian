@@ -86,7 +86,7 @@
  */
 
 import "server-only";
-import { Prisma } from "@prisma/client";
+import { Prisma, type PlatformArea } from "@prisma/client";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
@@ -128,7 +128,16 @@ const ALL_SNAPSHOTS = 100_000;
  * the user does not exist (the caller has already authenticated them, so this
  * is a should-not-happen guard).
  */
-export async function assembleUserExport(userId: string): Promise<ExportData> {
+export interface AssembleUserExportOptions {
+  /**
+   * S2 09ed — the areas whose fresh per-area probe passes NOW, for the Platform AI lost-area rule
+   * (the route wires area-access.ts conversationFreshHeldAreas for the subject's own session).
+   * Absent ⇒ no area (fail closed).
+   */
+  answerHeldAreas?: (directory: readonly { area: string }[]) => Promise<ReadonlySet<PlatformArea>>;
+}
+
+export async function assembleUserExport(userId: string, opts: AssembleUserExportOptions = {}): Promise<ExportData> {
   // ── PHASE 1 — the subject, their personal Space, and their memberships ─────
   // One short transaction. `User` is admitted by `"id" = current_fm_user_id()`
   // (RLS §10) and `SpaceMember` by `"userId" = current_fm_user_id()` (§12), so
@@ -357,14 +366,27 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   //     route's rule; no per-area fresh guard, so no false OBS-009 denial rows),
   //     and NONE when operator 2FA is enforced and the operator has no second
   //     factor (the guard's own SEC-PLAT-1 decision);
+  //   · inside a held conversation, an ANSWER follows the P4b lost-area rule (S2 09ed)
+  //     over a fresh per-area PROBE (no denial rows), exactly as the view;
   //   · a held area exports questions and rendered answers; a lost area exports
   //     NO content — one line "N conversations in <area> omitted: you no longer
   //     have access" and a manifest count per area.
   // Not gated on the conversations flags: subject access covers what is STORED,
   // and with the flags off nothing is (a flag-off environment has 0 rows).
   const totpRefused = decideOperatorTotpRefusal({ role: user.role, totpEnabled: user.totpEnabled, enforced: env.isOperatorTotpEnforced });
-  const heldAreas = totpRefused ? new Set<never>() : grantedAreasFrom(await loadPlatformDirectory(userId));
-  const platformAi = projectPlatformAiConversationsForExport(await readConversationsForExport(userId, heldAreas), heldAreas);
+  const directory = totpRefused ? [] : await loadPlatformDirectory(userId);
+  const heldAreas = totpRefused ? new Set<never>() : grantedAreasFrom(directory);
+  const conversationsRead = await readConversationsForExport(userId, heldAreas);
+  // S2 09ed — the P4b lost-area rule inside a held conversation: an answer is exported only when
+  // EVERY area it read passes the SAME fresh per-area probe the view uses NOW (opts.answerHeldAreas,
+  // wired by POST /api/user/export to area-access.ts conversationFreshHeldAreas). Not wired ⇒ NO
+  // area (fail closed: an answer with recorded areas exports "[no longer available]"). Probed only
+  // when a held conversation was read; never wider than the directory's held areas.
+  const probed = conversationsRead.conversations.length === 0 || !opts.answerHeldAreas
+    ? new Set<PlatformArea>()
+    : await opts.answerHeldAreas(directory).catch(() => new Set<PlatformArea>());
+  const answerHeldAreas = new Set([...probed].filter((a) => heldAreas.has(a)));
+  const platformAi = projectPlatformAiConversationsForExport(conversationsRead, heldAreas, answerHeldAreas);
   // Platform AI operational memory (design v2 D13): held areas only (RLS also hides a lost area), the
   // note decrypted, type, refs and dates; the EXPORTED audit row carries the count only. Not gated on
   // the memory flags (subject access covers what is STORED; flags off ⇒ 0 rows).

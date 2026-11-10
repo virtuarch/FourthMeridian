@@ -152,6 +152,15 @@ async function main() {
       const incidentToken = incidentAudienceFor(auth);
       return { auth, csTier: incidentToken?.audience === "CUSTOMER_SUCCESS", incidentToken };
     },
+    setGrant(op, area, status) {
+      const userId = E0_OPERATORS[op].id;
+      const t = fake.table("PlatformGrant");
+      const i = t.findIndex((g) => g.userId === userId && g.area === area);
+      if (status === null) { if (i >= 0) t.splice(i, 1); return; }
+      if (i >= 0) t[i].status = status;
+      else fake.seed("PlatformGrant", { userId, area, level: "READ", status });
+    },
+    collect: (sink, text) => { corpus.push({ sink, text }); },
   };
   const runUnit = (c: UnitCase): Promise<string[]> => c.run(unitCtx);
 
@@ -174,7 +183,7 @@ async function main() {
     return c.check(obs);
   }
 
-  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags; P4: answer identity, record render)\n");
+  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags; P4: answer identity, record render; P4b: multi-area conversations)\n");
   let caseCount = 0;
   console.log = console.info = console.warn = console.error = capture;
   try {

@@ -6,6 +6,9 @@
  * module, withTenantDb as the operator), then runs runConversationTurn with
  *   · the binding from `access` — the conversation's OWN area, FRESH, built by
  *     ./area-access.ts from its own guard result (never the request, never the row);
+ *     P4b: plus every other area the operator holds NOW (access.turnAreas, each from
+ *     its own fresh guard; composed) — the boundary rechecks each per tool call; a
+ *     prior answer that read a lost area is replayed as "[no longer available]";
  *   · the ledgered provider seam (makePlatformAiGenerate): surface platform_ai
  *     (overhead, the same per-operator daily cap), sub-surface
  *     platform_ai:conversation, a fresh correlationId per turn and the
@@ -36,6 +39,8 @@ import { platformAiToolAudit } from "@/lib/platform/intelligence/ai/authz/audit"
 import { fillSubjectSlots, resolveSubjects } from "@/lib/platform/intelligence/ai/authz/subject";
 import { platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subject.server";
 import { STORED_NOTES_MAX } from "@/lib/platform/intelligence/ai/conversations/answer";
+import { answerReadable, packAreasRead, withAreasRead } from "@/lib/platform/intelligence/ai/conversations/multi-area";
+import { CORE_PACKS } from "@/lib/platform/intelligence/ai/engine/router";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -50,7 +55,8 @@ async function memoryTurnFor(operatorId: string, question: string, access: AreaA
   if (!isMemoryEffective(env) || !access.area || !access.memoryReaders) return undefined;
   const area = access.area, readers = access.memoryReaders;
   const { facts } = await retrieveFacts({ operatorId, areas: [area], readersFor: async () => readers, store: memoryStore, mode: "inject" });
-  const historyNewestFirst = [...history].reverse().map((m) => (typeof m.content === "string" ? m.content : m.content ? renderAnswerText(m.content) : "")).filter(Boolean);
+  // P4b: an answer that read an area not held now never feeds memory either.
+  const historyNewestFirst = [...history].reverse().filter((m) => typeof m.content === "string" || !m.content || answerReadable(m.evidenceRefs, m.content, access.heldAreas)).map((m) => (typeof m.content === "string" ? m.content : m.content ? renderAnswerText(m.content) : "")).filter(Boolean);
   return buildMemoryTurn({
     operatorId, area, facts, question, historyNewestFirst,
     metricLabel: (id) => access.binding.describeMetric(id)?.label ?? null,
@@ -65,16 +71,19 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
   let memory: MemoryTurn | undefined;
   try { memory = await memoryTurnFor(operatorId, question, access, history); }
   catch { memory = undefined; console.warn(`[platform-ai] memory unavailable for this turn (${ROUTE_KEY})`); }
-  // P2 — THE turn boundary: every tool call re-authorized (pack flag, strict args, the
-  // conversation's own area re-checked FRESH per call, per-turn handles). No scope ⇒ no tool runs.
+  // P2 — THE turn boundary: every tool call re-authorized (pack flag, strict args, every area of the
+  // turn re-checked FRESH per call, per-turn handles). No scope ⇒ no tool runs.
+  // P4b: the turn's areas = the conversation's own scope + every other area held NOW (access.turnAreas,
+  // each from its own fresh guard). Without widening ⇒ the own scope only (the pre-P4b turn).
+  const turnAreas = access.turnAreas ?? (access.scope ? [{ scope: access.scope, binding: access.binding }] : []);
   const correlationId = randomUUID();
   const boundary = createTurnBoundary({
     operatorId, correlationId,
-    areas: access.scope ? [{ scope: access.scope, binding: access.binding }] : [],
+    areas: turnAreas,
     binding: access.binding,
     recheck: platformAiFreshRecheck,
     // P3: core packs until the turn routes its scrubbed question (engine/router.ts); more_tools within the bounds.
-    packs: routePlatformAiPacks({ question: null, areas: access.scope ? [access.scope.area] : [], memory: !!memory }),
+    packs: routePlatformAiPacks({ question: null, areas: turnAreas.map((p) => p.scope.area), memory: !!memory }),
     router: platformAiTurnRouter({ memory: !!memory }),
     packEnabled: (p) => platformAiPackEnabled(p),
     onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${ROUTE_KEY})`),
@@ -103,14 +112,22 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     // THIS turn only after replay re-authz (the boundary's area recheck + the kind's revalidate).
     records: boundary.recordRef,
     remint: boundary.remint,
+    // P4b — a prior answer that read an area not held now replays as "[no longer available]" (never re-minted).
+    ...(access.heldAreas ? { heldAreas: access.heldAreas } : {}),
     model, reasoningModel: reasoning, classify: classifyPlatformAiFailure,
     onUngrounded: (verdict, unresolved) => console.warn(`[platform-ai] answer replaced: verdict=${verdict} unresolved=${unresolved} (${ROUTE_KEY})`),
     onTrace: (line) => console.info(`[platform-ai] turn ${line} (${ROUTE_KEY})`),
   });
   if (run.outcome.status === "FAILED") console.warn(`[platform-ai] turn failed: code=${run.outcome.failureCode} (${ROUTE_KEY})`);
+  // P4b — a multi-area turn's provenance also names every area a PACK tool ran over (metric reads already carry
+  // their envelope surface), so losing any of them later hides this answer. One-area turns: stored exactly as before.
+  const outcome = access.turnAreas && run.outcome.status === "COMPLETE"
+    ? { ...run.outcome, evidenceRefs: withAreasRead(run.outcome.evidenceRefs, packAreasRead(boundary.toolAreas(), CORE_PACKS)) }
+    : run.outcome;
   // P5: the one uniform server note for any unresolved subject (code-written; never says why).
-  if (subjectNote && run.outcome.status === "COMPLETE" && !run.outcome.answer.notes.includes(subjectNote) && run.outcome.answer.notes.length < STORED_NOTES_MAX) {
-    return { ...run.outcome, answer: { ...run.outcome.answer, notes: [...run.outcome.answer.notes, subjectNote] } };
+  if (subjectNote && outcome.status === "COMPLETE" && !outcome.answer.notes.includes(subjectNote) && outcome.answer.notes.length < STORED_NOTES_MAX) {
+    return { ...outcome, answer: { ...outcome.answer, notes: [...outcome.answer.notes, subjectNote] } };
   }
-  return run.outcome;
+  return outcome;
 };
+

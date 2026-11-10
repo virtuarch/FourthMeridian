@@ -23,7 +23,7 @@ import {
   NOT_AVAILABLE_BODY, handleDeleteConversation, handleGetConversation, type ConversationHttp,
 } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
-import { conversationAreaAccess } from "../area-access";
+import { conversationAreaAccess, conversationHeldAccess } from "../area-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,14 +47,16 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   // 2–3. The viewer, before any lookup.
   const [user, uerr] = await requireUser();
   if (uerr) return uerr;
-  const area = platformAiAreaFor(await loadPlatformDirectory(user.id));
+  const rows = await loadPlatformDirectory(user.id);
+  const area = platformAiAreaFor(rows);
   if (!area) return FORBIDDEN();
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err) return err;
   if (!auth.grant) return FORBIDDEN();
   const { id } = await ctx.params;
   try {
-    return respond(await handleGetConversation({ operatorId: auth.user.id, area: auth.grant.area }, id, deps()));
+    // P4b — answers that read an area not held now (these rows, each fresh-guarded) render "[no longer available]".
+    return respond(await handleGetConversation({ operatorId: auth.user.id, area: auth.grant.area }, id, { ...deps(), heldAccess: conversationHeldAccess(rows) }));
   } catch (e) {
     return INTERNAL("get", e);
   }

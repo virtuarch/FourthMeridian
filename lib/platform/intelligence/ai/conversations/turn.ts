@@ -41,6 +41,8 @@ import {
 import type { TurnRecordLookup } from "../compose/record";
 import type { MemoryProposalCard, MemoryTurn } from "../memory/turn";
 import { assemblePlatformAiHistory, type AssembledHistory, type HistoryMessage, type HistoryScope } from "./history";
+import { answerReadable } from "./multi-area";
+import type { PlatformArea } from "@prisma/client";
 
 /** The settle outcome (store.ts SettleOutcome, restated here so this module stays free of the data module). */
 export type ConversationTurnOutcome =
@@ -48,11 +50,13 @@ export type ConversationTurnOutcome =
   | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH" };
 
 /** What the CURRENT token can see, for history's earlier-evidence filter: the binding's own accessors. */
-export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric" | "resolvePage">, reminted?: ReadonlyMap<StoredRecordSegment, string>): HistoryScope {
+export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric" | "resolvePage">, reminted?: ReadonlyMap<StoredRecordSegment, string>, heldAreas?: ReadonlySet<PlatformArea>): HistoryScope {
   return {
     describeMetric: (id) => binding.describeMetric(id),
     pageVisible: (id) => binding.resolvePage(id) !== null,
     ...(reminted ? { recordHandle: (seg: StoredRecordSegment) => reminted.get(seg) ?? null } : {}),
+    // P4b: a prior answer that read an area not held now replays as "[no longer available]" (conversations/multi-area.ts).
+    ...(heldAreas ? { answerVisible: (refs: readonly EvidenceRef[], answer: StoredAnswer) => answerReadable(refs, answer, heldAreas) } : {}),
   };
 }
 
@@ -64,10 +68,11 @@ export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric
 export type RecordRemint = (refs: readonly { rk: string; rid: string; a: string }[]) => Promise<(string | null)[]>;
 
 /** The record spans of the replayable prior answers, re-authorized through `remint` (none ⇒ no call). */
-async function remintHistory(history: readonly HistoryMessage[], remint: RecordRemint | undefined): Promise<Map<StoredRecordSegment, string>> {
+async function remintHistory(history: readonly HistoryMessage[], remint: RecordRemint | undefined, heldAreas?: ReadonlySet<PlatformArea>): Promise<Map<StoredRecordSegment, string>> {
   const out = new Map<StoredRecordSegment, string>();
   if (!remint) return out;
-  const segs = history.flatMap((m) => (m.role === "ASSISTANT" && m.status === "COMPLETE" && m.content !== null && typeof m.content !== "string" ? storedRecordSegments(m.content) : []));
+  // P4b: an answer that read an area not held now is not replayed at all — none of its spans is re-minted.
+  const segs = history.flatMap((m) => (m.role === "ASSISTANT" && m.status === "COMPLETE" && m.content !== null && typeof m.content !== "string" && answerReadable(m.evidenceRefs, m.content, heldAreas) ? storedRecordSegments(m.content) : []));
   if (segs.length === 0) return out;
   let handles: (string | null)[] = [];
   try { handles = await remint(segs.map((x) => ({ rk: x.rk, rid: x.rid, a: x.a }))); } catch { handles = []; }
@@ -152,7 +157,10 @@ export interface ConversationTurnInput {
   conversationId: string;
   /** The stored, ALREADY-SCRUBBED question (one scrub for both sinks, S2 B3). */
   question: string;
-  /** Built by the route from the conversation's OWN area guard (FRESH), never from the request or the row. */
+  /**
+   * Built by the route from FRESH guards, never from the request or the row: the conversation's OWN
+   * area, and (P4b) every other area the operator holds now, each from its own guard (composed).
+   */
   binding: PlatformAiBinding;
   /** The conversation's stored COMPLETE messages (store.loadConversationHistory). */
   history: readonly HistoryMessage[];
@@ -176,6 +184,11 @@ export interface ConversationTurnInput {
   records?: TurnRecordLookup;
   /** P4 — the turn boundary's replay re-authz (area recheck + revalidate ⇒ a handle of THIS turn). Absent ⇒ prior records replay as kind markers only. */
   remint?: RecordRemint;
+  /**
+   * P4b — the areas the operator holds NOW (the turn's fresh guards). A prior answer that read any
+   * other area replays as "[no longer available]" and is never re-minted. Absent ⇒ pre-P4b (every answer replays).
+   */
+  heldAreas?: ReadonlySet<PlatformArea>;
 }
 
 export interface ConversationTurnRun {
@@ -191,8 +204,8 @@ export interface ConversationTurnRun {
 export async function runConversationTurn(input: ConversationTurnInput): Promise<ConversationTurnRun> {
   let history: AssembledHistory | null = null;
   try {
-    const reminted = await remintHistory(input.history, input.remint);
-    history = assemblePlatformAiHistory({ conversationId: input.conversationId, messages: input.history, scope: historyScopeFor(input.binding, reminted) });
+    const reminted = await remintHistory(input.history, input.remint, input.heldAreas);
+    history = assemblePlatformAiHistory({ conversationId: input.conversationId, messages: input.history, scope: historyScopeFor(input.binding, reminted, input.heldAreas) });
     const { result, transcript, record } = await runPlatformAiTurn({
       question: input.question, questionScrubbed: true, history,
       binding: input.binding, generate: input.generate, model: input.model, reasoningModel: input.reasoningModel,

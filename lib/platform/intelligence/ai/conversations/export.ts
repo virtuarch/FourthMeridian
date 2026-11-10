@@ -21,13 +21,22 @@
  * and is EMPTY when operator 2FA is enforced and the operator has none (the
  * guard's own SEC-PLAT-1 rule). Stored links are exported as their TEXT only.
  *
+ * S2 09ed (OD-7 delegated) — the P4b LOST-AREA rule, inside a held conversation: an
+ * answer whose recorded areas (areasRead + record-span areas, multi-area.ts
+ * answerAreas) are NOT ALL held NOW exports as "[no longer available]" whole — no
+ * text, figure, citation, note or record of it; the operator's question stays. "Held
+ * now" here is `answerHeldAreas`: each area through the SAME fresh per-area probe the
+ * view uses (area-access.ts conversationFreshHeldAreas), so export == view. An
+ * answer with no recorded areas (stored before P4b) exports as before.
+ *
  * No database, no key, no env, no clock, no I/O.
  */
 
 import type { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import { recordReplayMarker } from "../compose/record";
+import { RECORD_GONE_TEXT, recordReplayMarker } from "../compose/record";
 import type { StoredAnswer } from "./answer";
+import { answerReadable } from "./multi-area";
 import type { ExportConversationRecord, ExportConversationsRead, MessageRecord } from "./store";
 
 export interface ExportPlatformAiMessage {
@@ -84,7 +93,7 @@ export function renderAnswerText(a: StoredAnswer): string {
   return a.segments.map((s) => (s.kind === "record" ? recordReplayMarker(s.rk, null) : s.kind === "correction" || s.kind === "note" ? `${s.text} ` : s.text)).join("");
 }
 
-function exportMessage(m: MessageRecord): ExportPlatformAiMessage {
+function exportMessage(m: MessageRecord, answerHeldAreas: ReadonlySet<PlatformArea>): ExportPlatformAiMessage {
   const base = {
     role: m.role, status: m.status,
     createdAt: m.createdAt.toISOString(),
@@ -94,6 +103,8 @@ function exportMessage(m: MessageRecord): ExportPlatformAiMessage {
   };
   if (m.role === "USER") return { ...base, text: typeof m.content === "string" ? m.content : null };
   const answer = m.content !== null && typeof m.content !== "string" ? m.content : null;
+  // S2 09ed: an answer that read an area not held now => the view's one marker, nothing of the answer.
+  if (answer && !answerReadable(m.evidenceRefs, answer, answerHeldAreas)) return { ...base, text: RECORD_GONE_TEXT, citations: [], notes: [] };
   return {
     ...base,
     text: answer ? renderAnswerText(answer) : null,
@@ -102,30 +113,32 @@ function exportMessage(m: MessageRecord): ExportPlatformAiMessage {
   };
 }
 
-const exportConversation = (c: ExportConversationRecord): ExportPlatformAiConversation => ({
+const exportConversation = (c: ExportConversationRecord, answerHeldAreas: ReadonlySet<PlatformArea>): ExportPlatformAiConversation => ({
   id: c.id,
   area: c.area,
   areaLabel: areaLabel(c.area),
   createdAt: c.createdAt.toISOString(),
   lastActivityAt: c.lastActivityAt.toISOString(),
-  messages: c.messages.map(exportMessage),
+  messages: c.messages.map((m) => exportMessage(m, answerHeldAreas)),
 });
 
 /**
  * PURE. The export section for what the data module read: held conversations
  * in full, lost areas as counts. Defence in depth: a conversation whose area is
  * not held is DROPPED here too (counted, never exported), even if a caller
- * passed one.
+ * passed one. Inside a held conversation, each answer follows the lost-area rule over
+ * `answerHeldAreas` (the fresh per-area probe; S2 09ed) — required, so no caller can skip it.
  */
 export function projectPlatformAiConversationsForExport(
   read: ExportConversationsRead,
   heldAreas: ReadonlySet<PlatformArea>,
+  answerHeldAreas: ReadonlySet<PlatformArea>,
 ): PlatformAiExportSection {
   const counts = new Map<PlatformArea, number>();
   for (const o of read.omitted) counts.set(o.area, (counts.get(o.area) ?? 0) + o.count);
   const conversations: ExportPlatformAiConversation[] = [];
   for (const c of read.conversations) {
-    if (heldAreas.has(c.area)) conversations.push(exportConversation(c));
+    if (heldAreas.has(c.area)) conversations.push(exportConversation(c, answerHeldAreas));
     else counts.set(c.area, (counts.get(c.area) ?? 0) + 1);
   }
   const omitted = [...counts]

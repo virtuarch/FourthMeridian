@@ -303,6 +303,19 @@ async function main() {
     check("open_page with a param key that is not offered: the same INVALID_ARGS trace", JSON.stringify(e3.trace) === JSON.stringify(e4.trace), e3.trace);
   }
 
+  console.log("\n6b. P4b — toolAreas(): the areas each pack ran over (the call's surviving, freshly rechecked areas)");
+  {
+    runs = [];
+    const two = [{ scope: scopeOf("PLATFORM_OPS"), binding: binding("Ops") }, { scope: scopeOf("CUSTOMER_SUCCESS"), binding: binding("CS") }];
+    const { b } = boundary({ registry: [aggTool(), recordsTool(() => [rec("r1")], { requires: { areas: ["SECURITY_OPS"], level: "READ", tier: "OPS" } })], areas: two, held: new Set<PlatformArea>(["PLATFORM_OPS"]) });
+    check("nothing ran ⇒ no pack areas", b.toolAreas().size === 0);
+    await call(b, "probe_list", {});
+    check("a refused call records nothing", b.toolAreas().size === 0);
+    await call(b, "probe_agg", { n: 1 });
+    check("an AGGREGATE call over Ops + CS where only Ops passes its recheck ⇒ metrics: [PLATFORM_OPS] (the refused area is not recorded)",
+      JSON.stringify([...b.toolAreas()]) === JSON.stringify([["metrics", ["PLATFORM_OPS"]]]), [...b.toolAreas()]);
+  }
+
   console.log("\n7. static — one boundary, wired by both production callers, no module state");
   {
     const bsrc = code(src("lib/platform/intelligence/ai/authz/boundary.ts"));

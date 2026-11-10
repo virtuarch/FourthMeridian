@@ -38,7 +38,7 @@ import {
   NOT_AVAILABLE_BODY, grantedAreasFrom, handleCreateConversation, handleListConversations, type ConversationHttp,
 } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
-import { conversationAreaAccess } from "./area-access";
+import { conversationAreaAccess, conversationHeldAccess } from "./area-access";
 import { isSubjectResolutionEnabled, platformAiSubjectFlags } from "@/lib/platform/intelligence/ai/authz/subject.server";
 import { runConversationTurnForRoute } from "./turn-runner";
 
@@ -81,7 +81,8 @@ export async function POST(req: NextRequest) {
   // 2–3. The viewer, before any lookup.
   const [user, uerr] = await requireUser();
   if (uerr) return uerr;
-  const area = platformAiAreaFor(await loadPlatformDirectory(user.id));
+  const rows = await loadPlatformDirectory(user.id);
+  const area = platformAiAreaFor(rows);
   if (!area) return FORBIDDEN();
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err) return err;
@@ -95,6 +96,8 @@ export async function POST(req: NextRequest) {
   try {
     return respond(await handleCreateConversation({ operatorId: auth.user.id, area: auth.grant.area }, body, {
       ...deps(),
+      // P4b — the turn binds every area held NOW (these directory rows), each behind its own fresh guard.
+      heldAccess: conversationHeldAccess(rows),
       admission: () => readPaidRequestsAdmission(),
       freeze: () => readGlobalCostFreeze(),
       turns: (id, now) => readPlatformAiTurns(id, now),
