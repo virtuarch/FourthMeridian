@@ -267,7 +267,10 @@ check("fixture-db: deletes ONLY by manifest id (never by tag alone), and never A
   (db.match(/deleteMany\(\{ where: id\("/g) ?? []).length === 9 && !/auditLog\.delete/.test(db));
 check("fixture-db: no runtime import (type-only Prisma)", specs(db).every((s) => s === "@prisma/client" || s === "./fixture-common") && /import type \{ Prisma \}/.test(db));
 const io = srcs["scripts/e0-live/fixture-io.ts"];
-check("fixture-io: Prisma is constructed only in loadPrisma (dynamic import)", /await import\("@prisma\/client"\)/.test(io) && !/^import[^\n]*@prisma\/client/m.test(io));
+check("fixture-io: the client is the repo's guarded `db` (@/lib/db, dynamic import after the guard) — no private client anywhere",
+  /const \{ db \} = await import\("@\/lib\/db"\);/.test(io) && !/^import[^\n]*@prisma\/client/m.test(io)
+  && FILES.every((f) => !/new PrismaClient|import\("@prisma\/client"\)/.test(srcs[f]))
+  && /process\.env\.DATABASE_URL !== directUrl/.test(io));
 check("fixture-io: the guard populates DATABASE_URL from the guarded file only and unsets the role URLs",
   /process\.env\.DATABASE_URL = decision\.directUrl;/.test(io) && /"DATABASE_URL_APP", "DATABASE_URL_AUTH", "DATABASE_URL_SYSTEM"/.test(io));
 check("no file prints a URL: errors are redacted", /<redacted-url>/.test(seed) && /<redacted-url>/.test(td));

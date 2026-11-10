@@ -126,7 +126,18 @@ export function printCounts(title: string, counts: Record<string, number>): void
 
 // ── Prisma (AFTER the guard) ─────────────────────────────────────────────────
 
+/**
+ * The repo's ONE guarded client (`db` from @/lib/db — it runs the clone guard,
+ * lib/db-safety.ts, before constructing), never a privately constructed client.
+ * runGuards() has already set DATABASE_URL := the guarded Preview DIRECT_URL and
+ * unset every role URL, so lib/db's `db` (and `systemDb`, which then falls back
+ * to it) points at exactly the guarded target. Re-asserted here before the import.
+ */
 export async function loadPrisma(directUrl: string) {
-  const { PrismaClient } = await import("@prisma/client");
-  return new PrismaClient({ datasources: { db: { url: directUrl } }, log: ["error"] });
+  if (process.env.DATABASE_URL !== directUrl) die("DATABASE_URL is not the guarded Preview DIRECT_URL — refusing to load the client.");
+  for (const k of ["DIRECT_URL", "DATABASE_URL_APP", "DATABASE_URL_AUTH", "DATABASE_URL_SYSTEM"]) {
+    if (process.env[k]) die(`${k} is set after the guard — refusing to load the client.`);
+  }
+  const { db } = await import("@/lib/db");
+  return db;
 }
