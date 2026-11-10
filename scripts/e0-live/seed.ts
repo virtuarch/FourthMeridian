@@ -39,8 +39,8 @@
 
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { MANIFEST_TABLES, dayPrefix, emptyIds, migrationBasisRefusal, nonceFromBytes, parseTag, teardownDeadline, utcDay, type E0LiveManifest } from "./fixture-common";
-import { buildFixturePlan, failingFacts, planCounts, planRefusals, type FixturePlan, type ObservedFacts } from "./fixture-spec";
+import { MANIFEST_TABLES, dayPrefix, migrationBasisRefusal, nonceFromBytes, parseTag, utcDay, type E0LiveManifest } from "./fixture-common";
+import { buildFixturePlan, failingFacts, manifestFromPlan, planCounts, planRefusals, safetyReport, safetyReportLines, type FixturePlan, type ObservedFacts } from "./fixture-spec";
 import {
   assertRepoBasis, die, ensurePrivateDir, loadPrisma, localNewestMigration, logLine, printCounts, privateFixtureDir, runGuards, stamp, writePrivateNew,
 } from "./fixture-io";
@@ -70,8 +70,10 @@ async function main(): Promise<void> {
     printCounts("PLAN (offline; nothing contacted). Rows by table:", planCounts(plan));
     const refusals = planRefusals(plan);
     console.log(refusals.length ? `PLAN REFUSALS:\n  - ${refusals.join("\n  - ")}` : "plan refusals: none");
+    const safety = safetyReport(plan, new Date());
+    for (const line of safetyReportLines(safety)) console.log(line);
     console.log(`live-only facts: ${plan.liveOnly.map((f) => f.id).join(", ")}`);
-    process.exit(refusals.length ? 2 : 0);
+    process.exit(refusals.length || safety.refusals.length ? 2 : 0);
   }
 
   // ── Guards FIRST (nothing that can reach a database is loaded before this) ──
@@ -108,6 +110,11 @@ async function main(): Promise<void> {
   const refusals = planRefusals(plan);
   if (refusals.length) die(`plan refused: ${refusals.join(" · ")}`);
   if (parseTag(plan.tag)?.day !== day) die("the plan's tag day is not today (UTC).");
+  // S2 09eo — the safety report, printed and enforced BEFORE the transaction (dry run and apply alike).
+  const safety = safetyReport(plan, new Date());
+  for (const line of safetyReportLines(safety)) console.log(line);
+  if (safety.refusals.length) die(`safety report refused: ${safety.refusals.join(" · ")}`);
+  logLine(LOG, `safety report: refusals=0 markerRows=${safety.auditLogs.markerRows}`);
 
   class DryRunRollback extends Error { constructor() { super("dry-run rollback"); } }
   class SelfCheckFailed extends Error { constructor(readonly facts: string[]) { super("self-check failed"); } }
@@ -210,21 +217,9 @@ async function main(): Promise<void> {
       const bad = failingFacts(plan, observed);
       if (bad.length) throw new SelfCheckFailed(bad);
 
-      // ── Manifest (ids + drift hashes) ──
-      const ids = emptyIds();
-      ids.user = plan.users.map((r) => r.id);
-      ids.customerPolicyAssignment = plan.policies.map((r) => r.id);
-      ids.userSession = plan.sessions.map((r) => r.id);
-      ids.plaidItem = plan.plaidItems.map((r) => r.id);
-      ids.connection = plan.connections.map((r) => r.id);
-      ids.financialAccount = plan.financialAccounts.map((r) => r.id);
-      ids.accountConnection = plan.accountConnections.map((r) => r.id);
-      ids.syncIssue = plan.syncIssues.map((r) => r.id);
-      ids.betaAccessRequest = plan.betaRequests.map((r) => r.id);
-      manifest = {
-        kind: "e0-live-fixture-manifest", tag: plan.tag, createdAt: now.toISOString(), repoSha: sha, targetHash: guard.targetHash,
-        teardownDeadline: teardownDeadline(plan.tag), ids, hashes: await readDriftHashes(tx, ids), auditLogIds: plan.auditLogs.map((a) => a.id),
-      };
+      // ── Manifest (ids + drift hashes; no column value of any row — no session token) ──
+      const base = manifestFromPlan(plan, { createdAt: now, repoSha: sha, targetHash: guard.targetHash }, {});
+      manifest = { ...base, hashes: await readDriftHashes(tx, base.ids) };
       if (MODE === "dry-run") throw new DryRunRollback();
     }, { timeout: 240_000, maxWait: 20_000 });
   } catch (e) {
