@@ -81,7 +81,7 @@ const REASONS = ATTENTION_KEYS as readonly string[];
 const BROKEN_STATUS = new Set(["ERROR", "NEEDS_REAUTH"]);
 
 /** "First connection" (the rollup's label) → "firstConnection" (the closed key); anything else ⇒ null. */
-const stageKeyOf = (label: string | null | undefined): string | null =>
+export const stageKeyOf = (label: string | null | undefined): string | null =>
   (Object.entries(FUNNEL_STAGE_LABELS) as [string, string][]).find(([, l]) => l === label)?.[0] ?? null;
 
 const T2: RecordSchema["t2Fields"] = ["name", "email"];

@@ -55,12 +55,13 @@ const LEGACY = PLATFORM_AI_TOOL_REGISTRY.filter((t) => CORE_TOOL_NAMES.includes(
 const PACK_TOOLS = PLATFORM_AI_TOOL_REGISTRY.filter((t) => !CORE_TOOL_NAMES.includes(t.name));
 const CUSTOMERS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "customers");
 const INCIDENTS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "incidents");
+const ONBOARDING_TOOLS = PACK_TOOLS.filter((t) => t.pack === "onboarding");
 
 async function main() {
   console.log("1. the six existing tools, each a valid declaration");
   check("the registry declares the core's tools (4 + 2 memory) first, in the order offered, then the pack tools",
     PLATFORM_AI_REGISTERED_TOOLS.slice(0, 6).join() === CORE_TOOL_NAMES.join() && CORE_TOOL_NAMES.join() === [...PLATFORM_AI_TOOLS, ...PLATFORM_AI_MEMORY_TOOLS].join() && LEGACY.length === 6
-    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile,incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs",
+    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile,incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs,onboarding_overview,list_onboarding_attention,get_onboarding_timeline",
     PLATFORM_AI_REGISTERED_TOOLS);
   for (const t of PLATFORM_AI_TOOL_REGISTRY) check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
   check("packs: metrics = list_metrics/get_metric · navigation = find_page/open_page · memory = recall/propose",
@@ -232,6 +233,36 @@ async function main() {
     check("investigate tools cost 2 calls (design §10), the lists 1",
       platformAiTool("investigate_incident")!.cost.toolCalls === 2 && platformAiTool("investigate_incident_cs")!.cost.toolCalls === 2
       && platformAiTool("list_incidents")!.cost.toolCalls === 1 && platformAiTool("list_incidents_cs")!.cost.toolCalls === 1);
+  }
+
+  console.log("\n9. P6 — the onboarding pack");
+  {
+    const { validateRecordSchema, T2_FIELD_NAMES } = await import("../evidence/record-envelope");
+    check("onboarding pack = onboarding_overview, list_onboarding_attention, get_onboarding_timeline",
+      ONBOARDING_TOOLS.map((t) => t.name).join() === "onboarding_overview,list_onboarding_attention,get_onboarding_timeline");
+    const LINKAGE = /user|subject|owner|target|linked|email|name|institution|label|note|message|detail|address|id$/i;
+    for (const t of ONBOARDING_TOOLS) {
+      check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
+      check(`${t.name}: READ, 1 call; no free-string argument (only enum / CUSTOMER handle)`,
+        t.requires.level === "READ" && t.cost.toolCalls === 1 && Object.values(t.args.properties).every((a) => a.kind === "enum" || (a.kind === "handle" && a.recordKind === "CUSTOMER")));
+    }
+    const ov = platformAiTool("onboarding_overview")!;
+    check("onboarding_overview: AGGREGATE, not linkable, tier OPS, pii 0, areas [PLATFORM_OPS, CUSTOMER_SUCCESS] (counts only)",
+      ov.scope === "AGGREGATE" && ov.customerLinkable === false && ov.requires.tier === "OPS" && ov.pii === 0 && ov.requires.areas.join() === "PLATFORM_OPS,CUSTOMER_SUCCESS" && !ov.recordSchema);
+    for (const n of ["list_onboarding_attention", "get_onboarding_timeline"]) {
+      const t = platformAiTool(n)!;
+      check(`${n}: RECORD, CS tier on CUSTOMER_SUCCESS only, customer-linkable with PLATFORM_AI_RECORD_VIEWED (kind CUSTOMER), pii 2`,
+        t.scope === "RECORD" && t.customerLinkable === true && t.audit?.action === "PLATFORM_AI_RECORD_VIEWED" && t.audit.detail.recordKind === "CUSTOMER"
+        && t.requires.tier === "CUSTOMER_SUCCESS" && t.requires.areas.join() === "CUSTOMER_SUCCESS" && t.pii === 2);
+      check(`${n}: a closed CUSTOMER record schema — ref = opaqueRef, no T2-named / linkage / free-text field, t2Fields = [name, email]`,
+        !!t.recordSchema && t.recordSchema.kind === "CUSTOMER" && validateRecordSchema(t.recordSchema).length === 0
+        && t.recordSchema.fields.ref?.type === "opaqueRef"
+        && Object.keys(t.recordSchema.fields).every((k) => !(T2_FIELD_NAMES as readonly string[]).includes(k) && !LINKAGE.test(k))
+        && Object.values(t.recordSchema.fields).every((f) => f.type !== "registryName")
+        && (t.recordSchema.t2Fields ?? []).join() === "name,email");
+    }
+    check("get_onboarding_timeline takes a CUSTOMER handle and revalidates it",
+      platformAiTool("get_onboarding_timeline")?.args.properties.customer?.kind === "handle" && typeof platformAiTool("get_onboarding_timeline")?.revalidate === "function");
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

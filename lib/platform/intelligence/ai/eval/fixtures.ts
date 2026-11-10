@@ -14,6 +14,7 @@
 
 import { CUSTOMER_WHERE, OPEN_ACCOUNT_WHERE } from "@/lib/platform/customer/population";
 import type { IncidentsPackReaders } from "../tools/packs/incidents";
+import type { OnboardingPackReaders } from "../tools/packs/onboarding";
 
 /** T2 sentinels — synthetic customers' identities. */
 export const E0_CUSTOMERS = [
@@ -268,6 +269,83 @@ export function e0IncidentReaders(now: Date, over: Partial<IncidentsPackReaders>
     },
     investigate: async (token, id) => { const inv = w.investigations.get(id as never); return inv ? ({ ...inv, verdict: tiered(token, inv.verdict) }) as never : null; },
     customerRef: (userId) => (E0_CUSTOMER_REF_TOKENS[userId] ? `user #${E0_CUSTOMER_REF_TOKENS[userId]}` : null),
+    now: () => now,
+    ...over,
+  };
+}
+
+// ── P6 — the onboarding pack's reader fixtures (sentinel T2 + injection in every free-text field) ──
+
+/**
+ * Reader outputs shaped like the Production onboarding readers' (new-connection-imports-core.ts, attention.ts,
+ * onboarding-core.ts): an injected failed-import reason KEY, injection payloads in the attention details, a
+ * link-exit stage, an add-failure code (not in the closed vocabulary), the timeline's connection labels /
+ * reason labels / event labels / pending lines, and the sentinel customers' names as a connection label.
+ * The onboarding-pack mappers must project NONE of them: codes outside the closed sets read "OTHER" /
+ * "UNKNOWN" / null.
+ *   zelda — link_exited (INVALID_CREDENTIALS, 2 h ago) + import_failed (PROVIDER_AUTH) + reconnect (not onboarding)
+ *   orrin — link_failed (WALLET_ADD, injected code ⇒ OTHER, 1 h ago) + stalled; a test account
+ */
+export function e0OnboardingDtos(now: Date) {
+  const [zelda, orrin] = E0_CUSTOMERS;
+  const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+  const iso = (min: number) => ago(min).toISOString();
+  const newConnectionImports = {
+    windowDays: 7, started: 3, byStatus: { in_progress: 1, complete: 1, recovered: 0, failed: 1, removed: 0 },
+    failedReasons: { PROVIDER_AUTH: 1, [E0_INJECTIONS.errorCode]: 2 }, interruptedInProgress: 1, floor: false,
+    checkedAt: now.toISOString(), notes: [E0_INJECTIONS.auditDetail],
+  };
+  const keys = ["reconnect", "incident", "import_failed", "import_stuck", "link_exited", "link_failed", "policy", "no_connection_24h", "stalled"];
+  const sets: Record<string, Set<string>> = Object.fromEntries(keys.map((k) => [k, new Set<string>()]));
+  sets.reconnect.add(zelda.id); sets.link_exited.add(zelda.id); sets.import_failed.add(zelda.id);
+  sets.link_failed.add(orrin.id); sets.stalled.add(orrin.id);
+  const fold = {
+    keys, sets, union: new Set([zelda.id, orrin.id]), floor: false,
+    activeFunnel: { users: [{ id: zelda.id, createdAt: ago(60 * 24 * 3) }, { id: orrin.id, createdAt: ago(60 * 24 * 9) }], plaidItems: [], walletConnections: [], manualAssets: [] },
+    through: new Map([[zelda.id, 2], [orrin.id, 0]]),
+    details: new Map([[zelda.id, { link_exited: E0_INJECTIONS.errorCode, import_failed: zelda.email }], [orrin.id, { link_failed: E0_INJECTIONS.institutionName }]]),
+    testAccounts: new Set([orrin.id]), testInUnion: new Set([orrin.id]),
+  };
+  const facts = {
+    linkExits: [
+      { userId: zelda.id, at: ago(120), stage: E0_INJECTIONS.accountName, errorCode: "INVALID_CREDENTIALS" },
+      { userId: zelda.id, at: ago(600), stage: "REQUIRES_CREDENTIALS", errorCode: E0_INJECTIONS.errorCode },
+    ],
+    linkFailures: [{ userId: orrin.id, at: ago(60), stage: "WALLET_ADD", errorCode: E0_INJECTIONS.errorCode }],
+    recentImports: [{ userId: zelda.id, verdict: { status: "failed", interrupted: false, reason: "PROVIDER_AUTH" } }],
+  };
+  const conn = (id: string, kind: "BANK" | "WALLET", label: string, linkedMin: number, over: Record<string, unknown> = {}) => ({
+    id, kind, label, linkedAt: iso(linkedMin), importStatus: kind === "BANK" ? "complete" : null, interrupted: false, reason: null,
+    reasonLabel: E0_INJECTIONS.accountName, transactions: 12, importCompletedAt: iso(linkedMin - 5), firstWealthRegenAt: kind === "BANK" ? iso(linkedMin - 10) : null,
+    attempts: 1, interruptedAttempts: 0, ...over,
+  });
+  const timeline = {
+    onboarding: {
+      registeredAt: iso(60 * 24 * 3), invited: true, emailVerifiedAt: iso(60 * 24 * 3 - 5), firstSessionAt: iso(60 * 24 * 3 - 10),
+      firstAiTurnAt: null, firstBriefAt: iso(60 * 24), importHealth: "red", floor: false,
+      connections: [
+        conn("e0-item-0001", "BANK", E0_INJECTIONS.institutionName, 60 * 30),
+        conn("e0-item-0002", "BANK", zelda.name, 60 * 20, { importStatus: "failed", reason: "PROVIDER_AUTH", importCompletedAt: null, firstWealthRegenAt: null }),
+        conn("e0-conn-0001", "WALLET", `${E0_INJECTIONS.accountName} wallet`, 60 * 10),
+      ],
+      events: [{ at: iso(60), kind: "linked", label: `${E0_INJECTIONS.institutionName} linked`, tone: "neutral", connectionId: "e0-item-0001" }],
+      pending: [`${zelda.email}: import failed — ${E0_INJECTIONS.errorCode}`],
+    },
+    rollup: { funnelStage: "First connection" },
+  };
+  return { newConnectionImports, fold, facts, timeline };
+}
+
+/** Fixture readers over e0OnboardingDtos (keyed rids = E0_CUSTOMER_REF_TOKENS, as the customers pack's). */
+export function e0OnboardingReaders(now: Date, over: Partial<OnboardingPackReaders> = {}): OnboardingPackReaders {
+  const d = e0OnboardingDtos(now);
+  const byRid = new Map(Object.entries(E0_CUSTOMER_REF_TOKENS).map(([id, t]) => [`u:${t}`, id]));
+  return {
+    newConnectionImports: async () => d.newConnectionImports as never,
+    attention: async () => ({ facts: d.facts as never, fold: d.fold as never }),
+    timeline: async (userId) => (userId === E0_CUSTOMERS[0].id ? d.timeline as never : null),
+    ridOf: (id) => (E0_CUSTOMER_REF_TOKENS[id] ? `u:${E0_CUSTOMER_REF_TOKENS[id]}` : null),
+    resolveRid: async (rid) => byRid.get(rid) ?? null,
     now: () => now,
     ...over,
   };

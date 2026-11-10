@@ -34,6 +34,7 @@ import type { FreshGuard } from "../authz/recheck";
 import type { PlatformAiToolContract, ToolAreas } from "./contract";
 import { CUSTOMERS_PACK_TOOLS } from "./packs/customers.server";
 import { INCIDENTS_PACK_TOOLS } from "./packs/incidents.server";
+import { ONBOARDING_PACK_TOOLS } from "./packs/onboarding.server";
 
 /** What the existing executor needs for one call — the per-turn context P1b passes through unchanged. */
 export interface LegacyToolContext {
@@ -122,6 +123,10 @@ const TOOLS: PlatformAiTool[] = [
   // PLATFORM_OPS and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS, behind
   // PLATFORM_AI_PACK_INCIDENTS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
   ...(INCIDENTS_PACK_TOOLS as PlatformAiTool[]),
+  // P6 — the onboarding pack (tools/packs/onboarding.ts): an identity-free OPS aggregate (CS counts only with a fresh
+  // CS guard) and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS (CUSTOMER kind, audited), behind
+  // PLATFORM_AI_PACK_ONBOARDING_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(ONBOARDING_PACK_TOOLS as PlatformAiTool[]),
 ];
 
 export const PLATFORM_AI_TOOL_REGISTRY: readonly PlatformAiTool[] = Object.freeze(TOOLS);

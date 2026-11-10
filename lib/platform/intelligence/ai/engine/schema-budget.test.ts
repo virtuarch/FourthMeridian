@@ -18,6 +18,8 @@
  * 4. the router's decisions for a fixed question list are pinned (router-decisions.snapshot.json):
  *    with today's registry (core only) AND with every planned pack declared (the rule table).
  *    Update deliberately: UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT=1.
+ * 7. P6 — the onboarding pack (onboardingPackOn): unrelated questions unchanged; the narrowed rule's pinned
+ *    false / true positives; Ops-only ⇒ the aggregate only.
  * 5. P5 (PACK-PR-CONDITIONS 2) — the customers pack DECLARED with its flag ON (the real registry,
  *    every area in scope): pinned as `customersPackOn`; every question the customers rule does not
  *    match routes exactly as `today` (the pack changes nothing for unrelated questions), and the
@@ -73,6 +75,20 @@ const QUESTIONS = [
   "Show member accounts needing attention",
   "Who recently joined?",
   "Any customers with failed imports?",
+  // P6 (PACK-PR-CONDITIONS 2) — the onboarding rule, narrowed: operator "activation" questions must NOT route it ...
+  "Did the kill switch activation work?",
+  "What is the activation status of the incidents pack?",
+  // ... and the onboarding questions still must.
+  "How is onboarding going for new customers?",
+  "Who left linking without connecting?",
+  "Any link failures this week?",
+];
+
+/** P6: the onboarding rule's pinned false positives (never onboarding) and true positives (always). */
+const ONBOARDING_FALSE_POSITIVES = ["Did the kill switch activation work?", "What is the activation status of the incidents pack?", "How are we looking today?", "Are bank connections healthy? Any reauth needed?"];
+const ONBOARDING_TRUE_POSITIVES = [
+  "How many imports failed during onboarding this week?", "Any customers with failed imports?", "How is onboarding going for new customers?",
+  "Who left linking without connecting?", "Any link failures this week?",
 ];
 
 /** S2 P5 follow-up (e): the customers rule's pinned false positives (never customers) and true positives (always). */
@@ -137,6 +153,7 @@ async function main() {
     everyPlannedPackDeclared: decisions(ruled),
     customersPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "customers" }),
     incidentsPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "incidents" }),
+    onboardingPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "onboarding" }),
   }, null, 2) + "\n";
   if (process.env.UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT === "1") { writeFileSync(SNAPSHOT, current); console.log("  (snapshot written)"); }
   const pinned = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, "utf8") : null;
@@ -174,6 +191,30 @@ async function main() {
   check("an operator with neither PLATFORM_OPS nor CUSTOMER_SUCCESS is never offered the incidents pack", noArea === "metrics,navigation,memory", noArea);
   const flagOff = R.routePlatformAiPacks({ question: "Any open incidents right now?", areas: ALL, memory: true }, env).join();
   check("flag unset (the live env here) ⇒ the incidents pack is never offered", flagOff === "metrics,navigation,memory", flagOff);
+
+  console.log("\n7. P6 — the onboarding pack declared, flag ON (PACK-PR-CONDITIONS 1 / 2 / 3)");
+  const withOnboarding = decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "onboarding" });
+  const oRule = R.ROUTER_RULES.find((r) => r.pack === "onboarding")!.match;
+  const oUnrelated = QUESTIONS.filter((q) => !oRule.test(q));
+  check(`${oUnrelated.length} questions the onboarding rule does not match: routed exactly as today`, oUnrelated.length >= 10 && oUnrelated.every((q) => withOnboarding[q] === today[q]),
+    oUnrelated.filter((q) => withOnboarding[q] !== today[q]));
+  check("matched questions: the core packs + onboarding only (the router only OFFERS; invokeTool stays the authority)",
+    QUESTIONS.filter((q) => oRule.test(q)).length >= 4 && QUESTIONS.filter((q) => oRule.test(q)).every((q) => withOnboarding[q] === "metrics,navigation,memory,onboarding"));
+  const ofp = ONBOARDING_FALSE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || oRule.test(q) || withOnboarding[q].split(",").includes("onboarding"));
+  check(`${ONBOARDING_FALSE_POSITIVES.length} activation / status / connection questions never route onboarding (pack ON)`, ofp.length === 0, ofp);
+  const otp = ONBOARDING_TRUE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || !oRule.test(q) || !withOnboarding[q].split(",").includes("onboarding"));
+  check(`${ONBOARDING_TRUE_POSITIVES.length} onboarding questions route onboarding (pack ON)`, otp.length === 0, otp);
+  // The OPS aggregate is callable with PLATFORM_OPS alone (counts only); the CS record tools need CUSTOMER_SUCCESS.
+  const onbOn = { enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "onboarding" };
+  const opsOnly = R.routePlatformAiPacks({ question: "How is onboarding going for new customers?", areas: ["PLATFORM_OPS"], memory: true }, env, onbOn).join();
+  check("a PLATFORM_OPS-only operator is offered the onboarding pack (its AGGREGATE tool is callable there)", opsOnly === "metrics,navigation,memory,onboarding", opsOnly);
+  const opsSchemas = R.platformAiOfferedSchemas({ packs: ["metrics", "navigation", "onboarding"], areas: ["PLATFORM_OPS"], memory: false, paramKeys: [], expandable: [] }) as { function: { name: string } }[];
+  check("…but only the aggregate: the CS record tools are never offered without CUSTOMER_SUCCESS",
+    opsSchemas.some((x) => x.function.name === "onboarding_overview") && !opsSchemas.some((x) => ["list_onboarding_attention", "get_onboarding_timeline"].includes(x.function.name)));
+  const growthOnly = R.routePlatformAiPacks({ question: "How is onboarding going for new customers?", areas: ["GROWTH_REVENUE"], memory: true }, env, { enabled: () => true }).join();
+  check("an operator with neither PLATFORM_OPS nor CUSTOMER_SUCCESS is never offered the onboarding pack", growthOnly === "metrics,navigation,memory", growthOnly);
+  const oFlagOff = R.routePlatformAiPacks({ question: "How is onboarding going for new customers?", areas: ALL, memory: true }, env).join();
+  check("flag unset (the live env here) ⇒ the onboarding pack is never offered", oFlagOff === "metrics,navigation,memory", oFlagOff);
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");

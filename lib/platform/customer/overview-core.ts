@@ -28,16 +28,25 @@ export interface CsOverviewFacts extends AttentionFacts {
 
 const kindLabel = (k: string) => k.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
 
+/**
+ * Active customers by the furthest onboarding stage reached THROUGH (the strict funnel's fold), in
+ * funnel order. The ONE stage distribution: the CS overview and the Platform AI onboarding pack
+ * (lib/platform/intelligence/ai/tools/packs/onboarding.ts) both read it.
+ */
+export function funnelStageCounts(through: ReadonlyMap<string, number>): { key: string; label: string; count: number }[] {
+  return FUNNEL_STAGE_ORDER.map((key, i) => ({
+    key, label: FUNNEL_STAGE_LABELS[key],
+    count: [...through.values()].filter((t) => t === i).length,
+  }));
+}
+
 export function buildCsOverview(facts: CsOverviewFacts, now: Date, windowDays: 30 | 90): CsOverviewResponse {
   // PB-4 — the ONE attention fold (the Customers list's filter reads the same sets).
   const att = foldAttention(facts, now);
   const funnel = att.activeFunnel;
   const through = att.through;
 
-  const stages = FUNNEL_STAGE_ORDER.map((key, i) => ({
-    key, label: FUNNEL_STAGE_LABELS[key],
-    count: [...through.values()].filter((t) => t === i).length,
-  }));
+  const stages = funnelStageCounts(through);
 
   const openByKind = [...facts.openByKind].sort((a, b) => b.count - a.count).map((r) => ({ ...r, label: kindLabel(r.kind) }));
   return {
