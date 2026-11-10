@@ -25,7 +25,7 @@ const concentrated = (over: Partial<NonNullable<BriefPackage['currentState']['co
   const p = basePackage();
   p.identity.briefDay = day; p.identity.asOf = day;
   p.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'BTC', topWeightPct: 85,
-    populationValue: 28440.27, populationIsComplete: false, ...over };
+    topValue: 24174.23, populationValue: 28440.27, populationIsComplete: false, ...over };
   // A quiet day: no material investment movement.
   p.recentChanges.d1!.investments = { abs: 240.1, pct: 0.3 };
   p.recentChanges.d1!.digitalAssets = { abs: 20.37, pct: 0.1 };
