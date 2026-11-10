@@ -86,7 +86,7 @@ import {
   decideSyntheticOperator, passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord, providerConnectionBlocksCleanup,
   E0_LIVE_ROSTER, E0_LIVE_FLIP_OPERATOR, isRosterGrant, isE0LiveGrantAllowed, computeE0LiveDeadline, e0LiveDirFor,
   e0LiveOperatorDir, e0LiveRecordDirRefusal, parseE0LiveRecord, classifySignalLine, regrantAuditAction,
-  AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS, E0_LIVE_PROFILE,
+  AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS, E0_LIVE_PROFILE, decideE0LiveProvisionExpiry,
   type SyntheticRecord, type CleanupCounts, type SyntheticArea, type E0LiveArea, type E0LiveRecord, type E0LiveOperator,
 } from "./lib/synthetic-operator.core";
 import {
@@ -456,6 +456,8 @@ async function provisionE0Live(db: Db, targetHash: string | null): Promise<numbe
   if (existing > 0) refuse(["an e0-live roster operator already exists on this database — run --cleanup with its record first."], true);
 
   const now = new Date();
+  const expiry = decideE0LiveProvisionExpiry(now);
+  if (!expiry.ok) refuse([expiry.reason], true);
   const deadline = computeE0LiveDeadline(now);
   if (deadline.getTime() <= now.getTime()) refuse(["the same-day cleanup deadline has passed — provision on a new UTC day."], true);
 
@@ -654,6 +656,11 @@ async function cleanupE0Live(db: Db, rosterDir: string, targetHash: string | nul
 async function main(): Promise<void> {
   const decision = decideSyntheticOperator(process.argv.slice(2), process.env);
   if (!decision.ok) refuse(decision.reasons, false);
+  if (decision.profile === "e0-live" && decision.command.kind === "provision") {
+    // S2 09eh: hard stop — refuse before any database contact or file write.
+    const expiry = decideE0LiveProvisionExpiry(new Date());
+    if (!expiry.ok) refuse([expiry.reason], false);
+  }
 
   // Imported only after the gate: constructing the client is the first contact with any database.
   const { db } = await import("@/lib/db");
