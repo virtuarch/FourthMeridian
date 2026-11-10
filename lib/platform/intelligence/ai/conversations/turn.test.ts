@@ -436,8 +436,8 @@ async function main(): Promise<void> {
       && /bindArea\(scope, \{ metricToken: metricAccessFor\(auth\), incidentToken \}\)/.test(access) && !/retrieveMetric\(/.test(access)
       && (code(src("lib/platform/intelligence/ai/authz/scope.ts")).match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(code(src("lib/platform/intelligence/ai/authz/scope.ts"))));
   const runner = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
-  check("the runner binds ONLY access.binding, the ledgered seam with the conversation id, and logs metadata only",
-    /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId, turnId: correlationId \}\)/.test(runner) && /invoke: boundary\.invoke/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
+  check("the runner binds ONLY access.binding (P4b: composed from fresh guards) over access.turnAreas (else the own scope), the ledgered seam with the conversation id, and logs metadata only",
+    /binding: access\.binding/.test(runner) && /const turnAreas = access\.turnAreas \?\? \(access\.scope \? \[\{ scope: access\.scope, binding: access\.binding \}\] : \[\]\);/.test(runner) && /areas: turnAreas,/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId, turnId: correlationId \}\)/.test(runner) && /invoke: boundary\.invoke/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
   const turnSrc = code(src("lib/platform/intelligence/ai/conversations/turn.ts"));
   check("turn.ts is pure: no db, env, clock (beyond the timeout signal) or provider import", !/@\/lib\/db|@\/lib\/env|new Date\(|Date\.now|generateWithTools|from "openai"|withTenantDb|systemDb/.test(turnSrc));
   const handlers = code(src("lib/platform/intelligence/ai/conversations/handlers.ts"));
@@ -497,9 +497,15 @@ async function main(): Promise<void> {
     check("B1(b): …so a stored turn can never cite one: evidence refs and citations hold the CS metric only, and the answer citing an Ops metric is refused",
       refs.every((x) => x.k !== "m" || x.id === "cs-needs-help@1") && (r.result?.citations ?? []).every((c) => c.metric === "cs-needs-help@1") && r.result?.grounding.replaced === true, { refs, cit: r.result?.citations });
     const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
-    check("B1(b): the conversation access helper binds ONLY the conversation's own area (one fresh guard, no composition, no directory read) and carries the B1(a) TODO",
-      (access.match(/requireFreshPlatformAccess\(/g) ?? []).length === 1 && !/composePlatformAiBindings|platformAiAreasFor|loadPlatformDirectory/.test(access)
-        && /TODO\(B1\(a\) provenance areasRead before multi-area conversations\)/.test(src("app/api/platform/ai/conversations/area-access.ts")));
+    // P4b (design v2 §8.3) supersedes B1(b) for operators who hold MORE than one area; the behaviour above (one held area) is unchanged.
+    const own = access.slice(access.indexOf("export async function conversationAreaAccess"), access.indexOf("async function heldAreaAccess"));
+    const other = access.slice(access.indexOf("async function heldAreaAccess"), access.indexOf("export function conversationHeldAccess"));
+    check("P4b: the conversation's OWN-area gate is still ONE non-probe fresh guard with no composition; each OTHER area comes only from its own probe guard; composition is the pure multi-area.ts; the B1(a) TODO is closed",
+      (own.match(/requireFreshPlatformAccess\(/g) ?? []).length === 1 && /const \[auth, err\] = await requireFreshPlatformAccess\(area, "READ"\);/.test(own) && !/composePlatformAiBindings|platformAiAreasFor|loadPlatformDirectory|widenConversationAccess/.test(own)
+        && (other.match(/requireFreshPlatformAccess\(/g) ?? []).length === 1 && /const \[held, heldErr\] = await requireFreshPlatformAccess\(area, "READ", \{ probe: true \}\);/.test(other)
+        && /scopeFromGuard\(held, area, operatorId\)/.test(other) && /metricAccessFor\(held\)/.test(other) && /incidentAudienceFor\(held\)/.test(other)
+        && /widenConversationAccess\(own, areas, \(a\) => heldAreaAccess\(a, operatorId\)\)/.test(access) && !/composePlatformAiBindings|loadPlatformDirectory/.test(access)
+        && !/TODO\(B1\(a\)/.test(src("app/api/platform/ai/conversations/area-access.ts")));
     const ask = code(src("app/api/platform/ai/ask/route.ts"));
     check("B1(b): the stateless ask route still composes every held area, each behind its own fresh guard",
       /for \(const other of platformAiAreasFor\(rows\)\)/.test(ask) && /await requireFreshPlatformAccess\(other, "READ"/.test(ask) && /composePlatformAiBindings\(parts\)/.test(ask));

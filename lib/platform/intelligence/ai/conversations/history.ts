@@ -31,12 +31,16 @@
  *     or `[customer h_…]` when THIS turn's boundary re-authorized it (area recheck +
  *     revalidate) and minted a fresh handle (scope.recordHandle). Never an id, never a
  *     value — history grants nothing.
+ *   · P4b — a prior ANSWER that read an area the operator no longer holds (scope.answerVisible
+ *     false, conversations/multi-area.ts) replays as "[no longer available]" only: none of its
+ *     prose, markers or evidence pointers reach the model. Its question (the operator's own,
+ *     scrubbed text) stays.
  *
  * Wired into runPlatformAiTurn (its `history` input) by ./turn.ts
  * runConversationTurn. Nothing here calls a model, a database or a clock.
  */
 
-import { recordReplayMarker } from "../compose/record";
+import { RECORD_GONE_TEXT, recordReplayMarker } from "../compose/record";
 import type { EvidenceRef, StoredAnswer, StoredRecordSegment } from "./answer";
 import {
   PLATFORM_AI_HISTORY_CHARS_PER_TOKEN,
@@ -70,6 +74,8 @@ export interface HistoryScope {
   pageVisible(id: string): boolean;
   /** P4 — the handle THIS turn re-minted for a prior record span (after re-authz), or null / absent ⇒ the bare kind marker. */
   recordHandle?(seg: StoredRecordSegment): string | null;
+  /** P4b — false ⇒ this prior answer read an area not held now: replayed as "[no longer available]", its refs never listed. Absent ⇒ every answer visible. */
+  answerVisible?(refs: readonly EvidenceRef[], answer: StoredAnswer): boolean;
 }
 
 export interface AssembledHistory {
@@ -147,7 +153,11 @@ export function assemblePlatformAiHistory(input: {
     if (q.role !== "USER" || q.status !== "COMPLETE" || typeof q.content !== "string") continue;
     const a = replies.get(q.id);
     if (!a || a.status !== "COMPLETE" || a.content === null || typeof a.content === "string") continue;
-    exchanges.push({ user: neutraliseBraces(q.content), assistant: replayAnswer(a.content, a.createdAt, scope.recordHandle?.bind(scope)), refs: a.evidenceRefs, at: q.createdAt.getTime() });
+    let visible = true;
+    try { visible = scope.answerVisible ? scope.answerVisible(a.evidenceRefs, a.content) === true : true; } catch { visible = false; }
+    exchanges.push(visible
+      ? { user: neutraliseBraces(q.content), assistant: replayAnswer(a.content, a.createdAt, scope.recordHandle?.bind(scope)), refs: a.evidenceRefs, at: q.createdAt.getTime() }
+      : { user: neutraliseBraces(q.content), assistant: RECORD_GONE_TEXT, refs: [], at: q.createdAt.getTime() });
   }
   exchanges.sort((x, y) => x.at - y.at);
 

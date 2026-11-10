@@ -152,6 +152,11 @@ export interface TurnBoundary {
   trace(): readonly BoundaryTraceStep[];
   /** The areas still in scope. */
   scopeAreas(): PlatformArea[];
+  /**
+   * P4b — the areas each PACK ran over this turn (the call's surviving, freshly rechecked areas, recorded
+   * when the tool ran): the conversations' provenance for pack tools (metric reads have envelope surfaces).
+   */
+  toolAreas(): ReadonlyMap<ToolPack, readonly PlatformArea[]>;
   /** P3 — the packs routed now (grows with more_tools). */
   routedPacks(): ToolPack[];
   /** P3 — handed to core.ts (`tools`) when a router is injected: question routing + the schemas each model call is offered. */
@@ -196,6 +201,9 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   const router = opts.router;
   let routed: ToolPack[] = [...opts.packs];
   let routedByQuestion = false, expansions = 0, calls = 0;
+  // P4b — pack → the areas its tools ran over this turn (this closure only; codes, never ids).
+  const ranOver = new Map<ToolPack, Set<PlatformArea>>();
+  const noteRan = (pack: ToolPack, areas: readonly PlatformArea[]) => { const s = ranOver.get(pack) ?? new Set<PlatformArea>(); for (const a of areas) s.add(a); ranOver.set(pack, s); };
 
   /** The binding over exactly these areas: the turn's own while nothing was removed, else recomposed from the surviving parts. */
   const bindingFor = (areas: readonly PlatformArea[]): PlatformAiBinding | null => {
@@ -284,6 +292,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     }
 
     // 9. run — an AGGREGATE tool is the executor, unchanged (its own trace step, its own result).
+    noteRan(tool.pack, surviving);
     if (tool.scope === "AGGREGATE") {
       const out = await tool.run(runArgs, ctx);
       trace.push({ tool: tool.name, pack: tool.pack, outcome: "OK" });
@@ -487,6 +496,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     remint,
     trace: () => [...trace],
     scopeAreas: () => scope.areas(),
+    toolAreas: () => new Map([...ranOver].map(([p, s]) => [p, [...s]] as const)),
     routedPacks: () => [...routed],
     ...(tools ? { tools } : {}),
   };
