@@ -23,7 +23,9 @@
  * DISMISS ≠ RESOLVED: only closure "recovered" (AUTOMATIC_RECOVERY — success
  * evidence) is a verified recovery. An operator close is never called a
  * recovery: OPERATOR_FIXED is "closed by an operator as fixed — not verified",
- * the other operator reason codes are "dismissed". A removed connection and a
+ * the other registered operator reason codes are "dismissed", and an operator
+ * close with no reason code or an unregistered one is "operator-closed" (closed,
+ * reason unknown — neither fixed nor dismissed). A removed connection and a
  * legacy row are closed, not recovered.
  *
  * TEXT RULES: every sentence is fixed text here or a registry wording
@@ -64,7 +66,7 @@ export interface LifecycleMilestone {
   tone: StatusTone;
 }
 
-export type ClosureOutcome = "verified-recovery" | "operator-fixed" | "dismissed" | "subject-removed" | "legacy";
+export type ClosureOutcome = "verified-recovery" | "operator-fixed" | "operator-closed" | "dismissed" | "subject-removed" | "legacy";
 
 export interface LifecycleClosure {
   kind: NonNullable<IncidentRowDTO["closure"]>;
@@ -185,7 +187,7 @@ export function lifecycleClosureOf(d: Pick<IncidentDetailDTO, "incident" | "reso
     case "operator":
       if (code === "OPERATOR_FIXED") { outcome = "operator-fixed"; headline = OPERATOR_FIXED_HEADLINE; }
       else if (code && DISMISS_CODES.has(code)) { outcome = "dismissed"; headline = DISMISSED_HEADLINE; }
-      else { outcome = "operator-fixed"; headline = OPERATOR_CLOSED_HEADLINE; }
+      else { outcome = "operator-closed"; headline = OPERATOR_CLOSED_HEADLINE; } // absent / unregistered reason
       break;
     case "connection-removed": outcome = "subject-removed"; headline = SUBJECT_REMOVED_HEADLINE; break;
     default: outcome = "legacy"; headline = LEGACY_HEADLINE;
