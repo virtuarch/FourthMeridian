@@ -7,7 +7,8 @@
  * injected institution names / error codes / labels, a wallet-address SENTINEL and its tail, nicknames, masks,
  * balances and an email on every row):
  * 1. connection_health_overview: identity-free counts; institutions ONLY via the static registry (unlisted ⇒
- *    "institution"); error codes ONLY when allowlisted (else OTHER; INVALID_WALLET_ADDRESS ⇒ OTHER); networks as
+ *    "institution"); error codes ONLY when allowlisted (else OTHER; INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES are fixed
+ *    codes, S2 09dy(1), never accompanied by an address / fragment / name / format hint); networks as
  *    chain codes; no address / tail / nickname / label / email; no audit; a failed reader ⇒ UNAVAILABLE;
  * 2. get_customer_connections: the oracle's closed CONNECTION fields per live connection, one
  *    PLATFORM_AI_RECORD_VIEWED row (the owner), Ops ⇒ NOT_FOUND, audit failure ⇒ UNAVAILABLE, another turn's
@@ -24,7 +25,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { UserRole, type PlatformArea } from "@prisma/client";
 import {
-  E0_CUSTOMERS, E0_INJECTION_SENTINELS, E0_KNOWN_INSTITUTION_ID, E0_T2_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_NICKNAME, e0ConnectionsReaders,
+  E0_CUSTOMERS, E0_INJECTION_SENTINELS, E0_KNOWN_INSTITUTION_ID, E0_T2_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_FORMAT_HINT, E0_WALLET_NICKNAME, e0ConnectionsReaders,
 } from "../../eval/fixtures";
 import type { BoundaryAuditRow } from "../../authz/boundary";
 import type { ConnectionsPackReaders } from "./connections";
@@ -39,7 +40,13 @@ const OP = "cop000000000000000000000co";
 const NOW = new Date("2026-11-10T12:00:00.000Z");
 const [ZELDA] = E0_CUSTOMERS;
 const ago = (min: number) => new Date(NOW.getTime() - min * 60_000).toISOString();
-const PLANTED = [...E0_T2_SENTINELS, ...E0_INJECTION_SENTINELS, "e0inj", E0_WALLET_ADDRESS, E0_WALLET_ADDRESS.slice(-6), E0_WALLET_NICKNAME, "4417", "98765", "INVALID_WALLET_ADDRESS", "NO_USED_ADDRESSES"];
+const PLANTED = [...E0_T2_SENTINELS, ...E0_INJECTION_SENTINELS, "e0inj", E0_WALLET_ADDRESS, E0_WALLET_ADDRESS.slice(-6), E0_WALLET_NICKNAME, E0_WALLET_FORMAT_HINT, "e0formatsentinel", "segwit", "4417", "98765"];
+/** S2 09dy(1): what must NEVER accompany INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES — the address, a fragment, the wallet name, a format hint. */
+const ADDRESS_BEARING = [E0_WALLET_ADDRESS, E0_WALLET_ADDRESS.slice(-6), E0_WALLET_ADDRESS.slice(0, 8), E0_WALLET_NICKNAME, "cold storage", E0_WALLET_FORMAT_HINT, "e0formatsentinel", "extended-key", "segwit", "xpub", "bech32"];
+const sentinelHits = (x: unknown, list: readonly string[]) => {
+  const s = (typeof x === "string" ? x : JSON.stringify(x)).toLowerCase();
+  return list.filter((v) => s.includes(v.toLowerCase()));
+};
 const leaks = (x: unknown) => {
   const s = JSON.stringify(x).toLowerCase();
   return PLANTED.filter((v) => s.includes(v.toLowerCase()));
@@ -76,22 +83,25 @@ async function main() {
   check("networkCodeOf: one registry chain ⇒ that code; several ⇒ MULTIPLE; none / unknown / an address-shaped string ⇒ OTHER",
     networkCodeOf(["ETH"]) === "ETH" && networkCodeOf(["eth", "ETH"]) === "ETH" && networkCodeOf(["BTC", "SOL"]) === "MULTIPLE"
     && networkCodeOf([]) === "OTHER" && networkCodeOf([null]) === "OTHER" && networkCodeOf([E0_WALLET_ADDRESS]) === "OTHER");
-  check("errorCodeOf: Plaid allowlist / wallet sync codes pass; INVALID_WALLET_ADDRESS, NO_USED_ADDRESSES, provider text ⇒ OTHER; none ⇒ null",
+  check("errorCodeOf: Plaid allowlist / wallet sync codes pass; INVALID_WALLET_ADDRESS + NO_USED_ADDRESSES pass as FIXED codes (S2 09dy(1)); provider text / a Plaid code on a wallet ⇒ OTHER; none ⇒ null",
     errorCodeOf("PLAID", "ITEM_LOGIN_REQUIRED") === "ITEM_LOGIN_REQUIRED" && errorCodeOf("WALLET", "BALANCE_UNAVAILABLE") === "BALANCE_UNAVAILABLE"
-    && errorCodeOf("WALLET", "INVALID_WALLET_ADDRESS") === "OTHER" && errorCodeOf("WALLET", "NO_USED_ADDRESSES") === "OTHER"
+    && errorCodeOf("WALLET", "INVALID_WALLET_ADDRESS") === "INVALID_WALLET_ADDRESS" && errorCodeOf("WALLET", "NO_USED_ADDRESSES") === "NO_USED_ADDRESSES"
+    && errorCodeOf("WALLET", `INVALID_WALLET_ADDRESS ${E0_WALLET_ADDRESS}`) === "OTHER" && errorCodeOf("PLAID", "NO_USED_ADDRESSES") === "OTHER"
     && errorCodeOf("PLAID", "the bank said: please call 555") === "OTHER" && errorCodeOf("WALLET", "ITEM_LOGIN_REQUIRED") === "OTHER" && errorCodeOf("PLAID", null) === null);
 
   console.log("\n1. connection_health_overview (AGGREGATE, identity-free)");
   {
     const ops = turn({ areas: ["PLATFORM_OPS"] });
     const o = await ops.call("connection_health_overview", {}) as Record<string, unknown>;
-    check("counts: total, byHealth, retired; per source faults by state + ALLOWLISTED code (injected ⇒ OTHER, INVALID_WALLET_ADDRESS ⇒ OTHER); no institution refs",
+    check("counts: total, byHealth, retired; per source faults by state + ALLOWLISTED code (injected ⇒ OTHER; INVALID_WALLET_ADDRESS a fixed code); no institution refs",
       o.status === "CONFIRMED" && o.total === 4 && JSON.stringify(o.byHealth) === JSON.stringify({ HEALTHY: 1, STALE: 0, DEGRADED: 1, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 })
       && JSON.stringify(o.retired) === JSON.stringify({ revoked: 1, ownerInactive: 0 })
       && JSON.stringify(o.bySource) === JSON.stringify({
         PLAID: { active: 3, revoked: 1, faults: [{ healthState: "ERROR", errorCode: "OTHER", count: 1 }, { healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 1 }] },
-        WALLET: { active: 1, revoked: 0, faults: [{ healthState: "DEGRADED", errorCode: "OTHER", count: 1 }] },
+        WALLET: { active: 1, revoked: 0, faults: [{ healthState: "DEGRADED", errorCode: "INVALID_WALLET_ADDRESS", count: 1 }] },
       }), o);
+    check("S2 09dy(1): the aggregate carrying INVALID_WALLET_ADDRESS carries NO address / fragment / wallet name / format hint",
+      JSON.stringify(o).includes("INVALID_WALLET_ADDRESS") && sentinelHits(o, ADDRESS_BEARING).length === 0, sentinelHits(o, ADDRESS_BEARING));
     const inst = (o.unhealthyByInstitution ?? []) as { institution: string; count: number }[];
     check("institutions ONLY via the registry keyed by institutionId: a verified id ⇒ its registry name, an unlisted id ⇒ the generic word",
       inst.length === 2 && inst.some((x) => x.institution === KNOWN && x.count === 1) && inst.some((x) => x.institution === UNLISTED_INSTITUTION && x.count === 1), inst);
@@ -124,10 +134,23 @@ async function main() {
     check("one CONNECTION record per live connection: registry institution, chain CODE (several ⇒ MULTIPLE), allowlisted codes, needsReauth, times",
       r.status === "CONFIRMED" && JSON.stringify(r.records.map((x) => x.fields)) === JSON.stringify([
         { ...base, provider: "PLAID", kind: "BANK", institution: KNOWN, network: null, status: "ERROR", healthState: "ERROR", errorCode: "OTHER", needsReauth: false, lastSyncedAt: ago(120), neverSynced: false, connectedAt: ago(500) },
-        { ...base, provider: "WALLET", kind: "WALLET", institution: null, network: "ETH", status: "ACTIVE", healthState: "DEGRADED", errorCode: "OTHER", needsReauth: false, lastSyncedAt: null, neverSynced: true, connectedAt: ago(400) },
+        { ...base, provider: "WALLET", kind: "WALLET", institution: null, network: "ETH", status: "ACTIVE", healthState: "DEGRADED", errorCode: "INVALID_WALLET_ADDRESS", needsReauth: false, lastSyncedAt: null, neverSynced: true, connectedAt: ago(400) },
         { ...base, provider: "PLAID", kind: "BANK", institution: UNLISTED_INSTITUTION, network: null, status: "NEEDS_REAUTH", healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", needsReauth: true, lastSyncedAt: ago(300), neverSynced: false, connectedAt: ago(450) },
-        { ...base, provider: "WALLET", kind: "WALLET", institution: null, network: "MULTIPLE", status: "ACTIVE", healthState: "DEGRADED", errorCode: "OTHER", needsReauth: false, lastSyncedAt: ago(30), neverSynced: false, connectedAt: ago(100) },
+        { ...base, provider: "WALLET", kind: "WALLET", institution: null, network: "MULTIPLE", status: "ACTIVE", healthState: "DEGRADED", errorCode: "NO_USED_ADDRESSES", needsReauth: false, lastSyncedAt: ago(30), neverSynced: false, connectedAt: ago(100) },
       ]) && r.records.every((x) => x.kind === "CONNECTION" && /^h_[A-Za-z0-9_-]{16}$/.test(x.handle) && !x.t2Fields), r);
+    {
+      // S2 09dy(1): each record carrying one of the two address codes holds EXACTLY the closed CONNECTION fields — no
+      // extra key, no address, fragment, wallet name or format hint (the fixture rows carry all four beside the code).
+      const SCHEMA_KEYS = Object.keys(connectionsPackTools(e0ConnectionsReaders(NOW)).find((x) => x.name === "get_customer_connections")!.recordSchema!.fields).sort().join();
+      const coded = r.records.filter((x) => x.fields.errorCode === "INVALID_WALLET_ADDRESS" || x.fields.errorCode === "NO_USED_ADDRESSES");
+      check("S2 09dy(1): both address codes are present (non-vacuous), each in a record with exactly the closed field set and a chain CODE network",
+        coded.length === 2 && coded.every((x) => Object.keys(x.fields).sort().join() === SCHEMA_KEYS && /^[A-Z]+$/.test(String(x.fields.network))), coded);
+      check("S2 09dy(1): NO address / fragment (head or tail) / wallet name / format hint anywhere in the envelope", sentinelHits(r, ADDRESS_BEARING).length === 0, sentinelHits(r, ADDRESS_BEARING));
+      // …nor in what a provider request would carry: the boundary's model-facing JSON of this result (what core.ts sends as the tool message).
+      const providerMessage = JSON.stringify({ role: "tool", tool_call_id: "c1", content: JSON.stringify(r) });
+      check("S2 09dy(1): the provider-request tool message carries the codes but none of the address-bearing values",
+        /INVALID_WALLET_ADDRESS/.test(providerMessage) && /NO_USED_ADDRESSES/.test(providerMessage) && sentinelHits(providerMessage, ADDRESS_BEARING).length === 0);
+    }
     check("ONE PLATFORM_AI_RECORD_VIEWED row (the owner, deduplicated across the four records), kind CONNECTION",
       rows.length === 1 && rows[0].action === "PLATFORM_AI_RECORD_VIEWED" && rows[0].targetUserId === ZELDA.id && rows[0].detail.recordKind === "CONNECTION" && rows[0].detail.tool === "get_customer_connections");
     check("NO wallet address (or its tail), nickname, wallet / account name, mask, balance, institution name, provider text, email or connection id",

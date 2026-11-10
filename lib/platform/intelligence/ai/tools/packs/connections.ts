@@ -23,8 +23,8 @@
  *     unlisted ⇒ the generic word "institution"). PlaidItem.institutionName / the health row's `label` /
  *     `institution` are NEVER read;
  *   · error codes ONLY when allowlisted: Plaid ⇒ incidents/explanations.ts allowlistedProviderCode; wallets ⇒ the
- *     generic wallet sync codes (lib/crypto/wallet-sync-dispatch.ts WalletSyncErrorCode) minus
- *     INVALID_WALLET_ADDRESS (it describes the address); anything else ⇒ "OTHER". Never a provider message;
+ *     generic wallet sync codes (lib/crypto/wallet-sync-dispatch.ts WalletSyncErrorCode) + NO_USED_ADDRESSES, as
+ *     fixed codes only (S2 09dy(1)); anything else ⇒ "OTHER". Never a provider message;
  *   · WALLETS: never the address, any fragment of it (the health row's `label` / customer-core's label carry the
  *     externalConnectionId tail — never read), the wallet name, a balance, or anything describing the address
  *     format. The network is a chain CODE from the registry's closed list (several ⇒ MULTIPLE, else OTHER);
@@ -105,10 +105,15 @@ const STATUSES = ["ACTIVE", "NEEDS_REAUTH", "ERROR", "OTHER"] as const;
 export const HEALTH_STATES = ["HEALTHY", "STALE", "DEGRADED", "NEEDS_REAUTH", "ERROR", "REVOKED"] as const satisfies readonly HealthState[];
 
 /**
- * The generic wallet sync codes (wallet-sync-dispatch.ts WalletSyncErrorCode) the model may see. INVALID_WALLET_ADDRESS
- * is deliberately ABSENT (S2 09dx: nothing describing the address) ⇒ it reads "OTHER", as does any other stored code.
+ * The wallet codes the model may see: the generic wallet sync codes (wallet-sync-dispatch.ts WalletSyncErrorCode) plus
+ * BTC's NO_USED_ADDRESSES (btc-sync.ts). S2 09dy(1): INVALID_WALLET_ADDRESS and NO_USED_ADDRESSES are ALLOWED as fixed
+ * codes — the code alone, never with an address, a fragment of one, a wallet name or a format hint (none is ever
+ * selected or mapped; connections.test.ts + E0 p7.* pin it). Any other stored code reads "OTHER".
  */
-export const WALLET_ERROR_CODES = ["PROVIDER_NOT_CONFIGURED", "BALANCE_UNAVAILABLE", "POSITION_CAPTURE_UNAVAILABLE", "CHAIN_UNSUPPORTED", "ADAPTER_ERROR"] as const satisfies readonly WalletSyncErrorCode[];
+export const WALLET_ERROR_CODES = [
+  ...(["PROVIDER_NOT_CONFIGURED", "INVALID_WALLET_ADDRESS", "BALANCE_UNAVAILABLE", "POSITION_CAPTURE_UNAVAILABLE", "CHAIN_UNSUPPORTED", "ADAPTER_ERROR"] as const satisfies readonly WalletSyncErrorCode[]),
+  "NO_USED_ADDRESSES",
+] as const;
 /** Every errorCode value a record / tally may carry: allowlisted Plaid codes ∪ the wallet codes ∪ OTHER. */
 export const CONNECTION_ERROR_CODES: readonly string[] = [...new Set<string>([...[...KNOWN_PROVIDER_ERROR_CODES].sort(), ...WALLET_ERROR_CODES, "OTHER"])];
 /** Chain codes (the registry's closed list) + MULTIPLE (several chains) + OTHER (unrecorded / unknown). */

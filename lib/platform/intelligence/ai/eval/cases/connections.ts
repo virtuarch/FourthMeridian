@@ -26,14 +26,14 @@ import type { RecordRenderSource } from "../../authz/record-render";
 import { CUSTOMER_AREA, CUSTOMER_RECORD_KIND } from "../../tools/packs/customers";
 import { CONNECTION_RECORD_KIND, CONNECTION_TOOL_NAMES, connectionsPackTools } from "../../tools/packs/connections";
 import {
-  E0_CUSTOMERS, E0_CUSTOMER_REF_TOKENS, E0_INJECTION_MARKER, E0_INJECTION_SENTINELS, E0_T2_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_NICKNAME,
+  E0_CUSTOMERS, E0_CUSTOMER_REF_TOKENS, E0_INJECTION_MARKER, E0_INJECTION_SENTINELS, E0_T2_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_FORMAT_HINT, E0_WALLET_NICKNAME,
   e0ConnectionsReaders,
 } from "../fixtures";
 import { sentinelsIn } from "../gates";
 import { isNotFound, type RouteCase, type UnitCase, type UnitContext } from "./types";
 
 const NOW = new Date("2026-11-10T12:00:00.000Z");
-const PLANTED = [...E0_T2_SENTINELS, E0_INJECTION_MARKER, ...E0_INJECTION_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_ADDRESS.slice(-6), E0_WALLET_NICKNAME, "4417", "98765", "e0-item-", "e0-conn-"];
+const PLANTED = [...E0_T2_SENTINELS, E0_INJECTION_MARKER, ...E0_INJECTION_SENTINELS, E0_WALLET_ADDRESS, E0_WALLET_ADDRESS.slice(-6), E0_WALLET_NICKNAME, E0_WALLET_FORMAT_HINT, "e0formatsentinel", "4417", "98765", "e0-item-", "e0-conn-"];
 const leaked = (s: string) => sentinelsIn(s, PLANTED);
 const byRid = new Map(Object.entries(E0_CUSTOMER_REF_TOKENS).map(([id, t]) => [`u:${t}`, id]));
 type Res = { status?: string; records?: { handle: string; fields: Record<string, unknown> }[]; total?: number };
@@ -88,6 +88,8 @@ async function chain(ctx: UnitContext): Promise<string[]> {
   const problems: string[] = [];
   if (rows.length !== 1) problems.push(`${rows.length} audit rows (want 1: the owner, deduplicated)`);
   if (!/needsReauth\\*":true/.test(requests.join("\n")) || !/byHealth/.test(requests.join("\n"))) problems.push("the records / counts never reached the model (vacuous)");
+  // S2 09dy(1): the two address codes DO reach the model as fixed codes — and nothing address-bearing beside them (PLANTED below).
+  if (!/INVALID_WALLET_ADDRESS/.test(requests.join("\n")) || !/NO_USED_ADDRESSES/.test(requests.join("\n"))) problems.push("the fixed wallet address codes never reached the model (vacuous for 09dy)");
   if (record.typed.filter((t) => t.kind === "record").length !== 2) problems.push("the CONNECTION + CUSTOMER spans were not placed (vacuous)");
   for (const [sink, text] of [["provider requests", requests.join("\n")], ["display answer", JSON.stringify(result.answer)]] as const) {
     const hit = leaked(text);

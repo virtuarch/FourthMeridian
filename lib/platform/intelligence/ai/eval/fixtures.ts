@@ -362,6 +362,8 @@ export function e0OnboardingReaders(now: Date, over: Partial<OnboardingPackReade
  */
 export const E0_WALLET_ADDRESS = "e0sentinelwalletaddr0000zz";
 export const E0_WALLET_NICKNAME = `${E0_INJECTION_MARKER}-NICK Zelda's cold storage`;
+/** An address-FORMAT hint (S2 09dy(1)): must never accompany INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES. */
+export const E0_WALLET_FORMAT_HINT = `${E0_INJECTION_MARKER}-FMT e0formatsentinel extended-key segwit`;
 /** A VERIFIED registry entry (whatever the registry's first key is), so no real institution name is written in a test file. */
 export const E0_KNOWN_INSTITUTION_ID = Object.keys(INSTITUTIONS)[0];
 
@@ -370,7 +372,8 @@ export const E0_KNOWN_INSTITUTION_ID = Object.keys(INSTITUTIONS)[0];
  * read): injected institution names / error codes / labels / nicknames / balances / the wallet-address sentinel
  * on every row. The connections-pack mappers must project NONE of them: institutions only via the registry
  * (E0_KNOWN_INSTITUTION_ID ⇒ its name; "ins_e0" ⇒ "institution"), error codes only when allowlisted (else OTHER;
- * INVALID_WALLET_ADDRESS ⇒ OTHER), networks only as chain codes.
+ * INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES pass as fixed codes, S2 09dy(1) — and the rows carrying them also carry an
+ * address, its tail, a wallet name and an address-FORMAT hint that must never accompany them), networks only as chain codes.
  */
 export function e0ConnectionsDtos(now: Date) {
   const [zelda] = E0_CUSTOMERS;
@@ -394,7 +397,7 @@ export function e0ConnectionsDtos(now: Date) {
     checkedAt: now.toISOString(), cap: 200, listedScope: "unhealthy",
   };
   const institutionIds = new Map([["e0-item-0001", "ins_e0"], ["e0-item-0003", E0_KNOWN_INSTITUTION_ID]]);
-  const leak = { label: E0_INJECTIONS.institutionName, institutionName: E0_INJECTIONS.institutionName, externalConnectionId: E0_WALLET_ADDRESS, name: E0_WALLET_NICKNAME, nickname: E0_WALLET_NICKNAME, mask: "4417", balance: 98765.43, message: E0_INJECTIONS.errorCode, ownerEmail: zelda.email };
+  const leak = { label: E0_INJECTIONS.institutionName, institutionName: E0_INJECTIONS.institutionName, externalConnectionId: E0_WALLET_ADDRESS, name: E0_WALLET_NICKNAME, nickname: E0_WALLET_NICKNAME, mask: "4417", balance: 98765.43, message: E0_INJECTIONS.errorCode, ownerEmail: zelda.email, addressFormat: E0_WALLET_FORMAT_HINT, addressTail: E0_WALLET_ADDRESS.slice(-6) };
   const customerRows = [
     { ...leak, source: "PLAID", id: "e0-item-0001", institutionId: E0_KNOWN_INSTITUTION_ID, status: "ERROR", errorCode: E0_INJECTIONS.errorCode, healthState: "ERROR", lastSyncedAt: ago(120), createdAt: ago(500), chains: [] },
     { ...leak, source: "WALLET", id: "e0-conn-0001", institutionId: null, status: "ACTIVE", errorCode: "INVALID_WALLET_ADDRESS", healthState: "DEGRADED", lastSyncedAt: null, createdAt: ago(400), chains: ["ETH"] },
