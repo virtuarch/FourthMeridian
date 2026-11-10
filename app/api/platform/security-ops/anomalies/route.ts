@@ -12,8 +12,11 @@
  * granted, non-SYSTEM_ADMIN platform staff gate the other Security Ops widgets
  * use (never requireSystemAdmin).
  *
+ * P12a: the read lives in lib/platform/security/anomalies.ts (pure move); this
+ * route is gate → reader → JSON.
+ *
  * PII (BETA V2): the detector's `metadata.key` is NOT coarse — it carries the raw
- * login identifier (email or username) or a full IP. It is projected server-side
+ * login identifier (email or username) or a full IP. The reader projects it
  * through lib/platform/security/anomalies-core.ts into a key KIND plus an opaque
  * digest, so the raw key never leaves this process; no email, IP or user-agent
  * is returned. `summary.failedLoginsWindow` is COUNT(LOGIN_FAILED) platform-wide
@@ -24,49 +27,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { AuditAction } from "@/lib/audit-actions";
-import { ANOMALY_THRESHOLDS } from "@/lib/security/anomalies";
-import { projectAnomalyTrip, type AnomalyTripProjection } from "@/lib/platform/security/anomalies-core";
+import { readSecurityAnomalies, type AnomaliesResponse } from "@/lib/platform/security/anomalies";
 
 export const runtime = "nodejs";
 
-const RECENT_LIMIT = 15;
-
-export type AnomalyTrip = AnomalyTripProjection;
-
-export interface AnomaliesResponse {
-  trips: AnomalyTrip[];
-  summary: {
-    failedLoginsWindow:   number; // LOGIN_FAILED over the identifier window
-    windowMinutes:        number;
-    tripsLast24h:         number;
-  };
-}
+export type { AnomalyTrip, AnomaliesResponse } from "@/lib/platform/security/anomalies";
 
 export async function GET() {
   const [, err] = await requirePlatformAccess("SECURITY_OPS", "READ");
   if (err) return err;
 
-  const windowMinutes = ANOMALY_THRESHOLDS.identifierFailedLogin.windowMinutes;
-  const now = Date.now();
-  const windowStart = new Date(now - windowMinutes * 60_000);
-  const dayStart = new Date(now - 24 * 60 * 60_000);
-
-  const [rows, failedLoginsWindow, tripsLast24h] = await Promise.all([
-    db.auditLog.findMany({
-      where:   { action: AuditAction.SECURITY_ANOMALY_DETECTED },
-      orderBy: { createdAt: "desc" },
-      take:    RECENT_LIMIT,
-      select:  { id: true, createdAt: true, metadata: true },
-    }),
-    db.auditLog.count({ where: { action: AuditAction.LOGIN_FAILED, createdAt: { gte: windowStart } } }),
-    db.auditLog.count({ where: { action: AuditAction.SECURITY_ANOMALY_DETECTED, createdAt: { gte: dayStart } } }),
-  ]);
-
-  const trips: AnomalyTrip[] = rows.map((r) => projectAnomalyTrip(r, windowMinutes));
-
-  return NextResponse.json({
-    trips,
-    summary: { failedLoginsWindow, windowMinutes, tripsLast24h },
-  } satisfies AnomaliesResponse);
+  return NextResponse.json((await readSecurityAnomalies(db, Date.now())) satisfies AnomaliesResponse);
 }
