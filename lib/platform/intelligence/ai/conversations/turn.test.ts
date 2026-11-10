@@ -432,7 +432,9 @@ async function main(): Promise<void> {
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
   check("the turn binding is built in the area guard from ITS OWN guard result, a literal surface per case",
     /const \[auth, err\] = await requireFreshPlatformAccess\(area, "READ"\);/.test(access) && /incidentAudienceFor\(auth\)/.test(access) && /metricAccessFor\(auth\)/.test(access)
-      && (access.match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(access));
+      // P1b: the five literal-surface cases live in the ONE shared binder (authz/scope.ts bindArea); the guard calls it with its own scope.
+      && /bindArea\(scope, \{ metricToken: metricAccessFor\(auth\), incidentToken \}\)/.test(access) && !/retrieveMetric\(/.test(access)
+      && (code(src("lib/platform/intelligence/ai/authz/scope.ts")).match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(code(src("lib/platform/intelligence/ai/authz/scope.ts"))));
   const runner = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
   check("the runner binds ONLY access.binding, the ledgered seam with the conversation id, and logs metadata only",
     /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId \}\)/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));

@@ -1853,10 +1853,16 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
     order.every((n, i) => at(n) > -1 && (i === 0 || at(n) > at(order[i - 1]))), order.map(at));
   const POST = route.slice(route.indexOf("export async function POST"));
   check("the flag is the FIRST statement of POST", /^export async function POST\(req: NextRequest\) \{\s*if \(!env\.isPlatformAiEnabled\) return/.test(POST));
-  const cases = [...route.matchAll(/case "([A-Z_]+)": return \{([\s\S]*?)\n    \};/g)];
-  check("bindingFor: one case per Platform area, each passing ITS OWN literal surface to every accessor",
+  // P1b: the binder moved VERBATIM from the route's bindingFor into the ONE shared authz/scope.ts bindArea
+  // (the conversations' area guard calls it too); the same per-case literal-surface pin now scans it there.
+  const scopeSrc = code(src(`${dir}/authz/scope.ts`));
+  const cases = [...scopeSrc.matchAll(/case "([A-Z_]+)": return \{([\s\S]*?)\n    \};/g)];
+  check("bindArea (authz/scope.ts, P1b — was the route's bindingFor): one case per Platform area, each passing ITS OWN literal surface to every accessor",
     cases.length === 5 && cases.every(([, a, body]) => (body.match(new RegExp(`"${a}"`, "g")) ?? []).length === 4 && !/"(?!${a})[A-Z_]{6,}"/.test(body.replace(new RegExp(`"${a}"`, "g"), ""))));
-  check("the surface is switched on the GUARD's grant area, never on request input", /bindingFor\(auth\.grant\.area,/.test(route) && !/searchParams|body\.(area|surface)/.test(route));
+  check("…and the route keeps no binder of its own (no literal-surface accessor call in the route)", !/retrieveMetric\(|listNavigationTargets\(|resolveNavigationTarget\(|function bindingFor/.test(route));
+  check("the surface is switched on the GUARD's own scope (scopeFromGuard on the guarded area), never on request input",
+    /const primaryScope = scopeFromGuard\(auth, area, auth\.user\.id\);/.test(route) && /bindArea\(primaryScope, \{ metricToken, incidentToken \}\)/.test(route)
+    && /switch \(scope\.area\)/.test(scopeSrc) && !/searchParams|body\.(area|surface)/.test(route));
   check("no persistence: the route stores nothing (no db write, no cookie, no storage)", !/\.(create|update|upsert)\(|cookies\(\)|set-cookie/i.test(route));
 }
 
@@ -1875,7 +1881,7 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
     && /const area = platformAiAreaFor\(spaces\);/.test(code(src("app/(shell)/dashboard/platform/ai/page.tsx")))
     && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
   check("the label is the registry's display label (PLATFORM_AREAS), the same one the route's binding reports",
-    platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("app/api/platform/ai/ask/route.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("app/api/platform/ai/ask/route.ts")));
+    platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("lib/platform/intelligence/ai/authz/scope.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("lib/platform/intelligence/ai/authz/scope.ts")));
   // Personal parity PR6 (owner 2026-11-08): the area is the shell header's context label, announced "Answering from: <label>".
   check("the page STATES the area before any question: the header context 'Answering from: Platform Operations'",
     /<span class="sr-only">Answering from: <\/span>Platform Operations/.test(html), html.slice(0, 900));
@@ -1927,10 +1933,11 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
   const route = code(src("app/api/platform/ai/ask/route.ts"));
   check("ask route: every OTHER held area is fresh-guarded on its own and bound from that guard (revoked ⇒ skipped), then composed",
     /for \(const other of platformAiAreasFor\(rows\)\)/.test(route) && /await requireFreshPlatformAccess\(other, "READ", \{ probe: true \}\)/.test(route)
-    && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route) && /bindingFor\(otherAuth\.grant\.area,/.test(route) && /composePlatformAiBindings\(/.test(route));
+    && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route)
+    && /const otherScope = scopeFromGuard\(otherAuth, other, auth\.user\.id\);\s*if \(!otherScope\) continue;/.test(route) && /bindArea\(otherScope,/.test(route) && /composePlatformAiBindings\(/.test(route));
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
   check("conversations stay single-area (S2 #483 B1(b)): the access helper binds only the conversation's own area — no composition",
-    /if \(err \|\| !auth\.grant \|\| auth\.grant\.area !== area \|\| auth\.user\.id !== operatorId\) return null;/.test(access)
+    /if \(err\) return null;\s*[^]*?const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(access)
     && !/composePlatformAiBindings|platformAiAreasFor/.test(access));
 
   // Prompt: the briefing protocol, in the owner's order.

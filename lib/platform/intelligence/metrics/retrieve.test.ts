@@ -877,8 +877,11 @@ console.log("\n8. static — no mint path, literal surfaces, no side effects, bo
   const strayImp = importers.filter((f) => f !== "lib/platform/intelligence/metrics/retrieve.ts"
     && f !== "lib/platform/intelligence/navigation/access.ts" && f !== "lib/platform/intelligence/navigation/registry.ts"
     && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnlyImp(f))
+    // Platform AI P1b: authz/scope.ts is the ONE Platform AI area binder (literal surface per case, scanned above);
+    // it binds the tokens its guarded caller minted and mints nothing itself.
+    && !(f === "lib/platform/intelligence/ai/authz/scope.ts" && !/metricAccessFor\(|incidentAudienceFor\(|require(?:Fresh)?PlatformAccess\(/.test(code(readFileSync(path.join(ROOT, f), "utf8"))))
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
-  check("the contract is imported only by retrieve.ts, the navigation registry (tiering only), the AI core (types only), tests, or guarded API routes", strayImp.length === 0, strayImp.join(", "));
+  check("the contract is imported only by retrieve.ts, the navigation registry (tiering only), the AI core (types only), the Platform AI binder (authz/scope.ts, mints nothing), tests, or guarded API routes", strayImp.length === 0, strayImp.join(", "));
 }
 
 // ── 9. operations metrics (Platform AI operational briefing, 2026-11-08) ─────

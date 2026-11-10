@@ -1,0 +1,296 @@
+{
+  "note": "Platform AI tool schemas as sent to the model. Update deliberately: UPDATE_PLATFORM_AI_TOOL_SNAPSHOT=1 (see registry.test.ts).",
+  "paramKeys": [
+    "view",
+    "window"
+  ],
+  "memoryOff": [
+    {
+      "type": "function",
+      "function": {
+        "name": "list_metrics",
+        "description": "List the metric definitions you may read here (ids, labels, windows, area). No values. Domain \"operations\" holds the operational briefing metrics (overall posture, customer-impacting failures, alerts firing, connection health, refresh pipeline, scheduled jobs, data freshness); \"incidents\" the incident counts; \"providers\" provider verdicts and call volume. Domain \"economics\" holds the cost and spend metrics (AI cost, provider cost, operating cost by category, AI calls and cost per call): use it for questions about cost, spend or what is costing the most. For \"most\" / \"largest\", use economics-operating-cost@1's largestMeasuredCategory part (the largest MEASURED category, server-computed); its totalUsd is the sum of the categories, never a category.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "domain": {
+              "type": "string",
+              "enum": [
+                "providers",
+                "operations",
+                "economics",
+                "engagement",
+                "growth",
+                "incidents",
+                "merchants",
+                "customers",
+                "security"
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_metric",
+        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "A metric id from list_metrics, e.g. \"provider-outcome@1\" or \"economics-operating-cost@1\"."
+            },
+            "window": {
+              "type": "integer",
+              "enum": [
+                1,
+                7,
+                30,
+                90
+              ],
+              "description": "Days, ONLY one of THIS metric's listed `windows` (list_metrics); a window it does not list is not read and you are told its windows. Omit for the default or a fixed window. \"Today\" is not a window: omit it, or use the metric's smallest listed window."
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "find_page",
+        "description": "Find Platform pages you may open, by words in their label.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "maxLength": 80
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "open_page",
+        "description": "Get the link (a relative href) for one page id from find_page, optionally with its filters.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "view": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "window": {
+                  "type": "string",
+                  "maxLength": 80
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "memoryOn": [
+    {
+      "type": "function",
+      "function": {
+        "name": "list_metrics",
+        "description": "List the metric definitions you may read here (ids, labels, windows, area). No values. Domain \"operations\" holds the operational briefing metrics (overall posture, customer-impacting failures, alerts firing, connection health, refresh pipeline, scheduled jobs, data freshness); \"incidents\" the incident counts; \"providers\" provider verdicts and call volume. Domain \"economics\" holds the cost and spend metrics (AI cost, provider cost, operating cost by category, AI calls and cost per call): use it for questions about cost, spend or what is costing the most. For \"most\" / \"largest\", use economics-operating-cost@1's largestMeasuredCategory part (the largest MEASURED category, server-computed); its totalUsd is the sum of the categories, never a category.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "domain": {
+              "type": "string",
+              "enum": [
+                "providers",
+                "operations",
+                "economics",
+                "engagement",
+                "growth",
+                "incidents",
+                "merchants",
+                "customers",
+                "security"
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_metric",
+        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "A metric id from list_metrics, e.g. \"provider-outcome@1\" or \"economics-operating-cost@1\"."
+            },
+            "window": {
+              "type": "integer",
+              "enum": [
+                1,
+                7,
+                30,
+                90
+              ],
+              "description": "Days, ONLY one of THIS metric's listed `windows` (list_metrics); a window it does not list is not read and you are told its windows. Omit for the default or a fixed window. \"Today\" is not a window: omit it, or use the metric's smallest listed window."
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "find_page",
+        "description": "Find Platform pages you may open, by words in their label.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "maxLength": 80
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "open_page",
+        "description": "Get the link (a relative href) for one page id from find_page, optionally with its filters.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "view": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "window": {
+                  "type": "string",
+                  "maxLength": 80
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "recall_memory",
+        "description": "Read OPERATOR MEMORY: with no id, the index of remembered items injected in this turn; with an id, that one item. Each has its type, the live subject label, concern, the operator's note, a {{mem:<id>}} placeholder for when it was noted, and the live check (UNCHANGED, CHANGED, UPDATED or UNVERIFIED). It never returns a value: for current state, read the live metric or page.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "maxLength": 40
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "propose_memory",
+        "description": "Propose ONE item for the operator to remember (they confirm it; nothing is saved by you). subjectRef must be a metric key or page id you read in THIS turn. At most one per turn; end your answer normally — the server shows the confirm card.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "factType": {
+              "type": "string",
+              "enum": [
+                "WATCHING_ISSUE",
+                "OPERATIONAL_STATE",
+                "FOLLOW_UP"
+              ]
+            },
+            "concern": {
+              "type": "string",
+              "enum": [
+                "RECURRING_FAILURE",
+                "DEGRADATION",
+                "COST_SPIKE",
+                "CUSTOMER_IMPACT",
+                "AWAITING_FIX",
+                "MONITOR_ONLY"
+              ]
+            },
+            "subjectRef": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 140,
+              "description": "A short note in your own words (no numbers, amounts, names, emails or ids, and never a sentence copied from the conversation)."
+            }
+          },
+          "required": [
+            "factType",
+            "subjectRef"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
