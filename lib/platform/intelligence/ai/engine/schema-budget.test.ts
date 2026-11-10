@@ -18,6 +18,10 @@
  * 4. the router's decisions for a fixed question list are pinned (router-decisions.snapshot.json):
  *    with today's registry (core only) AND with every planned pack declared (the rule table).
  *    Update deliberately: UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT=1.
+ * 5. P5 (PACK-PR-CONDITIONS 2) — the customers pack DECLARED with its flag ON (the real registry,
+ *    every area in scope): pinned as `customersPackOn`; every question the customers rule does not
+ *    match routes exactly as `today` (the pack changes nothing for unrelated questions), and the
+ *    questions it does match are listed in the snapshot for review.
  */
 
 process.env.PLATFORM_AI_ENABLED = "true";
@@ -54,6 +58,11 @@ const QUESTIONS = [
   "Customers hit by incidents after the jobs refresh broke their connections from a provider",
   "Open the platform ops page",
   "Remember that the scheduler is degraded.",
+  // P5 — the customers rule's broad words, pinned for review (PACK-PR-CONDITIONS 2).
+  "How many users signed up this week?",
+  "What does [customer h_AAAAAAAAAAAAAAAA] need?",
+  "Is anyone in the attention queue?",
+  "Are members of the ops team online?",
 ];
 
 async function main() {
@@ -106,11 +115,25 @@ async function main() {
     note: "Platform AI router decisions (engine/router.ts) for a fixed question list, every area in scope, memory on. Update deliberately: UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT=1 (see schema-budget.test.ts).",
     today: decisions({}),
     everyPlannedPackDeclared: decisions(ruled),
+    customersPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "customers" }),
   }, null, 2) + "\n";
   if (process.env.UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT === "1") { writeFileSync(SNAPSHOT, current); console.log("  (snapshot written)"); }
   const pinned = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, "utf8") : null;
   check("router decisions equal the committed snapshot", pinned === current, pinned === null ? "snapshot missing" : "differs — review, then UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT=1");
   check("today: every question routes exactly the core packs", Object.values(decisions({})).every((v) => v === "metrics,navigation,memory"));
+
+  console.log("\n5. P5 — the customers pack declared, flag ON (PACK-PR-CONDITIONS 2)");
+  const today = decisions({});
+  const withCustomers = decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "customers" });
+  const rule = R.ROUTER_RULES.find((r) => r.pack === "customers")!.match;
+  const unrelated = QUESTIONS.filter((q) => !rule.test(q));
+  check(`${unrelated.length} questions the customers rule does not match: routed exactly as today`, unrelated.length >= 10 && unrelated.every((q) => withCustomers[q] === today[q]),
+    unrelated.filter((q) => withCustomers[q] !== today[q]));
+  check("matched questions: the core packs + customers only (the router only OFFERS; invokeTool stays the authority)",
+    QUESTIONS.filter((q) => rule.test(q)).every((q) => withCustomers[q] === "metrics,navigation,memory,customers"));
+  check("a resolved subject marker ([customer h_…]) routes the customers pack", withCustomers["What does [customer h_AAAAAAAAAAAAAAAA] need?"] === "metrics,navigation,memory,customers");
+  const outOfScope = R.routePlatformAiPacks({ question: "Which customers need attention?", areas: ["PLATFORM_OPS"], memory: true }, env, { enabled: () => true }).join();
+  check("an operator without the CUSTOMER_SUCCESS area is never offered the customers pack", outOfScope === "metrics,navigation,memory", outOfScope);
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");

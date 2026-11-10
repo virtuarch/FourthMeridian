@@ -292,5 +292,87 @@
         }
       }
     }
+  ],
+  "packs": [
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_customer_attention",
+          "description": "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "reconnect",
+                  "incident",
+                  "import_failed",
+                  "import_stuck",
+                  "link_exited",
+                  "link_failed",
+                  "policy",
+                  "unassigned",
+                  "no_connection_24h",
+                  "stalled"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_recently_joined",
+          "description": "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "type": "integer",
+                "enum": [
+                  7,
+                  14,
+                  30
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_customer_profile",
+          "description": "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
   ]
 }

@@ -15,7 +15,7 @@ import type { PlatformAiBinding } from "../../core";
 import type { ScopedArea } from "../../authz/boundary";
 import type { PlatformAiRecheck } from "../../authz/recheck";
 
-export type E0Pack = "metrics" | "navigation" | "memory" | "boundary" | "router";
+export type E0Pack = "metrics" | "navigation" | "memory" | "boundary" | "router" | "customers";
 
 /** What the runner observed for one route turn. */
 export interface RouteTurnObservation {
@@ -74,7 +74,10 @@ export interface CoreMemoryCase {
 export interface UnitContext {
   operatorId(op: keyof typeof E0_OPERATORS): string;
   scoped(op: keyof typeof E0_OPERATORS, area: PlatformArea): { scope: ScopedArea; binding: PlatformAiBinding } | null;
-  /** A per-call recheck over the fixture world's PlatformGrant rows (status ACTIVE ⇒ fresh guard). */
+  /**
+   * A per-call recheck over the fixture world's PlatformGrant rows (status ACTIVE ⇒ fresh guard), carrying the
+   * incident token the runner mints from that fixture guard result (as authz/recheck.server.ts does in Production).
+   */
   recheck(op: keyof typeof E0_OPERATORS): PlatformAiRecheck;
 }
 

@@ -42,6 +42,7 @@ import { RECORD_GONE_TEXT, RECORD_PENDING_TEXT, isT2Field } from "../compose/rec
 import type { T2FieldName } from "../evidence/record-envelope";
 import type { ToolTier } from "../tools/contract";
 import type { FreshGuard } from "./recheck";
+import { customerRecordSource } from "../tools/packs/customers.server";
 
 /** The record segment the renderer reads (= conversations/answer.ts StoredRecordSegment / compose/record.ts RecordSpan). */
 export interface RecordRef { readonly rk: string; readonly rid: string; readonly a: string; readonly f: string }
@@ -63,8 +64,13 @@ export interface RecordRenderSource {
   t2(rid: string, area: PlatformArea, field: T2FieldName): Promise<string | null>;
 }
 
-/** The RECORD sources by kind. EMPTY in P4: no RECORD pack exists yet (each pack PR registers its own, S2-reviewed). */
-export const PLATFORM_AI_RECORD_SOURCES: Readonly<Record<string, RecordRenderSource>> = Object.freeze({});
+/**
+ * The RECORD sources by kind (each pack PR registers its own, S2-reviewed). P5: CUSTOMER — the
+ * customers pack's keyed-rid source (tools/packs/customers.server.ts customerRecordSource).
+ */
+export const PLATFORM_AI_RECORD_SOURCES: Readonly<Record<string, RecordRenderSource>> = Object.freeze({
+  CUSTOMER: customerRecordSource(),
+});
 
 /** The audit row a T2 render writes (codes + the linked customer; never a value). */
 export interface RecordViewedRow {

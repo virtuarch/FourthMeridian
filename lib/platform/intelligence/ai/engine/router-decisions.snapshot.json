@@ -16,7 +16,11 @@
     "Any merchant descriptors uncategorised?": "metrics,navigation,memory",
     "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory",
     "Open the platform ops page": "metrics,navigation,memory",
-    "Remember that the scheduler is degraded.": "metrics,navigation,memory"
+    "Remember that the scheduler is degraded.": "metrics,navigation,memory",
+    "How many users signed up this week?": "metrics,navigation,memory",
+    "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory",
+    "Is anyone in the attention queue?": "metrics,navigation,memory",
+    "Are members of the ops team online?": "metrics,navigation,memory"
   },
   "everyPlannedPackDeclared": {
     "How are we looking today?": "metrics,navigation,memory",
@@ -34,6 +38,32 @@
     "Any merchant descriptors uncategorised?": "metrics,navigation,memory,merchants",
     "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory,incidents,connections,jobs",
     "Open the platform ops page": "metrics,navigation,memory",
-    "Remember that the scheduler is degraded.": "metrics,navigation,memory,incidents,jobs"
+    "Remember that the scheduler is degraded.": "metrics,navigation,memory,incidents,jobs",
+    "How many users signed up this week?": "metrics,navigation,memory,customers",
+    "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory,customers",
+    "Is anyone in the attention queue?": "metrics,navigation,memory,customers",
+    "Are members of the ops team online?": "metrics,navigation,memory,customers"
+  },
+  "customersPackOn": {
+    "How are we looking today?": "metrics,navigation,memory",
+    "What's costing me the most money in the past 30 days?": "metrics,navigation,memory",
+    "Any open incidents right now?": "metrics,navigation,memory",
+    "Why did the refresh pipeline fail overnight?": "metrics,navigation,memory",
+    "Which customers need attention?": "metrics,navigation,memory,customers",
+    "Are bank connections healthy? Any reauth needed?": "metrics,navigation,memory",
+    "How many imports failed during onboarding this week?": "metrics,navigation,memory",
+    "Is the email provider bouncing?": "metrics,navigation,memory",
+    "How much AI spend and how many tokens today?": "metrics,navigation,memory",
+    "Who changed the refresh policy? Show the audit log.": "metrics,navigation,memory",
+    "Is the kill switch or the cost freeze on?": "metrics,navigation,memory",
+    "How are sign-ups and churn trending?": "metrics,navigation,memory",
+    "Any merchant descriptors uncategorised?": "metrics,navigation,memory",
+    "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory,customers",
+    "Open the platform ops page": "metrics,navigation,memory",
+    "Remember that the scheduler is degraded.": "metrics,navigation,memory",
+    "How many users signed up this week?": "metrics,navigation,memory,customers",
+    "What does [customer h_AAAAAAAAAAAAAAAA] need?": "metrics,navigation,memory,customers",
+    "Is anyone in the attention queue?": "metrics,navigation,memory,customers",
+    "Are members of the ops team online?": "metrics,navigation,memory,customers"
   }
 }

@@ -41,8 +41,8 @@ export type ToolResultStatus = (typeof TOOL_RESULT_STATUSES)[number];
 
 // ── Packs, tiers, levels ─────────────────────────────────────────────────────
 
-/** The packs declared so far. A pack is added WITH its PR (P5+), never ahead of it. */
-export const TOOL_PACKS = ["metrics", "navigation", "memory"] as const;
+/** The packs declared so far. A pack is added WITH its PR (P5+), never ahead of it. P5: customers. */
+export const TOOL_PACKS = ["metrics", "navigation", "memory", "customers"] as const;
 export type ToolPack = (typeof TOOL_PACKS)[number];
 
 export const TOOL_TIERS = ["OPS", "CUSTOMER_SUCCESS"] as const;

@@ -48,6 +48,7 @@ import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
 import type { ScopedArea } from "../authz/boundary";
+import { extractSubjects, storedSubjectText, type SubjectIdentifier } from "../authz/subject";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -106,8 +107,33 @@ export interface ConversationTurnStoreSeam {
  * area, FRESH). Expected never to throw; a throw is treated as PROVIDER.
  */
 export interface TurnRunDeps {
-  runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess }): Promise<ConversationTurnOutcome>;
+  /**
+   * `subjects` (P5) — present only when the question carried exact customer identifiers and
+   * resolution is on: the SLOTTED scrubbed text and the identifiers (memory only; never stored).
+   * The runner resolves them through THIS turn's boundary; `question` (the stored text) has `[customer]`.
+   */
+  runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess; subjects?: TurnSubjects }): Promise<ConversationTurnOutcome>;
+  /** P5 — the customers pack flag (strict, default OFF). Absent / false ⇒ the question is scrubbed exactly as before. */
+  subjectsEnabled?(): boolean;
 }
+
+/** P5 — the subject slots of one question (authz/subject.ts). Never stored, never logged. */
+export interface TurnSubjects { readonly slotted: string; readonly ids: readonly SubjectIdentifier[] }
+
+/**
+ * P5 — one scrub for both sinks, with subject resolution: exact identifiers are cut out of the RAW
+ * question BEFORE the scrub; the STORED text shows `[customer]` per identifier (no identifier, no
+ * handle is ever stored); the slots + identifiers go to the runner. Off / none ⇒ exactly as before.
+ */
+export function scrubWithSubjects(question: string, enabled: boolean): { stored: string; subjects?: TurnSubjects } {
+  if (!enabled) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
+  const ex = extractSubjects(question);
+  if (ex.ids.length === 0) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
+  const slotted = scrubOperatorText(ex.text, PLATFORM_AI_MESSAGE_MAX);
+  return { stored: storedSubjectText(slotted), subjects: { slotted, ids: ex.ids } };
+}
+
+const subjectsOn = (deps: TurnRunDeps): boolean => { try { return deps.subjectsEnabled?.() === true; } catch { return false; } };
 
 export interface ConversationDeps {
   /** Step 6: a FRESH guard on `area` for THIS operator; null on any refusal (⇒ 404). */
@@ -303,10 +329,10 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
  */
 async function runAndSettle(
   v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
-  deps: { store: ConversationTurnStoreSeam } & TurnRunDeps,
+  deps: { store: ConversationTurnStoreSeam } & TurnRunDeps, subjects?: TurnSubjects,
 ): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null }> {
   let outcome: ConversationTurnOutcome;
-  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access }); }
+  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access, ...(subjects ? { subjects } : {}) }); }
   catch { outcome = { status: "FAILED", failureCode: "PROVIDER" }; }
   try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
   const settled = (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
@@ -389,8 +415,9 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
   try {
     const access = await deps.areaAccess(v.area, v.operatorId);
     if (!access) return notFound();
-    // One scrub for both sinks (S2 B3): this exact string is stored AND sent.
-    const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
+    // One scrub for both sinks (S2 B3): this exact string is stored AND sent (P5: with subjects, the
+    // stored text has `[customer]` and the model text the resolved slot — see scrubWithSubjects).
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps));
     const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
     switch (out.kind) {
       case "LIMIT":
@@ -404,7 +431,7 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
         return pairResponse(200, out.conversation, out.pair, a);
       }
       case "CREATED": {
-        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps, subjects);
         return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
       }
     }
@@ -448,7 +475,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   const cost = await holdSpend(v, deps);
   if (cost.refused) return cost.refused;
   try {
-    const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps));
     const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
     switch (out.kind) {
       case "NOT_FOUND":
@@ -460,7 +487,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
       case "REPLAY":
         return pairResponse(200, null, out.pair, access);
       case "APPENDED": {
-        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps, subjects);
         return pairResponse(200, null, r.pair, access, r.memoryProposal);
       }
     }

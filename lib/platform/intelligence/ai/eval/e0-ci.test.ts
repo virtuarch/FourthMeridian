@@ -147,7 +147,10 @@ async function main() {
     recheck: (op) => async (area) => {
       const row = fake.one("PlatformGrant", { userId: E0_OPERATORS[op].id, area });
       if (!row || row.status !== "ACTIVE") return null;
-      return { auth: fixtureAuth(op, area), csTier: area === "CUSTOMER_SUCCESS" };
+      // P5: the incident token minted HERE from the same fixture guard result (the Production recheck's own path).
+      const auth = fixtureAuth(op, area);
+      const incidentToken = incidentAudienceFor(auth);
+      return { auth, csTier: incidentToken?.audience === "CUSTOMER_SUCCESS", incidentToken };
     },
   };
   const runUnit = (c: UnitCase): Promise<string[]> => c.run(unitCtx);

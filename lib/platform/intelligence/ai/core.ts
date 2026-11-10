@@ -92,6 +92,7 @@ import {
 } from "./compose/verdicts";
 import { envelopeHours, quotableWindowPhrase, requestedWindows } from "./compose/windows";
 import { parseAskedPeriods, windowDisclosureText } from "./compose/window-disclosure";
+import { extractSubjects, fillSubjectSlots, type SubjectIdentifier, type SubjectResult } from "./authz/subject";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
 
@@ -1419,6 +1420,26 @@ export interface PlatformAiAskDeps {
    * Absent ⇒ a placed record shows the fail-closed marker. Called only when the answer placed one.
    */
   renderRecords?(spans: readonly RecordSpan[]): Promise<ReadonlyMap<RecordSpan, string>>;
+  /**
+   * P5 — subject resolution (authz/subject.ts; the route passes it ONLY while the customers pack
+   * flag is ON). Exact identifiers are cut out of the RAW question before the scrub and resolved
+   * (limiter → fresh CS eligibility → exact lookup → audit → handle); the model sees
+   * `[customer h_…]` or the one `[customer not resolved]` literal. Absent ⇒ exactly as before.
+   */
+  subjects?: { resolve(ids: readonly SubjectIdentifier[]): Promise<SubjectResult> };
+}
+
+/**
+ * P5 — the operator's question as the MODEL receives it: identifiers cut out BEFORE the scrub and
+ * resolved, the rest scrubbed once. No identifier (or no resolver) ⇒ null (the turn scrubs as before).
+ */
+export async function questionWithSubjects(raw: string, max: number, subjects: PlatformAiAskDeps["subjects"]): Promise<{ question: string; note: string | null } | null> {
+  if (!subjects) return null;
+  const ex = extractSubjects(raw);
+  if (ex.ids.length === 0) return null;
+  const slotted = scrubOperatorText(ex.text, max);
+  const r = await subjects.resolve(ex.ids);
+  return { question: fillSubjectSlots(slotted, r.fills), note: r.note };
 }
 
 /**
@@ -1499,8 +1520,11 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);
   }
   try {
+    // P5: exact customer identifiers resolved before the scrub and before any model call (uniform literal + note).
+    const subj = await questionWithSubjects(question, PLATFORM_AI_QUESTION_MAX, deps.subjects);
     const { result, record } = await runPlatformAiTurn({
-      question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
+      question: subj ? subj.question : question, ...(subj ? { questionScrubbed: true } : {}),
+      binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
       ...(deps.invoke ? { invoke: deps.invoke } : {}),
       ...(deps.tools ? { tools: deps.tools } : {}),
@@ -1513,6 +1537,7 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       try { rendered = await deps.renderRecords(spans); } catch { rendered = new Map(); }
       result.answer = displayWithRecords(record.typed, rendered);
     }
+    if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
     return { status: 200, body: { ...result } };

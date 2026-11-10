@@ -22,6 +22,8 @@ export async function platformAiFreshRecheck(area: PlatformArea): Promise<FreshG
   const [fresh, freshErr] = await requireFreshPlatformAccess(area, "READ");
   if (freshErr || !fresh) return null;
   // grant null (break-glass) is refused by the scope rule anyway; it never earns a tier here.
-  const csTier = fresh.grant !== null && incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
-  return { auth: fresh, csTier };
+  const incidentToken = fresh.grant !== null ? incidentAudienceFor(fresh) : null;
+  const csTier = incidentToken?.audience === "CUSTOMER_SUCCESS";
+  // P5: the token rides with the guard it was minted from (a CS-tier pack reader needs it; never kept).
+  return { auth: fresh, csTier, incidentToken };
 }

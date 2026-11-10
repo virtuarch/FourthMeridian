@@ -122,10 +122,12 @@ export interface PlatformAiSessionViewProps {
   /** The "Privacy" control (collapsed by default: nothing is stored here). */
   noticeOpen?: boolean;
   onNotice?: (open: boolean) => void;
+  /** P5 (S2 09dp) — the customers pack is offered: the customer-lookup notice (composer + empty state). */
+  subjectNotice?: boolean;
 }
 
 /** Pure (no hooks except the log's anchor): the v0 page in the shared shell. */
-export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice }: PlatformAiSessionViewProps) {
+export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice, subjectNotice = false }: PlatformAiSessionViewProps) {
   const anchorRef = useRef<HTMLDivElement>(null);
   const mode = turns.length > 0 ? "conversation" : "empty";
   const last = turns[turns.length - 1];
@@ -145,9 +147,9 @@ export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraf
         contextLabel={areaLabel}
         contextPrefix="Answering from: "
         controls={controls}
-        lead={<PlatformAiLead />}
+        lead={<PlatformAiLead subjectNotice={subjectNotice} />}
         aside={<PlatformAiStarters onStarter={onAsk} />}
-        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} />}
+        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} subjectNotice={subjectNotice} />}
       >
         <ConversationLog scrollKey={turns} turnCount={turns.length} answered={answered} anchorRef={anchorRef}
           busy={pending} busyNode={<div data-platform-ai-in-flight=""><ThinkingIndicator srLabel={PLATFORM_AI_THINKING_LABEL} /></div>}>
@@ -169,7 +171,7 @@ export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraf
   );
 }
 
-export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
+export function PlatformAiAsk({ areaLabel, subjectNotice = false }: { areaLabel: string; subjectNotice?: boolean }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
@@ -208,7 +210,7 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
       onSend={() => { if (draft.trim() && !pending) { void ask(draft); setDraft(""); } }}
       onAsk={(q) => { void ask(q); }}
       onNew={() => { if (!pending) { setTurns([]); setDraft(""); } }}
-      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen} subjectNotice={subjectNotice}
     />
   );
 }

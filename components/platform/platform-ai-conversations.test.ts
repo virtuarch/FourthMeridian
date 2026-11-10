@@ -37,6 +37,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { env } from "@/lib/env";
 import { PLATFORM_AI_MESSAGE_MAX, PLATFORM_AI_RETENTION_DAYS } from "@/lib/platform/intelligence/ai/conversations/constants";
 import { AnswerSegments, PlatformAiAsk, PlatformAiSessionView, SessionAnswer } from "./PlatformAiAsk";
+import { PLATFORM_AI_SUBJECT_NOTICE, showsSubjectNotice } from "@/lib/platform/intelligence/ai/authz/subject-notice";
 import { renderStoredAnswer } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import { AiShell } from "@/components/ai/AiShell";
 import { ComposerFrame } from "@/components/ai/Composer";
@@ -131,7 +132,7 @@ console.log("1. flag gating — decided server-side by the page; OFF by default;
   const page = code(PAGE);
   const iV0Flag = page.indexOf("if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;");
   const iArea = page.indexOf("const area = platformAiAreaFor(spaces);");
-  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} />;");
+  const iConv = page.indexOf("if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} memory={isMemoryEffective(env)} subjectNotice={subjectNotice} />;");
   const iAsk = page.indexOf("return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;");
   const iTotp = page.indexOf("redirect(OPERATOR_TOTP_ENROLMENT_PATH)");
   check("page order: gates → v0 flag (placeholder) → area → conversations flag → v0 PlatformAiAsk (the fallthrough)",
@@ -545,6 +546,8 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
   check("shared presentation imports: exactly these modules (the shared AI primitives + the model)", importsOf(pres).join() === [
     "./platform-ai-conversations-model", "./platform-ai-memory-model", "@/components/ai/Composer", "@/components/ai/Markdown",
     "@/components/ai/StarterLine", "@/components/ai/SuggestedPrompt", "lucide-react", "react",
+    // P5 (S2 09dp): the customer-lookup notice text (pure, import-free).
+    "@/lib/platform/intelligence/ai/authz/subject-notice",
   ].sort().join(), importsOf(pres));
   const named = (c: string, mod: string) => (c.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
   check("from ConversationView only ConversationLog + ThinkingIndicator; from Composer only ComposerFrame; nothing from the barrel",
@@ -698,6 +701,26 @@ console.log("\n12. v0 parity — flag on, conversations off: the same shell, a s
     && /aria-describedby="platform-ai-privacy-hint"/.test(emptyV0) && /<div id="platform-ai-notice" data-platform-ai-notice="closed" hidden=""[^>]*><p data-platform-ai-session-notice=""/.test(emptyV0)
     && /id="platform-ai-privacy-hint" data-platform-ai-privacy-hint=""/.test(emptyV0) && /data-platform-ai-notice-toggle="" aria-expanded="false" aria-controls="platform-ai-notice"[^>]*>Privacy<\/button>/.test(emptyV0)
     && PLATFORM_AI_SESSION_NOT_SAVED.length > 0 && /PLATFORM_AI_SESSION_NOT_SAVED/.test(code(PRESENTATION)));
+
+  // P5 (S2 09dp) — the customer-lookup notice: no name scrub; exact ID / email only, said in the UI where the pack is offered.
+  check("P5 notice text is defined once, in code (S2 09dp)", PLATFORM_AI_SUBJECT_NOTICE === "Look customers up by their ID or email. Don't type customer names.");
+  const notice = PLATFORM_AI_SUBJECT_NOTICE.replace(/'/g, "&#x27;");
+  check("P5 notice OFF by default: v0 empty state and composer carry no notice", !/data-platform-ai-subject-notice/.test(emptyV0));
+  const emptyV0Notice = renderToStaticMarkup(createElement(PlatformAiSessionView, {
+    areaLabel: "Customer Success", turns: [], draft: "", pending: false, onDraft: noop, onSend: noop, onAsk: noop, onNew: noop, subjectNotice: true,
+  }));
+  check("P5 notice ON (v0): in the empty state AND the composer", emptyV0Notice.includes(`data-platform-ai-subject-notice="lead"`) && emptyV0Notice.includes(`data-platform-ai-subject-notice="composer"`)
+    && emptyV0Notice.split(notice).length === 3, emptyV0Notice.split(notice).length);
+  const convNotice = view({ subjectNotice: true, conversations: [] });
+  check("P5 notice ON (conversations): in the empty state AND the composer", convNotice.includes(`data-platform-ai-subject-notice="lead"`) && convNotice.includes(`data-platform-ai-subject-notice="composer"`));
+  check("P5 notice OFF (conversations) by default", !/data-platform-ai-subject-notice/.test(view({ conversations: [] })));
+  check("P5 notice shown only with the customers pack ON and a Customer Success grant",
+    showsSubjectNotice({ customersPackOn: true, areas: ["PLATFORM_OPS", "CUSTOMER_SUCCESS"] }) && !showsSubjectNotice({ customersPackOn: false, areas: ["CUSTOMER_SUCCESS"] })
+    && !showsSubjectNotice({ customersPackOn: true, areas: ["PLATFORM_OPS"] }));
+  const page = code("app/(shell)/dashboard/platform/ai/page.tsx");
+  check("P5 the page decides the notice server-side from the strict pack getter and the operator's areas, and passes it to both views",
+    /showsSubjectNotice\(\{ customersPackOn: env\.isPlatformAiPackCustomersEnabled, areas: platformAiAreasFor\(spaces\) \}\)/.test(page)
+    && /<PlatformAiConversations [^>]*subjectNotice=\{subjectNotice\}/.test(page) && /if \(subjectNotice\) return <PlatformAiAsk [^>]*subjectNotice \/>/.test(page));
   const ANSWER = {
     surface: "Platform Operations", notes: ["A v0 note."], grounding: {} as never,
     answer: [{ kind: "text" as const, text: "Para one.\n\n- item " }, { kind: "link" as const, text: "Providers", href: "/dashboard/platform/PLATFORM_OPS" }],
@@ -817,7 +840,7 @@ console.log("\n11. history (parity PR4) — ?c= deep link, grouping, delete-next
 
   // The view seam is the page's default.
   check("the page passes no View (the seam is for the history test only)", !/View=/.test(code(PAGE))
-    && /export function PlatformAiConversations\(\{ areaLabel, memory = false, View = PlatformAiConversationsView \}/.test(cmp));
+    && /export function PlatformAiConversations\(\{ areaLabel, memory = false, subjectNotice = false, View = PlatformAiConversationsView \}/.test(cmp));
 }
 
 // ── 13. F-1 window note + F-2 section labels / one nesting level (2026-11-08) ──

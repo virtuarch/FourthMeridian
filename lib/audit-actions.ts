@@ -421,6 +421,13 @@ export const AuditAction = {
   // No writer is wired until the first customer-linkable pack (P5, authz/audit.ts): until
   // then every T2 field renders masked.
   PLATFORM_AI_RECORD_VIEWED:           "PLATFORM_AI_RECORD_VIEWED",
+  // Platform AI P5 (design v2 §7, I-4 / D-4; S2 ruling 5). One row for EVERY exact-identifier
+  // subject lookup in an operator's question, whatever the outcome (MATCHED, NOT_FOUND,
+  // NO_ACCESS, LIMITED, UNAVAILABLE) — written by authz/audit.ts before the question reaches
+  // the model; a failed write ⇒ the subject is NOT resolved. Target USER only when matched
+  // (else PLATFORM_AI_SUBJECT = the keyed hash); detail = { surface, idKind, outcome, keyHash }
+  // only — never the identifier.
+  PLATFORM_AI_SUBJECT_LOOKUP:          "PLATFORM_AI_SUBJECT_LOOKUP",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link

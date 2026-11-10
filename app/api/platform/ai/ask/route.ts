@@ -23,6 +23,11 @@
  *      requireFreshPlatformAccess per call (authz/recheck.server.ts — a mid-turn
  *      revocation refuses the next call and drops the area), per-turn handles, tier,
  *      envelope; any refusal is the one NOT_FOUND the model sees
+ *   7. P5 — customer-linkable RECORD tools write their audit rows FIRST (authz/audit.ts
+ *      platformAiToolAudit; a failure ⇒ UNAVAILABLE); a T2 field renders only after its
+ *      PLATFORM_AI_RECORD_VIEWED row (platformAiRenderAudit); with the customers pack flag ON,
+ *      exact customer identifiers in the question are resolved before the scrub
+ *      (authz/subject.ts: limiter, fresh CS tier, exact lookup, audit, uniform literal + floor)
  *
  * THE SURFACE comes from the guard result, never from the request: P1b —
  * authz/scope.ts `scopeFromGuard` admits only a real grant for exactly the guarded
@@ -52,6 +57,9 @@ import { createTurnBoundary, type ScopedArea } from "@/lib/platform/intelligence
 import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
 import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
 import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
+import { platformAiRenderAudit, platformAiToolAudit } from "@/lib/platform/intelligence/ai/authz/audit";
+import { resolveSubjects } from "@/lib/platform/intelligence/ai/authz/subject";
+import { isSubjectResolutionEnabled, platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subject.server";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
@@ -131,7 +139,13 @@ export async function POST(req: NextRequest) {
     router: platformAiTurnRouter({ memory: false }),
     packEnabled: (p) => platformAiPackEnabled(p),
     onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${PLATFORM_AI_ROUTE_KEY})`),
+    // P5 — THE fail-closed audit writer for customer-linkable RECORD tools (actor = this call's fresh guard).
+    audit: platformAiToolAudit(),
   }) : null;
+  // P5 — subject resolution only while the customers pack flag is ON (OFF ⇒ the question is handled exactly as before).
+  const subjects = boundary && isSubjectResolutionEnabled()
+    ? { resolve: (ids: Parameters<typeof resolveSubjects>[0]) => resolveSubjects(ids, platformAiSubjectDeps({ operatorId: auth.user.id, primaryArea: area, boundary })) }
+    : null;
 
   const { model, reasoning } = platformAiModel();
   const res = await handlePlatformAiAsk(body, {
@@ -145,8 +159,9 @@ export async function POST(req: NextRequest) {
     generate: makePlatformAiGenerate({ operatorId: auth.user.id, turnId: correlationId }),
     ...(boundary ? { invoke: boundary.invoke, records: boundary.recordRef, ...(boundary.tools ? { tools: boundary.tools } : {}) } : {}),
     // P4 — a placed record renders at READ time for this viewer (fresh probe check per area, revalidate;
-    // T2 only with a fresh CS tier AND the audit row first — no writer until P5 ⇒ T2 always masked).
-    renderRecords: recordTextRenderer({ operatorId: auth.user.id, mode: "live", recheck: platformAiRenderRecheck }),
+    // T2 only with a fresh CS tier AND the PLATFORM_AI_RECORD_VIEWED row written first — P5 writer, fail closed ⇒ masked).
+    renderRecords: recordTextRenderer({ operatorId: auth.user.id, mode: "live", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit() }),
+    ...(subjects ? { subjects } : {}),
     model,
     reasoningModel: reasoning,
     now: () => new Date(),

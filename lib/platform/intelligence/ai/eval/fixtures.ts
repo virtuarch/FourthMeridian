@@ -12,7 +12,7 @@
  * produces — provider requests, response evidence, logs, ledger rows.
  */
 
-import { CUSTOMER_WHERE } from "@/lib/platform/customer/population";
+import { CUSTOMER_WHERE, OPEN_ACCOUNT_WHERE } from "@/lib/platform/customer/population";
 
 /** T2 sentinels — synthetic customers' identities. */
 export const E0_CUSTOMERS = [
@@ -129,4 +129,55 @@ export function seedE0World(fake: E0Seeder, opts: { passwordHash: string; now: n
   const merchant = fake.seed("Merchant", { canonicalKey: "e0-merchant", displayName: "E0 Merchant" });
   fake.seed("MerchantAlias", { aliasKey: "e0-alias", sample: E0_INJECTIONS.merchantSample, source: "PLAID", merchant: { connect: { id: merchant.id as string } } });
   fake.seed("BetaAccessRequest", { email: orrin.email, note: E0_INJECTIONS.betaNote });
+}
+
+// ── P5 — the customers pack's reader fixtures (sentinel T2 + injection in every free-text field) ──
+
+/** The fixture PRIV-ref tokens of the sentinel customers (fixed fakes — never derived from a real key). */
+export const E0_CUSTOMER_REF_TOKENS: Readonly<Record<string, string>> = { [E0_CUSTOMERS[0].id]: "a1a1a1a1", [E0_CUSTOMERS[1].id]: "b2b2b2b2" };
+
+/**
+ * Reader DTOs shaped like the Production readers' (lib/platform/customer/*), carrying the T2
+ * sentinels (email, name, username, id) in every identity column and an injection payload in every
+ * free-text column the DTO has (connection label, incident account label, provider error code,
+ * presence / last-active labels, a stage that is not a known label). The customers-pack mappers must
+ * project NONE of them.
+ */
+export function e0CustomerDtos(now: Date) {
+  const [zelda, orrin] = E0_CUSTOMERS;
+  const iso = (minAgo: number) => new Date(now.getTime() - minAgo * 60_000).toISOString();
+  const recentlyJoined = {
+    windowDays: 14, total: 2, floor: false,
+    importTotals: { complete: 0, in_progress: 1, failed: 1, recovered: 0, removed: 0 },
+    rows: [zelda, orrin].map((c, i) => ({
+      id: c.id, email: c.email, name: c.name, username: c.username, joinedAt: iso(60 * (i + 1)), invited: i === 0,
+      stage: i === 0 ? "First connection" : E0_INJECTIONS.accountName, importHealth: i === 0 ? "red" : "amber",
+      imports: { complete: 0, in_progress: i, failed: 1 - i, recovered: 0, removed: 0 }, connections: 1, wallets: 0,
+    })),
+  };
+  const profile = {
+    identity: { id: zelda.id, email: zelda.email, name: zelda.name, username: zelda.username, ...CUSTOMER_WHERE, ...OPEN_ACCOUNT_WHERE, createdAt: iso(600), emailVerifiedAt: iso(590), deletionRequestedAt: null, deletionScheduledAt: null },
+    activity: { presence: "IDLE", presenceLabel: E0_INJECTIONS.auditDetail, lastActive: { bucket: "TODAY", label: E0_INJECTIONS.auditDetail }, lastLoginAt: iso(30), activeSessions: 1 },
+    connections: [
+      { kind: "PLAID", id: "e0-item-0001", provider: "PLAID", label: E0_INJECTIONS.institutionName, status: "ERROR", errorCode: E0_INJECTIONS.errorCode, lastSyncedAt: iso(120), createdAt: iso(500), healthState: "ERROR", investmentsConsent: null },
+      { kind: "CONNECTION", id: "e0-conn-0001", provider: "WALLET", label: E0_INJECTIONS.accountName, status: "ACTIVE", errorCode: null, lastSyncedAt: iso(10), createdAt: iso(400), healthState: "HEALTHY", investmentsConsent: null },
+      { kind: "PLAID", id: "e0-item-0002", provider: "PLAID", label: zelda.name, status: "REVOKED", errorCode: null, lastSyncedAt: null, createdAt: iso(450), healthState: "REVOKED", investmentsConsent: null },
+    ],
+    incidents: {
+      open: [{ id: "e0-inc-0001", provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "e0-item-0001", financialAccountId: "e0-acct-0001", firstOccurredAt: iso(120), lastOccurredAt: iso(5), account: E0_INJECTIONS.incidentDetail, state: "active", freshness: "fresh" }],
+      openTruncated: false, recentExecutions: [], recentWebhooks: [],
+    },
+    rollup: { aiTurns30d: 3, aiEstimatedUsd30d: 0.01, plaidItemCount: 1, lastEngagedAt: iso(30), funnelStage: "First connection" },
+  };
+  // The attention fold (attention-core.ts AttentionFold shape): zelda needs a reconnect + has an incident,
+  // orrin is stalled and a test account; the per-customer details carry an injection payload.
+  const [zid, oid] = [zelda.id, orrin.id];
+  const attention = {
+    keys: ["reconnect", "incident", "stalled"],
+    sets: { reconnect: new Set([zid]), incident: new Set([zid]), stalled: new Set([oid]) },
+    union: new Set([zid, oid]), floor: false,
+    details: new Map([[zid, { reconnect: E0_INJECTIONS.errorCode }], [oid, { stalled: orrin.email }]]),
+    testAccounts: new Set([oid]), testInUnion: new Set([oid]),
+  };
+  return { recentlyJoined, profile, attention };
 }
