@@ -516,6 +516,14 @@ The pre-reset prose validator is gone (§9). Enforcement now sits where a figure
   balance to an unconnected movement (`UNCONNECTED_MOVEMENT`). It drops rather than
   regenerates: a loop that asks again until the numbers look right eventually accepts a
   wrong one.
+- **Daily Brief share consistency — IMPLEMENTED (S2 O-2).** A licensed figure can still
+  be used falsely: Production shipped "about 57% … ($12,985 out of $12,985.14)", every
+  token licensed, the part equal to the whole. `lib/ai/brief/share-consistency.ts` reads
+  a money part/whole pair and the percentage tied to it in one sentence and fails when
+  they disagree by more than 2 points (after written rounding) or the part is not below
+  the whole under a share < 100%. An observation is dropped (`INCONSISTENT_SHARE`, codes
+  only); a headline refuses the Brief (`INCONSISTENT_SHARE_HEADLINE`). The package now
+  carries `concentration.topValue` (the part) beside `populationValue` (the whole).
 - **Memory provenance gate — IMPLEMENTED.** `memory-model.ts` `admitWrite` (§5).
 - **Scenario argument contract — IMPLEMENTED.** An argument a scenario tool's schema does
   not declare is refused by name (`lib/ai/conversation/tools/scenario/setup.ts`); which
