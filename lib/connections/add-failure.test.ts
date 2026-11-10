@@ -51,7 +51,7 @@ async function main() {
   check("mismatched provider / stage writes nothing",
     connectionAddFailureData({ ...ok, provider: "WALLET" }) === null && connectionAddFailureData({ ...ok, provider: "PLAID", stage: "WALLET_ADD" }) === null);
   check("unknown provider / stage / empty user writes nothing",
-    connectionAddFailureData({ ...ok, provider: "COINBASE" as never }) === null
+    connectionAddFailureData({ ...ok, provider: "EXAMPLE_EXCHANGE" as never }) === null
     && connectionAddFailureData({ ...ok, stage: "OTHER" as never }) === null
     && connectionAddFailureData({ ...ok, userId: "" }) === null);
 

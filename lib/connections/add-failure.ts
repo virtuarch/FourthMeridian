@@ -35,7 +35,7 @@
 
 import { AuditAction } from "@/lib/audit-actions";
 import { buildAuditData } from "@/lib/audit";
-import { LINK_EXIT_ERROR_CODES, linkExitErrorCode } from "@/lib/analytics/product-events";
+import { LINK_EXIT_ERROR_CODES, linkExitErrorCode } from "@/lib/analytics/link-error-codes";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import type { Prisma } from "@prisma/client";
 

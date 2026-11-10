@@ -226,8 +226,20 @@ const TERMINAL_CODES = [
   // gate it pinned had silently stopped firing. Capability is the real question.
   check("12b. the create route regenerates history only for a chain that HAS it",
     (walletRoute.match(/chainSupportsHistory\(chain\)/g) ?? []).length === 3);
+  // B12 PR-B — POST is now a thin wrapper: on an error that ALREADY escaped the
+  // add (never a sync outcome — syncWalletBestEffort cannot throw), it records one
+  // CONNECTION_ADD_FAILED row and rethrows that same error, exactly the 500 the
+  // framework always gave. That one rethrow is excluded from the scan by name and
+  // pinned to its shape; every other line from syncWalletBestEffort on (its body,
+  // the add itself and every call site) must still contain no `throw`.
+  const wrapStart = walletRoute.indexOf("export async function POST");
+  const wrapEnd = walletRoute.indexOf("async function addWallet(");
+  const wrapper = walletRoute.slice(wrapStart, wrapEnd);
+  const outsideWrapper = walletRoute.slice(walletRoute.indexOf("syncWalletBestEffort"), wrapStart) + walletRoute.slice(wrapEnd);
   check("12c. a refused sync is best-effort and non-fatal — the wallet is still recorded",
-    /if \(!outcome\.ok\)/.test(walletRoute) && !/throw/.test(walletRoute.slice(walletRoute.indexOf("syncWalletBestEffort"))));
+    /if \(!outcome\.ok\)/.test(walletRoute) && wrapStart >= 0 && wrapEnd > wrapStart && !/throw/.test(outsideWrapper));
+  check("12d. the POST wrapper's only throw rethrows the caught error after the best-effort failure capture",
+    (wrapper.match(/throw/g) ?? []).length === 1 && /catch \(e\) \{\s*await recordConnectionAddFailure\([\s\S]*?\);\s*throw e;\s*\}/.test(wrapper));
 }
 
 console.log(`\nwallet-failure-state: ${passes} passed, ${failures} failed`);
