@@ -111,6 +111,10 @@ async function main() {
   async function runRoute(c: RouteCase): Promise<string[]> {
     const cookie = await cookieFor(c.operator);
     currentOperator = E0_OPERATORS[c.operator];
+    // P2b: spend already on today's ledger (RETURNED platform_ai rows at the E0 model's rate: gpt-4o-mini output $0.60 / M).
+    for (const [i, l] of (c.ledger ?? []).entries()) {
+      fake.seed("AiInvocation", { provider: "OPENAI", model: "gpt-4o-mini", occurredAt: new Date(), promptTokens: 0, cachedPromptTokens: 0, completionTokens: Math.round(l.usd / 0.6e-6), latencyMs: 1, environment: "development", surface: "platform_ai", userId: E0_OPERATORS[l.operator].id, correlationId: `e0-ledger-${c.id}-${i}`, outcome: "RETURNED" });
+    }
     const obs: RouteTurnObservation[] = [];
     for (const turn of c.turns) {
       provider.load(turn.steps);
@@ -222,6 +226,15 @@ async function main() {
   out(`  ${revocationsHeld ? "✓" : "✗"} REVOCATION_MID_TURN non-vacuous: ${revocationsApplied} mid-turn revocation(s) applied between tool calls (expected 4)`);
   record("REVOCATION_MID_TURN", revocationsHeld);
   if (!revocationsHeld) failures.push("the mid-turn revocations were not applied");
+
+  // P2b: every route case went through the route's $ reservation, and every reservation was released.
+  const inflightRows = fake.table("RateLimit").filter((r) => String(r.key).startsWith("user:platform-ai-inflight:"));
+  const reserved = fake.callsTo("RateLimit", "upsert").filter((x) => String((x.args as { where?: { key_windowStart?: { key?: string } } }).where?.key_windowStart?.key ?? "").startsWith("user:platform-ai-inflight:")).length;
+  const held = inflightRows.reduce((n, r) => n + Number(r.count ?? 0), 0);
+  const costCapHeld = reserved >= 10 && held === 0;
+  out(`  ${costCapHeld ? "✓" : "✗"} COST_CAP non-vacuous: ${reserved} route reservation(s) taken, ${held} still held after every turn (expected 0)`);
+  record("COST_CAP", costCapHeld);
+  if (!costCapHeld) failures.push("route $ reservations were not taken or not released");
 
   // ── the gate report (counts only) ─────────────────────────────────────────
   out(`\nE0 gates (${caseCount} cases)`);

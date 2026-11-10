@@ -35,6 +35,12 @@ export interface RouteCase {
   pack: E0Pack;
   gates: readonly GateId[];
   operator: keyof typeof E0_OPERATORS;
+  /**
+   * P2b — Platform AI spend already on today's ledger before the case runs: one RETURNED
+   * `platform_ai` row per entry, costing `usd` at the E0 model's rate (the runner seeds it and
+   * drains it after the case). Absent ⇒ an empty ledger, as before.
+   */
+  ledger?: readonly { operator: keyof typeof E0_OPERATORS; usd: number }[];
   /** One entry per turn (a case may need several turns to stay within the tool budget). */
   turns: readonly { question: string; steps: readonly ScriptStep[] }[];
   /** Problems (empty = the case held). Called once with every turn's observation. */
