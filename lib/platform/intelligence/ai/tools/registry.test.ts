@@ -56,12 +56,13 @@ const PACK_TOOLS = PLATFORM_AI_TOOL_REGISTRY.filter((t) => !CORE_TOOL_NAMES.incl
 const CUSTOMERS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "customers");
 const INCIDENTS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "incidents");
 const ONBOARDING_TOOLS = PACK_TOOLS.filter((t) => t.pack === "onboarding");
+const CONNECTIONS_TOOLS = PACK_TOOLS.filter((t) => t.pack === "connections");
 
 async function main() {
   console.log("1. the six existing tools, each a valid declaration");
   check("the registry declares the core's tools (4 + 2 memory) first, in the order offered, then the pack tools",
     PLATFORM_AI_REGISTERED_TOOLS.slice(0, 6).join() === CORE_TOOL_NAMES.join() && CORE_TOOL_NAMES.join() === [...PLATFORM_AI_TOOLS, ...PLATFORM_AI_MEMORY_TOOLS].join() && LEGACY.length === 6
-    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile,incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs,onboarding_overview,list_onboarding_attention,get_onboarding_timeline",
+    && PLATFORM_AI_REGISTERED_TOOLS.slice(6).join() === "list_customer_attention,list_recently_joined,get_customer_profile,incident_overview,list_incidents,investigate_incident,list_incidents_cs,investigate_incident_cs,onboarding_overview,list_onboarding_attention,get_onboarding_timeline,connection_health_overview,get_customer_connections",
     PLATFORM_AI_REGISTERED_TOOLS);
   for (const t of PLATFORM_AI_TOOL_REGISTRY) check(`${t.name}: contractProblems = none`, contractProblems(t as never).length === 0, contractProblems(t as never));
   check("packs: metrics = list_metrics/get_metric · navigation = find_page/open_page · memory = recall/propose",
@@ -263,6 +264,34 @@ async function main() {
     }
     check("get_onboarding_timeline takes a CUSTOMER handle and revalidates it",
       platformAiTool("get_onboarding_timeline")?.args.properties.customer?.kind === "handle" && typeof platformAiTool("get_onboarding_timeline")?.revalidate === "function");
+  }
+
+  console.log("\n10. P7 — the connections pack (incl. wallets)");
+  {
+    const { validateRecordSchema, T2_FIELD_NAMES } = await import("../evidence/record-envelope");
+    const { INSTITUTION_NAMES } = await import("../evidence/name-registry");
+    check("connections pack = connection_health_overview, get_customer_connections", CONNECTIONS_TOOLS.map((t) => t.name).join() === "connection_health_overview,get_customer_connections");
+    for (const t of CONNECTIONS_TOOLS) {
+      check(`${t.name}: contractProblems = none; READ; 1 call; no free-string argument (only a CUSTOMER handle)`,
+        contractProblems(t as never).length === 0 && t.requires.level === "READ" && t.cost.toolCalls === 1
+        && Object.values(t.args.properties).every((a) => a.kind === "handle" && a.recordKind === "CUSTOMER"));
+    }
+    const ov = platformAiTool("connection_health_overview")!;
+    check("connection_health_overview: AGGREGATE, not linkable, tier OPS, pii 0, areas [PLATFORM_OPS, CUSTOMER_SUCCESS], no args",
+      ov.scope === "AGGREGATE" && ov.customerLinkable === false && ov.requires.tier === "OPS" && ov.pii === 0 && ov.requires.areas.join() === "PLATFORM_OPS,CUSTOMER_SUCCESS"
+      && Object.keys(ov.args.properties).length === 0 && !ov.recordSchema);
+    const g = platformAiTool("get_customer_connections")!;
+    check("get_customer_connections: RECORD, CS tier on CUSTOMER_SUCCESS only, customer-linkable, PLATFORM_AI_RECORD_VIEWED (kind CONNECTION), pii 2, revalidates the handle",
+      g.scope === "RECORD" && g.customerLinkable === true && g.audit?.action === "PLATFORM_AI_RECORD_VIEWED" && g.audit.detail.recordKind === "CONNECTION"
+      && g.requires.tier === "CUSTOMER_SUCCESS" && g.requires.areas.join() === "CUSTOMER_SUCCESS" && g.pii === 2 && typeof g.revalidate === "function");
+    const s = g.recordSchema!;
+    const FREE = /user|subject|owner|target|linked|email|name|label|note|message|detail|address|nickname|mask|balance|amount|id$/i;
+    check("CONNECTION schema: closed; customer = opaqueRef; institution = registryName over the static registry; network = a chain CODE; no T2 / linkage / free-text / address / balance field; no t2Fields",
+      s.kind === "CONNECTION" && validateRecordSchema(s).length === 0 && s.fields.customer?.type === "opaqueRef"
+      && s.fields.institution?.type === "registryName" && JSON.stringify((s.fields.institution as { names: readonly string[] }).names) === JSON.stringify(INSTITUTION_NAMES)
+      && s.fields.network?.type === "code"
+      && Object.keys(s.fields).every((k) => !(T2_FIELD_NAMES as readonly string[]).includes(k) && (k === "customer" || k === "institution" || !FREE.test(k)))
+      && (s.t2Fields ?? []).length === 0);
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

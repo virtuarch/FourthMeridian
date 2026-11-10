@@ -82,6 +82,19 @@ const QUESTIONS = [
   "How is onboarding going for new customers?",
   "Who left linking without connecting?",
   "Any link failures this week?",
+  // P7 (PACK-PR-CONDITIONS 2) — the connections rule, re-justified: bare "connected" no longer routes it ...
+  "Are the operators connected to the VPN?",
+  "Is the scheduler connected?",
+  // ... and the connection-health questions (incl. wallets) still do.
+  "Which wallets are failing?",
+  "Does any customer need to relink their bank?",
+  "How many institutions have errors?",
+];
+
+/** P7: the connections rule's pinned false positives (never connections) and true positives (always). */
+const CONNECTIONS_FALSE_POSITIVES = ["Are the operators connected to the VPN?", "Is the scheduler connected?", "How are we looking today?", "How is onboarding going for new customers?", "Who recently joined?"];
+const CONNECTIONS_TRUE_POSITIVES = [
+  "Are bank connections healthy? Any reauth needed?", "Which wallets are failing?", "Does any customer need to relink their bank?", "How many institutions have errors?",
 ];
 
 /** P6: the onboarding rule's pinned false positives (never onboarding) and true positives (always). */
@@ -154,6 +167,7 @@ async function main() {
     customersPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "customers" }),
     incidentsPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "incidents" }),
     onboardingPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "onboarding" }),
+    connectionsPackOn: decisions({ enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "connections" }),
   }, null, 2) + "\n";
   if (process.env.UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT === "1") { writeFileSync(SNAPSHOT, current); console.log("  (snapshot written)"); }
   const pinned = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, "utf8") : null;
@@ -215,6 +229,27 @@ async function main() {
   check("an operator with neither PLATFORM_OPS nor CUSTOMER_SUCCESS is never offered the onboarding pack", growthOnly === "metrics,navigation,memory", growthOnly);
   const oFlagOff = R.routePlatformAiPacks({ question: "How is onboarding going for new customers?", areas: ALL, memory: true }, env).join();
   check("flag unset (the live env here) ⇒ the onboarding pack is never offered", oFlagOff === "metrics,navigation,memory", oFlagOff);
+
+  console.log("\n8. P7 — the connections pack declared, flag ON (PACK-PR-CONDITIONS 1 / 2 / 3; customer-linkable, broad words)");
+  const conOn = { enabled: (p: string) => R.CORE_PACKS.includes(p) || p === "connections" };
+  const withConnections = decisions(conOn);
+  const cRule = R.ROUTER_RULES.find((r) => r.pack === "connections")!.match;
+  const cUnrelated = QUESTIONS.filter((q) => !cRule.test(q));
+  check(`${cUnrelated.length} questions the connections rule does not match: routed exactly as today`, cUnrelated.length >= 10 && cUnrelated.every((q) => withConnections[q] === today[q]),
+    cUnrelated.filter((q) => withConnections[q] !== today[q]));
+  check("matched questions: the core packs + connections only (the router only OFFERS; invokeTool stays the authority)",
+    QUESTIONS.filter((q) => cRule.test(q)).length >= 4 && QUESTIONS.filter((q) => cRule.test(q)).every((q) => withConnections[q] === "metrics,navigation,memory,connections"));
+  const cfp = CONNECTIONS_FALSE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || cRule.test(q) || withConnections[q].split(",").includes("connections"));
+  check(`${CONNECTIONS_FALSE_POSITIVES.length} staff / infrastructure / other-pack questions never route connections (pack ON)`, cfp.length === 0, cfp);
+  const ctp = CONNECTIONS_TRUE_POSITIVES.filter((q) => !QUESTIONS.includes(q) || !cRule.test(q) || !withConnections[q].split(",").includes("connections"));
+  check(`${CONNECTIONS_TRUE_POSITIVES.length} connection-health questions (banks, wallets, relink, institutions) route connections (pack ON)`, ctp.length === 0, ctp);
+  const cOps = R.platformAiOfferedSchemas({ packs: ["metrics", "navigation", "connections"], areas: ["PLATFORM_OPS"], memory: false, paramKeys: [], expandable: [] }) as { function: { name: string } }[];
+  check("a PLATFORM_OPS-only operator is offered the identity-free aggregate only (never the CS record tool)",
+    cOps.some((x) => x.function.name === "connection_health_overview") && !cOps.some((x) => x.function.name === "get_customer_connections"));
+  const cGrowth = R.routePlatformAiPacks({ question: "Which wallets are failing?", areas: ["GROWTH_REVENUE"], memory: true }, env, { enabled: () => true }).join();
+  check("an operator with neither PLATFORM_OPS nor CUSTOMER_SUCCESS is never offered the connections pack", cGrowth === "metrics,navigation,memory", cGrowth);
+  const cFlagOff = R.routePlatformAiPacks({ question: "Which wallets are failing?", areas: ALL, memory: true }, env).join();
+  check("flag unset (the live env here) ⇒ the connections pack is never offered", cFlagOff === "metrics,navigation,memory", cFlagOff);
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");

@@ -44,6 +44,7 @@ import type { ToolTier } from "../tools/contract";
 import type { FreshGuard } from "./recheck";
 import { customerRecordSource } from "../tools/packs/customers.server";
 import { incidentRecordSource } from "../tools/packs/incidents.server";
+import { connectionRecordSource } from "../tools/packs/connections.server";
 
 /** The record segment the renderer reads (= conversations/answer.ts StoredRecordSegment / compose/record.ts RecordSpan). */
 export interface RecordRef { readonly rk: string; readonly rid: string; readonly a: string; readonly f: string }
@@ -77,6 +78,9 @@ export interface RecordRenderSource {
 export const PLATFORM_AI_RECORD_SOURCES: Readonly<Record<string, RecordRenderSource>> = Object.freeze({
   CUSTOMER: customerRecordSource(),
   INCIDENT: incidentRecordSource(),
+  // P7: CONNECTION — the connections pack's source (tools/packs/connections.server.ts connectionRecordSource): CS tier
+  // only; T1 = a code-derived label (registry institution / network); no T2 fields.
+  CONNECTION: connectionRecordSource(),
 });
 
 /** The audit row a T2 render writes (codes + the linked customer; never a value). */

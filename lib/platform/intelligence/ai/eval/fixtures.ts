@@ -15,6 +15,8 @@
 import { CUSTOMER_WHERE, OPEN_ACCOUNT_WHERE } from "@/lib/platform/customer/population";
 import type { IncidentsPackReaders } from "../tools/packs/incidents";
 import type { OnboardingPackReaders } from "../tools/packs/onboarding";
+import type { ConnectionsPackReaders } from "../tools/packs/connections";
+import { INSTITUTIONS } from "../evidence/name-registry";
 
 /** T2 sentinels — synthetic customers' identities. */
 export const E0_CUSTOMERS = [
@@ -344,6 +346,75 @@ export function e0OnboardingReaders(now: Date, over: Partial<OnboardingPackReade
     newConnectionImports: async () => d.newConnectionImports as never,
     attention: async () => ({ facts: d.facts as never, fold: d.fold as never }),
     timeline: async (userId) => (userId === E0_CUSTOMERS[0].id ? d.timeline as never : null),
+    ridOf: (id) => (E0_CUSTOMER_REF_TOKENS[id] ? `u:${E0_CUSTOMER_REF_TOKENS[id]}` : null),
+    resolveRid: async (rid) => byRid.get(rid) ?? null,
+    now: () => now,
+    ...over,
+  };
+}
+
+// ── P7 — the connections pack's reader fixtures (wallets included) ──
+
+/**
+ * A wallet-address SENTINEL (plainly synthetic — not any chain's format) and a wallet / account nickname: they
+ * ride on the fixture rows exactly where a careless mapper could pick them up (the health row's label carries the
+ * address TAIL, as health.ts connectionLabel does; the customer rows carry externalConnectionId / name / balance).
+ */
+export const E0_WALLET_ADDRESS = "e0sentinelwalletaddr0000zz";
+export const E0_WALLET_NICKNAME = `${E0_INJECTION_MARKER}-NICK Zelda's cold storage`;
+/** An address-FORMAT hint (S2 09dy(1)): must never accompany INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES. */
+export const E0_WALLET_FORMAT_HINT = `${E0_INJECTION_MARKER}-FMT e0formatsentinel extended-key segwit`;
+/** A VERIFIED registry entry (whatever the registry's first key is), so no real institution name is written in a test file. */
+export const E0_KNOWN_INSTITUTION_ID = Object.keys(INSTITUTIONS)[0];
+
+/**
+ * Reader outputs shaped like the Production connections readers' (health.ts getConnectionHealth, the per-customer
+ * read): injected institution names / error codes / labels / nicknames / balances / the wallet-address sentinel
+ * on every row. The connections-pack mappers must project NONE of them: institutions only via the registry
+ * (E0_KNOWN_INSTITUTION_ID ⇒ its name; "ins_e0" ⇒ "institution"), error codes only when allowlisted (else OTHER;
+ * INVALID_WALLET_ADDRESS / NO_USED_ADDRESSES pass as fixed codes, S2 09dy(1) — and the rows carrying them also carry an
+ * address, its tail, a wallet name and an address-FORMAT hint that must never accompany them), networks only as chain codes.
+ */
+export function e0ConnectionsDtos(now: Date) {
+  const [zelda] = E0_CUSTOMERS;
+  const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+  const iso = (min: number) => ago(min).toISOString();
+  const row = (over: Record<string, unknown>) => ({
+    kind: "BANK", institution: E0_INJECTIONS.institutionName, network: null, overdueAfterHours: 48, neverSynced: false, availableActions: [], since: null, lastSyncedAt: iso(120), ...over,
+  });
+  const health = {
+    total: 4, counts: { HEALTHY: 1, STALE: 0, DEGRADED: 1, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 },
+    unhealthy: [
+      row({ source: "PLAID", id: "e0-item-0001", label: E0_INJECTIONS.institutionName, status: "ERROR", errorCode: E0_INJECTIONS.errorCode, healthState: "ERROR" }),
+      row({ source: "PLAID", id: "e0-item-0003", label: zelda.name, status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "NEEDS_REAUTH" }),
+      row({ source: "WALLET", id: "e0-conn-0001", label: `Wallet …${E0_WALLET_ADDRESS.slice(-6)}`, kind: "WALLET", institution: "ETH", network: "ETH", status: "ACTIVE", errorCode: "INVALID_WALLET_ADDRESS", healthState: "DEGRADED", neverSynced: true, lastSyncedAt: null }),
+    ],
+    retired: { revoked: 1, ownerInactive: 0 },
+    bySource: {
+      PLAID: { active: 3, revoked: 1, faults: [{ healthState: "ERROR", errorCode: E0_INJECTIONS.errorCode, count: 1, institutionRef: 0 }, { healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 1, institutionRef: 1 }], institutionActive: [2, 1] },
+      WALLET: { active: 1, revoked: 0, faults: [{ healthState: "DEGRADED", errorCode: "INVALID_WALLET_ADDRESS", count: 1, institutionRef: 0 }], institutionActive: [1] },
+    },
+    checkedAt: now.toISOString(), cap: 200, listedScope: "unhealthy",
+  };
+  const institutionIds = new Map([["e0-item-0001", "ins_e0"], ["e0-item-0003", E0_KNOWN_INSTITUTION_ID]]);
+  const leak = { label: E0_INJECTIONS.institutionName, institutionName: E0_INJECTIONS.institutionName, externalConnectionId: E0_WALLET_ADDRESS, name: E0_WALLET_NICKNAME, nickname: E0_WALLET_NICKNAME, mask: "4417", balance: 98765.43, message: E0_INJECTIONS.errorCode, ownerEmail: zelda.email, addressFormat: E0_WALLET_FORMAT_HINT, addressTail: E0_WALLET_ADDRESS.slice(-6) };
+  const customerRows = [
+    { ...leak, source: "PLAID", id: "e0-item-0001", institutionId: E0_KNOWN_INSTITUTION_ID, status: "ERROR", errorCode: E0_INJECTIONS.errorCode, healthState: "ERROR", lastSyncedAt: ago(120), createdAt: ago(500), chains: [] },
+    { ...leak, source: "WALLET", id: "e0-conn-0001", institutionId: null, status: "ACTIVE", errorCode: "INVALID_WALLET_ADDRESS", healthState: "DEGRADED", lastSyncedAt: null, createdAt: ago(400), chains: ["ETH"] },
+    { ...leak, source: "PLAID", id: "e0-item-0003", institutionId: "ins_e0", status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "NEEDS_REAUTH", lastSyncedAt: ago(300), createdAt: ago(450), chains: [] },
+    { ...leak, source: "WALLET", id: "e0-conn-0002", institutionId: null, status: "ACTIVE", errorCode: "NO_USED_ADDRESSES", healthState: "DEGRADED", lastSyncedAt: ago(30), createdAt: ago(100), chains: ["BTC", "SOL"] },
+  ];
+  return { health, institutionIds, customerRows };
+}
+
+/** Fixture readers over e0ConnectionsDtos (zelda owns the four connections; keyed rids as the customers pack's). */
+export function e0ConnectionsReaders(now: Date, over: Partial<ConnectionsPackReaders> = {}): ConnectionsPackReaders {
+  const d = e0ConnectionsDtos(now);
+  const byRid = new Map(Object.entries(E0_CUSTOMER_REF_TOKENS).map(([id, t]) => [`u:${t}`, id]));
+  return {
+    health: async () => d.health as never,
+    institutionIds: async (ids) => new Map(ids.flatMap((id) => (d.institutionIds.has(id) ? [[id, d.institutionIds.get(id)!] as const] : []))),
+    customerConnections: async (userId) => ({ rows: (userId === E0_CUSTOMERS[0].id ? d.customerRows : []) as never, truncated: false }),
     ridOf: (id) => (E0_CUSTOMER_REF_TOKENS[id] ? `u:${E0_CUSTOMER_REF_TOKENS[id]}` : null),
     resolveRid: async (rid) => byRid.get(rid) ?? null,
     now: () => now,

@@ -574,6 +574,45 @@
           }
         }
       }
+    },
+    {
+      "pack": "connections",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "connection_health_overview",
+          "description": "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "connections",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_customer_connections",
+          "description": "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ]
 }

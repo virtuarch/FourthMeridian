@@ -15,7 +15,7 @@ import type { PlatformAiBinding } from "../../core";
 import type { ScopedArea } from "../../authz/boundary";
 import type { PlatformAiRecheck } from "../../authz/recheck";
 
-export type E0Pack = "metrics" | "navigation" | "memory" | "boundary" | "router" | "customers" | "incidents" | "onboarding";
+export type E0Pack = "metrics" | "navigation" | "memory" | "boundary" | "router" | "customers" | "incidents" | "onboarding" | "connections";
 
 /** What the runner observed for one route turn. */
 export interface RouteTurnObservation {
