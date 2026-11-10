@@ -16,7 +16,13 @@
  *   p4b.directory-is-not-a-grant  the Ops operator's turn told to try Customer Success (as if the
  *                                 directory listed it) binds Ops only — the CS metric NOT_FOUND;
  *   p4b.single-area-unchanged     a CS-only operator: the widened access keeps the same binding and
- *                                 scope; the stored answer and evidence refs equal the pre-P4b turn's.
+ *                                 scope; the stored answer and evidence refs equal the pre-P4b turn's;
+ *   p4b.export-after-revoke       S2 09ed: the subject-access EXPORT (conversations/export.ts) of the
+ *                                 cross-area conversation over the export's held areas
+ *                                 (multi-area.ts freshlyHeldAreas — the same fresh per-area read): with
+ *                                 CS held the answer is exported; CS revoked ⇒ that answer is exactly
+ *                                 "[no longer available]" (none of its text, figures, citations, notes or
+ *                                 T2 sentinels), the question stays, and the view hides the same answer.
  * Every provider request and view is added to the corpus (IDENTITY_LEAK). Reports are counts only.
  */
 
@@ -28,7 +34,8 @@ import { RECORD_GONE_TEXT } from "../../compose/record";
 import type { EvidenceRef, StoredAnswer, StoredRecordSegment } from "../../conversations/answer";
 import { messageDto, renderMessageRecords, type AreaAccess } from "../../conversations/handlers";
 import type { HistoryMessage } from "../../conversations/history";
-import { packAreasRead, widenConversationAccess, withAreasRead } from "../../conversations/multi-area";
+import { projectPlatformAiConversationsForExport } from "../../conversations/export";
+import { freshlyHeldAreas, packAreasRead, widenConversationAccess, withAreasRead } from "../../conversations/multi-area";
 import { runConversationTurn } from "../../conversations/turn";
 import type { PlatformAiGenerate } from "../../core";
 import type { RecordSchema } from "../../evidence/record-envelope";
@@ -227,8 +234,52 @@ async function singleAreaUnchanged(ctx: UnitContext): Promise<string[]> {
   return problems;
 }
 
+/** S2 09ed — the subject-access export applies the view's lost-area rule over the same fresh per-area read. */
+async function exportAfterRevoke(ctx: UnitContext): Promise<string[]> {
+  const problems: string[] = [];
+  ctx.setGrant("ops2", CS, "ACTIVE");
+  try {
+    const t1 = await conversationTurn(ctx, "ops2", OPS, [OPS, CS], [], model(
+      [{ name: "get_metric", args: { id: OPS_METRIC } }, { name: "get_metric", args: { id: CS_METRIC } }, { name: "e0_p4b_cases", args: {} }],
+      (h) => `The open case is {{r:${h}|ref}}. ${TURN1_MARK} is the word to remember.`), []);
+    if (!t1?.answer || !JSON.stringify(t1.answer).includes(TURN1_MARK)) return ["turn 1: no stored cross-area answer (vacuous)"];
+    const { history, assistant } = exchange(t1.answer, t1.refs);
+    const messages = [{ ...history[0], completedAt: at, unreadable: false, failureCode: null } as MessageRecord, assistant];
+    const conversation = { id: CONVERSATION_ID, area: OPS, createdAt: at, lastActivityAt: at, messages };
+    const directory = new Set<PlatformArea>([OPS, CS]);
+    const exportNow = async () => {
+      // The export's held areas: each area through ITS OWN fresh read NOW (the route wires area-access.ts conversationFreshHeldAreas).
+      const held = await freshlyHeldAreas([OPS, CS], ctx.operatorId("ops2"), (a) => accessFor(ctx, "ops2", a));
+      return { held, section: projectPlatformAiConversationsForExport({ conversations: [conversation], omitted: [] }, directory, held) };
+    };
+
+    const before = await exportNow();
+    if (!before.held.has(CS) || !JSON.stringify(before.section).includes(TURN1_MARK)) problems.push("export while both areas are held: the cross-area answer is not exported (vacuous)");
+
+    ctx.setGrant("ops2", CS, "REVOKED");
+    const after = await exportNow();
+    const text = JSON.stringify(after.section);
+    ctx.collect("response_body", text);
+    const m = after.section.conversations[0]?.messages ?? [];
+    if (after.held.has(CS) || !after.held.has(OPS)) problems.push("export after revoke: the held areas are not {Ops}");
+    if (m[1]?.text !== RECORD_GONE_TEXT || (m[1]?.citations ?? []).length !== 0 || (m[1]?.notes ?? []).length !== 0) problems.push("export after revoke: the lost answer is not [no longer available] whole");
+    if (text.includes(TURN1_MARK) || text.includes(CS_METRIC) || text.includes("case #p4b")) problems.push("export after revoke: the lost answer's text reached the export");
+    if (t2Hits(text) > 0) problems.push("export after revoke: a T2 sentinel reached the export");
+    if (m[0]?.text !== history[0].content) problems.push("export after revoke: the operator's question was not kept");
+    // export == view: the view of NOW hides the same answer, with the same marker.
+    const own = await accessFor(ctx, "ops2", OPS);
+    const view = own ? await widenConversationAccess(own, [OPS, CS], (a) => accessFor(ctx, "ops2", a)) : null;
+    const dto = view ? messageDto(assistant, view, false) : null;
+    if (!dto || JSON.stringify(dto.content) !== JSON.stringify([{ kind: "text", text: m[1]?.text }])) problems.push("export after revoke: the export and the view disagree on the lost answer");
+  } finally {
+    ctx.setGrant("ops2", CS, null);
+  }
+  return problems;
+}
+
 export const CONVERSATION_CASES: readonly UnitCase[] = [
   { kind: "unit", id: "p4b.cross-area-then-revoked", pack: "conversations", gates: ["MULTI_AREA_CONVERSATION", "SCOPE_REFUSAL"], run: crossAreaThenRevoked },
   { kind: "unit", id: "p4b.directory-is-not-a-grant", pack: "conversations", gates: ["MULTI_AREA_CONVERSATION", "SCOPE_REFUSAL"], run: directoryIsNotAGrant },
   { kind: "unit", id: "p4b.single-area-unchanged", pack: "conversations", gates: ["MULTI_AREA_CONVERSATION"], run: singleAreaUnchanged },
+  { kind: "unit", id: "p4b.export-after-revoke", pack: "conversations", gates: ["MULTI_AREA_CONVERSATION"], run: exportAfterRevoke },
 ];
