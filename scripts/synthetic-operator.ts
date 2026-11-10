@@ -56,7 +56,7 @@ import path from "node:path";
 import {
   SYNTHETIC_EMAIL, SYNTHETIC_USERNAME, SYNTHETIC_FIRST_NAME, SYNTHETIC_LAST_NAME, SYNTHETIC_REASON, SYNTHETIC_ROLE,
   SYNTHETIC_GRANTS, isSyntheticEmailAllowed, isGrantAllowed, computeCleanupDeadline, privateDirFor, recordDirRefusal,
-  decideSyntheticOperator, passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord,
+  decideSyntheticOperator, passwordFromBytes, parseSyntheticRecord, cleanupCountsRecord, providerConnectionBlocksCleanup,
   type SyntheticRecord, type CleanupCounts, type SyntheticArea,
 } from "./lib/synthetic-operator.core";
 import {
@@ -294,8 +294,15 @@ async function cleanup(db: Db, recordDir: string, targetHash: string | null, env
   if (u.email !== SYNTHETIC_EMAIL || !isSyntheticEmailAllowed(u.email) || u.role !== "USER") {
     refuse(["the recorded user is not the synthetic operator (email/role mismatch) — refusing to delete it."], true);
   }
-  const plaidItems = await db.plaidItem.count({ where: { userId: u.id } });
-  if (plaidItems !== 0) refuse(["the synthetic operator has a provider connection — it must have none; investigate before cleanup."], true);
+  // REVOKED (disconnected) items do not block: the user purge's cascade
+  // (PlaidItem.user onDelete: Cascade) removes them, and purgeUser only calls
+  // Plaid itemRemove for ACTIVE items (lib/account-deletion/purge.ts), so the
+  // throwing itemRemove stub below stays unreachable. ACTIVE / ERROR / any other
+  // non-REVOKED item still refuses (providerConnectionBlocksCleanup).
+  const plaidItems = await db.plaidItem.findMany({ where: { userId: u.id }, select: { status: true } });
+  if (providerConnectionBlocksCleanup(plaidItems.map((i) => i.status))) {
+    refuse(["the synthetic operator has an active (not disconnected) provider connection — it must have none; investigate before cleanup."], true);
+  }
 
   const before = await countsFor(db, u.id);
 
