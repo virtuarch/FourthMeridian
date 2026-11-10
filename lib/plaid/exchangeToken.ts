@@ -72,7 +72,7 @@ export interface ExchangeTokenParams {
   spaceId:          string;
   /** Short-lived public_token returned by Plaid Link's onSuccess. */
   public_token:     string;
-  /** Plaid institution identifier (e.g. "ins_3" for Chase). */
+  /** Plaid institution identifier (e.g. "ins_56" for Chase — see lib/transactions/provider-link-extract.ts). */
   institution_id:   string;
   /** Human-readable institution name for display + DB storage. */
   institution_name: string;

@@ -9,7 +9,7 @@
  * id (lib/platform/opaque-user-ref.ts — the SAME key and purpose, no new key material), resolved back
  * by the bounded digest scan the CS list already uses (customers.ts resolveOpaqueRef) and then
  * restricted to the customer population (CUSTOMER_WHERE). More than one match (a 32-bit digest
- * collision) or none ⇒ not visible (fail closed).
+ * collision), none, or a scan that reached its cap (truncated) ⇒ not visible (fail closed).
  *
  * Also here: the CUSTOMER record source the read-time renderer and replay re-authz use
  * (authz/record-render.ts PLATFORM_AI_RECORD_SOURCES) — T2 = the customer's name / email, read ONLY
@@ -17,7 +17,7 @@
  * subject lookups (authz/subject.server.ts).
  *
  * fm_system (an operator reaching a customer acts outside their own tenancy — the CS routes' reasoning).
- * Allowlisted selects; never logs.
+ * Allowlisted selects; logs only the counts-only capped-scan line (resolveCustomerRid) — never an id, ref or email.
  */
 
 import "server-only";
@@ -26,7 +26,7 @@ import type { PlatformArea } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { loadAttention } from "@/lib/platform/customer/attention";
 import { getCustomerDetail } from "@/lib/platform/customer/customer-detail";
-import { resolveOpaqueRef } from "@/lib/platform/customer/customers";
+import { REF_SEARCH_SCAN_CAP, resolveOpaqueRef } from "@/lib/platform/customer/customers";
 import { CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { listRecentlyJoined } from "@/lib/platform/customer/recently-joined";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
@@ -45,10 +45,27 @@ export function customerRid(userId: string): string | null {
   return t ? ridOfRefToken(t) : null;
 }
 
-/** rid → the ONE customer (role USER) it names; a collision or no match ⇒ null. */
+/** The counts-only line a capped (truncated) resolution scan logs. No id, no ref, no email — counts only. */
+export const CAPPED_RESOLUTION_LOG = (scanned: number, matches: number) =>
+  `[platform-ai] customer rid resolution failed closed: digest scan reached its cap (scanned=${scanned}, cap=${REF_SEARCH_SCAN_CAP}, matches=${matches})`;
+
+/**
+ * rid → the ONE customer (role USER) it names; a collision or no match ⇒ null.
+ *
+ * S2 P5 follow-up (c): a scan that reached REF_SEARCH_SCAN_CAP is TRUNCATED — accounts older than
+ * the newest cap were never digested, so neither "no match" nor "exactly one match" is proven (an
+ * unseen older account may share the 32-bit reference). A capped scan therefore FAILS CLOSED (null,
+ * the same uniform not-resolved every other miss returns, so the caller's record is not returned)
+ * and emits ONE counts-only log line. The CS list (customers.ts listCustomers) keeps its own
+ * capped-note behaviour; this is the Platform AI resolution only.
+ */
 export async function resolveCustomerRid(rid: string, client: Client = systemDb): Promise<string | null> {
   if (!CUSTOMER_RID.test(rid)) return null;
-  const { ids } = await resolveOpaqueRef(rid.slice(2), client);
+  const { ids, search } = await resolveOpaqueRef(rid.slice(2), client);
+  if (search.capped) {
+    console.warn(CAPPED_RESOLUTION_LOG(search.scanned, search.matches));
+    return null;
+  }
   if (ids.length !== 1) return null;
   const rows = await client.user.findMany({ where: { AND: [CUSTOMER_WHERE, { id: { in: ids } }] }, select: { id: true }, take: 2 });
   return rows.length === 1 ? rows[0].id : null;

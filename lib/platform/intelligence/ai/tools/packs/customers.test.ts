@@ -170,6 +170,49 @@ async function main() {
     const staffRid = customerRid(users[1].id)!;
     check("a non-customer (staff) account never resolves", (await src.revalidate(staffRid, "CUSTOMER_SUCCESS", csGuard)) === null);
     check("a malformed rid never resolves", (await src.revalidate(ZELDA.id, "CUSTOMER_SUCCESS", csGuard)) === null);
+
+    // S2 P5 follow-up (c): a scan that reaches REF_SEARCH_SCAN_CAP is truncated ⇒ fail closed + counts-only log.
+    const { resolveCustomerRid } = await import("./customers.server");
+    const { REF_SEARCH_SCAN_CAP } = await import("@/lib/platform/customer/customers");
+    const fill = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `cfill${String(i).padStart(20, "0")}`, email: `f${i}@x.invalid`, name: "F", role: "USER" }));
+    const cappedClient = (rows: typeof users) => ({
+      user: {
+        findMany: async (a: { where?: { AND?: [unknown, { id: { in: string[] } }] }; take?: number }) => {
+          const ids = a.where?.AND?.[1]?.id?.in;
+          const hit = rows.filter((u) => (ids ? ids.includes(u.id) && u.role === "USER" : true));
+          return hit.slice(0, a.take ?? hit.length).map((u) => ({ id: u.id }));
+        },
+        findUnique: async (a: { where: { id: string } }) => rows.find((u) => u.id === a.where.id) ?? null,
+      },
+    });
+    const logged: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); };
+    try {
+      // Zelda IS among the newest cap rows (a match), yet the scan was truncated: uniqueness unproven ⇒ null.
+      const withMatch = cappedClient([users[0], ...fill(REF_SEARCH_SCAN_CAP + 5)]);
+      const r1 = await resolveCustomerRid(rid, withMatch as never);
+      const s1 = customerRecordSource(withMatch as never);
+      const rv = await s1.revalidate(rid, "CUSTOMER_SUCCESS", csGuard);
+      const t2 = await s1.t2(rid, "CUSTOMER_SUCCESS", "email");
+      let linked = "returned";
+      try { await s1.linkedUserIds(rid, "CUSTOMER_SUCCESS"); } catch { linked = "threw"; }
+      check("capped scan WITH a match among the newest cap ⇒ not resolved (fail closed): resolve null, revalidate null, t2 null, linkedUserIds throws",
+        r1 === null && rv === null && t2 === null && linked === "threw", { r1, rv, t2, linked });
+      // Zelda older than the cap (not scanned) ⇒ no match ⇒ the same uniform not-resolved.
+      const noMatch = cappedClient([...fill(REF_SEARCH_SCAN_CAP + 5), users[0]]);
+      check("capped scan with NO match ⇒ the same uniform null", (await resolveCustomerRid(rid, noMatch as never)) === null);
+      // Below the cap, the same customer still resolves (the cap, not the population, closes it).
+      const under = cappedClient([users[0], ...fill(REF_SEARCH_SCAN_CAP - 2)]);
+      check("an uncapped scan (cap − 1 rows) still resolves the one customer", (await resolveCustomerRid(rid, under as never)) === ZELDA.id);
+    } finally {
+      console.warn = warn;
+    }
+    const capLines = logged.filter((l) => l.includes("failed closed"));
+    check("every capped resolution emits ONE counts-only line (5 capped calls ⇒ 5 lines; none for the uncapped call)", capLines.length === 5 && logged.length === 5, logged.length);
+    const leaked = capLines.filter((l) => l.includes(ZELDA.id) || l.includes(rid.slice(2)) || l.includes("@") || /cfill|user #/.test(l)
+      || l.replace(/\[platform-ai\][^:]*:[^(]*\((scanned=\d+, cap=\d+, matches=\d+)\)/, "").trim() !== "");
+    check("the capped line carries counts only — no id, no ref, no email", leaked.length === 0 && capLines[0].includes(`cap=${REF_SEARCH_SCAN_CAP}`), capLines[0]);
   }
 
   console.log("\n4. static");

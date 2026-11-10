@@ -96,7 +96,13 @@ export const ROUTER_RULES: readonly { readonly pack: string; readonly match: Reg
   { pack: "incidents", match: /\b(?:incidents?|outages?|alerts?|alerting|investigat(?:e|ed|ing|ion)|root cause|broken|degraded|degradation)\b/i },
   { pack: "connections", match: /\b(?:connections?|connected|wallets?|institutions?|banks?|re-?auth(?:enticate|orization)?|relink|link(?:ed)? accounts?|plaid)\b/i },
   { pack: "jobs", match: /\b(?:jobs?|cron|scheduler|scheduled|refresh(?:es|ed|ing)?|sync(?:s|ed|ing)?|pipeline|executions?|retries|backlog)\b/i },
-  { pack: "customers", match: /\b(?:customers?|users?|members?|accounts? needing|attention|recently joined|new users?)\b/i },
+  // S2 P5 follow-up (e): NARROWED. Bare "users?" / "members?" / "new users?" are gone — they matched
+  // growth questions ("how many users signed up"), staff ("members of the ops team") and anything
+  // about operators. Kept: the CS vocabulary itself (customer(s) — also the resolved-subject marker
+  // "[customer h_…]"), the two unambiguous synonyms "account holder(s)" / "member account(s)", and
+  // the existing CS phrases (accounts needing, attention, recently/newly joined). Sign-ups stay with
+  // growth. Conservative on purpose: a missed route still has more_tools; a false route spends schema.
+  { pack: "customers", match: /\b(?:customers?|account holders?|member accounts?|accounts? needing|attention|(?:recently|newly) joined)\b/i },
   { pack: "onboarding", match: /\b(?:onboard(?:ing|ed)?|imports?|imported|importing|first connection|activation)\b/i },
   { pack: "providers", match: /\b(?:providers?|vendors?|upstream|email deliver(?:y|ability)|bounces?|provider cost|call volume)\b/i },
   { pack: "ai_usage", match: /\b(?:ai (?:usage|spend|cost|calls?|budget)|tokens?|llm|model (?:cost|usage|calls?)|briefs?|invocations?)\b/i },
