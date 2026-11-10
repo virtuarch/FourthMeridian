@@ -89,6 +89,17 @@ async function main() {
     platformAiPackEnabled("incidents") === env.isPlatformAiPackIncidentsEnabled && env.isPlatformAiPackIncidentsEnabled === false);
   check("PACK_FLAG.incidents reads exactly e.isPlatformAiPackIncidentsEnabled (source pin)",
     /incidents: \(e\) => e\.isPlatformAiEnabled === true && e\.isPlatformAiPackIncidentsEnabled === true,/.test(routerSrc));
+  // P6 (PACK-PR-CONDITIONS 3): onboarding is wired to ITS strict getter (master AND PLATFORM_AI_PACK_ONBOARDING_ENABLED).
+  const withOnboarding = (master: boolean, pack: boolean | undefined) => ({ ...fakeEnv(master, false), ...(pack === undefined ? {} : { isPlatformAiPackOnboardingEnabled: pack }) });
+  check("onboarding pack flag = isPlatformAiPackOnboardingEnabled (and the master); absent getter ⇒ OFF; another pack's getter does not turn it on",
+    platformAiPackEnabled("onboarding", withOnboarding(true, true)) && !platformAiPackEnabled("onboarding", withOnboarding(true, false))
+    && !platformAiPackEnabled("onboarding", withOnboarding(false, true)) && !platformAiPackEnabled("onboarding", withOnboarding(true, undefined))
+    && !platformAiPackEnabled("onboarding", withCustomers(true, true)) && !platformAiPackEnabled("onboarding", withIncidents(true, true))
+    && !platformAiPackEnabled("customers", withOnboarding(true, true)) && !platformAiPackEnabled("incidents", withOnboarding(true, true)));
+  check("onboarding pack flag over the LIVE env: PLATFORM_AI_PACK_ONBOARDING_ENABLED=\"1\" here ⇒ OFF (strict; default OFF)",
+    platformAiPackEnabled("onboarding") === env.isPlatformAiPackOnboardingEnabled && env.isPlatformAiPackOnboardingEnabled === false);
+  check("PACK_FLAG.onboarding reads exactly e.isPlatformAiPackOnboardingEnabled (source pin)",
+    /onboarding: \(e\) => e\.isPlatformAiEnabled === true && e\.isPlatformAiPackOnboardingEnabled === true,/.test(routerSrc));
   const OPS: PlatformArea[] = ["PLATFORM_OPS"];
   const r = (memory: boolean, e: ReturnType<typeof fakeEnv>, q: string | null = null, areas: PlatformArea[] = OPS) => routePlatformAiPacks({ question: q, areas, memory }, e).join();
   check("core routing: memory only with the turn's memory hooks",
@@ -123,7 +134,8 @@ async function p3(fakeEnv: FakeEnv) {
   const ALL: PlatformArea[] = ["PLATFORM_OPS", "SECURITY_OPS", "GROWTH_REVENUE", "CUSTOMER_SUCCESS", "MERCHANT_OPS"];
   const synRegistry: PlatformAiTool[] = [
     // P8: the real incidents pack is replaced by its synthetic stand-in here (these checks pin the rule table).
-    ...PLATFORM_AI_TOOL_REGISTRY.filter((t) => t.pack !== "incidents"),
+    // P6: the real onboarding pack is not in SYN_PACKS (undeclared here ⇒ inert), kept out for clarity.
+    ...PLATFORM_AI_TOOL_REGISTRY.filter((t) => t.pack !== "incidents" && t.pack !== "onboarding"),
     synTool("syn_incidents", "incidents", ["PLATFORM_OPS"]),
     synTool("syn_connections", "connections", ["PLATFORM_OPS", "CUSTOMER_SUCCESS"], "RECORD"),
     synTool("syn_jobs", "jobs", ["PLATFORM_OPS"]),

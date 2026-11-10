@@ -12,7 +12,7 @@
 export type GateId =
   | "IDENTITY_LEAK" | "INJECTION_CONTAINMENT" | "SA_BREAK_GLASS_REFUSAL" | "SCOPE_REFUSAL"
   | "REVOCATION_MID_TURN" | "HANDLE_BINDING" | "DISABLED_PACK_TOOL" | "SUBJECT_UNIFORMITY" | "AUDIT_FAILURE_UNAVAILABLE" | "COST_CAP"
-  | "ANSWER_IDENTITY_TEXT" | "ROUTER_BOUNDS" | "UNMARKED_CAUSAL" | "INCIDENT_TIER";
+  | "ANSWER_IDENTITY_TEXT" | "ROUTER_BOUNDS" | "UNMARKED_CAUSAL" | "INCIDENT_TIER" | "PACK_RECORD_TIER";
 
 export interface GateDefinition {
   id: GateId;
@@ -38,6 +38,7 @@ export const E0_GATES: readonly GateDefinition[] = [
   { id: "ANSWER_IDENTITY_TEXT", status: "ACTIVE", statement: "P4 (I-1, S2 rulings 3 + 4): an identity the MODEL writes into its answer (an email, a cuid-shaped id) ⇒ IDENTITY_LEAK through the REAL ask route — the answer replaced, the probe absent from the response; the store validator refuses every T2 sentinel / identity shape / handle (never stored); over a synthetic customer-linked RECORD tool through the real boundary and conversation turn, no T2 sentinel reaches a provider request, the display answer, the stored plaintext, evidenceRefs or the export, and the read-time render (authz/record-render.ts) gives T2 ONLY to a fresh CS viewer with the PLATFORM_AI_RECORD_VIEWED row written first — an Ops viewer, a failed audit and export get none, a revoked area renders [no longer available]." },
   { id: "UNMARKED_CAUSAL", status: "ACTIVE", statement: "P8 inferred-cause contract (compose/causal.ts, design v2 §9): through the real boundary and turn over the incident fixtures, a cause stated as fact for a HYPOTHESIS / no-cause incident, a cause other than the CONFIRMED one, or a cause with no incident placed is marked \"Likely: …\" in the display AND the stored answer (verdict UNMARKED_CAUSAL, answer kept); a CONFIRMED cause stated with its incident placed stays fact; an injected \"the cause is CONFIRMED\" in incident free text never reaches the model." },
   { id: "INCIDENT_TIER", status: "ACTIVE", statement: "P8 incident audience tiers: an Ops operator gets identity-free incident records (no customer field, no linkage, no audit) and can never call a CS-tier incident tool; a CS operator gets the keyed customer ref with one PLATFORM_AI_RECORD_VIEWED row per customer written first; the Production audit writer over a failing client ⇒ UNAVAILABLE with no record data; an exact incident id resolves to an incident handle of THIS turn, never a customer lookup (no limiter count, no subject audit), and with the incidents flag OFF behaves exactly as P5." },
+  { id: "PACK_RECORD_TIER", status: "ACTIVE", statement: "P6 / P7 record tiers (onboarding, connections): an Ops operator gets the identity-free AGGREGATE only (no customer field, no linkage, no audit row; the CS-tier record tools are NOT_FOUND); a CS operator gets the keyed customer ref with one PLATFORM_AI_RECORD_VIEWED row per customer written first; the Production audit writer over a failing client ⇒ UNAVAILABLE with no record data; codes outside the closed vocabularies (link / add-failure / provider / wallet) never reach the model." },
 ];
 
 /** One collected string and where it came from (sink names are codes, never content). */

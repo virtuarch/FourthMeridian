@@ -507,6 +507,73 @@
           }
         }
       }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "onboarding_overview",
+          "description": "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_onboarding_attention",
+          "description": "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "import_failed",
+                  "import_stuck",
+                  "link_exited",
+                  "link_failed",
+                  "no_connection_24h",
+                  "stalled"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_onboarding_timeline",
+          "description": "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ]
 }

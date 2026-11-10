@@ -51,7 +51,7 @@ import { CORE_TOOL_NAMES, PLATFORM_AI_TOOL_REGISTRY, platformAiRegistrySchemas }
 
 /** The env getters the pack flags read (a test passes its own; an absent pack getter is OFF). */
 export type PackFlagEnv = Pick<typeof liveEnv, "isPlatformAiEnabled" | "isPlatformAiMemoryEnabled">
-  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled" | "isPlatformAiPackIncidentsEnabled">>;
+  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled" | "isPlatformAiPackIncidentsEnabled" | "isPlatformAiPackOnboardingEnabled">>;
 
 const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   metrics: (e) => e.isPlatformAiEnabled === true,
@@ -61,6 +61,8 @@ const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   customers: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackCustomersEnabled === true,
   // P8 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_INCIDENTS_ENABLED === "true"; default OFF).
   incidents: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackIncidentsEnabled === true,
+  // P6 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_ONBOARDING_ENABLED === "true"; default OFF).
+  onboarding: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackOnboardingEnabled === true,
 };
 
 /** Is this pack's server flag ON? Unknown pack ⇒ false. */
@@ -105,7 +107,12 @@ export const ROUTER_RULES: readonly { readonly pack: string; readonly match: Reg
   // the existing CS phrases (accounts needing, attention, recently/newly joined). Sign-ups stay with
   // growth. Conservative on purpose: a missed route still has more_tools; a false route spends schema.
   { pack: "customers", match: /\b(?:customers?|account holders?|member accounts?|accounts? needing|attention|(?:recently|newly) joined)\b/i },
-  { pack: "onboarding", match: /\b(?:onboard(?:ing|ed)?|imports?|imported|importing|first connection|activation)\b/i },
+  // P6 (PACK-PR-CONDITIONS 1 / 2): re-justified and NARROWED. Bare "activation" is gone — it matched operator
+  // questions about pack / flag / kill-switch activation, not a customer's. Kept: onboarding itself, the import
+  // vocabulary (a new connection's first import is the onboarding fact Platform Ops and CS both read), "first
+  // connection" (the funnel stage), and the two link-step facts the needs-help reasons name ("link exit(s)",
+  // "link failure(s)" / "failed link(s)"). The rule only OFFERS the pack; invokeTool stays the authority.
+  { pack: "onboarding", match: /\b(?:onboard(?:ing|ed)?|imports?|imported|importing|first connection|link (?:exits?|exited|failures?|failed)|failed links?|left linking)\b/i },
   { pack: "providers", match: /\b(?:providers?|vendors?|upstream|email deliver(?:y|ability)|bounces?|provider cost|call volume)\b/i },
   { pack: "ai_usage", match: /\b(?:ai (?:usage|spend|cost|calls?|budget)|tokens?|llm|model (?:cost|usage|calls?)|briefs?|invocations?)\b/i },
   { pack: "audit_history", match: /\b(?:audit(?: log| trail)?|history|who (?:changed|did|approved)|operator actions?|activity log)\b/i },
