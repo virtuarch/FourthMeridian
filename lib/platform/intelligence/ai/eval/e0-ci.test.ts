@@ -171,7 +171,7 @@ async function main() {
     return c.check(obs);
   }
 
-  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags)\n");
+  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags; P4: answer identity, record render)\n");
   let caseCount = 0;
   console.log = console.info = console.warn = console.error = capture;
   try {
@@ -184,13 +184,7 @@ async function main() {
       if (problems.length) failures.push(`${c.id}: ${problems.join("; ")}`);
       out(`  ${problems.length ? "✗" : "✓"} ${c.id} [${c.gates.join(", ")}]${problems.length ? ` — ${problems.join("; ")}` : ""}`);
     }
-
-    // ANSWER_IDENTITY_TEXT (PENDING until P4): measured, not enforced — does an identity the MODEL writes survive into the answer?
-    provider.load([{ content: "The affected customer is probe@e0-model.invalid." }]);
-    const measured = await invoke(POST, request("/api/platform/ai/ask", { method: "POST", cookie: await cookieFor("ops"), body: { question: "Who is affected?" } }));
-    drainLedger();
-    const survived = JSON.stringify(measured.body).includes("probe@e0-model.invalid");
-    out(`  ○ measure ANSWER_IDENTITY_TEXT: a model-written email ${survived ? "SURVIVES" : "does not survive"} into the answer (enforced with P4's IDENTITY_LEAK verdict)`);
+    // ANSWER_IDENTITY_TEXT is ACTIVE since P4 (cases/answers.ts): the route cases assert IDENTITY_LEAK, the unit cases the store + render path.
   } finally {
     Object.assign(console, original);
     provider.restore();

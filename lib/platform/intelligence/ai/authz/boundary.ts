@@ -58,6 +58,17 @@
  * the pack flag re-read, 3 a tool of the pack callable in the live scope, 4 the per-call
  * recheck of those areas — then the pack joins the routed set. Any refusal is the same
  * NOT_FOUND. Without a router (tests), `packs` is fixed and `more_tools` is UNKNOWN_TOOL.
+ *
+ * P4 — RECORDS FOR COMPOSE AND REPLAY (design v2 §6.3, §8.2):
+ *   · `recordRef(handle)` — THIS turn's handle → {rk, rid, a, fields}: the only thing a
+ *     {{r:h|field}} placeholder resolves against (compose/record.ts). Fields = "ref" + the
+ *     record schema's t2Fields (names only). Closure state, never serialised or logged.
+ *   · `remint(refs)` — replay re-authz: a prior answer's record span gets a handle of THIS
+ *     turn ONLY when its area is in the turn's live scope and passes the per-call recheck
+ *     (the boundary's own recheck: a refusal removes the area, as for a tool call) AND its
+ *     kind's source re-validates the record for that fresh guard (authz/record-render.ts
+ *     RecordRenderSource.revalidate). Anything else ⇒ null (the replay shows the bare kind
+ *     marker). History grants nothing.
  */
 
 import "server-only";
@@ -73,9 +84,11 @@ import {
   type ModelRecord, type RawRecord, type RecordFields, type RecordRunResult,
 } from "../evidence/record-envelope";
 import { MORE_TOOLS_NAME, toolCallableIn, type PlatformAiTurnRouter } from "../engine/router";
-import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack } from "../tools/contract";
+import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack, type ToolTier } from "../tools/contract";
 import { PLATFORM_AI_TOOL_REGISTRY, type LegacyToolContext, type PlatformAiTool } from "../tools/registry";
 import { createHandleTable } from "./handles";
+import { PLATFORM_AI_RECORD_SOURCES, type RecordRenderSource } from "./record-render";
+import { RECORD_REF_FIELD, type TurnRecordRef } from "../compose/record";
 import {
   createDenialLog, createTurnScope,
   type BoundaryDenialReason, type DenialRow, type FreshGuard, type PlatformAiRecheck,
@@ -128,6 +141,8 @@ export interface TurnBoundaryOptions {
   onDenial?(row: DenialRow): void;
   /** Tests only: a registry other than the real one. */
   readonly registry?: readonly PlatformAiTool[];
+  /** P4 — the RECORD kinds' read-time sources (replay re-authz). Absent ⇒ PLATFORM_AI_RECORD_SOURCES (empty in P4). */
+  readonly recordSources?: Readonly<Record<string, RecordRenderSource>>;
 }
 
 export interface TurnBoundary {
@@ -141,6 +156,10 @@ export interface TurnBoundary {
   routedPacks(): ToolPack[];
   /** P3 — handed to core.ts (`tools`) when a router is injected: question routing + the schemas each model call is offered. */
   readonly tools?: PlatformAiTurnTools;
+  /** P4 — THIS turn's handle → record (compose's {{r:h|field}} lookup). null for any key this turn did not mint. */
+  recordRef(handle: string): TurnRecordRef | null;
+  /** P4 — replay re-authz: one handle of THIS turn (or null) per prior record ref, in order. */
+  remint(refs: readonly { rk: string; rid: string; a: string }[]): Promise<(string | null)[]>;
 }
 
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
@@ -151,6 +170,9 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   const scope = createTurnScope({ operatorId: opts.operatorId, scopes: parts.map((p) => p.scope), recheck: opts.recheck });
   // Per turn, in this closure only: never module state, never serialised (handles.ts).
   const handles = createHandleTable({ operatorId: opts.operatorId, correlationId: opts.correlationId });
+  // P4: handle → record, for compose and replay (this closure only; never serialised).
+  const recordRefs = new Map<string, TurnRecordRef>();
+  const recordSources = opts.recordSources ?? PLATFORM_AI_RECORD_SOURCES;
   const denials = createDenialLog(opts.onDenial);
   const trace: BoundaryTraceStep[] = [];
   // P3 — routing state, per turn (this closure only).
@@ -335,12 +357,16 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     }
 
     // 12. handles minted; the record id stays here.
-    const records: ModelRecord[] = kept.map((r) => ({
-      handle: handles.mint({ kind: r.ref.kind, area: r.ref.area, tier: r.ref.tier, recordId: r.ref.recordId }),
-      kind: schema.kind,
-      fields: withoutT2(r.fields),
-      ...(schema.t2Fields?.length ? { t2Fields: [...schema.t2Fields] } : {}),
-    }));
+    const records: ModelRecord[] = kept.map((r) => {
+      const handle = handles.mint({ kind: r.ref.kind, area: r.ref.area, tier: r.ref.tier, recordId: r.ref.recordId });
+      recordRefs.set(handle, Object.freeze({ rk: r.ref.kind, rid: r.ref.recordId, a: r.ref.area, fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])]) }));
+      return {
+        handle,
+        kind: schema.kind,
+        fields: withoutT2(r.fields),
+        ...(schema.t2Fields?.length ? { t2Fields: [...schema.t2Fields] } : {}),
+      };
+    });
 
     // 13. evidence + trace: codes and counts.
     ctx.ev.trace.push({ tool: tool.name as PlatformAiTraceStep["tool"], outcome: "OK", refs: [], count: records.length });
@@ -361,8 +387,32 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     },
   } : undefined;
 
+  /** P4 — replay re-authz (see the header). Never throws; every refusal is null. */
+  async function remint(refs: readonly { rk: string; rid: string; a: string }[]): Promise<(string | null)[]> {
+    const guards = new Map<string, FreshGuard | null>();
+    for (const a of new Set(refs.map((r) => r.a))) {
+      const area = a as PlatformArea;
+      guards.set(a, scope.has(area) ? await scope.recheck(area) : null);
+    }
+    const out: (string | null)[] = [];
+    for (const r of refs) {
+      const guard = guards.get(r.a) ?? null;
+      const src = Object.prototype.hasOwnProperty.call(recordSources, r.rk) ? recordSources[r.rk] : undefined;
+      if (!guard || !src || typeof r.rid !== "string" || r.rid.length === 0) { out.push(null); continue; }
+      let tier: ToolTier | null = null;
+      try { tier = await src.revalidate(r.rid, r.a as PlatformArea, guard); } catch { tier = null; }
+      if (!(tier === "OPS" || (tier === "CUSTOMER_SUCCESS" && guard.csTier))) { out.push(null); continue; }
+      const handle = handles.mint({ kind: r.rk, area: r.a as PlatformArea, tier, recordId: r.rid });
+      recordRefs.set(handle, Object.freeze({ rk: r.rk, rid: r.rid, a: r.a, fields: Object.freeze([RECORD_REF_FIELD, ...src.t2Fields]) }));
+      out.push(handle);
+    }
+    return out;
+  }
+
   return {
     invoke,
+    recordRef: (handle) => (typeof handle === "string" && handles.owns(handle) ? recordRefs.get(handle) ?? null : null),
+    remint,
     trace: () => [...trace],
     scopeAreas: () => scope.areas(),
     routedPacks: () => [...routed],

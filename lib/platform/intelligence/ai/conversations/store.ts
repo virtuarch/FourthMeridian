@@ -39,7 +39,7 @@ import { withTenantDb, type TenantClient } from "@/lib/db/tenant-context";
 import { encryptWithPurpose, decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditInsert, type OperatorActionWriteClient, recordOperatorAction } from "@/lib/audit";
-import { parseEvidenceRefs, parseStoredAnswer, serializeStoredAnswer, validateEvidenceRefs, type EvidenceRef, type StoredAnswerV1 } from "./answer";
+import { parseEvidenceRefs, parseStoredAnswer, serializeStoredAnswer, validateEvidenceRefs, type EvidenceRef, type StoredAnswer } from "./answer";
 import {
   PLATFORM_AI_ABANDON_AFTER_MS,
   PLATFORM_AI_CONVERSATION_MESSAGES_MAX,
@@ -70,7 +70,7 @@ export interface MessageRecord {
   createdAt: Date;
   completedAt: Date | null;
   replyToId: string | null;
-  content: string | StoredAnswerV1 | null;
+  content: string | StoredAnswer | null;
   /** True when a stored value exists but could not be decrypted / parsed (shown as unavailable, never as text). */
   unreadable: boolean;
   failureCode: FailureCode | null;
@@ -93,7 +93,7 @@ const decryptMessage: MessageDecrypt = (c) => decryptWithPurpose(c, EncryptionPu
 
 /** Decrypt one row. Never throws: an unreadable value is reported, never shown, never logged. */
 export function toMessageRecord(row: MessageRow, decrypt: MessageDecrypt = decryptMessage): MessageRecord {
-  let content: string | StoredAnswerV1 | null = null;
+  let content: string | StoredAnswer | null = null;
   let unreadable = false;
   if (row.contentEncrypted) {
     try {
@@ -431,7 +431,7 @@ export async function appendTurn(input: {
 }
 
 export type SettleOutcome =
-  | { status: "COMPLETE"; answer: StoredAnswerV1; evidenceRefs: readonly EvidenceRef[] }
+  | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[] }
   | { status: "FAILED"; failureCode: Exclude<FailureCode, "ABANDONED"> };
 
 /**

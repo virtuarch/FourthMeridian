@@ -25,6 +25,19 @@ export const PLACEHOLDER_VERDICTS = [
   "RESOLVED_WITH_STALE_NOTE",
   "MALFORMED_PLACEHOLDER", "UNIT_MISMATCH", "WINDOW_MISMATCH", "UNRESOLVED_PLACEHOLDER",
   "USER_NUMERAL_COLLISION", "UNGROUNDED_DIGIT",
+  /**
+   * P4 (design v2 §9) — a `{{r:h|field}}` that does not resolve against THIS turn's handles
+   * (another turn / operator, a forged key, an undeclared field) or a bare handle key in the
+   * prose ⇒ the safe fallback (never retried).
+   */
+  "RECORD_UNRESOLVED",
+  /**
+   * P4 (design v2 §9, E0 ANSWER_IDENTITY_TEXT) — the MODEL wrote an identity shape (an email,
+   * a cuid / uuid-shaped id) into its own prose ⇒ a HARD fail: the answer is replaced and
+   * counted, never retried, never stored. T2 reaches an operator only through
+   * authz/record-render.ts.
+   */
+  "IDENTITY_LEAK",
 ] as const;
 export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
 

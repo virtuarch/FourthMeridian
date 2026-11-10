@@ -414,6 +414,14 @@ export const AuditAction = {
   PLATFORM_AI_MEMORY_EXPORTED:         "PLATFORM_AI_MEMORY_EXPORTED",
   PLATFORM_AI_MEMORY_PURGED:           "PLATFORM_AI_MEMORY_PURGED",
 
+  // Platform AI P4 (broad read-only intelligence design v2 §6.5 / §8.2; S2 ruling 4). One row
+  // per linked customer per area, written fail-closed BEFORE a customer-linkable record (or a
+  // T2 field at read-time render, authz/record-render.ts) reaches the operator. Target USER;
+  // detail = { surface: "platform-ai", tool, recordKind } only — never a value or a record id.
+  // No writer is wired until the first customer-linkable pack (P5, authz/audit.ts): until
+  // then every T2 field renders masked.
+  PLATFORM_AI_RECORD_VIEWED:           "PLATFORM_AI_RECORD_VIEWED",
+
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
   // token, exchange a public_token into a new PlaidItem under the OWNER's

@@ -30,7 +30,7 @@ import type { PlatformArea } from "@prisma/client";
 import type { PlatformAiMemoryHooks, ToolEvidence } from "../core";
 import { MEMORY_CONCERNS, MEMORY_METRIC_WINDOWS, MEMORY_TTL_CHOICES, type MemoryConcern, type MemoryFactType, type MemoryTtl } from "./constants";
 import { hasVerbatimSpan, redactNoteSpans, validateOperatorNote, type NoteRefusal } from "./note-guard";
-import type { StoredAnswerV1 } from "../conversations/answer";
+import type { StoredAnswer } from "../conversations/answer";
 import { liveCheckPhrase, memPlaceholderText, neutraliseNote, type RetrievedFact } from "./retrieve";
 import { metricObservedState, refProblem, type MemoryRef } from "./schema";
 import { signProposal } from "./token";
@@ -77,7 +77,7 @@ export interface MemoryTurn {
    * this turn that the answer repeats is replaced by "[your saved note]" in the stored
    * segments (the live display may keep it). The transcript never keeps a note.
    */
-  redactStored(answer: StoredAnswerV1): StoredAnswerV1;
+  redactStored(answer: StoredAnswer): StoredAnswer;
   /** After the turn: the confirm card (or null), and any refusal codes (audited, no content). */
   finalize(answerText: string): { card: MemoryProposalCard | null; refusals: NoteRefusal[] };
 }

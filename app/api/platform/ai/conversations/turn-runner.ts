@@ -84,6 +84,10 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     generate: makePlatformAiGenerate({ operatorId, conversationId, turnId: correlationId }),
     invoke: boundary.invoke,
     ...(boundary.tools ? { tools: boundary.tools } : {}),
+    // P4 — {{r:h|field}} resolves against THIS turn's handles only; prior record spans get a handle of
+    // THIS turn only after replay re-authz (the boundary's area recheck + the kind's revalidate).
+    records: boundary.recordRef,
+    remint: boundary.remint,
     model, reasoningModel: reasoning, classify: classifyPlatformAiFailure,
     onUngrounded: (verdict, unresolved) => console.warn(`[platform-ai] answer replaced: verdict=${verdict} unresolved=${unresolved} (${ROUTE_KEY})`),
     onTrace: (line) => console.info(`[platform-ai] turn ${line} (${ROUTE_KEY})`),

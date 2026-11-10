@@ -25,3 +25,17 @@ export async function platformAiFreshRecheck(area: PlatformArea): Promise<FreshG
   const csTier = fresh.grant !== null && incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
   return { auth: fresh, csTier };
 }
+
+/**
+ * P4 — the READ-TIME render's area check (authz/record-render.ts): the SAME decision with
+ * `probe: true` — the operator asked to read an answer, not that area, so a refusal (an area
+ * they no longer hold) renders "[no longer available]" and is not recorded as OBS-009.
+ * Every call re-reads the session, grant and 2FA rows; nothing is cached. Passed only to the
+ * record renderer (the ask route, the conversations' area access) — never to the boundary.
+ */
+export async function platformAiProbeRecheck(area: PlatformArea): Promise<FreshGuard | null> {
+  const [fresh, freshErr] = await requireFreshPlatformAccess(area, "READ", { probe: true });
+  if (freshErr || !fresh) return null;
+  const csTier = fresh.grant !== null && incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
+  return { auth: fresh, csTier };
+}

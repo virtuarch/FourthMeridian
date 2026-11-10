@@ -1834,7 +1834,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
   // P1a: the answer-composition code moved to compose/*; the same purity scans cover it, and compose/* never imports core.ts (no cycle).
   const composeFiles = readdirSync(path.join(ROOT, dir, "compose")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/compose/${f}`);
-  check("compose/* (P1a) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
+  check("compose/* (P1a; P4 + record.ts) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "record", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
   for (const f of composeFiles) check(`${f}: never imports core.ts`, !/from "\.\.\/core"|intelligence\/ai\/core"/.test(src(f)));
   for (const f of [...files, ...composeFiles]) {
     const s = code(src(f));
@@ -1846,7 +1846,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
@@ -2164,7 +2164,7 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
     kinds[0] === "note" && /^Note: You asked about the past 30 days; .* covers .* instead\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/You asked about|^Note:/.test(x.text)), c.result.answer);
   const stored = storedAnswerOf(c.result, c.record);
   check("F-1: stored typed as { kind: \"note\" } (valid StoredAnswerV1), replayed and exported as its own block",
-    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => /You asked about/.test(x.text))
+    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => "text" in x && /You asked about/.test(x.text))
     && /^Note: You asked about .* instead\. The largest/.test(replayAnswer(stored, NOW)) && /^Note: You asked about .* instead\. The largest/.test(renderAnswerText(stored)), stored.segments);
   check("F-1: a note segment with an extra key is not a valid stored answer", !isStoredAnswer({ ...stored, segments: [{ kind: "note", text: "x", href: "/y" }] }));
 

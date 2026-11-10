@@ -29,6 +29,8 @@ import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/handlers";
+import { platformAiProbeRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
+import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
 
 /**
  * B11 turn integration: the access for ONE area from THIS function's own guard
@@ -54,5 +56,10 @@ export async function conversationAreaAccess(area: PlatformArea, operatorId: str
   if (!binding) return null;
   // Platform AI memory (design v2 §2): the authorized readers come from THIS fresh guard result.
   // P2: the route-issued scope travels with the binding — the turn boundary rechecks exactly it, per tool call.
-  return { resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding) };
+  // P4: stored record segments render at READ time for this operator (authz/record-render.ts: a fresh
+  // probe check per record area per render, revalidate, T2 only with a fresh CS tier + the audit row).
+  return {
+    resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding),
+    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiProbeRecheck }),
+  };
 }

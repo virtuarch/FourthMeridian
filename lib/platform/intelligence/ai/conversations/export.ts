@@ -26,7 +26,8 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import type { StoredAnswerV1 } from "./answer";
+import { recordReplayMarker } from "../compose/record";
+import type { StoredAnswer } from "./answer";
 import type { ExportConversationRecord, ExportConversationsRead, MessageRecord } from "./store";
 
 export interface ExportPlatformAiMessage {
@@ -73,9 +74,14 @@ const areaLabel = (area: PlatformArea) => PLATFORM_AREAS[area]?.label ?? area;
 export const omittedConversationsNote = (count: number, area: PlatformArea) =>
   `${count} ${count === 1 ? "conversation" : "conversations"} in ${areaLabel(area)} omitted: you no longer have access`;
 
-/** A stored answer as plain rendered text: text, figure and link spans in order (links by their text only). */
-export function renderAnswerText(a: StoredAnswerV1): string {
-  return a.segments.map((s) => (s.kind === "correction" || s.kind === "note" ? `${s.text} ` : s.text)).join("");
+/**
+ * A stored answer as plain rendered text: text, figure and link spans in order (links by their text only).
+ * P4 (S2 ruling 4: exports never T2): a RECORD span is its kind marker ("[customer]") — never a
+ * value and never the stored id (the export is a file; T1 refs need the read-time renderer, which
+ * no export path calls).
+ */
+export function renderAnswerText(a: StoredAnswer): string {
+  return a.segments.map((s) => (s.kind === "record" ? recordReplayMarker(s.rk, null) : s.kind === "correction" || s.kind === "note" ? `${s.text} ` : s.text)).join("");
 }
 
 function exportMessage(m: MessageRecord): ExportPlatformAiMessage {

@@ -7,6 +7,7 @@
  * importers and tests are unchanged. compose/* never imports ../core.
  */
 
+import type { RecordSpan } from "./record";
 import type { FigureClass } from "./stale";
 
 /**
@@ -47,4 +48,11 @@ export type TypedAnswerSegment =
   | { kind: "link"; text: string; href: string }
   | ServerNoteSegment
   /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
-  | { kind: "memory"; text: string };
+  | { kind: "memory"; text: string }
+  /**
+   * P4 (design v2 §8.1) — a resolved {{r:h|field}} span: record kind, id, area, field CODE.
+   * NO text: its value is rendered at READ time (authz/record-render.ts); the display answer
+   * carries the fail-closed marker until then. The id never leaves the server except inside
+   * the encrypted stored answer.
+   */
+  | RecordSpan;
