@@ -293,6 +293,7 @@ export const SUPPRESSION_LABEL = {
   ENTITLEMENT: "Not entitled",
   PROVIDER_FREEZE: "Provider frozen",
   ENVIRONMENT_GUARD: "Environment guard (not production)",
+  RESERVED_DOMAIN: "Not sent: reserved test domain",
   AUTOMATION_PAUSED: "Automation paused",
   STORM_BREAKER: "Storm breaker",
   // The server SUPPRESSES these (storm.ts): never sent later, so never "held".

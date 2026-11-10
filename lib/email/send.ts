@@ -34,6 +34,12 @@
  * callers that branch on "error" (and the retry job, which selects only
  * "error" rows) leave it alone.
  *
+ * RESERVED-DOMAIN REFUSAL (S2 ruling 09eq P2; recipient-guard.ts
+ * isReservedDomainRecipient): in EVERY environment, Production included, a
+ * recipient whose domain ends in an RFC 2606/6761 reserved TLD (.test /
+ * .example / .invalid / .localhost) is refused before the guard and the
+ * provider — `{ status: "captured", provider: "none", reason: "RESERVED_DOMAIN" }`.
+ *
  * Every send path reaches the provider only through here: direct sendEmail
  * callers, lib/notifications/channels/email.ts (create-time AND the
  * jobs/retry-notifications.ts re-delivery), lib/alerts/run.ts, the purge's
@@ -71,7 +77,7 @@ import { getTemplate } from "@/lib/email/templates";
 import { resolveSender } from "@/lib/email/senders";
 import { resendAdapter } from "@/lib/email/providers/resend";
 import { captureAdapter } from "@/lib/email/providers/capture";
-import { decideRecipient, describeGuardedRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
+import { decideRecipient, describeGuardedRecipient, emailEnvironment, isReservedDomainRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
 import { emailLedgerRow, recipientHash, recordDelivery, resolveEmailKey, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import { countRecentAcceptedEmails, writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import { decideStorm, PendingSends, pendingSends, type Reservation, type StormCounter } from "@/lib/notifications/delivery/storm";
@@ -226,8 +232,17 @@ async function send(
   // No key: capture (local dev needs no credentials). Nothing leaves the process.
   if (!env.RESEND_API_KEY) return deps.capture.send(message);
 
-  // The real provider is next — the non-production recipient guard runs here,
-  // and ONLY here, so no path can reach the provider around it.
+  // The real provider is next. FIRST, in EVERY environment (Production
+  // included — S2 ruling 09eq P2): a recipient on an RFC 2606/6761 reserved
+  // TLD (.test/.example/.invalid/.localhost) can never be a real mailbox, so it
+  // is refused here and never handed to the provider. Same outcome shape as the
+  // guard below; the log line carries the domain + short hash, never the address.
+  if (isReservedDomainRecipient(to)) {
+    log(`[email] refused: reserved-domain recipient: template=${name} environment=${emailEnvironment(env)} ${describeGuardedRecipient(to)}`, "info");
+    return { status: "captured", provider: "none", reason: "RESERVED_DOMAIN" };
+  }
+  // The non-production recipient guard runs here, and ONLY here, so no path
+  // can reach the provider around it.
   const decision = decideRecipient(to, env);
   if (!decision.deliver) {
     const detail = `template=${name} environment=${decision.environment} ${describeGuardedRecipient(to)}`;
