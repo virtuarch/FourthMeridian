@@ -8,6 +8,8 @@
  *                      from 7 days `stalled` takes over (never both).
  *   link_exited        an exit in the last 7 days with no connection since; an exit followed by a
  *                      connection clears it; an exit older than 7 days does not count; only codes shown.
+ *   link_failed        (B12 PR-B) a server-side link-token / exchange / wallet-add failure in 7 d with no
+ *                      connection since — same rule as link_exited; closed codes only; the reader is bounded.
  *   import_failed /    the import-status verdicts: failed vs in progress + interrupted (stuck);
  *   import_stuck       in progress (not interrupted), complete, recovered, removed are not reasons.
  *
@@ -23,8 +25,8 @@ import path from "node:path";
 import { buildCsOverview, type CsOverviewFacts } from "./overview-core";
 import {
   ATTENTION_ACTIONS, ATTENTION_KEYS, ATTENTION_LABELS, ATTENTION_SHORT, CONTACT_REQUIRES_APPROVAL,
-  attentionDetailOf, attentionOf, foldAttention, idsForAttention, linkExitDetail, linkExitFactOf, parseAttentionFilter,
-  type ImportAttentionFact, type LinkExitFact,
+  attentionDetailOf, attentionOf, foldAttention, idsForAttention, linkExitDetail, linkExitFactOf, linkFailureDetail, linkFailureFactOf,
+  parseAttentionFilter, type ImportAttentionFact, type LinkExitFact, type LinkFailureFact,
 } from "./attention-core";
 import { RESERVED_TEST_EMAIL_WHERE, isReservedTestEmail } from "./population";
 
@@ -113,6 +115,38 @@ console.log("2. link_exited — an exit in 7 d with no connection since; codes o
   check("non-object metadata reads no codes", JSON.stringify(linkExitFactOf({ userId: "u", createdAt: ago(1), metadata: [1] })) === JSON.stringify({ userId: "u", at: ago(1), stage: null, errorCode: null }));
 }
 
+console.log("2b. link_failed — a server-side add failure in 7 d with no connection since; codes only");
+{
+  const failures: LinkFailureFact[] = [
+    { userId: "f1", at: ago(2), stage: "EXCHANGE", errorCode: "INSTITUTION_DOWN" },
+    { userId: "f1", at: ago(20), stage: "LINK_TOKEN", errorCode: "UNEXPECTED" },
+    { userId: "fw", at: ago(3), stage: "WALLET_ADD", errorCode: "DATABASE_ERROR" },
+    { userId: "fafter", at: ago(10), stage: "LINK_TOKEN", errorCode: "RATE_LIMIT_EXCEEDED" },
+    { userId: "fold", at: ago(7 * 24 + 1), stage: "EXCHANGE", errorCode: "ITEM_LOCKED" },
+    { userId: "fweird", at: ago(1), stage: "<script>", errorCode: "Example Bank: secret" },
+  ];
+  const f = withFunnel(facts({ users: ["f1", "fw", "fafter", "fold", "fweird"].map((id) => user(id, 200)), linkFailures: failures }), {
+    walletConnections: [{ userId: "fafter", createdAt: ago(5), status: "ACTIVE" }],
+  });
+  const fold = foldAttention(f, NOW);
+  const set = fold.sets.link_failed;
+  check("positive: an exchange failure 2 h ago with no connection", set.has("f1"));
+  check("positive: a wallet-add failure counts too", set.has("fw"));
+  check("negative: a failure followed by a connection (any kind) clears it", !set.has("fafter"));
+  check("negative: a failure older than 7 days", !set.has("fold"));
+  check("detail is the LATEST failure's step and closed code", attentionDetailOf(fold, "f1").link_failed === "failed connecting the bank (INSTITUTION_DOWN)",
+    attentionDetailOf(fold, "f1"));
+  check("wallet detail", attentionDetailOf(fold, "fw").link_failed === "failed adding a wallet (DATABASE_ERROR)");
+  check("privacy: a non-code value never reaches the detail",
+    attentionDetailOf(fold, "fweird").link_failed === "failed a connection step (OTHER)" && !JSON.stringify([...fold.details.values()]).includes("Example Bank"));
+  check("linkFailureDetail: null codes → OTHER", linkFailureDetail({ stage: null, errorCode: null }) === "failed a connection step (OTHER)");
+  const row = linkFailureFactOf({ userId: "u", createdAt: ago(1), metadata: { provider: "PLAID", stage: "EXCHANGE", errorCode: "OTHER", institution: "Example Bank" } });
+  check("the reader keeps only userId, time, stage and errorCode",
+    row !== null && JSON.stringify(Object.keys(row).sort()) === JSON.stringify(["at", "errorCode", "stage", "userId"]) && !JSON.stringify(row).includes("Example Bank"));
+  check("a row without a user is dropped", linkFailureFactOf({ userId: null, createdAt: ago(1), metadata: {} }) === null);
+  check("no facts ⇒ nobody", foldAttention(facts({ users: [user("f1", 200)] }), NOW).sets.link_failed.size === 0);
+}
+
 console.log("3. import_failed vs import_stuck — the import-status verdicts");
 {
   const v = (status: ImportAttentionFact["verdict"]["status"], interrupted = false, reason: ImportAttentionFact["verdict"]["reason"] = null) => ({ status, interrupted, reason });
@@ -146,8 +180,8 @@ console.log("3. import_failed vs import_stuck — the import-status verdicts");
 
 console.log("4. every reason: label, chip word, text-only action that gates customer contact");
 {
-  check("nine reasons, in display order", JSON.stringify(ATTENTION_KEYS) === JSON.stringify([
-    "reconnect", "incident", "import_failed", "import_stuck", "link_exited", "policy", "unassigned", "no_connection_24h", "stalled"]));
+  check("ten reasons, in display order", JSON.stringify(ATTENTION_KEYS) === JSON.stringify([
+    "reconnect", "incident", "import_failed", "import_stuck", "link_exited", "link_failed", "policy", "unassigned", "no_connection_24h", "stalled"]));
   check("every reason parses as a filter", ATTENTION_KEYS.every((k) => parseAttentionFilter(k) === k));
   check("every reason has a label, a chip word and an action", ATTENTION_KEYS.every((k) => ATTENTION_LABELS[k] && ATTENTION_SHORT[k] && ATTENTION_ACTIONS[k]));
   const customerFacing = ATTENTION_KEYS.filter((k) => k !== "policy" && k !== "unassigned");
@@ -193,6 +227,8 @@ console.log("6. privacy + read-only (S2 conditions a, c, f)");
   check("the reader writes nothing", !/\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$queryRaw|fetch\(/.test(reader));
   check("the exits read is the product event, windowed by (action, createdAt), capped",
     /auditLog\.findMany\(\{ where: \{ action: AuditAction\.CONNECTION_LINK_EXITED, createdAt: \{ gte: exitFrom \} \}, select: \{ userId: true, createdAt: true, metadata: true \}, orderBy: \{ createdAt: "desc" \}, take: cap \}\)/.test(reader));
+  check("the add-failure read is CONNECTION_ADD_FAILED, same window, same select, capped",
+    /auditLog\.findMany\(\{ where: \{ action: AuditAction\.CONNECTION_ADD_FAILED, createdAt: \{ gte: exitFrom \} \}, select: \{ userId: true, createdAt: true, metadata: true \}, orderBy: \{ createdAt: "desc" \}, take: cap \}\)/.test(reader));
   check("imports: recent items picked from the funnel facts, read by primary key", /loadImportsForItemIds\(recentItemIds, now, client\)/.test(reader)
     && /where: \{ id: \{ in: ids \} \}/.test(code("lib/platform/onboarding/import-facts.ts")));
   check("the test label read selects ids only", /client\.user\.findMany\(\{ where: \{ AND: \[OPEN_CUSTOMER_WHERE, RESERVED_TEST_EMAIL_WHERE\] \}, select: \{ id: true \}, take: cap \}\)/.test(reader));

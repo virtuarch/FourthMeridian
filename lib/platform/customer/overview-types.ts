@@ -59,10 +59,12 @@ export interface CsOverviewResponse {
  * `import_failed` / `import_stuck` — a recent bank connection's first import, by the import-status rule
  * (import-status-core.ts): failed, or in progress with its newest run failed (a resume is pending).
  * `link_exited` — Plaid Link closed without success in the last 7 days and no connection was made since.
+ * `link_failed` — a bank link (link-token / exchange) or a wallet add FAILED server-side in the last 7 days
+ * (CONNECTION_ADD_FAILED) and no connection was made since.
  * `no_connection_24h` — registered 24 h – 7 d ago with no connection or account yet (`stalled` takes over at 7 d).
  */
 export type AttentionKey =
-  | "reconnect" | "incident" | "import_failed" | "import_stuck" | "link_exited"
+  | "reconnect" | "incident" | "import_failed" | "import_stuck" | "link_exited" | "link_failed"
   | "policy" | "unassigned" | "no_connection_24h" | "stalled";
 /** The Customers list's `attention` filter: one reason, or any reason. */
 export type AttentionFilter = AttentionKey | "any";

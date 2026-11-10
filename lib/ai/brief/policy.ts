@@ -132,8 +132,13 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * history includes restricted cash (HSA, retirement) that today's unrestricted
  * liquid excludes arrives as `recentChanges.<w>.unavailable.liquid` with that
  * reason; the two are different measures and are never compared.
+ *
+ * part-whole-1 (S2 O-2): concentration carries `topValue` (the holding's own
+ * value, the part) beside `populationValue` (the whole), and the instruction says
+ * which is which. Code also refuses a share whose part, whole and percentage
+ * disagree (share-consistency.ts) — that check, not this sentence, is the guard.
  */
-export const BRIEF_PROMPT_REVISION = 'restricted-cash-1';
+export const BRIEF_PROMPT_REVISION = 'part-whole-1';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

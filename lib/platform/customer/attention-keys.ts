@@ -14,7 +14,7 @@ import type { AttentionFilter, AttentionKey } from "./overview-types";
  * `unassigned` is live only while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce (S2 ruling, 2026-11-02).
  */
 export const ATTENTION_KEYS: readonly AttentionKey[] = [
-  "reconnect", "incident", "import_failed", "import_stuck", "link_exited", "policy", "unassigned", "no_connection_24h", "stalled",
+  "reconnect", "incident", "import_failed", "import_stuck", "link_exited", "link_failed", "policy", "unassigned", "no_connection_24h", "stalled",
 ];
 
 /** The query value, parsed: null = absent / empty (no filter); undefined = not a reason (the route refuses it). */

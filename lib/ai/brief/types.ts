@@ -253,7 +253,13 @@ export interface BriefPackage {
       classification: string;
       topSymbol:      string | null;
       topWeightPct:   number;
-      /** The value the weight is a share of. */
+      /**
+       * S2 O-2 — the top holding's OWN value: the PART of which `topWeightPct` is the
+       * share, so the model never has to reuse the whole as the part. Code computes
+       * it (topWeight × population value, the identity the weight was built from).
+       */
+      topValue:       number;
+      /** The value the weight is a share of — the WHOLE. */
       populationValue: number;
       populationIsComplete: boolean;
       /**
