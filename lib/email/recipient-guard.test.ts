@@ -25,6 +25,7 @@ import {
   decideRecipient,
   describeGuardedRecipient,
   emailEnvironment,
+  isReservedDomainRecipient,
   parseNonprodAllowlist,
 } from "@/lib/email/recipient-guard";
 import type { EmailMessage, EmailProvider, EmailResult } from "@/lib/email/types";
@@ -79,7 +80,7 @@ async function main() {
     check("unlisted address → captured/none/ENVIRONMENT_GUARD", isGuarded(no), no);
     check("unlisted address never reached the provider", h.provided.length === 1 && !h.provided.some((m) => m.to === "customer@example.org"));
     check("guarded send is not put in the capture transport either", h.captured.length === 0);
-    check("a superstring of a listed address is not a match", isGuarded(await h.send("smoke", "owner@example.com.evil.test")));
+    check("a superstring of a listed address is not a match", isGuarded(await h.send("smoke", "owner@example.com.evil.org")));
     check("a substring of a listed address is not a match", isGuarded(await h.send("smoke", "wner@example.com")));
   }
 
@@ -271,6 +272,48 @@ async function main() {
     const second = await retryNotifications(client, adapter, new Date("2026-10-31T07:31:00Z"));
     check("second pass: nothing examined, nothing re-sent", second.examined === 0 && delivered.length === 1, second);
     check("captured is not counted as still failing", first.stillFailing === 0);
+  }
+
+  console.log("10. Reserved-domain recipients (RFC 2606/6761) are refused in EVERY environment (S2 09eq P2)");
+  {
+    const positives = [
+      "a@x.test", "a@x.example", "a@x.invalid", "a@x.localhost",
+      "a@test", "a@example", "a@invalid", "a@localhost",
+      "a@X.TEST", "a@Sub.Example", "a@x.INVALID.", "a@localhost.", " a@deep.sub.test ",
+    ];
+    for (const to of positives) check(`reserved: ${JSON.stringify(to)}`, isReservedDomainRecipient(to) === true);
+    // Near-misses: real domains that only CONTAIN a reserved word stay deliverable.
+    const nearMisses = [
+      "a@test.com", "a@example.com", "a@invalid.org", "a@localhost.co",
+      "a@mytest.com", "a@testing.io", "a@sub.test.com", "a@example.co.uk", "a@tests", "a@x.examples",
+    ];
+    for (const to of nearMisses) check(`not reserved (near-miss): ${JSON.stringify(to)}`, isReservedDomainRecipient(to) === false);
+    check("no @ / empty domain → not classified here (the guard and provider decide)",
+      !isReservedDomainRecipient("test") && !isReservedDomainRecipient("a@") && !isReservedDomainRecipient("a@."));
+
+    const isReserved = (r: EmailResult) => r.status === "captured" && r.provider === "none" && r.reason === "RESERVED_DOMAIN";
+    for (const [label, env] of [
+      ["production", { ...PROD }],
+      ["production with the address allowlisted", { ...PROD, EMAIL_NONPROD_ALLOWLIST: "member@team.example" }],
+      ["preview", { ...PREVIEW }],
+      ["preview with the address allowlisted", { ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "member@team.example" }],
+    ] as const) {
+      const h = harness(env);
+      const results = [
+        await h.send("smoke", "member@team.example", { note: "x" }),
+        await h.send("smoke", "Member@Seed.TEST.", { note: "x" }),
+        await h.send("smoke", "member@fixture.invalid", { note: "x" }),
+        await h.send("smoke", "member@localhost", { note: "x" }),
+      ];
+      check(`${label}: every reserved recipient → captured/none/RESERVED_DOMAIN`, results.every(isReserved), results);
+      check(`${label}: ZERO provider calls, nothing captured by the transport either`, h.provided.length === 0 && h.captured.length === 0);
+      check(`${label}: one redacted line per refusal, never the local part`,
+        h.logs.length === 4 && h.logs.every((l) => l.includes("reserved-domain") && !/member@/i.test(l)), h.logs);
+    }
+    // Production still sends to a real near-miss domain.
+    const p = harness({ ...PROD });
+    const ok = await p.send("smoke", "member@sub.test.com", { note: "x" });
+    check("production: a near-miss real domain is still sent", ok.status === "sent" && p.provided.length === 1 && p.provided[0].to === "member@sub.test.com", ok);
   }
 
   console.log(failures === 0 ? "\nAll recipient-guard checks passed." : `\n${failures} failure(s).`);

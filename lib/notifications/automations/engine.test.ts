@@ -100,10 +100,10 @@ async function main(): Promise<void> {
     fake.reset();
     clock = T0; freeze = judgeGlobalCostFreeze(null); states = {}; sent.length = 0; lifecycleReads = 0;
     providerAnswer = () => ({ status: "sent", id: `re_${sent.length}`, provider: "resend" });
-    fake.seed("User", { id: ACTOR, email: "actor@example.invalid", username: "actor", emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 400 * 86_400_000) });
+    fake.seed("User", { id: ACTOR, email: "actor@example.com", username: "actor", emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 400 * 86_400_000) });
   }
   function user(id: string, extra: Record<string, unknown> = {}): void {
-    fake.seed("User", { id, email: `${id}@example.invalid`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * 86_400_000), ...extra });
+    fake.seed("User", { id, email: `${id}@example.com`, username: id, emailVerifiedAt: T0, createdAt: new Date(T0.getTime() - 100 * 86_400_000), ...extra });
   }
   function emailOn(id: string): void { fake.seed("NotificationPreference", { userId: id, category: "SPACES", channel: "EMAIL", enabled: true }); }
   let factN = 0;
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
     reset(); user("u2"); emailOn("u2"); automation({ channels: ["EMAIL"] }); roleChanged("u2", new Date(T0.getTime() - 2 * MIN));
     await run();
     check("under the limit: the email goes to the RECIPIENT's address, with the item as messageKey + automationRunItemId on the ledger row",
-      sent.length === 1 && sent[0].to === "u2@example.invalid" && ledgerRows({ status: "ACCEPTED", channel: "EMAIL", automationRunItemId: (items()[0] as any).id, messageKey: (items()[0] as any).id }).length === 1);
+      sent.length === 1 && sent[0].to === "u2@example.com" && ledgerRows({ status: "ACCEPTED", channel: "EMAIL", automationRunItemId: (items()[0] as any).id, messageKey: (items()[0] as any).id }).length === 1);
     reset(); user("u3"); automation({ channels: ["EMAIL"] }); roleChanged("u3", new Date(T0.getTime() - 2 * MIN));
     await run();
     check("the category EMAIL preference applies (SPACES email is off by default) ⇒ SUPPRESSED / PREFERENCE_OFF", (items()[0] as any).reason === "PREFERENCE_OFF" && sent.length === 0);
