@@ -14,6 +14,10 @@
  * loading / unavailable / nothing to cover), values never changed, the opt-in
  * returns every point byte-identical to before, the note wording, and the
  * callers wired (Net Worth trend + Debt balance history). Synthetic fixtures only.
+ *
+ * B12 P3 — while the coverage read is LOADING the chart holds its placeholder
+ * (no points, so no flash of the unclipped "crash"); FAILED / nothing to cover
+ * render at once, unclipped, as before.
  */
 
 import assert from "node:assert/strict";
@@ -24,9 +28,12 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { projectWealthTrendPoints } from "@/components/space/widgets/wealth/wealth-trend-points";
 import { debtTrendPoints } from "@/components/space/widgets/debt/debt-trend-points";
 import { BalanceCoverageNote } from "@/components/space/widgets/shared/BalanceCoverageNote";
+import { WealthTrendChart } from "@/components/space/widgets/wealth/WealthTrendChart";
+import { DebtBalanceHistory } from "@/components/space/widgets/debt/DebtBalanceHistory";
+import { SpaceIdProvider } from "@/components/space/space-id-context";
 import {
   BALANCE_COVERAGE_LOADING, BALANCE_COVERAGE_UNAVAILABLE, HIDE_PARTIAL_HISTORY_LABEL, SHOW_PARTIAL_HISTORY_LABEL,
-  balanceChartStartISO, balanceCoverageNote, balanceCoverageSidesFor, balanceHistoryStartNote, clipToBalanceCoverage,
+  balanceChartPending, balanceChartStartISO, balanceCoverageNote, balanceCoverageSidesFor, balanceHistoryStartNote, clipToBalanceCoverage,
   type BalanceCoverage,
 } from "./balance-coverage.core";
 
@@ -167,6 +174,38 @@ const wealthResult = (dates: string[]): WealthResult => ({
     assert.ok(/<BalanceCoverageNote[^>]*partialHistory=\{\{ shown: showPartialHistory/.test(s), `${ws}: note carries the control`);
   }
   ok("callers: Net Worth (Total/Assets/Liquid/Cash/Debt-as-liabilities) trend + Debt balance history share one opt-in with their note");
+}
+
+// ── 6. B12 P3 — loading holds the chart; failed / none render as before ──────
+{
+  // The rule.
+  assert.equal(balanceChartPending(BALANCE_COVERAGE_LOADING, NW, false), true, "loading + governed ⇒ held");
+  assert.equal(balanceChartPending(BALANCE_COVERAGE_LOADING, ["liability"], false), true, "debt history held too");
+  assert.equal(balanceChartPending(BALANCE_COVERAGE_LOADING, [], false), false, "ungoverned series (invested) never held");
+  assert.equal(balanceChartPending(BALANCE_COVERAGE_LOADING, NW, true), false, "opted in: every point either way, never held");
+  for (const cov of [BALANCE_COVERAGE_UNAVAILABLE, null, DAY_ONE, COMPLETE]) {
+    assert.equal(balanceChartPending(cov, NW, false), false, "resolved (failed / none / known) ⇒ never held");
+  }
+  // FAILED / nothing to cover: the points are exactly the unclipped series, as before.
+  const marked = projectWealthTrendPoints(wealthResult(WINDOW), "netWorth", null, BALANCE_COVERAGE_UNAVAILABLE);
+  assert.deepEqual(clipToBalanceCoverage(marked, BALANCE_COVERAGE_UNAVAILABLE, NW, false), marked, "failed: unclipped");
+
+  // Rendered: inside a Space the read has not landed during SSR ⇒ LOADING ⇒ held.
+  const inSpace = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(SpaceIdProvider as never, { spaceId: "space-1" }, el));
+  const nw = createElement(WealthTrendChart, { result: wealthResult(WINDOW), currency: "USD", metric: "netWorth" });
+  const heldNw = inSpace(nw);
+  assert.ok(heldNw.includes("data-trend-pending") && !/<svg/.test(heldNw) && !/<circle/.test(heldNw), "net worth: held, no points rendered");
+  const invested = inSpace(createElement(WealthTrendChart, { result: wealthResult(WINDOW), currency: "USD", metric: "invested" }));
+  assert.ok(!invested.includes("data-trend-pending") && /<svg/.test(invested), "invested (ungoverned): not held");
+  const slice = { points: WINDOW.map((date) => ({ date, totalDebt: 5_000, isEstimated: false })), currency: "USD", windowStart: WINDOW[0], windowAsOf: TODAY };
+  const debt = createElement(DebtBalanceHistory, { history: slice as never, currency: "USD", asOf: TODAY, compareTo: null });
+  const heldDebt = inSpace(debt);
+  assert.ok(heldDebt.includes("data-trend-pending") && !/<svg/.test(heldDebt), "debt history: held, no points rendered");
+  // No Space ⇒ nothing to cover ⇒ the chart renders at once, every point (unchanged).
+  const free = renderToStaticMarkup(nw);
+  assert.ok(!free.includes("data-trend-pending") && /<svg/.test(free), "nothing to cover: rendered as before");
+  assert.ok(!renderToStaticMarkup(debt).includes("data-trend-pending"), "debt, nothing to cover: rendered as before");
+  ok("loading: Net Worth + Debt charts hold a placeholder (no points); invested / opt-in / failed / none / known never held");
 }
 
 for (const c of checks) console.log(`  ✓ ${c}`);

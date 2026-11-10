@@ -27,7 +27,7 @@ import { projectWealthTrendPoints } from "./wealth-trend-points";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 import { liquidNetWorthChartMarkers } from "@/lib/debt/liquid-net-worth";
-import { balanceCoverageSidesFor, clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
+import { balanceChartPending, balanceCoverageSidesFor, clipToBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 export type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 
@@ -70,16 +70,21 @@ export function WealthTrendChart({
   // B12 O-3 — by default the plot STARTS at the coverage floor (a day-one
   // connection is a today-only view, not a month of partial points above a
   // cliff); opted in, the partial days are drawn, marked partial as above.
+  const sides = balanceCoverageSidesFor(metric);
   const points = clipToBalanceCoverage(
     projectWealthTrendPoints(result, metric, investedSeries, balanceCoverage),
-    balanceCoverage, balanceCoverageSidesFor(metric), showPartialHistory,
+    balanceCoverage, sides, showPartialHistory,
   );
+  // B12 P3 — while that read is in flight the chart HOLDS its placeholder
+  // instead of flashing the unclipped series; FAILED / nothing to cover render now.
+  const pending = balanceChartPending(balanceCoverage, sides, showPartialHistory);
 
 
   return (
     <TrendChart
       onSelectPoint={onSelectPoint}
-      points={points}
+      points={pending ? [] : points}
+      pending={pending}
       currency={currency}
       ariaLabel={`${title} over time`}
       emptyMessage="No snapshot history in this range yet. Widen the range or connect accounts to build history."
