@@ -558,11 +558,20 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
   // calls it) re-resolves stored links through the ACCESSOR with a token minted from its own guard.
   const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts", "app/api/platform/customer-success/incidents/[id]/route.ts",
     "app/api/platform/ai/conversations/area-access.ts"];
+  // Platform AI P1b: the ask route and the conversations' area guard share ONE binder, authz/scope.ts, which
+  // reaches the ACCESSOR only with the token its guarded caller minted, and mints nothing itself.
+  const SCOPE_BINDER = "lib/platform/intelligence/ai/authz/scope.ts";
   const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
     && !(GUARDED_ROUTES.includes(f) && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
+    && f !== SCOPE_BINDER
     && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnly(f)));
-  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI ask + the conversations' area guard, Ops + CS incident detail), and type-only by the AI core",
+  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI ask + the conversations' area guard, Ops + CS incident detail), the shared Platform AI binder (authz/scope.ts), and type-only by the AI core",
     strayNav.length === 0 && importers.includes("lib/platform/intelligence/navigation/access.ts"), strayNav.join() || importers.join());
+  {
+    const s = code(readFileSync(path.join(ROOT, SCOPE_BINDER), "utf8"));
+    check(`…${SCOPE_BINDER} reaches it through the ACCESSOR only (never the registry, never buildNavigationHref) and mints nothing (tokens come from its guarded callers)`,
+      !/intelligence\/navigation\/registry["']/.test(s) && !/buildNavigationHref/.test(s) && !/metricAccessFor\(|incidentAudienceFor\(|require(?:Fresh)?PlatformAccess\(/.test(s));
+  }
   for (const f of GUARDED_ROUTES) {
     const s = readFileSync(path.join(ROOT, f), "utf8");
     check(`…${f} reaches it through the ACCESSOR only (never the registry, never buildNavigationHref) and mints from its own guard result`,
