@@ -42,7 +42,11 @@
  * AGGREGATES ONLY (S2 condition 4)
  *   `value` is a number, null, or a small fixed object of numbers (each entry a
  *   finite number or null). `assertAggregate` refuses anything else at runtime
- *   (the envelope becomes UNAVAILABLE). No per-user row, no identifier, no
+ *   (the envelope becomes UNAVAILABLE). The one structured entry is a declared
+ *   RANKING part (S2 ruling 2026-11-05, PartRole below): computed HERE from the
+ *   projection's own category parts, never by a projection, and its strings are
+ *   registry / module text (a declared category label, the window label, the
+ *   fixed RANKING_QUALIFIER). No per-user row, no identifier, no
  *   label from a payload ever enters the envelope: every string in it comes
  *   from the registry or from this module. Per-row and per-subject readers are
  *   NOT_RETRIEVABLE with a stated reason (the table below), and a permission
@@ -71,7 +75,7 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { describeMetric, isMetricAccessToken, type MetricAccessToken } from "./access";
-import { daysWindowLabel, drillLinkOn, hoursWindowLabel, metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
+import { daysWindowLabel, drillLinkOn, hoursWindowLabel, metricKey, metricStaleness, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
 import { assertAudienceToken, atOpsTier, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { DEFAULT_SEARCH } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery, IncidentSearchResult } from "@/lib/platform/incidents/intelligence/types";
@@ -87,6 +91,15 @@ import type { EconomicsFigure, EconomicsSnapshot, TrendWindow } from "@/lib/plat
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import { aiCallStats, aiCostPerCall } from "@/lib/platform/ai/call-stats";
 import { NO_EVALUABLE_PROVIDER } from "@/lib/platform/verdicts/provider-outcome";
+import type { OperationsOverview } from "@/lib/platform/ops/overview";
+import type { DomainState, DomainStatus } from "@/lib/platform/ops/overview-core";
+import type { AttentionResponse } from "@/lib/platform/ops/attention";
+import type { AlertRunSummary } from "@/lib/alerts/evaluate";
+import { firingNow, latestAlertEvaluation, notEvaluableNow, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
+import type { ConnectionHealthResult } from "@/lib/connections/health";
+import { isUpdateModeFixable } from "@/lib/plaid/reauth-codes";
+import type { ScheduledJobsHealth } from "@/lib/jobs/health";
+import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -107,8 +120,43 @@ export type RetrievalStatus = "MEASURED" | "ESTIMATED" | "PARTIAL" | "UNAVAILABL
 export const UNAVAILABLE_CODES = ["NOT_RETRIEVABLE", "WINDOW_FIXED", "WINDOW_NOT_OFFERED", "READER_FAILED", "PROJECTION_REFUSED", "NO_FIGURE"] as const;
 export type UnavailableCode = (typeof UNAVAILABLE_CODES)[number];
 
-/** A number, or a small fixed object of numbers (null = that part has no figure, never 0). */
-export type AggregateValue = number | Readonly<Record<string, number | null>>;
+/**
+ * PART ROLES (S2 ruling 2026-11-05 — "fix the contract, not prose"). An object
+ * value whose parts are a TOTAL and the CATEGORIES it sums declares each part's
+ * role, so no reader (the Platform AI included) can present the total as a
+ * category:
+ *   total    — the sum of the categories; NEVER a category, never ranked
+ *   category — one category of the total, with its server label
+ *   ranking  — SERVER-COMPUTED by envelope() (largestMeasuredCategory), never
+ *              projected: the largest MEASURED (non-null) category part
+ * Pinned (retrieve.test.ts): every declared part exists in valueUnits and every
+ * unit part is declared; at most one total; a ranking part needs ≥ 1 category and
+ * carries the categories' unit.
+ */
+export type PartRole = "total" | "category" | "ranking";
+export type PartDeclaration = { role: "total" } | { role: "category"; label: string } | { role: "ranking" };
+export type PartDeclarations = Readonly<Record<string, PartDeclaration>>;
+
+/**
+ * The FIXED qualifier a ranking carries when the ranking cannot be complete (S2
+ * ruling 2026-11-05): any category part is null (unmetered / unpriced) or the
+ * envelope is not MEASURED (PARTIAL = a floor; ESTIMATED = a rate-card estimate).
+ */
+export const RANKING_QUALIFIER = "ranking among measured categories; some categories are incomplete";
+
+/**
+ * A ranking part's value: the largest MEASURED category — its server label, its
+ * figure (the category part's own value: same unit, same basis) and the
+ * envelope's window label — plus the qualifier (null only when every category is
+ * measured and the envelope is MEASURED). Never the total.
+ */
+export interface RankedCategory { label: string; figure: number; window: string | null; qualifier: typeof RANKING_QUALIFIER | null }
+
+/**
+ * A number, or a small fixed object of numbers (null = that part has no figure,
+ * never 0); a declared ranking part holds a RankedCategory (or null: no category measured).
+ */
+export type AggregateValue = number | Readonly<Record<string, number | null | RankedCategory>>;
 
 /**
  * THE EXPLICIT UNIT of a figure — what a renderer (Platform AI's placeholder
@@ -176,6 +224,21 @@ export interface MetricEnvelope {
   estimatedParts: EstimatedParts | null;
   /** Configuration parts rendered with no window label (UnwindowedParts); null = none. */
   unwindowedParts: UnwindowedParts | null;
+  /**
+   * F-3 (S2, 2026-11-08): on a PARTIAL envelope, the parts that are nevertheless EXACT (the
+   * metric is incomplete — e.g. a domain had nothing to judge, a reader failed — but this
+   * count was read in full). Platform AI renders "at least" ONLY for a PARTIAL part NOT
+   * listed here (a capped scan / failed reader / a floor). Absent / null = none exact.
+   */
+  exactParts?: readonly string[] | null;
+  /** Each part's role (PartRole: total / category / ranking); null = not declared (S2 ruling 2026-11-05). */
+  partRoles: Readonly<Record<string, PartRole>> | null;
+  /**
+   * Each CATEGORY part's server label (the declaration's `label`, e.g. "Providers (Plaid)");
+   * null / absent = no category parts declared. What Platform AI's {{l:<key>|part=<category>}}
+   * renders (S2 F-C2, 2026-11-07) — never model text.
+   */
+  partLabels?: Readonly<Record<string, string>> | null;
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
@@ -191,7 +254,15 @@ export interface MetricEnvelope {
    * s.cycle.start); null when the reader gives none.
    */
   window: { kind: MetricDefinition["window"]["kind"]; description: string; days: number | null; hours: number | null; label: string | null; start: string | null };
-  freshness: { asOf: string | null; source: string };
+  /**
+   * `asOf` = when the figure was true (the reader's clock; for alerts-firing-now the
+   * latest evaluation). `maxAgeMs` = the registry's staleness limit for this metric;
+   * `stale` = stamped at retrieval with the server's clock (registry metricStaleness):
+   * true ⇔ the envelope carries a figure and asOf is missing, unreadable or older than
+   * maxAgeMs. A stale figure is never presented as current (Platform AI words it "last
+   * evaluated <time>, may be out of date"). Optional only so older fixtures type.
+   */
+  freshness: { asOf: string | null; source: string; maxAgeMs?: number; stale?: boolean };
   coverage: { gaps: readonly string[]; missing: readonly string[] };
   /**
    * `kind` is "estimated" for a rate-card figure (provenance ESTIMATED: every dollar
@@ -199,11 +270,35 @@ export interface MetricEnvelope {
    * still "estimated" (a lower bound of an estimate).
    */
   basis: { kind: "estimated" | "measured"; definition: `${string}@${number}`; compute: string; reader: string; answerClass: MetricDefinition["answerClass"] };
+  /**
+   * NAMED SUBJECTS (2026-11-08, Platform AI briefing): which subjects of an aggregate are
+   * not healthy — a closed state word beside a REGISTRY / MODULE name (an overview domain's
+   * server title, a scheduled job's registry name, an alert rule id, a freshness resource id).
+   * Never a customer, connection, institution, execution or incident: every label passes
+   * isSubjectLabel (a server label or a kebab-case registry slug — no digit, no identifier
+   * shape), at most MAX_SUBJECTS. Absent / null = the metric names no subjects.
+   */
+  subjects?: readonly MetricSubject[] | null;
   /** null when the drill route's own gate is not this surface (the caller could not open it here) — see drillReason. */
   drill: MetricDrillDescriptor | null;
   /** Why `drill` is null; null when a drill is given. */
   drillReason: string | null;
 }
+
+/** The closed state vocabulary a named subject may carry. */
+export const SUBJECT_STATES = [
+  "failed", "degraded", "stale", "unknown",
+  "firing", "firing-critical", "not-evaluable", "source-unavailable",
+  "overdue", "failing", "dead", "never-ran", "skipped", "running",
+  "empty",
+] as const;
+export type SubjectState = (typeof SUBJECT_STATES)[number];
+export interface MetricSubject { label: string; state: SubjectState }
+export const MAX_SUBJECTS = 12;
+/** A kebab-case registry slug ("sync-banks", "resource-stale"): letters and hyphens, at least one hyphen, no digit. */
+const SUBJECT_SLUG = /^[a-z]{2,20}(?:-[a-z]{2,20}){1,4}$/;
+/** True for a subject label the envelope may carry: a server label (SERVER_LABEL) or a registry slug. */
+export const isSubjectLabel = (s: unknown): s is string => typeof s === "string" && (SERVER_LABEL.test(s) || SUBJECT_SLUG.test(s));
 
 // ── Readers (bound to the real functions in ./retrieve.ts) ──────────────────
 
@@ -224,6 +319,12 @@ export interface RetrievalReaders {
   accountsWithLiveSession(now: Date): Promise<number>;
   economicsSnapshot(nowMs: number): Promise<EconomicsSnapshot>;
   aiOperations(window: "7d" | "30d"): Promise<AiOperations>;
+  operationsOverview(): Promise<Pick<OperationsOverview, "checkedAt" | "domains" | "worst">>;
+  attention(token: OpsToken): Promise<Pick<AttentionResponse, "checkedAt" | "userImpact">>;
+  alertRuns(): Promise<readonly AlertRunSummary[]>;
+  connectionHealth(): Promise<ConnectionHealthResult>;
+  jobHealth(): Promise<Pick<ScheduledJobsHealth, "checkedAt" | "jobs">>;
+  resourceFreshness(): Promise<Pick<ResourceFreshnessResult, "checkedAt" | "resources">>;
 }
 export type ReaderKey = keyof RetrievalReaders;
 
@@ -240,6 +341,12 @@ export const READER_SYMBOL: Readonly<Record<ReaderKey, string>> = {
   accountsWithLiveSession: "countAccountsWithLiveSession",
   economicsSnapshot: "getEconomicsSnapshot",
   aiOperations: "getAiOperations",
+  operationsOverview: "getOperationsOverview",
+  attention: "getAttention",
+  alertRuns: "loadRecentAlertRuns",
+  connectionHealth: "getConnectionHealth",
+  jobHealth: "checkScheduledJobHealth",
+  resourceFreshness: "checkResourceFreshness",
 };
 
 // ── The per-metric table ─────────────────────────────────────────────────────
@@ -256,6 +363,15 @@ interface Projected {
   hours?: number | null;
   /** An EXPLICIT window start the reader itself holds (ISO date, YYYY-MM-DD) — never inferred. */
   start?: string | null;
+  /**
+   * A server phrase that REPLACES the generic day / hour label (S2 #483 R1: "last seen in the last
+   * N days"); built only from module text and the read's own days — never payload text.
+   */
+  windowLabel?: string;
+  /** Named subjects (MetricSubject) — registry / module names only; envelope() drops any label that is not one. */
+  subjects?: readonly MetricSubject[];
+  /** F-3: PARTIAL, but these parts are exact (MetricEnvelope.exactParts). */
+  exactParts?: readonly string[];
 }
 
 interface ReadInput {
@@ -277,6 +393,8 @@ interface Retrievable {
   estimatedParts?: EstimatedParts;
   /** Configuration parts rendered without a window label — see UnwindowedParts. */
   unwindowedParts?: UnwindowedParts;
+  /** Each part's role (total / category / ranking) — see PartRole. Ranking parts are computed by envelope(). */
+  parts?: PartDeclarations;
   /** Windows the metric accepts, the first being the tile's default; [] = no window parameter. */
   windows: readonly number[];
   /** Needs an incident token at the effective tier. */
@@ -300,6 +418,24 @@ function fromFigure(f: EconomicsFigure, asOf: string, days: number | null = null
 }
 
 const TREND_OF: Readonly<Record<number, TrendWindow>> = { 7: "7d", 30: "30d", 90: "90d" };
+
+/** The overview domains' SERVER labels (keyed by the closed DomainStatus key — never the payload's title). */
+const DOMAIN_LABEL: Readonly<Record<DomainStatus["key"], string>> = {
+  pipeline: "Refresh pipeline", sources: "Connections", jobs: "Scheduled jobs", ai: "AI", brief: "Daily Brief", plaid: "Plaid",
+};
+const DOMAIN_PART: Readonly<Record<DomainState, "failed" | "degraded" | "stale" | "unknown" | "healthy">> = {
+  FAILED: "failed", DEGRADED: "degraded", STALE: "stale", UNKNOWN: "unknown", HEALTHY: "healthy",
+};
+const DOMAIN_SUBJECT: Readonly<Record<DomainState, SubjectState>> = { FAILED: "failed", DEGRADED: "degraded", STALE: "stale", UNKNOWN: "unknown", HEALTHY: "unknown" };
+const JOB_PART: Readonly<Record<string, "healthy" | "running" | "overdue" | "failing" | "dead" | "neverRan" | "skipped" | "notScheduled">> = {
+  healthy: "healthy", running: "running", overdue: "overdue", failing: "failing", dead: "dead", "never-ran": "neverRan", skipped: "skipped", "not-scheduled": "notScheduled",
+};
+const JOB_SUBJECT: Readonly<Record<string, SubjectState | null>> = {
+  healthy: null, running: null, "not-scheduled": null, overdue: "overdue", failing: "failing", dead: "dead", "never-ran": "never-ran", skipped: "skipped",
+};
+const FRESHNESS_PART: Readonly<Record<string, "fresh" | "stale" | "empty" | "idle" | "notRefreshed">> = {
+  fresh: "fresh", stale: "stale", empty: "empty", idle: "idle", "not-refreshed": "notRefreshed",
+};
 
 /**
  * EVERY registered metric appears here exactly once (pinned): retrievable, or
@@ -410,7 +546,18 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   "economics-operating-cost@1": {
     // The Overview's hero (s.figures.operating_cost) and its split tiles (SPLIT_KEYS: AI / Providers / Infrastructure).
     kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [],
-    valueUnits: { totalUsd: "usd", aiUsd: "usd", providersUsd: "usd", infrastructureUsd: "usd" }, estimatedParts: ["totalUsd", "aiUsd", "providersUsd", "infrastructureUsd"],
+    valueUnits: { totalUsd: "usd", aiUsd: "usd", providersUsd: "usd", infrastructureUsd: "usd", largestMeasuredCategory: "usd" },
+    estimatedParts: ["totalUsd", "aiUsd", "providersUsd", "infrastructureUsd", "largestMeasuredCategory"],
+    // S2 ruling 2026-11-05: the total is the SUM of the categories, never a category. The
+    // category labels are the Overview's split tiles; largestMeasuredCategory is computed by
+    // envelope() from the three category parts (declared order = the tie order), never the total.
+    parts: {
+      totalUsd: { role: "total" },
+      aiUsd: { role: "category", label: "AI" },
+      providersUsd: { role: "category", label: "Providers (Plaid)" },
+      infrastructureUsd: { role: "category", label: "Infrastructure" },
+      largestMeasuredCategory: { role: "ranking" },
+    },
     async read({ readers, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
       const op = s.figures.operating_cost;
@@ -560,6 +707,210 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       return { value: await readers.accountsWithLiveSession(now), asOf: now.toISOString() };
     },
   },
+
+  // ── operations (Platform AI operational briefing, 2026-11-08) ──────────────
+  "ops-overall-posture@1": {
+    // The Operations lead's status header: overallWord(o.worst) and each domain's state (operations-model.ts).
+    kind: "RETRIEVABLE", reader: "operationsOverview", unit: "counts", windows: [],
+    valueUnits: { failed: "count", degraded: "count", stale: "count", unknown: "count", healthy: "count" },
+    async read({ readers }) {
+      const o = await readers.operationsOverview();
+      const v = { failed: 0, degraded: 0, stale: 0, unknown: 0, healthy: 0 };
+      for (const d of o.domains) v[DOMAIN_PART[d.state]]++;
+      const subjects = o.domains.filter((d) => d.state !== "HEALTHY").map((d) => ({ label: DOMAIN_LABEL[d.key], state: DOMAIN_SUBJECT[d.state] }));
+      if (o.domains.length === 0) return { value: null, status: "UNAVAILABLE", reason: "the overview returned no domain verdicts", asOf: o.checkedAt };
+      // F-3: every domain verdict is counted in full — an unknown domain makes the posture incomplete, never a count a floor.
+      return v.unknown > 0
+        ? { value: v, status: "PARTIAL", reason: `${plural(v.unknown, "domain")} had nothing to judge (unknown, never counted healthy)`, missing: subjects.filter((x) => x.state === "unknown").map((x) => `${x.label}: unknown`), asOf: o.checkedAt, subjects, exactParts: Object.keys(v) }
+        : { value: v, asOf: o.checkedAt, subjects };
+    },
+  },
+  "customer-impact-24h@1": {
+    // The Attention block's customer-impact panel: counts per kind and usersAffectedReading(u) (attention-view.ts).
+    kind: "RETRIEVABLE", reader: "attention", unit: "counts", windows: [], incidentScoped: "ANY",
+    valueUnits: { refreshFailed: "count", refreshPartial: "count", aiFailures: "count", briefFailed: "count", needsReauth: "count", customersAffected: "count", sourcesAffected: "count" },
+    async read({ readers, incident }) {
+      const a = await readers.attention(incident as OpsToken);
+      const u = a.userImpact;
+      const value = {
+        refreshFailed: u.counts["refresh-failed"], refreshPartial: u.counts["refresh-partial"], aiFailures: u.counts["ai-failure"],
+        briefFailed: u.counts["brief-failed"], needsReauth: u.counts["needs-reauth"],
+        customersAffected: u.usersAffected.count, sourcesAffected: u.sourcesAffected,
+      };
+      const missing = [
+        ...u.authorities.failed.map((f) => `impact reader unavailable: ${f}`),
+        ...(u.usersAffected.count === null ? ["customers affected: no reader exposed a customer reference"] : u.usersAffected.reason ? ["customers affected is a floor (some rows carry no customer reference)"] : []),
+        ...(u.floors.length > 0 ? [`${plural(u.floors.length, "impact reader")} returned a floor`] : []),
+      ];
+      const base = { asOf: a.checkedAt, hours: u.windowHours };
+      // F-3: a part is EXACT when its own authority answered and did not report a floor (a capped page);
+      // customers / sources are exact only when every authority answered with no floor and every row named its customer.
+      const ok = (a: string) => u.authorities.checked.includes(a as never) && !u.authorities.failed.includes(a as never);
+      const floored = (prefix: string) => u.floors.some((f) => f.startsWith(prefix) && f.includes("a floor"));
+      const whole = u.authorities.failed.length === 0 && !u.floors.some((f) => f.includes("a floor"));
+      const exactParts = [
+        ...(ok("refresh-executions") && !floored("Refresh:") ? ["refreshFailed", "refreshPartial"] : []),
+        ...(ok("ai-failures") ? ["aiFailures"] : []),
+        ...(ok("brief-ops") && !floored("Brief:") ? ["briefFailed"] : []),
+        ...(ok("connection-health") ? ["needsReauth"] : []),
+        ...(whole && u.usersAffected.count !== null && u.usersAffected.reason === null ? ["customersAffected"] : []),
+        ...(whole ? ["sourcesAffected"] : []),
+      ];
+      if (u.authorities.checked.length === 0) return { ...base, value: null, status: "UNAVAILABLE", reason: "no customer-impact reader could be read", missing };
+      return missing.length > 0
+        ? { ...base, value, status: "PARTIAL", reason: "a floor — not every impact fact could be read or attributed", missing, exactParts }
+        : { ...base, value };
+    },
+  },
+  "incident-needs-verification@1": {
+    // The Incidents "Needs verification" view's list total (incidentTotalText, the same search preset).
+    kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [], incidentScoped: "ANY",
+    valueUnits: "count",
+    async read({ readers, incident, now }) {
+      const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "needs-verification" }, { now });
+      return r.truncated
+        ? { value: r.total, status: "PARTIAL", reason: "a floor — the read was capped", missing: [`only ${plural(r.scanned, "row")} scanned`], asOf: now.toISOString() }
+        : { value: r.total, asOf: now.toISOString() };
+    },
+  },
+  "incident-resolved-window@1": {
+    // The Incidents "History" view's list total over the window's UTC days (from / to on lastSeenAt).
+    // S2 #483 R1 (fallback): the search contract filters on LAST SEEN, not resolvedAt, so the window
+    // is LABELLED as such ("last seen in the last N days") — never "resolved in the last N days".
+    kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [7, 1, 30], incidentScoped: "ANY",
+    valueUnits: "count",
+    async read({ readers, incident, now, window }) {
+      const days = window ?? 7;
+      const to = now.toISOString().slice(0, 10);
+      const from = new Date(now.getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+      const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "history", from, to }, { now });
+      const base = { asOf: now.toISOString(), days, windowLabel: `last seen ${daysWindowLabel(days)}` };
+      return r.truncated
+        ? { ...base, value: r.total, status: "PARTIAL", reason: "a floor — the read was capped", missing: [`only ${plural(r.scanned, "row")} scanned`] }
+        : { ...base, value: r.total };
+    },
+  },
+  "alerts-firing-now@1": {
+    // The Platform health drawer's Alerts group: firing.length from the latest evaluation (platform-health-view.ts alertsView).
+    kind: "RETRIEVABLE", reader: "alertRuns", unit: "counts", windows: [],
+    valueUnits: { firing: "count", firingCritical: "count", notEvaluable: "count", enabledRules: "count", sourcesUnavailable: "count" },
+    async read({ readers }) {
+      const latest = latestAlertEvaluation(await readers.alertRuns());
+      if (!latest) return { value: null, status: "UNAVAILABLE", reason: "no alert evaluation has run — nothing is known to be firing or quiet", asOf: null };
+      const firing = firingNow(latest);
+      const blind = unavailableAlertSources(latest);
+      const notEval = notEvaluableNow(latest);
+      const value = {
+        firing: firing.length, firingCritical: firing.filter((r) => r.severity === "critical").length,
+        notEvaluable: notEval.length, enabledRules: latest.rules.filter((r) => r.enabled).length, sourcesUnavailable: blind.length,
+      };
+      const subjects: MetricSubject[] = [
+        ...firing.map((r) => ({ label: r.id, state: (r.severity === "critical" ? "firing-critical" : "firing") as SubjectState })),
+        ...notEval.map((r) => ({ label: r.id, state: "not-evaluable" as const })),
+      ];
+      return blind.length > 0
+        ? { value, status: "PARTIAL", reason: "some alert sources could not be read in the latest evaluation — a rule over them cannot fire", missing: [`${plural(blind.length, "alert source")} unavailable`], asOf: latest.evaluatedAtISO, subjects }
+        : { value, asOf: latest.evaluatedAtISO, subjects };
+    },
+  },
+  "connection-health-summary@1": {
+    // The Connection health card's composition (compositionSegments / listCoverage over r.counts).
+    kind: "RETRIEVABLE", reader: "connectionHealth", unit: "counts", windows: [],
+    valueUnits: { live: "count", healthy: "count", stale: "count", degraded: "count", needsReauth: "count", error: "count", reconnectNeeded: "count", customerImpacting: "count" },
+    async read({ readers }) {
+      const r = await readers.connectionHealth();
+      const c = r.counts;
+      // Reconnect needed: NEEDS_REAUTH, plus ERROR rows whose code Plaid fixes through update mode (NO_ACCOUNTS, ITEM_LOGIN_REQUIRED, …).
+      let fixableErrors = 0;
+      for (const t of Object.values(r.bySource ?? {})) for (const f of t.faults) if (f.healthState === "ERROR" && isUpdateModeFixable(f.errorCode)) fixableErrors += f.count;
+      const healthy = c.HEALTHY ?? 0;
+      const value = {
+        live: r.total, healthy, stale: c.STALE ?? 0, degraded: c.DEGRADED ?? 0, needsReauth: c.NEEDS_REAUTH ?? 0, error: c.ERROR ?? 0,
+        reconnectNeeded: (c.NEEDS_REAUTH ?? 0) + fixableErrors, customerImpacting: Math.max(0, r.total - healthy),
+      };
+      return r.bySource
+        ? { value, asOf: r.checkedAt }
+        : { value, status: "PARTIAL", reason: "reconnect needed is a floor — the per-source fault tally was not available", missing: ["ERROR connections fixable by reconnect could not be counted"], asOf: r.checkedAt };
+    },
+  },
+  "refresh-pipeline@1": {
+    // The Operations lead's Refresh pipeline KPI: o.domains.find((x) => x.key === "pipeline") (operations-model.ts).
+    kind: "RETRIEVABLE", reader: "operationsOverview", unit: "counts", windows: [],
+    valueUnits: { executions: "count", failed: "count", runningNow: "count" },
+    async read({ readers }) {
+      const o = await readers.operationsOverview();
+      const d = o.domains.find((x) => x.key === "pipeline");
+      if (!d) return { value: null, status: "UNAVAILABLE", reason: "the overview carries no pipeline verdict", asOf: o.checkedAt };
+      const fact = (label: string): number | null => {
+        const f = d.facts.find((x) => x.label === label);
+        return f && /^\d+$/.test(f.value) ? Number(f.value) : null;
+      };
+      const value = { executions: fact("Executions"), failed: fact("Failed"), runningNow: fact("Running now") };
+      const subjects = d.state === "HEALTHY" ? [] : [{ label: DOMAIN_LABEL.pipeline, state: DOMAIN_SUBJECT[d.state] }];
+      if (value.executions === null || value.failed === null) return { value: null, status: "UNAVAILABLE", reason: "the pipeline verdict carries no execution counts", asOf: o.checkedAt };
+      return d.state === "UNKNOWN"
+        ? { value, status: "PARTIAL", reason: "no attempted refresh execution in the window — nothing to judge", missing: [], asOf: o.checkedAt, subjects }
+        : { value, asOf: o.checkedAt, subjects };
+    },
+  },
+  "scheduled-job-health@1": {
+    // The Operations lead's job KPIs (jobKpis: c.failing + c.dead …) — the job-health route's own counts.
+    kind: "RETRIEVABLE", reader: "jobHealth", unit: "counts", windows: [],
+    valueUnits: { healthy: "count", running: "count", overdue: "count", failing: "count", dead: "count", neverRan: "count", skipped: "count", notScheduled: "count" },
+    async read({ readers }) {
+      const h = await readers.jobHealth();
+      const v = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 0, notScheduled: 0 };
+      const subjects: MetricSubject[] = [];
+      for (const j of h.jobs) {
+        const k = JOB_PART[j.status];
+        if (!k) throw new Error("unknown job status"); // never guessed into a bucket ⇒ UNAVAILABLE
+        v[k]++;
+        const st = JOB_SUBJECT[j.status];
+        if (st) subjects.push({ label: j.job, state: st });
+      }
+      if (h.jobs.length === 0) return { value: null, status: "UNAVAILABLE", reason: "no scheduled job is registered", asOf: iso(h.checkedAt) };
+      return { value: v, asOf: iso(h.checkedAt), subjects };
+    },
+  },
+  "data-freshness@1": {
+    // The Platform health drawer's Freshness group: d.counts.stale + d.counts.empty (platform-health-view.ts freshnessView).
+    kind: "RETRIEVABLE", reader: "resourceFreshness", unit: "counts", windows: [],
+    valueUnits: { fresh: "count", stale: "count", empty: "count", idle: "count", notRefreshed: "count" },
+    async read({ readers }) {
+      const f = await readers.resourceFreshness();
+      const v = { fresh: 0, stale: 0, empty: 0, idle: 0, notRefreshed: 0 };
+      const subjects: MetricSubject[] = [];
+      for (const r of f.resources) {
+        const k = FRESHNESS_PART[r.healthState];
+        if (!k) throw new Error("unknown freshness state");
+        v[k]++;
+        if (r.healthState === "stale" || r.healthState === "empty") subjects.push({ label: r.resource, state: r.healthState });
+      }
+      if (f.resources.length === 0) return { value: null, status: "UNAVAILABLE", reason: "no freshness resource is registered", asOf: iso(f.checkedAt) };
+      return { value: v, asOf: iso(f.checkedAt), subjects };
+    },
+  },
+  "provider-call-volume@1": {
+    // The Provider health widget's "Calls" field (p.callsToday / p.calls30d), summed over metered providers.
+    kind: "RETRIEVABLE", reader: "providerHealth", unit: "counts", windows: [],
+    valueUnits: { callsToday: "count", callsMonth: "count", syncFailures: "count", meteredProviders: "count", unmeteredProviders: "count" },
+    async read({ readers }) {
+      const r = await readers.providerHealth();
+      const v = { callsToday: 0, callsMonth: 0, syncFailures: 0, meteredProviders: 0, unmeteredProviders: 0 };
+      for (const p of r.providers) {
+        const today = (p as { callsToday?: number | null }).callsToday ?? null;
+        const month = (p as { calls30d?: number | null }).calls30d ?? null;
+        if (today === null && month === null) v.unmeteredProviders++;
+        else { v.meteredProviders++; v.callsToday += today ?? 0; v.callsMonth += month ?? 0; }
+        v.syncFailures += (p as { syncFailures?: number }).syncFailures ?? 0;
+      }
+      const asOf = iso(r.checkedAt);
+      if (v.meteredProviders === 0) return { value: null, status: "UNAVAILABLE", reason: "no provider's calls are metered — call volume is unknown, never 0", asOf };
+      return v.unmeteredProviders > 0
+        ? { value: v, status: "PARTIAL", reason: "a floor — some providers are not metered", missing: [`${plural(v.unmeteredProviders, "provider")} not metered (calls unknown, never 0)`], asOf }
+        : { value: v, asOf };
+    },
+  },
 };
 
 // ── Tiering ──────────────────────────────────────────────────────────────────
@@ -629,14 +980,75 @@ function incidentAt(tier: IdentityTier, token: CsToken | OpsToken | null | undef
 const MAX_PARTS = 8;
 const PART_KEY = /^[a-z][A-Za-z]{0,31}$/;
 
-/** True for a number, or a flat object of ≤ 8 camelCase keys whose values are finite numbers or null. */
-export function isAggregate(v: unknown): v is AggregateValue {
+/**
+ * True for a number, or a flat object of ≤ 8 camelCase keys whose values are finite
+ * numbers or null. `rankingParts` (S2 ruling 2026-11-05) names the declared ranking
+ * parts that may instead hold a RankedCategory (isRankedCategory) — only those keys;
+ * a projection is checked with none (it never supplies one).
+ */
+export function isAggregate(v: unknown, rankingParts: readonly string[] = []): v is AggregateValue {
   if (typeof v === "number") return Number.isFinite(v);
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const entries = Object.entries(v);
   return entries.length > 0 && entries.length <= MAX_PARTS
-    && entries.every(([k, x]) => PART_KEY.test(k) && (x === null || (typeof x === "number" && Number.isFinite(x))));
+    && entries.every(([k, x]) => PART_KEY.test(k) && (x === null || (typeof x === "number" && Number.isFinite(x)) || (rankingParts.includes(k) && isRankedCategory(x))));
 }
+
+/** A server label: letters, spaces and ( ) & / - only — no digit, no identifier shape. */
+const SERVER_LABEL = /^[A-Za-z][A-Za-z ()&/-]{0,47}$/;
+
+/** EXACTLY { label, figure, window, qualifier }: a server label, a finite figure, a short window label or null, the fixed qualifier or null. */
+export function isRankedCategory(x: unknown): x is RankedCategory {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
+  const r = x as Record<string, unknown>;
+  return Object.keys(r).sort().join() === "figure,label,qualifier,window"
+    && typeof r.label === "string" && SERVER_LABEL.test(r.label)
+    && typeof r.figure === "number" && Number.isFinite(r.figure)
+    && (r.window === null || (typeof r.window === "string" && r.window.length <= 80))
+    && (r.qualifier === null || r.qualifier === RANKING_QUALIFIER);
+}
+
+/**
+ * THE RANKING RULE (S2 ruling 2026-11-05), one named pure function: the largest
+ * MEASURED category of an object value.
+ *   · only parts declared role "category" are candidates — the total is NEVER one;
+ *   · a null (unmetered / unpriced) or non-finite part is not measured: skipped, never $0;
+ *   · the largest figure wins; a TIE (exactly equal figures) goes to the FIRST
+ *     category in declared order (the `parts` declaration's key order);
+ *   · no category measured ⇒ null;
+ *   · the qualifier (RANKING_QUALIFIER) is set when any category part is null or
+ *     the envelope status is not MEASURED (PARTIAL or ESTIMATED).
+ * `window` is the envelope's own window label (server text).
+ */
+export function largestMeasuredCategory(
+  value: Readonly<Record<string, number | null | RankedCategory>>, parts: PartDeclarations,
+  opts: { status: RetrievalStatus; window: string | null },
+): RankedCategory | null {
+  let best: { label: string; figure: number } | null = null;
+  let incomplete = opts.status !== "MEASURED";
+  for (const [part, d] of Object.entries(parts)) {
+    if (d.role !== "category") continue;
+    const v = value[part];
+    if (typeof v !== "number" || !Number.isFinite(v)) { incomplete = true; continue; }
+    if (best === null || v > best.figure) best = { label: d.label, figure: v };
+  }
+  if (best === null) return null;
+  return { label: best.label, figure: best.figure, window: opts.window, qualifier: incomplete ? RANKING_QUALIFIER : null };
+}
+
+/** The declared ranking parts of a declaration (none when it declares no parts). */
+export const rankingPartsOf = (parts: PartDeclarations | undefined): string[] =>
+  Object.entries(parts ?? {}).filter(([, d]) => d.role === "ranking").map(([k]) => k);
+
+/** The role map an envelope carries (null when the metric declares no parts). */
+const partRolesOf = (parts: PartDeclarations | undefined): Readonly<Record<string, PartRole>> | null =>
+  parts ? Object.fromEntries(Object.entries(parts).map(([k, d]) => [k, d.role])) : null;
+
+/** The category parts' server labels (null when the metric declares no category part). */
+const partLabelsOf = (parts: PartDeclarations | undefined): Readonly<Record<string, string>> | null => {
+  const cats = Object.entries(parts ?? {}).flatMap(([k, d]) => (d.role === "category" ? [[k, d.label] as const] : []));
+  return cats.length > 0 ? Object.fromEntries(cats) : null;
+};
 
 // ── Retrieval ────────────────────────────────────────────────────────────────
 
@@ -685,24 +1097,45 @@ function unitsMatch(value: AggregateValue, units: ValueUnits | null): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i]);
 }
 
+/** Named subjects, kept only when the label is a server label / registry slug and the state is in the closed vocabulary; at most MAX_SUBJECTS. */
+function subjectsOnly(xs: readonly MetricSubject[]): MetricSubject[] {
+  return xs.filter((x) => isSubjectLabel(x?.label) && (SUBJECT_STATES as readonly string[]).includes(x?.state)).slice(0, MAX_SUBJECTS).map((x) => ({ label: x.label, state: x.state }));
+}
+
 /** The reader's window start, kept only when it is exactly an ISO date (YYYY-MM-DD); anything else ⇒ null. */
 const isoDateOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
-function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null, code: UnavailableCode | null = null): MetricEnvelope {
+function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null, code: UnavailableCode | null = null, now: Date = new Date()): MetricEnvelope {
   const m = scope.definition;
   const base: MetricEnvelope["status"] = m.provenance.class === "ESTIMATED" ? "ESTIMATED" : "MEASURED";
   let value = p.value;
   let status: RetrievalStatus = p.status ?? base;
   let reason = p.reason ?? null;
-  if (value !== null && !isAggregate(value)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: not an aggregate"; code = "PROJECTION_REFUSED"; }
-  if (value !== null && !unitsMatch(value, valueUnits)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: its parts do not match the declared units"; code = "PROJECTION_REFUSED"; }
+  const days = p.days ?? null;
+  const hours = p.hours ?? null;
+  const windowLabel = p.windowLabel ?? (days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null);
+  const entry = RETRIEVAL[metricKey(m)];
+  const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
+  const parts = entry?.kind === "RETRIEVABLE" ? entry.parts : undefined;
+  const ranking = rankingPartsOf(parts);
+  const refuse = (why: string) => { value = null; status = "UNAVAILABLE"; reason = `projection refused: ${why}`; code = "PROJECTION_REFUSED"; };
+  // The projection itself is a flat aggregate (no ranking entry may come from a reader).
+  if (value !== null && !isAggregate(value)) refuse("not an aggregate");
+  // S2 ruling 2026-11-05: a declared ranking part is SERVER-COMPUTED here from the
+  // projection's own category parts — a projection that supplies one is refused.
+  if (value !== null && ranking.length > 0) {
+    const v = value;
+    if (typeof v === "number" || ranking.some((k) => Object.prototype.hasOwnProperty.call(v, k))) refuse("a ranking part is server-computed, never projected");
+    else {
+      const ranked = largestMeasuredCategory(v, parts!, { status, window: windowLabel });
+      value = { ...v, ...Object.fromEntries(ranking.map((k) => [k, ranked])) };
+      if (!isAggregate(value, ranking)) refuse("not an aggregate");
+    }
+  }
+  if (value !== null && !unitsMatch(value, valueUnits)) refuse("its parts do not match the declared units");
   if (value === null && status !== "UNAVAILABLE") status = "UNAVAILABLE";
   if (status === "UNAVAILABLE") { value = null; reason = reason ?? "no figure"; }
   if (status === "PARTIAL" && !reason) reason = "a floor";
-  const days = p.days ?? null;
-  const hours = p.hours ?? null;
-  const entry = RETRIEVAL[metricKey(m)];
-  const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
   return {
     metric: metricKey(m),
     surface: scope.surface,
@@ -711,13 +1144,18 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     valueUnits,
     estimatedParts,
     unwindowedParts,
+    ...(status === "PARTIAL" && p.exactParts && value !== null && typeof value === "object" ? { exactParts: p.exactParts.filter((k) => Object.prototype.hasOwnProperty.call(value, k)) } : {}),
+    partRoles: partRolesOf(parts),
+    partLabels: partLabelsOf(parts),
     value,
     status,
     reason,
     unavailableCode: status === "UNAVAILABLE" ? code ?? "NO_FIGURE" : null,
-    window: { kind: m.window.kind, description: m.window.description, days, hours, label: days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null, start: isoDateOrNull(p.start) },
-    freshness: { asOf: p.asOf, source: m.freshnessSource },
+    window: { kind: m.window.kind, description: m.window.description, days, hours, label: windowLabel, start: isoDateOrNull(p.start) },
+    // Staleness: only a figure can be stale (an UNAVAILABLE envelope has none to present).
+    freshness: { asOf: p.asOf, source: m.freshnessSource, maxAgeMs: m.maxAgeMs, stale: status !== "UNAVAILABLE" && metricStaleness(p.asOf, m.maxAgeMs, now.getTime()).stale },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
+    ...(p.subjects !== undefined ? { subjects: status === "UNAVAILABLE" ? null : subjectsOnly(p.subjects) } : {}),
     basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
     ...drillOf(scope, days),
   };
@@ -742,7 +1180,7 @@ export async function retrieveWith(
   if (!scope) return null;
   const entry = RETRIEVAL[metricKey(scope.definition)];
   const unavailable = (code: UnavailableCode, reason: string, unit: MetricEnvelope["unit"] = "count", units: ValueUnits | null = null, est: EstimatedParts | null = null) =>
-    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est, code);
+    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est, code, now);
 
   if (!entry) return unavailable("NOT_RETRIEVABLE", "not retrievable: this metric version has no retrieval contract");
   if (entry.kind === "NOT_RETRIEVABLE") return unavailable("NOT_RETRIEVABLE", `not retrievable: ${entry.reason}`);
@@ -767,7 +1205,7 @@ export async function retrieveWith(
 
   try {
     const p = await entry.read({ readers, tier: scope.tier, incident, window, now });
-    return envelope(scope, entry.unit, p, entry.valueUnits, entry.estimatedParts ?? null);
+    return envelope(scope, entry.unit, p, entry.valueUnits, entry.estimatedParts ?? null, null, now);
   } catch {
     // The reader's error text never enters the envelope (it could carry identifiers).
     return unavailable("READER_FAILED", `the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit, entry.valueUnits, entry.estimatedParts ?? null);

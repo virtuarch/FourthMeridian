@@ -225,7 +225,7 @@ function main(): void {
   check("the day's real-asset basis reaches the core as a tier (a modeled day can never be written observed)",
     /realAssetTier: realAssetTierFor\(dayRealAssetBases\)/.test(code));
   check("the manual-asset branch sits BEFORE the flat fallback in the day map",
-    code.indexOf("manualHistoryByAccount.get(a.id)") < code.indexOf("return [{ type: a.type, balance: a.balance, currency: a.currency }]"));
+    code.indexOf("manualHistoryByAccount.get(a.id)") < code.indexOf("return [{ type: a.type, balance: a.balance, currency: a.currency, ...liabilityKindEvidence(a) }]"));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

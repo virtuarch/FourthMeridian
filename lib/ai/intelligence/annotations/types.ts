@@ -8,6 +8,8 @@
  * god-module (byte-identical bodies). Public surface re-exported via ./index.
  */
 
+import type { AiRateCoverage } from '@/lib/debt/aggregates';
+
 export type CompletenessLevel  = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type ConfidenceLevel    = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -42,7 +44,9 @@ export type DeficitCauseClassification =
    * them. A card payment that settles purchases already counted in spending is
    * NOT paydown, so a household whose payments settle the SAME WINDOW's charges
    * is never DEBT_DRIVEN. What this verdict states is exact: income covered
-   * spending, and more cash than the surplus went to REDUCING what is owed.
+   * spending, and more cash than the surplus went to debt — revolving net
+   * paydown plus (owner F6) installment-loan payments, which are debt SERVICE
+   * reported unsplit (principal + interest[ + escrow]), never principal reduction.
    *
    * ⚠️ STATEMENT LAG IS REAL PAYDOWN, AND IS GRADED AS SUCH. A full-payer whose
    * spending FELL across the window edge pays last period's larger statement
@@ -212,9 +216,11 @@ export type ClassificationScope =
   /** Liquid cash divided by the monthly expense baseline, in months. */
   | 'LIQUID_CASH_VS_MONTHLY_EXPENSES'
   /**
-   * The economic net (income − spending) less the cash that actually REDUCED debt
-   * (lib/transactions/debt-service.ts). Not "debt payments": a card payment that
-   * settles purchases already counted as spending is not in it.
+   * The economic net (income − spending) less the cash that actually REDUCED
+   * revolving debt and less unsplit loan payments (owner F6: installment-loan
+   * payments, principal + interest[ + escrow] not split — never principal
+   * reduction) (lib/transactions/debt-service.ts). Not "debt payments": a card
+   * payment that settles purchases already counted as spending is not in it.
    */
   | 'CASH_NET_AFTER_DEBT_PAYDOWN';
 
@@ -343,8 +349,9 @@ export interface CashFlowSection {
   /**
    * WHY the window ran a deficit, if it did. Graded on two figures only: the
    * canonical economic net (`netCashFlow`) and that net after the cash which
-   * genuinely REDUCED debt (`netAfterDebtPayments` = economic net − net
-   * paydown). See DeficitCauseClassification.
+   * genuinely REDUCED revolving debt and after unsplit loan payments
+   * (`netAfterDebtPayments` = economic net − revolving net paydown − unsplit
+   * loan payments; owner F6). See DeficitCauseClassification.
    */
   deficitCause:                 DeficitCauseClassification;
   /**
@@ -537,17 +544,31 @@ export interface DebtCandidate {
 export interface DebtStrategySection {
   confidence:                 ConfidenceLevel;
   payoffUrgency:              DebtPayoffUrgency;
-  /** Highest-APR FULL-visibility account — the avalanche strategy target. null if APR unknown everywhere. */
+  /** Highest-APR FULL-visibility NON-installment account — the avalanche strategy target
+   *  (F4: installment loans are never candidates). null if no targetable debt has a known APR. */
   avalancheCandidate:         DebtCandidate | null;
-  /** Lowest REPORTING-balance debt account — the snowball strategy target (ranked in
-   *  the Space reporting currency, not native magnitudes). null if no accounts available. */
+  /** Lowest REPORTING-balance NON-installment debt account — the snowball strategy target
+   *  (ranked in the Space reporting currency, not native magnitudes). null if none is targetable. */
   snowballCandidate:          DebtCandidate | null;
-  /** Weighted average APR across accounts where APR is known — weighted by REPORTING
-   *  balance. null if none known. */
+  /** Weighted average rate across ALL owing debt, weighted by REPORTING balance —
+   *  present ONLY when every owing debt has a rate on file (coverage COMPLETE).
+   *  Mortgage F3 / S2: null when any rate is unknown (see `ratedDebtsAvgRate`)
+   *  and null — never 0 — when none is known. */
   weightedAvgApr:             number | null;
+  /** F3 / S2 — what the weighted rate covers: status, rated/unrated counts, the
+   *  share of what is owed with no rate, and a reading the model can quote. */
+  weightedAvgAprCoverage:     AiRateCoverage;
+  /** F3 / S2 — when coverage is PARTIAL: the weighted rate of the RATED debts
+   *  only, with its meaning. Never the blended rate of all debt. Omitted otherwise. */
+  ratedDebtsAvgRate?:         { ratePct: number; meaning: string };
   knownMonthlyInterestBurden: number | null;
   missingAprAccountNames:     string[];
   hasBalanceOnlyDebt:         boolean;
+  /** Mortgage F4 — owing installment loans (mortgage, auto, student, personal):
+   *  paid on schedule, never avalanche/snowball candidates. */
+  scheduledOnlyAccountNames:  string[];
+  /** Mortgage F4 — the targeting rule in words the model states with any strategy. */
+  targetPolicy:               string;
   /**
    * P2-7D — true when any debt account driving this strategy had an ESTIMATED
    * reporting-currency balance (missing/walked-back FX or null-residue provenance),
@@ -574,8 +595,11 @@ export type AllocationEvidenceDomain = 'cashFlow' | 'debt' | 'liquidity' | 'inve
  */
 
 export interface CapitalAllocationEvidence {
-  /** Weighted average APR across FULL-visibility debt accounts with known APR. null if none known. */
+  /** Weighted average rate across ALL owing debt — null unless every owing debt
+   *  has a rate on file (F3 / S2; never 0 for unknown). */
   weightedDebtApr:           number | null;
+  /** F3 / S2 — what `weightedDebtApr` covers (same object as DebtStrategySection's). */
+  weightedDebtRateCoverage:  AiRateCoverage;
   /** Passive-index annual return reference used as the investing comparison baseline. */
   expectedMarketReturn:      number;
   /**

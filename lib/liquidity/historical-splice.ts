@@ -133,6 +133,8 @@ export function spliceLiquidityRows(
         id: r.id,
         type: r.type,
         providerSubtype: r.providerSubtype ?? null,
+        debtSubtype: r.debtSubtype ?? null,
+        debtType: r.debtType ?? null, // S2 P1-R1
         balance: cov.valuedSum,
         currency: reportingCurrency, // already reported → identity-convert downstream
         creditLimit: r.creditLimit,
@@ -146,6 +148,8 @@ export function spliceLiquidityRows(
         id: r.id,
         type: r.type,
         providerSubtype: r.providerSubtype ?? null,
+        debtSubtype: r.debtSubtype ?? null,
+        debtType: r.debtType ?? null, // S2 P1-R1
         balance: r.balance,
         currency: r.currency ?? null,
         creditLimit: r.creditLimit,

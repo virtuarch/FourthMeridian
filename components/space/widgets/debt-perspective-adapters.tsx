@@ -29,7 +29,7 @@ import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { debtColor } from "@/components/space/widgets/debt-adapters";
 import { presentationDebtClass, presentationDebtLabel, DEBT_CLASS_LABEL } from "@/components/space/widgets/debt/debt-ledger-util";
-import { creditUtilization } from "@/lib/accounts/credit-utilization";
+import { creditUtilization, formatUtilizationPct } from "@/lib/accounts/credit-utilization";
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { parseCreditLimitInput, saveAccountCreditLimit } from "@/lib/debt/user-terms";
@@ -38,6 +38,7 @@ import { formatCurrency } from "@/lib/currency";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
+import type { DebtType } from "@/lib/debt/liability-kind";
 import type { Snapshot } from "@/types";
 import { CreditCard, Plus, Loader2 } from "lucide-react";
 
@@ -61,8 +62,17 @@ export interface DebtPerspectiveAccount {
   /** v2.7 R2 — FinancialAccount.providerSubtype (provider evidence, e.g. "credit card",
    *  "mortgage", "home equity"), already on the mount payload (SpaceAccount). Read
    *  ONLY by the display classifier `presentationDebtClass` when `debtSubtype` is
-   *  empty; never by totals, utilization, interest, or payoff. null/absent = unknown. */
+   *  empty, and by the installment-loan rule (lib/debt/liability-kind.ts, Mortgage F2)
+   *  that keeps a Plaid loan out of utilization and the "add limit" prompt, and by
+   *  the rate LABEL (lib/debt/rate-label.ts, Mortgage F3: "Mortgage rate" / "Interest
+   *  rate" / "APR"); never by totals, interest, or payoff figures. null/absent = unknown. */
   providerSubtype?: string | null;
+  /** S2 PRIVACY P1 — the row's tier; non-FULL ⇒ every type LABEL is the coarse kind. */
+  visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: DebtType | null;
+
   /** Present ONLY on a privacy-aggregated row (synthetic id, several accounts
    *  behind it) — such a row has no single liability to attach a rate or limit to. */
   aggregate?: { memberAccountIds: string[]; memberCount: number };
@@ -269,7 +279,7 @@ export function CreditUtilizationWidget({
         <div key={r.id} className="space-y-1">
           <div className="flex items-center justify-between text-[12px]">
             <span className="text-[var(--text-secondary)] truncate">{r.name}</span>
-            <span className="font-semibold" style={{ color: UTIL_COLOR[r.level] }}>{r.pct.toFixed(0)}%</span>
+            <span className="font-semibold" style={{ color: UTIL_COLOR[r.level] }}>{formatUtilizationPct(r.pct)}</span>
           </div>
           <div className="h-2 rounded-full bg-[var(--surface-inset)] overflow-hidden">
             <div className="h-full rounded-full" style={{ width: `${r.barPct}%`, backgroundColor: UTIL_COLOR[r.level] }} />

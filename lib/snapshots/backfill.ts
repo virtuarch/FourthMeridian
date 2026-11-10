@@ -45,6 +45,7 @@ import {
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
   snapshotRestrictedCash,
+  snapshotInstallmentDebt,
   computeAccountFloors,
   isHeldFlatBalanceAccount,
   isReconstructableCard,
@@ -261,9 +262,10 @@ export async function backfillSpaceSnapshots(
   const dailyCash = reconstructDailyCashBalances(cashAccounts, deltaByAccountDay, today, effectiveStart);
 
   // ── D2.x Slice 4B — credit-card debt reconstruction ─────────────────────────
-  // Revolving credit cards only (isReconstructableCard). Non-card debt (loans,
-  // mortgages, HELOC/LOC with an explicit subtype) stays flat, as do
-  // investments/crypto/manual assets. Pending transactions are EXCLUDED so the
+  // Revolving lines only (isReconstructableCard — every revolving liabilityKind:
+  // card, HELOC, line of credit, overdraft; Mortgage F7). Installment debt
+  // (mortgage, auto, student, personal loans) stays flat even with a limit and is
+  // labelled estimated downstream, as do investments/crypto/manual assets. Pending transactions are EXCLUDED so the
   // window matches the posted `current` balance anchor. Liability walk ADDS
   // amounts (owed rises with purchases). Cash reconstruction above is untouched.
   const cardAccounts: CashAccountBalance[] = accounts
@@ -303,7 +305,7 @@ export async function backfillSpaceSnapshots(
     cryptoValuationStatus: null; completenessTier: "incomplete" | null;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
-    restrictedCash: number | null;
+    restrictedCash: number | null; installmentDebt: number;
   }> = [];
 
   // MC1 Phase 3 Slice 3 — THE BACKFILL FLIP (plan seams #2). One real space
@@ -363,6 +365,8 @@ export async function backfillSpaceSnapshots(
       cryptoValuationStatus: null, completenessTier: excludedTotalsCompletenessTier(c), ...fields,
       // FIN-E part 2 — the restricted share of THIS day's cash, from the same `c`.
       restrictedCash: snapshotRestrictedCash(c),
+      // Mortgage F1b — the installment debt THIS day's netLiquid excluded, same `c`.
+      installmentDebt: snapshotInstallmentDebt(c),
     });
   }
 

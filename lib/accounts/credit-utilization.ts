@@ -18,6 +18,9 @@
  */
 
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { isInstallmentLoan, REVOLVING_DEBT_SUBTYPES } from "@/lib/debt/liability-kind";
+
+export { REVOLVING_DEBT_SUBTYPES };
 
 export interface UtilizationInputAccount {
   id:           string;
@@ -25,6 +28,10 @@ export interface UtilizationInputAccount {
   type:         string;
   balance:      number;
   creditLimit?: number | null;
+  /** FM debtSubtype / Plaid providerSubtype — Mortgage F2: an installment loan
+   *  (lib/debt/liability-kind.ts) is never a utilization row, whatever limit it carries. */
+  debtSubtype?:     string | null;
+  providerSubtype?: string | null;
 }
 
 export type UtilizationLevel = "low" | "moderate" | "high" | "over";
@@ -39,18 +46,41 @@ export interface UtilizationRow {
   level:   UtilizationLevel;
 }
 
-/** Level thresholds (utilization %): <30 low, 30–70 moderate, 70–100 high, >100 over. */
+/**
+ * THE one source of truth for the utilization % a user sees: a whole percent.
+ * Every surface renders the number through `formatUtilizationPct` (DebtHero,
+ * the utilization rows, CreditHealthInputs, LiabilitiesLedger,
+ * DebtAccountDetail, debt signals), and `utilizationLevel` grades THIS value,
+ * so the band word / colour can never contradict the number beside it (29.9%
+ * used to read "30% · Low"). Defined AS the `toFixed(0)` rendering, so there is
+ * no second rounding rule to drift at a .5 boundary (pinned by a parity test).
+ */
+export function displayedUtilizationPct(pct: number): number {
+  return Number(pct.toFixed(0)) + 0; // `+ 0` normalises −0 to 0
+}
+
+/** The utilization % text: "30%". Same value `utilizationLevel` grades. */
+export function formatUtilizationPct(pct: number): string {
+  return `${displayedUtilizationPct(pct)}%`;
+}
+
+/**
+ * Level thresholds (utilization %, graded on the DISPLAYED whole percent):
+ * <30 low, 30–69 moderate, 70–100 high, >100 over.
+ */
 export function utilizationLevel(pct: number): UtilizationLevel {
-  if (pct > 100) return "over";
-  if (pct >= 70) return "high";
-  if (pct >= 30) return "moderate";
+  const shown = displayedUtilizationPct(pct);
+  if (shown > 100) return "over";
+  if (shown >= 70) return "high";
+  if (shown >= 30) return "moderate";
   return "low";
 }
 
 export interface CreditUtilizationResult {
   /** Revolving debts (have a positive credit limit), highest utilization first. */
   rows:         UtilizationRow[];
-  /** Debt accounts WITHOUT a usable credit limit — surfaced for an "add limit" affordance. */
+  /** Non-installment debt accounts WITHOUT a usable credit limit — surfaced for an
+   *  "add limit" affordance. Mortgage F2: installment loans are never prompted. */
   missingLimit: { id: string; name: string }[];
 }
 
@@ -76,12 +106,15 @@ export interface CreditUtilizationResult {
  * consume this predicate — the two previously asked different populations
  * under the same word.
  */
-export const REVOLVING_DEBT_SUBTYPES = new Set(["credit_card", "line_of_credit", "heloc"]);
-export function isRevolvingLine(a: { debtSubtype?: string | null; creditLimit?: number | null }): boolean {
-  return (
-    (a.debtSubtype == null || REVOLVING_DEBT_SUBTYPES.has(a.debtSubtype)) &&
-    a.creditLimit != null && a.creditLimit > 0
-  );
+/**
+ * Mortgage F2 — the subtype rule is lib/debt/liability-kind.ts `isInstallmentLoan`:
+ * an explicit non-revolving debtSubtype, or a Plaid `loan` providerSubtype
+ * (mortgage/student/auto/…), is never revolving even when it carries a limit.
+ */
+export function isRevolvingLine(a: {
+  type?: string | null; debtSubtype?: string | null; providerSubtype?: string | null; creditLimit?: number | null;
+}): boolean {
+  return !isInstallmentLoan(a) && a.creditLimit != null && a.creditLimit > 0;
 }
 
 export function utilizationPercent(
@@ -92,10 +125,12 @@ export function utilizationPercent(
 }
 
 export function creditUtilization(accounts: UtilizationInputAccount[]): CreditUtilizationResult {
-  const debts = accounts.filter((a) => a.type === "debt");
+  // Mortgage F2 — installment loans take no part in utilization: no row, and
+  // no "add a credit limit" prompt.
+  const debts = accounts.filter((a) => a.type === "debt" && !isInstallmentLoan(a));
 
   const rows: UtilizationRow[] = debts
-    .filter((a) => a.creditLimit != null && a.creditLimit > 0)
+    .filter((a) => isRevolvingLine(a))
     .map((a) => {
       const limit = a.creditLimit as number;
       const pct = utilizationPercent(a) as number;

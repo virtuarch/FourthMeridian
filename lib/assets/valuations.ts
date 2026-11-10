@@ -60,16 +60,24 @@ export async function recordInitialValuation(tx: TenantClient, args: {
   currency:           string;
   effectiveDate:      string;
   acquisition?:       AcquisitionInput;
+  /** Mortgage F9 — the kind chosen at entry and what the value IS (explicit only). */
+  property?:          { assetKind: string | null; valueBasis: "MARKET_VALUE" | "EQUITY_ENTERED" | "UNKNOWN" | null };
 }): Promise<void> {
-  if (hasAcquisitionFacts(args.acquisition)) {
+  const hasFacts = hasAcquisitionFacts(args.acquisition);
+  const assetKind = args.property?.assetKind ?? null;
+  const valueBasis = args.property?.valueBasis ?? null;
+  if (hasFacts || assetKind !== null || valueBasis !== null) {
+    const acq = hasFacts ? args.acquisition! : null;
     await tx.manualAssetProfile.create({
       data: {
         financialAccountId:           args.financialAccountId,
-        acquisitionDate:              args.acquisition.acquisitionDate ? DATE(args.acquisition.acquisitionDate) : null,
-        purchasePrice:                args.acquisition.purchasePrice ?? null,
+        acquisitionDate:              acq?.acquisitionDate ? DATE(acq.acquisitionDate) : null,
+        purchasePrice:                acq?.purchasePrice ?? null,
         // A purchase price is entered in the asset's currency (the form says so).
-        purchaseCurrency:             args.acquisition.purchasePrice != null ? args.currency : null,
-        purchasePriceIsStartingValue: args.acquisition.purchasePriceIsStartingValue === true,
+        purchaseCurrency:             acq?.purchasePrice != null ? args.currency : null,
+        purchasePriceIsStartingValue: acq?.purchasePriceIsStartingValue === true,
+        ...(assetKind !== null ? { assetKind } : {}),
+        ...(valueBasis !== null ? { valueBasis } : {}),
       },
     });
   }

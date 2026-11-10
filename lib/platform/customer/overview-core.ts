@@ -10,7 +10,7 @@
 import { FUNNEL_STAGE_LABELS, FUNNEL_STAGE_ORDER, dayOf } from "@/lib/platform/growth/product-analytics-core";
 import { buildOnboardingCohorts } from "@/lib/platform/growth/acquisition-core";
 import type { HealthState } from "@/lib/connections/health";
-import { ATTENTION_LABELS, foldAttention, type AttentionFacts } from "./attention-core";
+import { ATTENTION_ACTIONS, ATTENTION_LABELS, foldAttention, type AttentionFacts } from "./attention-core";
 import type { CsOverviewResponse } from "./overview-types";
 
 // PB-4 — the reasons live in attention-core.ts (shared with the Customers list); re-exported for existing callers.
@@ -48,7 +48,8 @@ export function buildCsOverview(facts: CsOverviewFacts, now: Date, windowDays: 3
     attention: {
       customers: att.union.size,
       floor: att.floor,
-      reasons: att.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], count: att.sets[key].size })),
+      reasons: att.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], action: ATTENTION_ACTIONS[key], count: att.sets[key].size })),
+      testAccounts: att.testInUnion.size,
     },
     connections: facts.connections,
     incidents: { days: facts.incidentDays, floor: facts.incidentsFloor, openByKind, open: openByKind.reduce((a, r) => a + r.count, 0), openFloor: facts.openFloor === true },
@@ -58,6 +59,10 @@ export function buildCsOverview(facts: CsOverviewFacts, now: Date, windowDays: 3
       "Onboarding stage is the strict funnel (the same one Growth uses), as of now.",
       "A customer can need help for several reasons; the headline counts each customer once. Each reason opens the Customers list filtered to it — the same rule, so the count and the list agree.",
       "Policy group: an assignment naming an unknown, invalid or retired group is flagged. A customer with no assignment resolves to the default and is flagged only while fail-closed enforcement is on (then access is restricted) — the same rule as the Platform Ops policy-assignment alert.",
+      "\"No connection yet\" is literal (no bank, wallet or manual account at all) and covers 24 h to 7 days after registering; from 7 days the customer reads \"Stalled\" instead.",
+      "Import failed / interrupted use the one import-status rule (the Recently-joined dot's) over bank connections linked in the last 14 days. \"Left linking\" is a Plaid Link exit in the last 7 days with no connection made since; only its closed exit code is shown.",
+      "Suggested next steps are text for the operator only. Nothing here contacts a customer; customer contact requires owner approval.",
+      "\"Test\" marks an account on a reserved e-mail domain (example.test, example.com, …). It is a label only: test accounts are still counted until the owner decides (OD-4).",
       "\"Stalled before first connection\" follows the strict funnel: a customer who connected but skipped an earlier stage (verification, a first session) is counted here too.",
       "Open sync incidents are the canonical ACTIVE incidents (the Incidents workspace's read) — orphaned, superseded and event rows are excluded; resolved episodes are kept 90 days.",
       "The sync-issue trend counts the same canonical incident episodes: opened = first occurrence, resolved = the recovery's resolvedAt. Event rows (e.g. a provider-removed transaction) are evidence, not incidents, and are not counted.",

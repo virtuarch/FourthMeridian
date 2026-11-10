@@ -54,6 +54,7 @@ import type { FreshnessBasis } from "@/lib/freshness/observation";
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — a VERDICT is a sentence (see display-money.ts)
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
+import { excludedAccountCounts, unobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -114,6 +115,12 @@ export interface DebtAccountRow {
   minimumPaymentIsEstimated?: boolean;
   /** DebtProfile.promoAprEndDate as "YYYY-MM-DD" — FULL rows only. */
   promoAprEndDate?: string;
+  /**
+   * Mortgage F8 — the data layer EXCLUDED this row's balance (FIN-A2: never
+   * observed; its `balance` is a structural 0). Not a fact about terms, so it
+   * rides on BALANCE_ONLY rows too (the tier already discloses the balance).
+   */
+  valuationUnknown?: boolean;
 }
 
 // ── Core computation ──────────────────────────────────────────────────────────
@@ -302,6 +309,12 @@ export function computeDebt(
   }
 
   const fullAgg = computeDebtAggregate(aggRows);
+
+  // Mortgage F8 (S2) — a countable debt whose balance was never observed is
+  // EXCLUDED from totalDebt (structural 0); the total is then PARTIAL and says
+  // which way the truth lies. The balance itself is never invented.
+  const debtCoverage = unobservedTotalCoverage("TOTAL_DEBT", excludedAccountCounts(countable));
+  const debtPartial = debtCoverage.status === "PARTIAL";
   const blendedApr = fullAgg.weightedApr;
   const minPayments = fullAgg.minimumPayment;
   const interestKnown = blendedApr !== null;
@@ -309,22 +322,45 @@ export function computeDebt(
   // ── Metrics ───────────────────────────────────────────────────────────────
   const headline: LensMetric = {
     id: "totalDebt",
-    label: "Total debt",
+    label: debtPartial ? `Total debt — partial: ${debtCoverage.notes.join("; ")}` : "Total debt",
     value: totalDebt,
     format: "currency",
-    tone: totalDebt > 0 ? "neutral" : "positive",
+    tone: totalDebt > 0 || debtPartial ? "neutral" : "positive",
   };
   const metrics: LensMetric[] = [headline];
   if (interestKnown) {
     metrics.push(
       { id: "monthlyInterest", label: "Estimated interest per month", value: monthlyInterest, format: "currency", tone: "warning", estimated: true },
-      { id: "blendedApr", label: "Blended APR (balance-weighted, known rates)", value: blendedApr as number, format: "percent" },
+      // Mortgage F3 — "rate", not "APR": the blend can include a mortgage or a
+      // loan (APR is revolving credit only), and this lens carries no kind. A
+      // blend over SOME of the debts is labelled PARTIAL with the coverage note.
+      // S2 — when the known rates cover under half of what is owed, the figure
+      // is "Not enough rate information" (the number stays in the assumption).
+      fullAgg.rateCoverage.sufficient
+        ? {
+            id: "blendedApr",
+            label: fullAgg.rateCoverage.status === "PARTIAL"
+              ? `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`
+              : "Blended rate (balance-weighted)",
+            value: blendedApr as number,
+            format: "percent",
+          }
+        : {
+            id: "blendedApr",
+            label: `Blended rate (balance-weighted) — partial: ${fullAgg.rateCoverage.note}`,
+            value: "Not enough rate information",
+            format: "text",
+          },
     );
   }
   if (minPaymentsKnown) {
     metrics.push({
       id: "minPayments",
-      label: "Minimum payments per month",
+      // Mortgage F3 — a sum over SOME of the owing debts is PARTIAL, never
+      // "the missing ones are 0".
+      label: fullAgg.minimumCoverage.status === "PARTIAL"
+        ? `Minimum payments per month — partial: ${fullAgg.minimumCoverage.note}`
+        : "Minimum payments per month",
       value: minPayments,
       format: "currency",
       estimated: anyMinEstimated || undefined,
@@ -363,6 +399,27 @@ export function computeDebt(
       source: "estimate",
     });
   }
+  if (interestKnown && fullAgg.rateCoverage.status === "PARTIAL") {
+    assumptions.push({
+      id: "partial-rate",
+      text: `The blended rate is ${(blendedApr as number).toFixed(2)}% across the debts with a known rate only — ${fullAgg.rateCoverage.note}; it is not the rate of all debt.`,
+      source: "default",
+    });
+  }
+  if (minPaymentsKnown && fullAgg.minimumCoverage.status === "PARTIAL") {
+    assumptions.push({
+      id: "partial-minimums",
+      text: `Minimum payments are partial: ${fullAgg.minimumCoverage.note} — a missing minimum is never counted as 0.`,
+      source: "default",
+    });
+  }
+  if (debtPartial) {
+    assumptions.push({
+      id: "excluded-unknown-balance",
+      text: `${debtCoverage.notes.join("; ")}: its balance was never observed, so it is left out of total debt — never counted as $0 and never estimated.`,
+      source: "default",
+    });
+  }
   // Knowledge gap — FULL rows only, by the assemblers' rule: naming a gap on
   // a shared account would reveal that a withheld debt has unknown terms.
   if (unknownRateFullCount > 0) {
@@ -386,6 +443,8 @@ export function computeDebt(
   } else {
     verdict = `You carry ${formatCurrencyWhole(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
   }
+  // Mortgage F8 — never a clean total over an excluded debt (incl. "no outstanding debt").
+  if (debtPartial) verdict = `${verdict} ${debtCoverage.notes.join("; ")}.`;
 
   return {
     ...base,
@@ -397,6 +456,8 @@ export function computeDebt(
     // context-less results serialize byte-identically (kill switch).
     ...(ctx ? { estimated: estFlag.estimated } : {}),
     ...(ctx && estFlag.unconverted ? { unconverted: true } : {}), // V25-FINAL-1 — incomplete total
+    // Mortgage F8 — present ONLY when PARTIAL (byte-identical otherwise).
+    ...(debtPartial ? { totalsCoverage: debtCoverage } : {}),
 
     assumptions,
     provenance,

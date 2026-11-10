@@ -28,6 +28,7 @@ import { ALERT_RULES } from "@/lib/alerts/rules";
 import { loadAlertSettings, loadRecentAlertRuns } from "@/lib/alerts/run";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 import { collectRecentRecoveries, type AlertRecoveredRecord } from "@/lib/alerts/recovery";
+import { alertEvaluatorOverdue, type AlertEvaluatorOverdue } from "@/lib/platform/ops/overview-core";
 import {
   collectAlertHistory,
   deriveAlertRuleViews,
@@ -51,6 +52,13 @@ export interface PlatformAlertsResponse {
   /** The latest evaluation's verdict — the only source of "firing now". Null
    *  when the evaluator has never recorded a run. */
   latest: AlertLatestEvaluation | null;
+  /** OBS-001 (drawer) — the evaluator age gate, computed HERE with the server's
+   *  clock by the same alertEvaluatorSilence the Overview chip uses (registry
+   *  cadence; same grace and dead multiple). Non-null ⇒ `latest` is too old to
+   *  speak for now and must be worded as "at last evaluation", never "now".
+   *  Null when current or when there is no evaluation. Optional only so older
+   *  fixtures type; the route always sends it. */
+  evaluatorOverdue?: AlertEvaluatorOverdue | null;
   /** ALERT RECOVERY — delivered recoveries across the retained evaluations, newest first. Optional so older fixtures type. */
   recoveries?: AlertRecoveredRecord[];
   /** ALERT RECOVERY — the latest run's `counts.recoveryExpired` (recoveries dropped undelivered after 7 days). */
@@ -67,13 +75,15 @@ export async function GET() {
     return rule ? resolveEnabled(rule, settings) : false;
   };
 
+  const latest = latestAlertEvaluation(recentRuns);
   return NextResponse.json({
     destinationConfigured: Boolean(env.PLATFORM_ALERTS_EMAIL),
     lastEvaluatedAt: recentRuns[0]?.evaluatedAtISO ?? null,
     rules: deriveAlertRuleViews(ALERT_RULES, isEnabled, recentRuns),
     history: collectAlertHistory(recentRuns),
     historyRuns: recentRuns.length,
-    latest: latestAlertEvaluation(recentRuns),
+    latest,
+    evaluatorOverdue: latest ? alertEvaluatorOverdue(latest.evaluatedAtISO, null, new Date()) : null,
     recoveries: collectRecentRecoveries(recentRuns),
     latestRecoveryExpired: recentRuns[0]?.counts.recoveryExpired ?? 0,
   } satisfies PlatformAlertsResponse);

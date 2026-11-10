@@ -43,7 +43,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { formatCompactCurrency } from "@/lib/currency";
 import {
   medianSpacingDays, toRuns, toDateGaps, toBasisSeams,
-  basisOf,
+  basisOf, joinsAcrossSeam,
   type TrendGeomPoint, type TrendRun, type TrendBasis,
 } from "./trend-runs.core";
 
@@ -130,6 +130,10 @@ const RUN_STYLE: Record<TrendBasis, { fill: string | null; opacity: number; dash
   recorded:      { fill: "url(#tc-fill)",       opacity: 1 },
   modeled:       { fill: "url(#tc-fill-recon)", opacity: 0.6,  dash: "4 3" },
   carried:       { fill: null,                  opacity: 0.6,  dash: "8 4" },
+  // Mortgage F1b — Liquid NW on the PREVIOUS definition (installments
+  // subtracted): faint, short-dotted, no fill, and never joined to the current
+  // line (joinsAcrossSeam), so the two definitions are never read as one series.
+  previousDefinition: { fill: null,             opacity: 0.4,  dash: "2 3" },
 };
 
 /** The tooltip's one-word provenance suffix. Text, not logic. */
@@ -140,6 +144,7 @@ const BASIS_SUFFIX: Record<TrendBasis, string | null> = {
   recorded:      "your estimate",
   modeled:       "modeled — not a market price",
   carried:       "latest estimate, carried forward",
+  previousDefinition: "previous definition — installment loans subtracted",
 };
 
 export function TrendChart({
@@ -150,6 +155,7 @@ export function TrendChart({
   ariaLabel,
   formatDate = defaultFormatDate,
   onSelectPoint,
+  markers,
 }: {
   points:       TrendPoint[];
   currency:     string;
@@ -165,6 +171,12 @@ export function TrendChart({
    * historical authority for those. Omitted ⇒ the chart is exactly as it was.
    */
   onSelectPoint?: (dateISO: string) => void;
+  /**
+   * Mortgage F1 — OPTIONAL dated annotations (e.g. a definition change). Drawn
+   * as a dashed vertical rule + short label when the date lies inside the
+   * plotted window; the CALLER writes the label. Omitted ⇒ unchanged.
+   */
+  markers?: { date: string; label: string }[];
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -218,7 +230,8 @@ export function TrendChart({
     // v2.7 — JOIN across a basis change: a run that begins at a basis seam (adjacent
     // points, no date hole) starts its path at the previous run's last point, so the
     // line flows on in the new run's style. Date holes are untouched (no seam there).
-    const joinFrom = new Map<Pt, Pt>(toBasisSeams(pts, gapDays).map((s) => [pts[s.toIndex], pts[s.fromIndex]]));
+    // Mortgage F1b — never across a liquid-NW definition change (joinsAcrossSeam).
+    const joinFrom = new Map<Pt, Pt>(toBasisSeams(pts, gapDays).filter(joinsAcrossSeam).map((s) => [pts[s.toIndex], pts[s.fromIndex]]));
     const runs = toRuns(pts, gapDays).map((run) => {
       const prev = joinFrom.get(run.points[0]);
       return prev && run.points[0] !== prev ? { ...run, points: [prev, ...run.points] } : run;
@@ -359,6 +372,16 @@ export function TrendChart({
                 <line x1={g.x1} y1={PAD_T - 4} x2={g.x1} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
                 <text x={(g.x0 + g.x1) / 2} y={H - PAD_B - 8} textAnchor="middle" className="fill-[var(--text-muted)] text-[9px] uppercase" style={{ letterSpacing: "0.08em" }}>
                   no data
+                </text>
+              </g>
+            ))}
+
+            {/* Mortgage F1 — caller-written dated annotations inside the window. */}
+            {(markers ?? []).filter((m) => ts(m.date) >= geom.pts[0].t && ts(m.date) <= geom.last.t).map((m) => (
+              <g key={`mk-${m.date}`} data-chart-marker={m.date}>
+                <line x1={geom.x(ts(m.date))} y1={PAD_T - 4} x2={geom.x(ts(m.date))} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
+                <text x={geom.x(ts(m.date))} y={PAD_T + 4} textAnchor="middle" className="fill-[var(--text-muted)] text-[9px] uppercase" style={{ letterSpacing: "0.08em" }}>
+                  {m.label}
                 </text>
               </g>
             ))}

@@ -74,11 +74,14 @@ async function liquidityLens(
     // 2026-10-07 — liquidity-access evidence (HSA / retirement / unverified);
     // a category, not an identity, so the lens privacy contract holds.
     providerSubtype: account.providerSubtype ?? null,
+    debtSubtype:     account.debtSubtype ?? null,
+    // S2 P1-R1 — the server's classification (coarse, raw subtypes withheld, on non-FULL rows).
+    debtType:        account.debtType ?? null,
     balance:         account.balance,
     // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
     // privacy contract of this boundary is about names/institutions).
     currency:        account.currency ?? null,
-    creditLimit:     account.creditLimit ?? undefined,
+    creditLimit:     account.creditLimit, // null = known-absent; undefined = withheld (S2 P1-R1)
     lastUpdated:     account.lastUpdated,
     // v2.6-L2 — the institution's own clock, so dataAsOfBasis can tell "as of"
     // from "checked". Null on every account in the corpus today.
@@ -104,6 +107,8 @@ async function liquidityLens(
     ...(!options.asOf && typeof account.adjustedBalance === "number"
       ? { adjustedBalance: account.adjustedBalance }
       : {}),
+    // Mortgage F8b — the data layer excluded this balance; OMITTED otherwise.
+    ...(account.valuationUnknown === true ? { valuationUnknown: true } : {}),
     visibilityLevel,
   }));
 

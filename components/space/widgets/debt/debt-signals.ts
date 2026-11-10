@@ -25,6 +25,9 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 import { computeDebtKpis } from "./debt-kpis";
+import { blendedRateLabel } from "@/lib/debt/rate-label";
+import { hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { displayedUtilizationPct } from "@/lib/accounts/credit-utilization";
 
 export type DebtSignalTone = "ok" | "warn";
 
@@ -51,7 +54,7 @@ export function buildDebtSignals({
 
   // 1. Utilization level (landed thresholds) — only when a revolving limit exists.
   if (kpis.utilizationPct != null && kpis.utilizationLevel != null) {
-    const pct = Math.round(kpis.utilizationPct);
+    const pct = displayedUtilizationPct(kpis.utilizationPct);
     switch (kpis.utilizationLevel) {
       case "over":
         signals.push({ id: "utilization", tone: "warn", text: `Credit utilization is over the limit (${pct}%)` });
@@ -78,13 +81,18 @@ export function buildDebtSignals({
   // 3. APR on file — `kpis.unratedCount` is scoped to accounts that OWE (a
   //    paid-off card accrues nothing, so its missing rate is not a gap). An
   //    explicit 0% is a rate on file.
+  //    Mortgage F3 — "APR" only when the debts named are all revolving credit;
+  //    a mortgage / loan without a rate is "no rate", never "no APR".
+  const owing = debts.filter((a) => hasOutstandingDebt(a.balance));
   if (kpis.unratedCount > 0) {
+    const word = blendedRateLabel(owing.filter((a) => a.interestRate == null));
     signals.push({
       id: "gaps", tone: "warn",
-      text: `${kpis.unratedCount} debt${kpis.unratedCount === 1 ? "" : "s"} with no APR — interest cost unknown. Add it in Interest cost.`,
+      text: `${kpis.unratedCount} debt${kpis.unratedCount === 1 ? "" : "s"} with no ${word} — interest cost unknown. Add it in Interest cost.`,
     });
   } else if (kpis.owingCount > 0) {
-    signals.push({ id: "gaps", tone: "ok", text: "APR on file for every debt with a balance" });
+    const word = blendedRateLabel(owing);
+    signals.push({ id: "gaps", tone: "ok", text: `${word === "APR" ? "APR" : "A rate"} on file for every debt with a balance` });
   }
 
   return signals;

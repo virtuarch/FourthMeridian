@@ -24,7 +24,8 @@ import type { RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { EnvReport } from "@/lib/env";
-import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { unavailableAlertSources, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { ALERT_AUTHORITY_SOURCE_LABEL } from "@/lib/alerts/authority-sources";
 import { platformViewTarget } from "@/lib/platform/workspaces";
 
 /** PLATFORM OPS PHASE 1 UX — posture chips open the Policies VIEW that holds
@@ -402,7 +403,26 @@ export function alertEvaluatorSilence(evaluatedAtISO: string, cadenceHours: numb
   return { ageHours, dead: ageHours > cadence * ALERT_EVALUATOR_DEAD_MULTIPLE };
 }
 
-const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time" : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
+/** Age in words for the evaluator gate ("9 h", "3 d", "unreadable time"). Shared by the chip, the drawer and Attention. */
+export const hoursWord = (h: number): string => (!Number.isFinite(h) ? "unreadable time" : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
+
+/**
+ * The evaluator gate as a JSON-safe FACT, computed SERVER-SIDE with the server's
+ * clock and shipped in a response (the Platform Health drawer must never age an
+ * evaluation against a client clock). Same thresholds as the chip — it is
+ * alertEvaluatorSilence, reshaped: `ageHours: null` = unreadable timestamp
+ * (Infinity does not survive JSON). Null = current.
+ */
+export interface AlertEvaluatorOverdue { ageHours: number | null; dead: boolean; cadenceHours: number }
+export function alertEvaluatorOverdue(evaluatedAtISO: string, cadenceHours: number | null | undefined, now: Date): AlertEvaluatorOverdue | null {
+  const silent = alertEvaluatorSilence(evaluatedAtISO, cadenceHours, now);
+  if (!silent) return null;
+  return {
+    ageHours: Number.isFinite(silent.ageHours) ? silent.ageHours : null,
+    dead: silent.dead,
+    cadenceHours: cadenceHours && cadenceHours > 0 ? cadenceHours : ALERT_EVALUATOR_DEFAULT_CADENCE_HOURS,
+  };
+}
 
 /**
  * ALERTS — firing NOW is the latest evaluation's verdict (lib/alerts/latest-evaluation.ts).
@@ -436,8 +456,15 @@ export function deriveAlertsPosture(a: PostureInputs["alerts"], now?: Date): Pos
   const firing = a.latest.rules.filter((r) => r.firing);
   const critical = firing.some((r) => r.severity === "critical");
   const evaluated = a.latest.rules.filter((r) => r.enabled).length;
-  if (firing.length === 0) return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
-  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
+  // B10 monitoring (S2 ruling) — a source that failed to gather left its rules
+  // blind: never "Quiet" over it. Warn and name the source(s).
+  const blind = unavailableAlertSources(a.latest);
+  const blindText = blind.length ? `alert source unavailable: ${blind.map((k) => ALERT_AUTHORITY_SOURCE_LABEL[k]).join(", ")}` : "";
+  if (firing.length === 0) {
+    if (blind.length) return { key: "alerts", label: "Alerts", word: "Alert source unavailable", tone: "warn", count: `0 of ${evaluated} firing · ${blindText}`, state: "observed", workspace: ALERTS_VIEW, basis: `${basis} + per-authority gather status` };
+    return { key: "alerts", label: "Alerts", word: "Quiet", tone: "ok", count: `0 of ${evaluated} firing`, state: "observed", workspace: ALERTS_VIEW, basis };
+  }
+  return { key: "alerts", label: "Alerts", word: critical ? "Firing (critical)" : "Firing", tone: critical ? "bad" : "warn", count: `${firing.length} of ${evaluated} firing${blind.length ? ` · ${blindText}` : ""}`, state: "observed", workspace: ALERTS_VIEW, basis };
 }
 
 /** PROVIDERS — the provider authority's own worst-wins trust roll-up. */

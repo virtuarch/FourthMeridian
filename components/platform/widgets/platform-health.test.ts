@@ -51,8 +51,10 @@ import {
   PlatformHealthSurface,
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
 import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView, envView } from "./platform-health-view";
 import { PLATFORM_AREA_WORKSPACES, resolvePlatformDestination } from "@/lib/platform/workspaces";
+import { alertEvaluatorOverdue } from "@/lib/platform/ops/overview-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -434,6 +436,72 @@ function main() {
     check("…and a latest-run breach is critical with the rule as a lead row", firing.status === "critical" && firing.lines[0]?.label === "Repeated job failures");
     const olderFiring = alertsView(alerts([HISTORY_ONLY_RUN, FIRING_RUN]), NOW);
     check("an older firing run does not outrank the newest quiet one", olderFiring.status === "nominal");
+  }
+
+  // ── 11b. B10 monitoring — a failed alert source is a warning, never silence ──
+  console.log("11b. an alert source that failed to gather turns Nominal into Caution and is named");
+  {
+    const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const]));
+    const blind = alertsView(alerts([run({ evaluatedAtISO: AGO(30), authorities: { ...allOk, syncIncidents: "failed" } })]), NOW);
+    check("failed source → caution (not nominal)", blind.status === "caution", String(blind.status));
+    check("…a lead row names it: 'Alert source unavailable: sync incidents'", blind.lines.some((l) => l.label === "Alert source unavailable: sync incidents" && l.tone === "bad"), JSON.stringify(blind.lines));
+    check("…the headline says a source is unavailable", /1 alert source unavailable/.test(blind.headline), blind.headline);
+    const clean = alertsView(alerts([run({ evaluatedAtISO: AGO(30), authorities: allOk })]), NOW);
+    check("all sources ok → nominal, no source row", clean.status === "nominal" && !clean.lines.some((l) => /Alert source unavailable/.test(l.label)));
+    const legacy = alertsView(alerts([run({ evaluatedAtISO: AGO(30) })]), NOW);
+    check("a row without `authorities` (pre-B10) → no warning invented, still nominal", legacy.status === "nominal" && ![...legacy.lines, ...legacy.details].some((l) => /Alert source unavailable/.test(l.label)));
+  }
+
+  // ── 11c. OBS-001 — the drawer is age-gated by the SERVER's verdict ─────────
+  console.log("11c. an overdue evaluator is never worded as 'now'; fresh wording is unchanged");
+  {
+    // The server's verdict, computed the way the route does (same helper, same thresholds).
+    const serverNow = new Date(NOW);
+    const withGate = (runs: AlertRunSummary[]): PlatformAlertsResponse => {
+      const d = alerts(runs);
+      return { ...d, evaluatorOverdue: d.latest ? alertEvaluatorOverdue(d.latest.evaluatedAtISO, null, serverNow) : null };
+    };
+    const twoFiring = (evaluatedAtISO: string) => run({
+      evaluatedAtISO,
+      rules: ALERT_RULES.map((r, i) => ({ id: r.id, kind: r.kind, enabled: r.live, live: r.live, firing: i < 2, breaches: i < 2 ? 1 : 0, severity: i < 2 ? "warning" as const : null })),
+    });
+
+    // FRESH (30 min old) — byte-identical wording to before.
+    const fresh = alertsView(withGate([twoFiring(AGO(30))]), NOW);
+    check("fresh: gate is null", withGate([twoFiring(AGO(30))]).evaluatorOverdue === null);
+    check("fresh: headline unchanged ('2 rules firing now')", fresh.headline === "2 rules firing now", fresh.headline);
+    check("fresh: firing rows say 'firing now'", fresh.lines.every((l) => /^firing now · /.test(l.detail)), JSON.stringify(fresh.lines));
+    check("fresh: no stale wording anywhere", ![fresh.headline, fresh.note ?? "", ...[...fresh.lines, ...fresh.details].map((l) => l.detail)].some((t) => /may be out of date|overdue/.test(t)));
+    check("fresh: 'Last evaluated' stays a normal fact", [...fresh.lines, ...fresh.details].find((l) => l.label === "Last evaluated")?.tone === "normal");
+
+    // OVERDUE (10 h old > 6 h cadence + 2 h grace) with two rows firing — the
+    // warn line must still lead (two firing rows would otherwise fill LEAD_ROWS).
+    const od = alertsView(withGate([twoFiring(AGO(600))]), NOW);
+    check("overdue: headline says 'at last evaluation (evaluator overdue)'", od.headline === "2 rules firing at last evaluation (evaluator overdue)", od.headline);
+    check("overdue: never 'now' in headline or rows", ![od.headline, ...[...od.lines, ...od.details].map((l) => l.detail)].some((t) => /firing now/.test(t)));
+    const last = od.lines[0];
+    check("overdue: 'Last evaluated' is the FIRST lead row (cannot be collapsed)", last?.label === "Last evaluated", JSON.stringify(od.lines));
+    check("overdue: …warn-toned", last?.tone === "warn");
+    check("overdue: …shared stale wording with the server age", /^last evaluated 10 h ago, may be out of date · evaluator overdue \(expected every 6 h\)$/.test(last?.detail ?? ""), last?.detail);
+    check("overdue: only one 'Last evaluated' line", [...od.lines, ...od.details].filter((l) => l.label === "Last evaluated").length === 1);
+    check("overdue: group is at least Caution", od.status === "caution", String(od.status));
+    const quietOd = alertsView(withGate([run({ evaluatedAtISO: AGO(600) })]), NOW);
+    check("overdue + nothing firing: not Nominal, worded at last evaluation", quietOd.status === "caution" && quietOd.headline === "No rule firing at last evaluation (evaluator overdue)", `${quietOd.status} ${quietOd.headline}`);
+    const dead = alertsView(withGate([run({ evaluatedAtISO: AGO(60 * 30) })]), NOW);
+    check("dead (30 h > 3 × 6 h): Action needed", dead.status === "critical", String(dead.status));
+    check("the warn tone renders with the warn token, not coral", (() => {
+      const { html } = renderSurface({ alerts: ok(withGate([twoFiring(AGO(600))])) });
+      return html.includes("var(--accent-warning)") && /evaluator overdue/.test(html);
+    })());
+
+    // NEVER EVALUATED — unchanged: Unknown, no gate, no stale claim.
+    const never = alertsView(withGate([]), NOW);
+    check("never ran: Unknown / 'Never evaluated', no overdue wording", never.status === "unknown" && never.headline === "Never evaluated" && !/overdue/.test(JSON.stringify(never)), never.headline);
+
+    // The view itself never ages against a client clock: the same overdue
+    // response read at a "client now" that would call it fresh is still overdue.
+    const clientSkew = alertsView(withGate([twoFiring(AGO(600))]), Date.parse(AGO(600)));
+    check("server verdict wins over the client clock", clientSkew.headline === od.headline, clientSkew.headline);
   }
 
   // ── 12. UX-P1 — compact: ≤2 lead rows; provenance and notes in <details> ──

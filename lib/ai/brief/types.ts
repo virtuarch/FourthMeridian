@@ -15,6 +15,9 @@
  * resolved against it (contract.ts).
  */
 
+import type { ExclusionDirection, ExclusionTotal } from '@/lib/balances/unobserved-totals';
+
+
 /**
  * One measured movement, in the metric's own direction.
  *
@@ -298,8 +301,10 @@ export interface BriefPackage {
     deficitCause:        string;
     /**
      * Present only when a deficit was graded: the verdict WITH its scope, rung and
-     * operands (economic net, debt payments, the new charges they settled, net
-     * paydown). Scope CASH_NET_AFTER_DEBT_PAYDOWN — never "debt payments".
+     * operands (economic net, debt payments, the new charges they settled,
+     * revolving net paydown, and — owner F6 — unsplit loan payments with their
+     * label: principal + interest[ + escrow] not split, never paydown). Scope
+     * CASH_NET_AFTER_DEBT_PAYDOWN — never "debt payments".
      */
     deficit?:            BriefClassification;
     /** CURRENT only — graded against today's balances. Each carries WHY it fired. */
@@ -351,6 +356,14 @@ export interface BriefPackage {
     unvaluedPositions: number;
     totalsEstimated: boolean;
     totalsUnconverted: boolean;
+    /**
+     * Mortgage F8b — each headline total that is PARTIAL because an account of
+     * unknown balance was excluded, with its DIRECTION and the excluded types
+     * ("Liquid net worth — partial: 1 balance unavailable (credit card); may be
+     * overstated"). An unobserved installment loan never makes liquid net worth
+     * partial (F1). Today only; OMITTED when every total is complete.
+     */
+    partialTotals?: { total: ExclusionTotal; directions: ExclusionDirection[]; note: string }[];
   };
 }
 

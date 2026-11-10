@@ -46,7 +46,7 @@ import { computeCapitalAllocation, computeInvestmentReadiness, computeRiskOpport
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
-import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
+import { computeDebtAggregate, aiRateCoverage, type DebtAggregateRow } from '@/lib/debt/aggregates';
 import { resolveExpenseBaseline } from '@/lib/liquidity/expense-baseline';
 
 export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
@@ -74,8 +74,13 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // as a paydown nothing had measured). With no paydown and no supplied after-paydown
   // net, the ladder grades on the economic net alone and DEBT_DRIVEN is unreachable.
   const netPaydown: number | null = txn?.debtService?.netPaydown ?? null;
+  // Owner F6 — installment-loan payments (connected + untracked) are debt
+  // service reported UNSPLIT, outside `netPaydown` (revolving only). Together
+  // they are the same cash the pre-F6 netPaydown + untracked carried.
+  const unsplitLoanPayments: number | null =
+    txn?.debtService ? (txn.debtService.unsplitLoanPayments ?? 0) : null;
   const netAfterDebtPayments: number | null =
-    txn?.netAfterDebtPayments ?? (netPaydown === null ? null : netCashFlow - netPaydown);
+    txn?.netAfterDebtPayments ?? (netPaydown === null ? null : netCashFlow - netPaydown - (unsplitLoanPayments ?? 0));
   const totalLiquid      = accts?.totalLiquid      ?? 0;
   const totalLiabilities = accts?.totalLiabilities ?? 0;
 
@@ -86,7 +91,9 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   // debt. Adding every debt payment counted purchases made on a card twice (once as
   // spending, once as the payment that settled them) and understated the ratio.
   // An unmeasured paydown adds nothing: spending alone is the floor of what left.
-  const totalOutflows    = expenseTotal + (netPaydown ?? 0);
+  // Owner F6 — unsplit loan payments are cash that left too (formerly inside
+  // netPaydown for connected loans), so they stay in the outflow floor.
+  const totalOutflows    = expenseTotal + (netPaydown ?? 0) + (unsplitLoanPayments ?? 0);
   const incomePlausRatio = totalOutflows > 0 ? incomeTotal / totalOutflows : 1;
 
   // ── Step 1: Data quality ─────────────────────────────────────────────────
@@ -209,6 +216,10 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       newChargesOnLiabilities: txn?.debtService ? money2(txn.debtService.newChargesOnLiabilities) : null,
       debtProceeds:            txn?.debtService ? money2(txn.debtService.debtProceeds) : null,
       netPaydown:              netPaydown === null ? null : money2(netPaydown),
+      // Owner F6 — loan payments, principal + interest[ + escrow] NOT split.
+      unsplitLoanPayments:     unsplitLoanPayments === null ? null : money2(unsplitLoanPayments),
+      ...(unsplitLoanPayments && txn?.debtService?.unsplitLoanPaymentLabel
+        ? { unsplitLoanPaymentLabel: txn.debtService.unsplitLoanPaymentLabel } : {}),
       netAfterDebtPaydown:     netAfterDebtPayments === null ? null : money2(netAfterDebtPayments),
       windowDays,
     },
@@ -378,7 +389,17 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       // the rate rungs cannot fire and the classification falls to IMPROVING /
       // HEALTHY on the liabilities trend, the honest read when no interest is
       // accruing. The reason echoes the null, never a 0% nobody measured.
-      const weightedAvgAPR = computeDebtAggregate(aprRows).weightedApr;
+      // F3 / S2 — the coverage is computed over EVERY owing debt (unrated and
+      // BALANCE_ONLY rows as null) so it says what the blend covers; this rung
+      // only runs when every rate is known, so it is COMPLETE here — and is
+      // carried into reasonMetrics beside the rate either way. Not COMPLETE ⇒
+      // null (unknown), never a blend presented as the rate of all debt.
+      const covRows: DebtAggregateRow[] = debtAccounts
+        .filter((a) => a.reportingBalance != null && hasOutstandingDebt(a.reportingBalance))
+        .map((a) => ({ balance: amountOwed(a.reportingBalance as number),
+          apr: a.visibilityLevel === 'FULL' && a.apr != null ? a.apr : null, minimumPayment: null }));
+      const covAgg = computeDebtAggregate(covRows);
+      const weightedAvgAPR = covAgg.rateCoverage.status === 'COMPLETE' ? computeDebtAggregate(aprRows).weightedApr : null;
       // W3 — IMPROVING now derives from the CANONICAL window authority
       // (`liabilitiesChange`, computed by canonicalWindowChange over the same
       // product-defined preset as `canonicalChange`), replacing the accidental
@@ -398,6 +419,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
         ratedOwed,
         liabilitiesChangeAbs: snap?.liabilitiesChange?.abs ?? null,
         ...population,
+        rateCoverage:         aiRateCoverage(covAgg.rateCoverage),
       });
       debtRateClassification = graded.classification;
       debtReason             = graded.reason;

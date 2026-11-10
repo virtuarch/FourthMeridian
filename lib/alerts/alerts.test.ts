@@ -28,6 +28,9 @@ import {
   type AlertRunSummary,
 } from "@/lib/alerts/evaluate";
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
+import { authorityGatherStatus } from "@/lib/alerts/evaluate";
+import { latestAlertEvaluation, unavailableAlertSources } from "@/lib/alerts/latest-evaluation";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { AlertSyncIncident, SyncIncidentHealth } from "@/lib/alerts/authorities";
 import { foldSyncIncidents, type AlertFoldVerdict } from "@/lib/alerts/sync-incidents";
@@ -99,10 +102,10 @@ console.log("registry");
 // assignments fail closed; the actionable operator alert). Ten rules, nine live.
 // Quota/cost anomaly re-pin: + the three anomaly@1 rules (ai-spend-anomaly,
 // ai-spend-user-anomaly, plaid-call-anomaly), all live. Thirteen rules, twelve live.
-check("thirteen rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004 + policy-assignment-invalid + three anomaly@1 rules)", ALERT_RULES.length === 13);
-check("twelve live rules", ALERT_RULES.filter((r) => r.live).length === 12);
+check("fourteen rules (five initial + ai-provider-failing + the two ai-spend rules + sync-incident-critical from OBS-004 + policy-assignment-invalid + three anomaly@1 rules + platform-ai-purge-late from B11 PR D)", ALERT_RULES.length === 14);
+check("thirteen live rules", ALERT_RULES.filter((r) => r.live).length === 13);
 check("quota-low is the sole dormant rule", ALERT_RULES.filter((r) => !r.live).map((r) => r.id).join() === "quota-low");
-check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 13);
+check("every rule id unique", new Set(ALERT_RULES.map((r) => r.id)).size === 14);
 check("sync-incident-critical reads the sync-incidents authority, live, on by default", ALERT_RULES.find((r) => r.id === "sync-incident-critical")?.authority === "sync-incidents" && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.live && ALERT_RULES.find((r) => r.id === "sync-incident-critical")!.defaultEnabled);
 check("ai-provider-failing reads the ai-failures authority", ALERT_RULES.find((r) => r.id === "ai-provider-failing")?.authority === "ai-failures");
 check("ai-spend-fleet-high reads the ai-spend authority and says critical = twice the threshold", ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")?.authority === "ai-spend" && /critical at or above twice/.test(ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!.description));
@@ -404,7 +407,7 @@ console.log("history derivation");
 
   const views = deriveAlertRuleViews(ALERT_RULES, ALL_ON, [s2, s1]);
   // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
-  check("a view per rule", views.length === 13);
+  check("a view per rule", views.length === 14);
   check("last-triggered is the newest across runs", views.find((v) => v.id === "job-failing")!.lastTriggeredAtISO === "2026-07-15T07:30:00Z");
   check("never-fired rule has null last-triggered", views.find((v) => v.id === "scheduler-silent")!.lastTriggeredAtISO === null);
   check("dormant rule reported not-live", views.find((v) => v.id === "quota-low")!.live === false);
@@ -453,7 +456,7 @@ async function orchestratorTests() {
   check("one email to the destination", sent.length === 1 && sent[0].to === "ops@fourthmeridian.com" && sent[0].count === 2);
   check("summary records fired for suppression/history", s1.fired.length === 2);
   // Owner ruling (2026-10-30) — ten rules now (policy-assignment-invalid added).
-  check("per-rule outcomes list all thirteen rules", s1.rules.length === 13);
+  check("per-rule outcomes list all fourteen rules", s1.rules.length === 14);
   check("dormant rule not firing in outcomes", s1.rules.find((r) => r.id === "quota-low")!.firing === false);
 
   // Second cycle sees the first as recent history ⇒ suppresses (no second email).
@@ -476,6 +479,25 @@ async function orchestratorTests() {
   });
   check("a healthy platform sends zero mail", quiet.counts.firing === 0 && quiet.deliveryStatus === "none" && sent.length === 1);
   check("nothing lost ⇒ undelivered is null", quiet.undelivered === null && s1.undelivered === null);
+
+  // ── B10 monitoring (S2 ruling) — per-authority gather status in the summary.
+  console.log("orchestrator · B10 per-authority gather status");
+  const fullOutputs = (o: Partial<AuthorityOutputs> = {}): AuthorityOutputs => outputs({
+    jobHealth: jobHealth([job("a", "healthy")]), connectionHealth: connHealth({ HEALTHY: 3 }), resourceFreshness: freshness([resource("fx", "fresh")]),
+    aiFailures: {} as never, aiSpend: {} as never, syncIncidents: { checkedAt: NOW.toISOString(), active: [], scanTruncated: false },
+    policyAssignments: {} as never, aiSpendAnomaly: {} as never, plaidCallAnomaly: {} as never, platformAiPurge: {} as never, ...o,
+  });
+  // Shape-only stand-ins: disable every rule so the engine never reads them; gather status depends on presence alone.
+  const allOff = async () => new Map(ALERT_RULES.map((r) => [`alert_rule_enabled:${r.id}`, "false"] as const));
+  const allGathered = await evaluatePlatformAlerts({ ...baseDeps, loadSettings: allOff, gatherAuthorities: async () => fullOutputs() });
+  check("every gathered source ⇒ `ok` for all ten keys", ALERT_AUTHORITY_SOURCES.length === 10 && ALERT_AUTHORITY_SOURCES.every((k) => allGathered.authorities?.[k] === "ok"), JSON.stringify(allGathered.authorities));
+  const syncDown = await evaluatePlatformAlerts({ ...baseDeps, loadSettings: allOff, gatherAuthorities: async () => fullOutputs({ syncIncidents: null }) });
+  check("sync-incidents gather failed (null) ⇒ authorities.syncIncidents === 'failed'", syncDown.authorities?.syncIncidents === "failed");
+  check("…the others stay ok", ALERT_AUTHORITY_SOURCES.filter((k) => k !== "syncIncidents").every((k) => syncDown.authorities?.[k] === "ok"));
+  check("…fixed words only — no error text in the summary", Object.values(syncDown.authorities ?? {}).every((v) => v === "ok" || v === "failed"));
+  check("…and the failed source surfaces through the latest-evaluation reader", unavailableAlertSources(latestAlertEvaluation([syncDown])).join() === "syncIncidents");
+  check("an absent optional source is failed, never ok", quiet.authorities?.policyAssignments === "failed" && quiet.authorities?.jobHealth === "ok");
+  check("authorityGatherStatus is pure over presence", authorityGatherStatus(fullOutputs({ aiSpend: null })).aiSpend === "failed");
 
   // ── OBS-003 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.2): no
   // RESEND_API_KEY ⇒ the chokepoint returns `captured`. Before the fix that was
@@ -528,7 +550,7 @@ async function orchestratorTests() {
   }
   check("start-write failed ⇒ no email sent", sent.length === before);
   check("start-write failed ⇒ skipped + LEDGER_WRITE_FAILED with the breach count", broken.deliveryStatus === "skipped" && broken.undelivered?.reason === "LEDGER_WRITE_FAILED" && broken.undelivered.breaches === 2);
-  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 13); // owner ruling 2026-10-30: ten rules; + three anomaly@1 rules
+  check("start-write failed ⇒ evaluation still recorded every rule outcome (the breaker is on delivery only)", broken.counts.firing === 2 && broken.rules.length === 14); // owner ruling 2026-10-30: ten rules; + three anomaly@1 rules
   const healthyLedger = await evaluatePlatformAlerts({ ...baseDeps, ledgerStartWriteFailed: () => false });
   check("start-write ok ⇒ delivery proceeds", healthyLedger.deliveryStatus === "sent" && sent.length === before + 1);
 }

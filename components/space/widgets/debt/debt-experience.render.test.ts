@@ -180,13 +180,16 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("after Card B gains 18%: its row shows 18.00% APR and an estimated-interest figure", rowBup.includes("Card B 18.00% APR") && /Estimated interest: \$\d+\.\d\d/.test(rowBup), rowBup);
   // Both cards' interest differ because each accrues at its own rate on its own balance.
   const interestOf = (r: string) => Number(r.match(/Estimated interest: \$([\d,.]+)/)?.[1].replace(/,/g, ""));
-  check("the 24% card's modelled interest exceeds the 18% card's on equal principal (independent accrual)",
-    interestOf(row(upgradedHtml, "a")) > interestOf(rowBup), `${interestOf(row(upgradedHtml, "a"))} vs ${interestOf(rowBup)}`);
+  // Mortgage F4 — avalanche: the 24% card takes the surplus first, so the 18%
+  // card carries its balance longer and accrues MORE (each at its own rate).
+  check("avalanche: the 24% card is extra-payment target #1 and accrues less than the 18% card it is paid ahead of",
+    row(upgradedHtml, "a").includes("extra payments: #1") && rowBup.includes("extra payments: #2")
+      && interestOf(row(upgradedHtml, "a")) < interestOf(rowBup), `${interestOf(row(upgradedHtml, "a"))} vs ${interestOf(rowBup)}`);
   check("the by-account rows contain no input — still no APR editor in Payoff Strategy",
     !/<input/.test(mixedHtml.match(/<details data-payoff-by-account[\s\S]*?<\/details>/)?.[0] ?? "<input"));
   check("says what the model is NOT: an issuer payoff quote; grace periods / statement timing not modelled",
     upgraded.includes("not an issuer payoff quote") && upgraded.includes("grace periods, statement timing and fees are not modelled"));
-  check("states the allocation rule in the user's terms", upgraded.includes("each payment is split across debts in proportion to what each owes"));
+  check("states the allocation rule in the user's terms", upgraded.includes("required payments first, then one debt at a time"));
 
   const rated = text(renderToStaticMarkup(createElement(DebtPayoffSection, {
     accounts: [acct("a", "Card A", 124, { interestRate: 30 })], today: TODAY,
@@ -205,9 +208,14 @@ console.log("B. PAYOFF STRATEGY — $50 default, monthly only, precise timing");
   check("the default is a useState INITIALISER (never re-applied over a choice)",
     planner.includes("useState(DEFAULT_PAYOFF_PAYMENT)") && !/useEffect\([^)]*setAmount/.test(planner) && !/setAmount\(DEFAULT_PAYOFF_PAYMENT\)/.test(planner));
   check("the schedule comes from planPayoff — no local amortization", planner.includes("planPayoff(") && !planner.includes("simulatePayoff") && !/Math\.ceil\(\s*balance/.test(planner) && !/30\.44/.test(planner));
-  check("minimum payments are not read", !/\.minimumPayment\b/.test(planner) && !/minPayment/.test(planner));
+  // Mortgage F4 — the minimum is read ONLY as the engine's requiredPayment; the
+  // planner sums or applies none itself.
+  check("minimum payments go to the engine as requiredPayment only", (planner.match(/\.minimumPayment\b/g) ?? []).length === 2
+    && planner.includes("requiredPayment: a.minimumPayment != null ? inDisp(a.minimumPayment, a.currency).amount : null") && !/minPayment/.test(planner));
   check("'is this an estimate?' is read from the engine's basis — never inferred from a rate",
-    planner.includes("payoffEstimateNotice(plan)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
+    // Mortgage F3 — pin updated intentionally: the call now also passes the
+    // blended rate WORD ("APR" | "rate"); the basis still comes from the plan.
+    planner.includes("payoffEstimateNotice(plan, R)") && !/isEstimate\s*=\s*[^;]*interestRate/.test(planner) && !/isEstimate\s*=\s*!hasRates/.test(planner));
   check("the planner never manufactures a 0% for an unknown account", !/interestRate\s*\?\?\s*0/.test(planner) && !/apr:\s*[^,\n]*\?\?\s*0/.test(planner));
 }
 
@@ -304,7 +312,7 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
   check("by-account, unknown APR: principal paid in full, 'Interest not included — APR unknown', principal-only",
     unkRow.includes("$30.00 of $30.00 principal paid") && unkRow.includes("Interest not included — APR unknown") && unkRow.includes("estimated on principal only"), unkRow);
   check("the planner holds no blended-rate INPUT: the engine is handed liabilities, not a total + APR",
-    planner.includes("planPayoff({ liabilities, payment: amount, startISO })") && !/planPayoff\(\{[^}]*\baprPct\b/.test(planner) && !/planPayoff\(\{[^}]*balance: total/.test(planner));
+    planner.includes("planPayoff({ liabilities, payment: amount, startISO, strategy, includeInstallmentExtra })") && !/planPayoff\(\{[^}]*\baprPct\b/.test(planner) && !/planPayoff\(\{[^}]*balance: total/.test(planner));
   check("the panel renders the engine's clamp — it does not subtract budget − balance itself",
     planner.includes("payoffOverBudgetNotice(plan") && !/amount\s*-\s*total|total\s*-\s*amount|amount\s*>\s*total/.test(planner));
 }
@@ -362,7 +370,7 @@ console.log("D. REDUNDANT INTEREST / APR / MINIMUM-PAYMENT SURFACES REMOVED");
   check("the planner references no preset/scenario machinery", !/PayoffScenario|buildPayoffScenarios|payoff-scenarios|PAYOFF_SCENARIO/.test(plannerSrc));
   check("the monthly payment control still drives the calculation: input + slider set `amount`, and `amount` is the engine's budget",
     /function handleInput[\s\S]*?setAmount\(/.test(plannerSrc) && /function handleSlider[\s\S]*?setAmount\(/.test(plannerSrc)
-      && plannerSrc.includes("planPayoff({ liabilities, payment: amount, startISO })"));
+      && plannerSrc.includes("planPayoff({ liabilities, payment: amount, startISO, strategy, includeInstallmentExtra })"));
 
   // RETIRE-CREDIT (2026-10-22) — the legacy Credit page and its DebtClient are
   // DELETED (owner decision); the Debt workspace is the one debt surface.

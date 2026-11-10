@@ -1,37 +1,48 @@
 "use client";
 
 /**
- * components/platform/PlatformAiAsk.tsx  (Platform AI v0 — the question box, shown ONLY when enabled)
+ * components/platform/PlatformAiAsk.tsx  (Platform AI v0 — a single session, shown ONLY when enabled)
  *
- * A minimal question box and one answer: the answer's segments, each cited
- * metric with its status chip, the figure(s) the SERVER rendered for it in the
- * answer (placeholder grounding — the chip pairs label and figure, so a figure
- * is always shown beside the metric it belongs to), its drill link, and the
- * deterministic notes.
- * Nothing is stored — no history, no draft persistence.
+ * PLATFORM_AI_ENABLED on, conversations off: the SAME layout as Platform AI
+ * conversations and Personal Space AI (owner 2026-11-08, Personal parity PR6) —
+ * the shared `AiShell`, the starter headline and chips, the docked composer with
+ * the short disclosure line ("… · Not saved · …" + a "Privacy" control that
+ * expands the privacy text inline), and natural answers in the shared
+ * answer frame with their sources collapsed beneath. One session in memory:
+ * nothing is stored — no history, no draft persistence; leaving the page clears
+ * it. Each question is its own POST /api/platform/ai/ask (the route re-applies
+ * every gate); earlier turns are only shown, never sent back.
  *
  * ⚠️ OUTPUT SINK FOR MODEL TEXT. No Markdown parser runs on the answer: the
  * server already reduced it to plain-text segments plus links whose href is
  * exactly a resolver href of the turn (lib/platform/intelligence/ai/core.ts
- * sanitiseAnswer). This component renders text as text (React escapes it) and a
- * link only when its href ALSO passes `isSameOriginPath` — the AI Markdown
- * renderer's own boundary (components/ai/Markdown.tsx, the <img> exfil fix) —
- * so even a compromised response body cannot load an image or leave the site.
+ * sanitiseAnswer). The shared renderer (platform-ai-presentation) lays the text
+ * out as paragraphs / lists (structure only), renders text as text (React
+ * escapes it) and a link only when its href ALSO passes `isSameOriginPath` —
+ * the AI Markdown renderer's own boundary (components/ai/Markdown.tsx, the
+ * <img> exfil fix) — so even a compromised response body cannot load an image
+ * or leave the site.
  *
  * Mobile: one reading column, min-w-0 everywhere and break-words, so nothing
  * overflows at 375 px.
  */
 
-import { useState } from "react";
-import { AiMark } from "@/components/ai/AiMark";
+import { useRef, useState } from "react";
+import { SquarePen } from "lucide-react";
+import { AiShell } from "@/components/ai/AiShell";
+import { AnswerFrame } from "@/components/ai/answer-frame";
+import { ConversationLog, ThinkingIndicator } from "@/components/ai/ConversationView";
+import { FailedTurn } from "@/components/ai/FailedTurn";
 import { isSameOriginPath } from "@/components/ai/Markdown";
+import { MessageCard } from "@/components/ai/MessageCard";
 import { ToneBadge } from "@/components/platform/platform-surface";
 import type { StatusTone } from "@/components/platform/widgets/job-health-format";
 import type { AnswerSegment, PlatformAiAnswer } from "@/lib/platform/intelligence/ai/core";
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
+import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
+import { PLATFORM_AI_THINKING_LABEL } from "./platform-ai-conversations-model";
 
 export const PLATFORM_AI_ASK_URL = "/api/platform/ai/ask";
-const MAX = 500;
 
 const STATUS_TONE: Record<PlatformAiAnswer["citations"][number]["status"], StatusTone> = {
   MEASURED: "ok", ESTIMATED: "info", PARTIAL: "warn", UNAVAILABLE: "muted",
@@ -49,23 +60,18 @@ const REFUSAL_COPY: Record<string, string> = {
   PROVIDER: "The AI provider did not answer.",
   NO_SURFACE: "Your access does not include Platform AI.",
 };
+const UNAVAILABLE = "Platform AI is unavailable right now.";
 
+/** The v0 answer's segments through the shared typed renderer (corrections above; no Markdown). */
 export function AnswerSegments({ segments }: { segments: readonly AnswerSegment[] }) {
-  return (
-    <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--text-primary)]">
-      {segments.map((s, i) =>
-        s.kind === "link" && isSameOriginPath(s.href)
-          ? <a key={i} href={s.href} className="underline underline-offset-2">{s.text}</a>
-          : <span key={i}>{s.text}</span>,
-      )}
-    </p>
-  );
+  return <TypedAnswerSegments segments={segments} />;
 }
 
+/** Each cited metric: its status word, label, the server-rendered figure(s), the drill link, and the reason when unavailable / partial. */
 export function AnswerCitations({ citations }: { citations: PlatformAiAnswer["citations"] }) {
   if (citations.length === 0) return null;
   return (
-    <ul className="mt-4 flex min-w-0 flex-col gap-2 border-t border-[var(--border-hairline)] pt-3">
+    <ul className="flex min-w-0 flex-col gap-2">
       {citations.map((c) => (
         <li key={c.metric} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <ToneBadge word={STATUS_WORD[c.status]} tone={STATUS_TONE[c.status]} />
@@ -85,20 +91,98 @@ export function AnswerCitations({ citations }: { citations: PlatformAiAnswer["ci
   );
 }
 
-/** The sentence that states the single area a v0 answer comes from. */
-export const answeringFrom = (areaLabel: string) => `Answering from ${areaLabel} data`;
+/** One v0 answer in the shared answer frame; citations and notes collapsed beneath. */
+export function SessionAnswer({ answer }: { answer: PlatformAiAnswer }) {
+  const extras = answer.citations.length + answer.notes.length > 0 ? (
+    <AnswerSources count={answer.citations.length}>
+      <AnswerCitations citations={answer.citations} />
+      <AnswerNotes notes={answer.notes} />
+    </AnswerSources>
+  ) : null;
+  return (
+    <section aria-label="Answer" className="min-w-0">
+      <AnswerFrame extras={extras}><AnswerSegments segments={answer.answer} /></AnswerFrame>
+    </section>
+  );
+}
+
+/** A turn of the in-memory session: the question, then its answer or its refusal sentence. */
+export interface SessionTurn { id: number; question: string; answer: PlatformAiAnswer | null; error: string | null }
+
+export interface PlatformAiSessionViewProps {
+  areaLabel: string;
+  turns: readonly SessionTurn[];
+  draft: string;
+  pending: boolean;
+  onDraft: (v: string) => void;
+  onSend: () => void;
+  onAsk: (question: string) => void;
+  onNew: () => void;
+  /** The "Privacy" control (collapsed by default: nothing is stored here). */
+  noticeOpen?: boolean;
+  onNotice?: (open: boolean) => void;
+}
+
+/** Pure (no hooks except the log's anchor): the v0 page in the shared shell. */
+export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice }: PlatformAiSessionViewProps) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const mode = turns.length > 0 ? "conversation" : "empty";
+  const last = turns[turns.length - 1];
+  const answered = !pending && !!last && (last.answer !== null || last.error !== null);
+  const controls = turns.length > 0 ? (
+    <button type="button" data-platform-ai-new-chat="" onClick={onNew} disabled={pending}
+      className="inline-flex items-center gap-1.5 h-8 rounded-lg px-2.5 text-xs font-medium transition-colors text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-info)]">
+      <SquarePen size={14} aria-hidden />
+      <span className="max-sm:sr-only">New chat</span>
+    </button>
+  ) : null;
+  return (
+    <div data-platform-ai-session="" className="min-w-0">
+      <AiShell
+        mode={mode}
+        title={PLATFORM_AI_TITLE}
+        contextLabel={areaLabel}
+        contextPrefix="Answering from: "
+        controls={controls}
+        lead={<PlatformAiLead />}
+        aside={<PlatformAiStarters onStarter={onAsk} />}
+        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} />}
+      >
+        <ConversationLog scrollKey={turns} turnCount={turns.length} answered={answered} anchorRef={anchorRef}
+          busy={pending} busyNode={<div data-platform-ai-in-flight=""><ThinkingIndicator srLabel={PLATFORM_AI_THINKING_LABEL} /></div>}>
+          {turns.map((t, i) => (
+            <div key={t.id} className="flex min-w-0 flex-col gap-7">
+              <div ref={i === turns.length - 1 ? anchorRef : undefined} className="ai-turn-enter min-w-0"><MessageCard content={t.question} /></div>
+              {t.answer ? <div className="ai-turn-enter min-w-0"><SessionAnswer answer={t.answer} /></div> : null}
+              {t.error ? (
+                <div className="ai-turn-enter min-w-0">
+                  <FailedTurn message={t.error} busy={pending} announce={i === turns.length - 1}
+                    onRetry={i === turns.length - 1 ? () => onAsk(t.question) : undefined} />
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </ConversationLog>
+      </AiShell>
+    </div>
+  );
+}
 
 export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
-  const [question, setQuestion] = useState("");
+  const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
-  const [answer, setAnswer] = useState<PlatformAiAnswer | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [turns, setTurns] = useState<SessionTurn[]>([]);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const nextId = useRef(0);
 
-  async function ask(e: React.FormEvent) {
-    e.preventDefault();
+  async function ask(question: string): Promise<boolean> {
     const q = question.trim();
-    if (!q || pending) return;
-    setPending(true); setError(null);
+    if (!q || pending) return false;
+    const id = nextId.current++;
+    setPending(true);
+    setTurns((ts) => [...ts, { id, question: q, answer: null, error: null }]);
+    const settle = (answer: PlatformAiAnswer | null, error: string | null) =>
+      setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, answer, error } : t)));
     try {
       const r = await fetch(PLATFORM_AI_ASK_URL, {
         method: "POST", credentials: "same-origin",
@@ -106,65 +190,24 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
       });
       const body = await r.json().catch(() => null) as (PlatformAiAnswer & { reason?: string; error?: string }) | null;
       if (!r.ok || !body || !Array.isArray(body.answer)) {
-        setAnswer(null);
-        setError((body?.reason && REFUSAL_COPY[body.reason]) ?? (r.status === 429 ? "Too many questions — try again shortly." : "Platform AI is unavailable right now."));
-      } else setAnswer(body);
+        settle(null, (body?.reason && REFUSAL_COPY[body.reason]) ?? (r.status === 429 ? "Too many questions — try again shortly." : UNAVAILABLE));
+      } else settle(body, null);
     } catch {
-      setError("Platform AI is unavailable right now.");
+      settle(null, UNAVAILABLE);
     } finally {
       setPending(false);
     }
+    return true;
   }
 
   return (
-    <div className="flex min-h-[60vh] min-w-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2.5 pb-3">
-        <AiMark />
-        <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">{PLATFORM_AI_TITLE}</h1>
-        <ToneBadge word="Read-only" tone="info" />
-      </header>
-      <p data-platform-ai-area="" className="min-w-0 break-words text-xs text-[var(--text-secondary)]">
-        {answeringFrom(areaLabel)} only. Other areas you can open are not included in v0.
-      </p>
-      <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-1 flex-col gap-4 py-4">
-        <form onSubmit={ask} className="flex min-w-0 flex-col gap-2">
-          <label htmlFor="platform-ai-question" className="text-sm text-[var(--text-secondary)]">
-            Ask about jobs, providers, costs, incidents or customers. Answers use only the Platform figures you can already see.
-          </label>
-          <textarea
-            id="platform-ai-question"
-            value={question}
-            maxLength={MAX}
-            rows={3}
-            onChange={(e) => setQuestion(e.target.value)}
-            aria-describedby="platform-ai-privacy-hint"
-            className="w-full min-w-0 resize-y rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-inset)] p-3 text-sm text-[var(--text-primary)]"
-          />
-          <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="text-xs text-[var(--text-secondary)]">
-            Don&rsquo;t enter customer names, emails, account numbers or other personal details. Questions are sent to our AI provider.
-          </p>
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <span className="text-xs tabular-nums text-[var(--text-muted)]">{question.length}/{MAX}</span>
-            <button type="submit" disabled={pending || question.trim().length === 0}
-              className="shrink-0 rounded-full border border-[var(--border-hairline-strong)] px-4 py-1.5 text-sm font-medium text-[var(--text-primary)] disabled:opacity-50">
-              {pending ? "Asking…" : "Ask"}
-            </button>
-          </div>
-        </form>
-        {error ? <p role="status" className="min-w-0 break-words text-sm text-[var(--text-secondary)]">{error}</p> : null}
-        {answer ? (
-          <section aria-label="Answer" className="min-w-0 rounded-xl border border-[var(--border-hairline)] p-4">
-            <AnswerSegments segments={answer.answer} />
-            {answer.notes.length > 0 ? (
-              <ul className="mt-3 flex min-w-0 flex-col gap-1 text-xs text-[var(--text-secondary)]">
-                {answer.notes.map((n, i) => <li key={i} className="min-w-0 break-words">{n}</li>)}
-              </ul>
-            ) : null}
-            <AnswerCitations citations={answer.citations} />
-            <p className="mt-3 text-[11px] text-[var(--text-muted)]">{answeringFrom(answer.surface)}. Nothing here is saved.</p>
-          </section>
-        ) : null}
-      </div>
-    </div>
+    <PlatformAiSessionView
+      areaLabel={areaLabel} turns={turns} draft={draft} pending={pending}
+      onDraft={setDraft}
+      onSend={() => { if (draft.trim() && !pending) { void ask(draft); setDraft(""); } }}
+      onAsk={(q) => { void ask(q); }}
+      onNew={() => { if (!pending) { setTurns([]); setDraft(""); } }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+    />
   );
 }

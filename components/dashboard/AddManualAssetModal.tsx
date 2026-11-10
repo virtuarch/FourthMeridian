@@ -121,6 +121,9 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   const [acquisitionDate, setAcquisitionDate] = useState("");
   const [purchasePrice,   setPurchasePrice]   = useState("");
   const [useAsStart,      setUseAsStart]      = useState(false);
+  // Mortgage F9 — a home is recorded at MARKET VALUE (never equity); the
+  // mortgage is linked separately from the asset's detail after adding.
+  const [isProperty,      setIsProperty]      = useState(false);
   const [spaces,        setSpaces]        = useState<SpaceOption[]>([]);
   const [selectedWsIds, setSelectedWsIds] = useState<string[]>(defaultSpaceIds ?? []);
   const [loadingWs,     setLoadingWs]     = useState(true);
@@ -132,7 +135,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
   const [initial] = useState(() => ({ currency, valuationDate, spaceIds: [...selectedWsIds] }));
   const dirty = name !== "" || value !== "" || currency !== initial.currency
     || valuationDate !== initial.valuationDate || acquisitionDate !== "" || purchasePrice !== ""
-    || useAsStart || selectedWsIds.length !== initial.spaceIds.length
+    || useAsStart || isProperty || selectedWsIds.length !== initial.spaceIds.length
     || selectedWsIds.some((id) => !initial.spaceIds.includes(id));
 
   // ── Shared Spaces for the optional sharing picker ──────────────────────────
@@ -187,6 +190,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
         ...(acquisitionDate ? { acquisitionDate } : {}),
         ...(parsedPrice !== null ? { purchasePrice: parsedPrice } : {}),
         ...(useAsStart ? { purchasePriceIsStartingValue: true } : {}),
+        ...(isProperty ? { assetKind: "real_estate", valueBasis: "MARKET_VALUE" } : {}),
       }),
     });
 
@@ -264,6 +268,23 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
             </select>
           </Field>
         </div>
+        <label className="flex items-start gap-2.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isProperty}
+            onChange={(e) => setIsProperty(e.target.checked)}
+            className="mt-0.5"
+            data-testid="manual-asset-is-property"
+          />
+          <span>
+            This is a home or other real estate.
+            {isProperty && (
+              <span className="block mt-1 text-[var(--text-muted)]">
+                Enter the home&apos;s market value, not your equity. Link its mortgage from the asset&apos;s details so equity is shown without counting the loan twice.
+              </span>
+            )}
+          </span>
+        </label>
         <Field label="Value as of" htmlFor="manual-asset-value-date" error={dateError}>
           <input
             id="manual-asset-value-date"

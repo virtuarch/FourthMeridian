@@ -369,8 +369,8 @@ export async function syncTransactionsForItem(
   // Account-context cache for the classifier (accountType/debtSubtype), which
   // the write path does not otherwise load. Populated lazily per account.
   // Independent of the resolveFinancialAccountId path used by writes.
-  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null; currency: string | null; ownerUserId: string | null }>();
-  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; currency: string | null; ownerUserId: string | null }> {
+  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null; providerSubtype: string | null; creditLimit: number | null; currency: string | null; ownerUserId: string | null }>();
+  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; providerSubtype: string | null; creditLimit: number | null; currency: string | null; ownerUserId: string | null }> {
     const cached = accountMetaCache.get(financialAccountId);
     if (cached) return cached;
     const fa = await database.financialAccount.findUnique({
@@ -378,9 +378,11 @@ export async function syncTransactionsForItem(
       // currency: MC1 Phase 0 Slice 2 — account-level fallback for the
       // per-transaction currency stamp when Plaid omits iso_currency_code.
       // createdByUserId (MI M5): the account owner whose USER MerchantRules apply.
-      select: { type: true, debtSubtype: true, currency: true, createdByUserId: true },
+      // providerSubtype/creditLimit (Mortgage F5): liability-KIND evidence, so the
+      // classifier can tell an installment loan's servicer leg from a card charge.
+      select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true, currency: true, createdByUserId: true },
     });
-    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null, currency: fa?.currency ?? null, ownerUserId: fa?.createdByUserId ?? null };
+    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null, providerSubtype: fa?.providerSubtype ?? null, creditLimit: fa?.creditLimit ?? null, currency: fa?.currency ?? null, ownerUserId: fa?.createdByUserId ?? null };
     accountMetaCache.set(financialAccountId, meta);
     return meta;
   }
@@ -600,6 +602,8 @@ export async function syncTransactionsForItem(
           amount,
           accountType: meta.type,
           debtSubtype: meta.debtSubtype,
+          providerSubtype: meta.providerSubtype,
+          creditLimit: meta.creditLimit,
         });
         const classification = classifyFlow(input);
         flowFields = withDescriptorEvidenceReason(
@@ -751,7 +755,7 @@ export async function syncTransactionsForItem(
           // OVERRIDE — a USER rule applies its category; re-derive flow from it
           // through the authoritative pipeline so category and flowType stay in sync.
           if (mi.category) {
-            const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
+            const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype, providerSubtype: meta.providerSubtype, creditLimit: meta.creditLimit });
             // FIN-002: a USER rule's category outranks the provider taxonomy.
             const overrideFlow = buildFlowWriteFields(classifyFlow({ ...input, providerTaxonomySuppressed: true }), input, captured, FLOW_CLASSIFIER_VERSION);
             return { ...columns, category: mi.category, ...ownFlow(overrideFlow), categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };

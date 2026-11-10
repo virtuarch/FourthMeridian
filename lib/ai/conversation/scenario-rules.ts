@@ -75,7 +75,7 @@ export function unknownKeys(raw: Record<string, unknown>, known: readonly string
  * compile if the ledger gains a word this list lacks.
  */
 type TargetWord = Extract<AllocationTarget, string>;
-export const ALLOCATION_TARGET_WORDS = ['investments', 'highest_apr'] as const satisfies readonly TargetWord[];
+export const ALLOCATION_TARGET_WORDS = ['investments', 'highest_apr', 'smallest_balance'] as const satisfies readonly TargetWord[];
 export type AllocationTargetWord = typeof ALLOCATION_TARGET_WORDS[number];
 type _EveryTargetWord = [TargetWord] extends [AllocationTargetWord] ? true : never;
 const _everyTargetWord: _EveryTargetWord = true;

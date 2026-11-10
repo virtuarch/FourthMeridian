@@ -33,6 +33,7 @@
 
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { isExcludedFromLiquidNetWorth } from "@/lib/debt/liquid-net-worth";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 
@@ -90,6 +91,23 @@ export interface ClassifiableAccount {
    * aggregate's balance). Counted into `unvaluedCount`.
    */
   unvaluedMemberCount?: number;
+  /**
+   * Mortgage F1 — FinancialAccount.debtSubtype, when the caller's rows carry it.
+   * Read ONLY through `isExcludedFromLiquidNetWorth` (liabilityKind) to split
+   * installment loans out of LIQUID net worth; never moves a row between
+   * net-worth buckets. Absent ⇒ the Plaid subtype decides, else "unknown"
+   * (counted — liquid NW is never overstated).
+   */
+  debtSubtype?: string | null;
+  /** Mortgage F1 — FinancialAccount.creditLimit; discriminates Plaid "home equity" only (liabilityKind). */
+  creditLimit?: number | null;
+  /** S2 PRIVACY P1 — the row's SpaceAccountLink tier. Read ONLY by the viewer
+   *  debt-label helpers (never by any total): a non-FULL debt is named coarsely. */
+  visibilityLevel?: string | null;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: import("@/lib/debt/liability-kind").DebtType | null;
+
 }
 
 /**
@@ -313,6 +331,15 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
    * Negative balances (card credits) are excluded — they don't reduce net worth.
    */
   totalLiabilities:   number;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — the part of `totalLiabilities` owed on
+   * INSTALLMENT loans (mortgage, auto, student, personal installment), per
+   * `isExcludedFromLiquidNetWorth` (lib/debt/liquid-net-worth.ts). Excluded
+   * from LIQUID net worth only; still subtracted in netWorth. Revolving and
+   * unknown-kind liabilities are not in it. Same clamp + conversion as
+   * totalLiabilities, so 0 ≤ this ≤ totalLiabilities.
+   */
+  totalInstallmentLiabilities: number;
   /** totalChecking + totalSavings + totalInvestments + totalDigitalAssets + totalRealAssets
    *  (= totalLiquid + totalRestrictedCash + …): restricted cash is still an asset. */
   totalAssets:        number;
@@ -452,15 +479,20 @@ export function classifyAccounts<T extends ClassifiableAccount>(
   // of several private copies of the same rule.
   // Convert-then-clamp: with positive rates, sign is preserved, so this is
   // equivalent to clamp-then-convert and byte-identical under identity.
-  const totalLiabilities   = ctx
-    ? liabilities.reduce((s, a) => {
+  const owedSum = (rows: T[]): number => ctx
+    ? rows.reduce((s, a) => {
         if (a.valuationUnknown === true) return s; // FM-AUDIT-022 — excluded
         const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, effectiveValuationDateISO!, ctx);
         if (c.estimated) flag.estimated = true;
         if (c.amount === null) { flag.unconverted = true; return s; } // V25-FINAL-1 — excluded, not native, not a fake 0
         return s + amountOwed(c.amount);
       }, 0)
-    : liabilities.reduce((s, a) => (a.valuationUnknown === true ? s : s + amountOwed(a.balance)), 0);
+    : rows.reduce((s, a) => (a.valuationUnknown === true ? s : s + amountOwed(a.balance)), 0);
+  const totalLiabilities   = owedSum(liabilities);
+  // Mortgage F1 — the installment subset (THE classification: liabilityKind via
+  // lib/debt/liquid-net-worth.ts). Empty ⇒ exactly 0, no extra arithmetic.
+  const installment        = liabilities.filter((a) => isExcludedFromLiquidNetWorth(a));
+  const totalInstallmentLiabilities = installment.length === 0 ? 0 : owedSum(installment);
   // Unchanged expression: restricted cash stays an asset, so net worth cannot move.
   const totalAssets        = totalChecking + totalSavings + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
@@ -480,6 +512,7 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     totalDigitalAssets,
     totalRealAssets,
     totalLiabilities,
+    totalInstallmentLiabilities,
     totalAssets,
     netWorth,
     estimated: flag.estimated,

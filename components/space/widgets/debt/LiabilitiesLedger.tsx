@@ -39,6 +39,9 @@ import { useMemo, useState } from "react";
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
 import { estimatedMonthlyInterest } from "@/lib/debt/interest-cost";
+import { viewerRateLabel } from "@/lib/debt/rate-label";
+import { debtLabelAccess } from "@/lib/debt/liability-kind";
+import { formatUtilizationPct, utilizationLevel } from "@/lib/accounts/credit-utilization";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatCurrency, formatCurrencyExact } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
@@ -62,12 +65,8 @@ const UTIL_COLOR: Record<string, string> = {
   high:     "#f97316",
   over:     "var(--accent-negative)",
 };
-function utilLevel(pct: number): keyof typeof UTIL_COLOR {
-  if (pct > 100) return "over";
-  if (pct >= 70) return "high";
-  if (pct >= 30) return "moderate";
-  return "low";
-}
+/** The ONE band rule (graded on the displayed whole percent) — no local copy. */
+const utilLevel = (pct: number): keyof typeof UTIL_COLOR => utilizationLevel(pct);
 
 /** One display-currency FX pass over the debt rows (mirrors debt-kpis' inDisp). */
 function buildRows(accounts: DebtPerspectiveAccount[], ctx?: ConversionContext): LiabilityRow[] {
@@ -281,7 +280,7 @@ function LedgerRow({ row, currency, onOpen }: { row: LiabilityRow; currency: str
           <span>{debtSubtypeLabel(a)}</span>
           {a.institution && <span className="text-[var(--text-faint)]"> · {a.institution}</span>}
           {a.interestRate != null && row.state === "owed" && (
-            <span className="text-[var(--text-faint)]"> · {a.interestRate.toFixed(2)}% APR</span>
+            <span className="text-[var(--text-faint)]"> · {a.interestRate.toFixed(2)}% {viewerRateLabel(a, debtLabelAccess(a))}</span>
           )}
         </p>
       </div>
@@ -311,7 +310,7 @@ function LedgerRow({ row, currency, onOpen }: { row: LiabilityRow; currency: str
           </p>
         )}
         {row.state === "owed" && util != null ? (
-          <p className="mt-0.5 tabular-nums text-[11px]" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{util.toFixed(0)}% used</p>
+          <p className="mt-0.5 tabular-nums text-[11px]" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{formatUtilizationPct(util)} used</p>
         ) : row.state === "owed" ? (
           <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{(row.share * 100).toFixed(0)}%</p>
         ) : (

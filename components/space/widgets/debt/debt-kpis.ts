@@ -21,7 +21,7 @@
 
 import { convertMoney } from "@/lib/money/convert";
 import { amountOwed, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
-import { computeDebtAggregate, type DebtAggregateRow } from "@/lib/debt/aggregates";
+import { computeDebtAggregate, type DebtAggregateRow, type TermCoverage } from "@/lib/debt/aggregates";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { computeInterestCost } from "@/lib/debt/interest-cost";
 import { utilizationLevel, isRevolvingLine, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
@@ -59,6 +59,12 @@ export interface DebtKpis {
   minPayments: number;
   /** Debts WITH outstanding balance but no minimum payment on file. */
   missingMinCount: number;
+  /** Mortgage F3 — `minPayments` is PARTIAL whenever `missingMinCount` > 0
+   *  (the aggregate authority's typed coverage; never a silent 0). Always set by
+   *  computeDebtKpis; optional only so hand-built fixtures stay valid. */
+  minimumCoverage?: TermCoverage;
+  /** Mortgage F3 — coverage of the rate population behind `estMonthlyInterest`. */
+  rateCoverage?: TermCoverage;
   /** True when any converted amount above was FX-estimated (⇒ `≈` prefix). */
   estimated: boolean;
 }
@@ -193,6 +199,8 @@ export function computeDebtKpis(
     utilizationLevel: level,
     minPayments,
     missingMinCount,
+    minimumCoverage: agg.minimumCoverage,
+    rateCoverage: agg.rateCoverage,
     estimated,
   };
 }

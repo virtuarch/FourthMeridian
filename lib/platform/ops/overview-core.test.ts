@@ -15,6 +15,7 @@
  *   · every domain names its authority.
  */
 
+import { ALERT_AUTHORITY_SOURCES } from "@/lib/alerts/authority-sources";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { buildOverview, derivePipeline, deriveSources, deriveJobs, deriveAi, deriveBrief, derivePlaid, derivePosture, deriveAlertsPosture, ALERT_EVALUATOR_GRACE_HOURS, ALERT_EVALUATOR_DEAD_MULTIPLE, type OverviewInputs, type PostureInputs } from "./overview-core";
@@ -183,6 +184,13 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
   check("warning firing → warn tone", deriveAlertsPosture({ latest: latest(true, "warning"), rulesRegistered: 2 }).tone === "warn");
   check("never evaluated → Unknown (muted), never Quiet", deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).word === "Unknown" && deriveAlertsPosture({ latest: null, rulesRegistered: 2 }).tone === "muted");
   check("loader failed → Unavailable, muted, 'could not be asked'", deriveAlertsPosture(null).state === "unavailable" && deriveAlertsPosture(null).tone === "muted");
+  // B10 monitoring — a source that failed to gather is never "Quiet".
+  const allOk = Object.fromEntries(ALERT_AUTHORITY_SOURCES.map((k) => [k, "ok" as const])) as Record<(typeof ALERT_AUTHORITY_SOURCES)[number], "ok" | "failed" | "unknown">;
+  const blind = deriveAlertsPosture({ latest: { ...latest(false), authorities: { ...allOk, syncIncidents: "failed" } }, rulesRegistered: 2 });
+  check("B10: quiet run with a failed source → warn, 'Alert source unavailable', names it", blind.tone === "warn" && blind.word === "Alert source unavailable" && /sync incidents/.test(blind.count), JSON.stringify(blind));
+  check("B10: all sources ok → Quiet", deriveAlertsPosture({ latest: { ...latest(false), authorities: allOk }, rulesRegistered: 2 }).word === "Quiet");
+  check("B10: firing + failed source → still Firing, source named in the count", /alert source unavailable: sync incidents/.test(deriveAlertsPosture({ latest: { ...latest(true), authorities: { ...allOk, syncIncidents: "failed" } }, rulesRegistered: 2 }).count));
+  check("B10: pre-B10 run (no authorities) → Quiet, unchanged", deriveAlertsPosture({ latest: latest(false), rulesRegistered: 2 }).word === "Quiet");
 
   // OBS-001 — the runtime fixture (runtime/07-OBSERVABILITY.md §7.3): a quiet
   // run evaluated 30 days ago read { word: "Quiet", tone: "ok" }. Age-gated now.

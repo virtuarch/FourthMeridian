@@ -20,11 +20,15 @@
  *   adapters and sync execution.
  */
 
+import type { AiExcludedAccountGroup, AiTotalsCoverage } from '@/lib/balances/unobserved-totals';
 import type { SpaceMemberRole } from '@prisma/client';
 import type { LiabilityState } from '@/lib/debt/balance-semantics';
+import type { RateLabel } from '@/lib/debt/rate-label';
+import type { DebtType, LiabilityKind } from '@/lib/debt/liability-kind';
+import type { AiPropertyFacts } from '@/lib/assets/property-equity';
 import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
-import type { DebtService } from "@/lib/transactions/debt-service";
+import type { DebtServiceAiView } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
 import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
@@ -362,6 +366,22 @@ export interface AccountSummaryItem {
    * Present only when at least two anchors exist.
    */
   valueChangeSinceFirstRecorded?: { from: string; to: string; fromValue: number; toValue: number; change: number };
+  /**
+   * Mortgage F9 (owner 2026-11-08) — a manual PROPERTY's value basis, the
+   * mortgage / HELOC debts (debtType, PR #485) the user linked as secured by it, and
+   * the DERIVED equity (value − linked secured debt). If ANY linked debt is not
+   * visible to this viewer, only the flag is sent (`derivedEquity` null,
+   * `equityUnavailableReason` LINKED_DEBT_NOT_VISIBLE, no list or total). Net worth ALREADY counts
+   * the property at `value` and each debt as a liability: equity is never
+   * additional wealth and must never be added to netWorth. `derivedEquity` is
+   * null when it cannot be stated honestly (`equityUnavailableReason`).
+   * `possibleDoubleCount` = the value may have been entered as equity while the
+   * mortgage is also counted; the app has NOT restated anything — quote the
+   * disclosure and ask the user to confirm market value vs equity. Only linked
+   * secured kinds appear: an auto, student or personal loan never reduces
+   * equity. Manual FULL rows that state a kind, a link or a basis only.
+   */
+  property?: AiPropertyFacts;
   balanceFreshness?: {
     /** PROVIDER_ATTESTED | INGESTION | UNOBSERVED. */
     basis:      string;
@@ -457,7 +477,24 @@ export interface AccountSummaryItem {
   // ── Debt metadata (FULL visibility, debt-type accounts only) ──────────────
   // Resolved from DebtProfile (preferred) → FinancialAccount flat fields (fallback).
   // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
-  apr?:                   number | null; // effective APR; null = known missing
+  apr?:                   number | null; // effective rate (percent); null = known missing
+  /** Mortgage F3 — the name of `apr` for THIS account (lib/debt/rate-label.ts):
+   *  'Mortgage rate' (mortgage only) | 'APR' (revolving credit only) | 'Interest rate'
+   *  (no kind evidence). The same label the debt UI renders. */
+  rateLabel?:             RateLabel;
+  /** Mortgage F4 — lib/debt/liability-kind.ts (derived from debtType): 'installment'
+   *  loans (mortgage, auto, student, personal) amortise on schedule and are never
+   *  extra-payment targets by default; 'revolving' (cards, lines, HELOCs) and
+   *  'unknown' are. */
+  liabilityKind?:         LiabilityKind;
+  /** Owner 2026-11-08 — the ONE fine-grained debt type (lib/debt/liability-kind.ts
+   *  `debtType`): credit_card | personal_installment | auto_loan | student_loan |
+   *  mortgage | heloc | personal_line_of_credit | overdraft | other_revolving |
+   *  other_installment | unknown. The model names the liability by `debtTypeLabel`
+   *  ("Auto loan", "HELOC", …) and applies mortgage-only reasoning (equity, escrow,
+   *  amortization) ONLY when debtType is "mortgage". */
+  debtType?:              DebtType;
+  debtTypeLabel?:         string;
   minimumPayment?:        number | null; // effective minimum payment; null = known missing
   rateSource?:            'user' | 'user_account' | null;
   dueDay?:                number | null; // day of month (1–31)
@@ -496,8 +533,33 @@ export interface KnowledgeGap {
   accountId:    string;
   accountName:  string;  // display-safe name (resolveDisplayName output)
   field:        'apr' | 'minimumPayment';
-  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage Rate"
+  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage rate", "Interest rate" (F3: lib/debt/rate-label.ts)
   debtSubtype?: string | null; // FinancialAccount.debtSubtype when present
+  /** Owner 2026-11-08 — the fine-grained debt type (lib/debt/liability-kind.ts). */
+  debtType?:    DebtType;
+}
+
+
+/**
+ * Mortgage F1 (owner 2026-11-08) — liquid net worth on the Hero's basis:
+ * UNRESTRICTED cash (`totalLiquid`) minus every liability EXCEPT installment
+ * loans (mortgage, auto, student, personal installment). Revolving debt (cards,
+ * HELOCs, lines of credit) and liabilities of UNKNOWN kind are subtracted
+ * (unknown conservatively, so the figure is never overstated). Net worth still
+ * subtracts every liability.
+ */
+export interface AiLiquidNetWorth {
+  amount:            number;
+  /** "Liquid net worth excludes mortgages and other long-term loans; total net worth includes all debts." */
+  definition:        string;
+  /** The rule the model must keep: excluded loans are still owed. */
+  notDebtFree:       string;
+  /** Owed on the excluded installment loans (still in totalLiabilities and netWorth). */
+  excludedInstallmentDebt: number;
+  /** Names of the excluded loans ("mortgage", "auto loan"); empty when none. */
+  excludedKinds:     string[];
+  /** Liabilities of unknown kind, INCLUDED in the subtraction; 0 when none. */
+  unknownKindLiabilityCount: number;
 }
 
 /**
@@ -566,6 +628,29 @@ export interface AccountsSectionData {
    * is an honest PARTIAL. OMITTED when nothing was excluded.
    */
   totalsUnvaluedCount?: number;
+  /**
+   * Mortgage F8c — the accounts excluded from the totals above, TYPED by the
+   * one detector (lib/balances/unobserved-totals.ts detectExcludedAccounts):
+   * class + reason + in-sentence type name ("mortgage", "crypto wallet") +
+   * count. No ids or names. Readers go through `excludedFromAiAccounts`, never
+   * `totalsUnvaluedCount`. OMITTED when nothing was excluded.
+   */
+  totalsExcluded?: AiExcludedAccountGroup[];
+  /**
+   * Mortgage F8 (S2) — PARTIAL status + DIRECTION beside netWorth / totalAssets /
+   * totalLiabilities / liquid when an account of unknown balance (never
+   * observed, FIN-A2; or not yet valued) was excluded: an excluded debt ⇒ the
+   * true net worth is lower; an excluded asset ⇒ it may be higher. OMITTED
+   * when every total is COMPLETE.
+   */
+  totalsCoverage?: AiTotalsCoverage;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — LIQUID net worth and how it differs from
+   * net worth, so the model can explain the difference and never present it as
+   * debt-free wealth. Optional so fixtures predating F1 still compile; the
+   * assembler always emits it.
+   */
+  liquidNetWorth?: AiLiquidNetWorth;
   counts: {
     liquid:       number;
     investments:  number;
@@ -998,8 +1083,11 @@ export interface TransactionsSummaryData {
    */
   netCashFlow:       number;
   /**
-   * netCashFlow − debtService.netPaydown: the economic net after the cash that
-   * genuinely went to REDUCING debt. A SEPARATE, named measure — never the
+   * netCashFlow − debtService.netPaydown − debtService.unsplitLoanPayments: the
+   * economic net after the cash that reduced REVOLVING debt and after every
+   * unsplit loan payment (owner F6 — installment-loan payments are debt
+   * service, principal + interest[ + escrow] not split; never "paydown"). The
+   * total subtracted is identical to the pre-F6 figure. A SEPARATE, named measure — never the
    * headline net (a debt payment is capital directed at a goal, not
    * consumption). Always ≤ netCashFlow.
    *
@@ -1017,13 +1105,22 @@ export interface TransactionsSummaryData {
    * post-M1 D3 — what the cash sent toward liabilities in this window actually
    * did (lib/transactions/debt-service.ts): `payments` (=== debtPaymentTotal),
    * the `newChargesOnLiabilities` they settle (a SUBSET of expenseTotal — never
-   * add the two), attested `debtProceeds`, and the resulting `netPaydown` /
-   * `netNewBorrowing`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
+   * add the two), attested `debtProceeds`, the resulting REVOLVING `netPaydown`
+   * / `netNewBorrowing`, and owner F6's ONE unsplit loan-payment figure
+   * `unsplitLoanPayments` (connected installment + untracked loans) with its
+   * `unsplitLoanPaymentLabel`. OBSERVED HISTORICAL FLOW — not Σ stated minimums
    * (lib/debt/aggregates.ts), not the payoff planner's chosen payment
    * (lib/debt/payoff.ts), not L1's projected minimums (scenario-ledger.ts).
    * Optional only so fixtures that predate it still compile.
    */
-  debtService?: DebtService;
+  debtService?: DebtServiceAiView;
+  /**
+   * Owner F6 — present whenever `debtService.unsplitLoanPayments` > 0 (connected
+   * installment-loan payments OR untracked loan payments in the window): the
+   * explicit statement that principal, interest and escrow of those unsplit
+   * payments are not individually verified (UNSPLIT_LOAN_PAYMENT_AI_NOTE).
+   */
+  unsplitLoanPaymentNote?: string;
   /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
    * totals above was estimated (rate walked back / missing, or null-residue
@@ -1461,6 +1558,16 @@ export interface SnapshotDataPoint {
   cashOnHand:   number;
   netLiquid:    number;
   /**
+   * Mortgage F1b (S2) — the liquid-NW definition THIS point's `netLiquid` was
+   * recorded on, read per stored row (never from its date):
+   *   INSTALLMENTS_EXCLUDED   — current: installment loans NOT subtracted.
+   *   INSTALLMENTS_SUBTRACTED — previous: installment loans also subtracted.
+   * A change between points on different bases includes the definition change
+   * (see `SnapshotSectionData.netLiquidNote`) and is not movement. Always
+   * emitted by the assembler; optional only for fixtures predating it.
+   */
+  netLiquidBasis?: 'INSTALLMENTS_EXCLUDED' | 'INSTALLMENTS_SUBTRACTED';
+  /**
    * Machine-readable reason the digital-asset figure (and the two totals built
    * on it) could not be asserted for this date. Present ONLY on such points.
    *   HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE — refused: a holding existed but
@@ -1587,6 +1694,12 @@ export interface SnapshotSectionData {
    */
   liquidBasis?:     'ALL_CASH' | 'UNRESTRICTED';
   liquidBasisNote?: string;
+  /**
+   * Mortgage F1 (owner 2026-11-08) — what every point's `netLiquid` means:
+   * installment loans (mortgage, auto, student) are NOT subtracted; total net
+   * worth still subtracts them. Always emitted by the assembler.
+   */
+  netLiquidNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

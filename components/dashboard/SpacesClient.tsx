@@ -39,6 +39,7 @@
  * glow/bloom, so liquid-glass raises feel tactile rather than neon.
  */
 
+import { exclusionBadge, type ExclusionDirection } from "@/lib/balances/unobserved-totals";
 import { useState, useTransition, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -119,6 +120,8 @@ type SpaceItem = {
   freshness?: {
     label: string; anchorObservedAt: string | null; qualifier: string | null;
     claim: string; accountCount: number; staleAccountCount: number;
+    /** Mortgage F8 — present only when the card's net worth excludes an account of unknown balance. */
+    netWorthCoverage?: { status: string; directions: ExclusionDirection[]; notes: string[] };
   } | null;
 };
 
@@ -417,6 +420,14 @@ function SpaceCard({
           {/* REVIEW-3 B-4 — ≈ marks a reconstructed/estimated figure (the same
               provenance the inside-Space history badges disclose). */}
           <Figure value={hasFigure ? `${space.estimated ? "≈" : ""}${formatCurrencyCompact(space.netWorth, space.currency)}` : "—"} size="lede" />
+          {/* Mortgage F8 (S2) — a total that excludes an account of unknown balance
+              is PARTIAL, with its direction; never a clean figure. */}
+          {hasFigure && space.freshness?.netWorthCoverage?.status === "PARTIAL" && (
+            <p className="mt-0.5 text-[11px] text-[var(--accent-warning)]" title={space.freshness.netWorthCoverage.notes.join("; ")} data-partial-total>
+              <span aria-hidden>{space.freshness.netWorthCoverage.directions.map(exclusionBadge).join(" · ")}</span>
+              <span className="sr-only">{space.freshness.netWorthCoverage.notes.join("; ")}</span>
+            </p>
+          )}
           {delta !== null && (
             <p
               className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}

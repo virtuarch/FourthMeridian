@@ -487,6 +487,12 @@ model User {
   // (lib/entitlements/catalogue.ts); only the ASSIGNMENT is data.
   policyAssignment            CustomerPolicyAssignment?
   cohorts                     CustomerCohort[]
+  // Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md).
+  // OPERATOR-PRIVATE: owner-only RLS, no fm_system path. Cascade on account purge.
+  platformAiConversations     PlatformAiConversation[] @relation("PlatformAiConversationOwner")
+  // Platform AI operational memory (Preview only; S2-approved design v2). Operator-private:
+  // owner + ACTIVE-grant RLS, no fm_system table path. Cascade on account purge.
+  platformAiMemoryFacts       PlatformAiMemoryFact[]   @relation("PlatformAiMemoryOwner")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1415,10 +1421,35 @@ model ManualAssetProfile {
   /// value on the acquisition date. False = purchase price is informational only.
   purchasePriceIsStartingValue Boolean   @default(false)
 
+  // Mortgage F9 (owner 2026-11-08 — HOME VALUATION). All three are additive;
+  // existing rows read null / UNKNOWN / [] and are never rewritten.
+  /// The kind the user chose at entry ("real_estate" | "vehicle" | "equipment" |
+  /// "other"). Null = not recorded (every asset created before F9).
+  assetKind             String?
+  /// What the recorded value IS for a property: the home's MARKET_VALUE, or an
+  /// EQUITY figure the user entered (value already net of the mortgage).
+  /// UNKNOWN = never stated (DB default for every pre-F9 row). Read by
+  /// lib/assets/property-equity.ts; never used to restate a value.
+  valueBasis            PropertyValueBasis @default(UNKNOWN)
+  /// The debt FinancialAccount ids (mortgage / HELOC) the
+  /// USER linked as secured by this property. No FK by design (see migration
+  /// 20261108140000_mortgage_f9_property_value_basis README): every read
+  /// re-checks each id against the caller's visible, same-Space, secured-kind
+  /// debts, so a deleted, unshared or re-typed debt simply stops counting.
+  /// Derived equity only — net worth never reads this.
+  securedDebtAccountIds String[]           @default([])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([financialAccountId])
+}
+
+/// Mortgage F9 — what a manual property's recorded value represents.
+enum PropertyValueBasis {
+  MARKET_VALUE
+  EQUITY_ENTERED
+  UNKNOWN
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3150,7 +3181,15 @@ model SpaceSnapshot {
   netWorth    Float @default(0) // stocks + crypto + cash + savings − debt
   totalAssets Float @default(0) // stocks + crypto + cash + savings
   cashOnHand  Float @default(0) // max(cash − expense_buffer, 0) — renamed from cashToPlay (legacy "play cash" language)
-  netLiquid   Float @default(0) // cash + savings − debt
+  netLiquid   Float @default(0) // cash + savings − debt + installmentDebt (Mortgage F1: installment loans excluded)
+
+  // Mortgage F1b (S2 ruling 2026-11-08) — the installment debt (mortgage, auto,
+  // student, …) this row EXCLUDED from netLiquid; it stays in `debt`/`netWorth`.
+  // Written on every NEW row by every snapshot writer (≥ 0; a recorded 0 means
+  // "nothing excluded"). Nullable, NO default, NO backfill: NULL = a legacy row
+  // written before the column — its basis is read per row by
+  // lib/debt/liquid-net-worth.ts (`liquidNetWorthRowBasis`), never from a date.
+  installmentDebt Float?
 
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows (cash
   // walked back from transactions; investments/loans/manual assets held flat).
@@ -5196,4 +5235,188 @@ model PolicyGroupVersion {
   createdAt     DateTime    @default(now())
 
   @@unique([groupKey, version])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM AI CONVERSATIONS (B11 — docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md)
+//
+// One operator's private, persistent Platform AI conversations. Migration
+// 20261104120000_platform_ai_conversations (B11 batch — not part of B10).
+// S2 REQUIRED 1: writers never choose retention or timestamps — every timestamp
+// is a DATABASE default (dbgenerated, omitted from Prisma's INSERT), excluded
+// from fm_app's column-level INSERT grant, and every derived timestamp is set
+// by a trigger. RLS: fm_app owner-only (current_fm_user_id()); NO fm_system
+// grant — retention runs through fm_purge_platform_ai_conversations only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One operator's private Platform AI conversation. OPERATOR-SCOPED: no spaceId
+/// and no tenant column. No title column (S2 Q1): the list label is derived at
+/// read time. Content lives only in PlatformAiMessage.contentEncrypted.
+model PlatformAiConversation {
+  id              String       @id @default(cuid())
+  /// The ONLY owner. RLS: operatorUserId = current_fm_user_id().
+  operatorUserId  String
+  operator        User         @relation("PlatformAiConversationOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  /// The authorized area at creation (platformAiAreaFor). Immutable (no UPDATE
+  /// grant). Every read and append re-checks a FRESH grant for it.
+  area            PlatformArea
+  /// Idempotency of the CREATE call (create = first question). Unique per operator.
+  createRequestId String
+  /// DB default only; not in the INSERT grant.
+  createdAt       DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// The last operator APPEND. DB default on insert; afterwards set ONLY by the
+  /// AFTER INSERT trigger on a USER message. Not in any fm_app grant.
+  lastActivityAt  DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Soft delete: hidden from every read immediately. fm_app may UPDATE this
+  /// column only; the trigger overwrites the value with now() and forbids
+  /// un-deleting or re-dating.
+  deletedAt       DateTime?
+
+  messages        PlatformAiMessage[]
+
+  @@unique([operatorUserId, createRequestId])
+  @@index([operatorUserId, deletedAt, lastActivityAt])
+  @@index([deletedAt])
+  @@index([createdAt])
+}
+
+enum PlatformAiMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum PlatformAiMessageStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
+/// S2 Q6: a closed set of codes, never provider text.
+enum PlatformAiFailureCode {
+  TIMEOUT
+  PROVIDER
+  KILL_SWITCH
+  ABANDONED
+}
+
+model PlatformAiMessage {
+  id               String                  @id @default(cuid())
+  conversationId   String
+  conversation     PlatformAiConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role             PlatformAiMessageRole
+  /// USER: the SCRUBBED question, exactly the string the provider received.
+  /// ASSISTANT: the RENDERED answer as versioned segment JSON.
+  /// encryptWithPurpose(…, PLATFORM_AI_MESSAGE). Null only while PENDING, or
+  /// for a FAILED assistant row.
+  contentEncrypted String?
+  /// ASSISTANT only: what the turn READ — metric keys, windows and page ids
+  /// ONLY, never a value, status, reason, href or argument the model wrote.
+  evidenceRefs     Json?
+  /// USER only: the client's idempotency key. UNIQUE(conversationId, clientRequestId).
+  clientRequestId  String?
+  /// ASSISTANT only: the USER message it answers (1:1). The composite FK
+  /// (conversationId, replyToId) → (conversationId, id) makes a reply into
+  /// another conversation impossible at the database.
+  replyToId        String?                 @unique
+  replyTo          PlatformAiMessage?      @relation("PlatformAiReply", fields: [conversationId, replyToId], references: [conversationId, id], onDelete: Cascade)
+  reply            PlatformAiMessage?      @relation("PlatformAiReply")
+  status           PlatformAiMessageStatus
+  failureCode      PlatformAiFailureCode?
+  /// DB default only; not in the INSERT grant.
+  createdAt        DateTime                @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the BEFORE UPDATE trigger when a PENDING row settles; not in any fm_app grant.
+  completedAt      DateTime?
+  /// R1 option (b), OD-7 (owner): per-message expiry, amended 2026-11-08 to 7 days.
+  /// DB default createdAt + 7 days (20261108120000); not in any fm_app grant. The USER and
+  /// ASSISTANT rows of a turn are inserted in ONE transaction (now() is the
+  /// transaction's start), so a pair always expires together.
+  purgeAfter       DateTime                @default(dbgenerated("((now() AT TIME ZONE 'UTC'::text) + '7 days'::interval)"))
+
+  @@unique([conversationId, id])
+  /// Prisma requires the composite FK fields of a 1:1 relation to be unique together.
+  @@unique([conversationId, replyToId])
+  @@unique([conversationId, clientRequestId])
+  @@index([conversationId, createdAt])
+  @@index([purgeAfter])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Platform AI operational memory (S2-approved design v2, 2026-11-08; O1 ruled (b)).
+// Migration 20261110120000_platform_ai_operational_memory. Preview only; both
+// flags (PLATFORM_AI_MEMORY_ENABLED, PLATFORM_AI_MEMORY_PURGE_ENABLED) ship OFF.
+// A fact is a short, typed, operator-confirmed pointer to records — never a
+// transcript: there is NO link to a conversation, message or AiInvocation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PlatformAiMemoryFactType {
+  WATCHING_ISSUE
+  OPERATIONAL_STATE
+  FOLLOW_UP
+  OPERATOR_PREFERENCE
+}
+
+enum PlatformAiMemoryOrigin {
+  OPERATOR_EXPLICIT
+  TOOL_DERIVED
+}
+
+enum PlatformAiMemoryConcern {
+  RECURRING_FAILURE
+  DEGRADATION
+  COST_SPIKE
+  CUSTOMER_IMPACT
+  AWAITING_FIX
+  MONITOR_ONLY
+}
+
+enum PlatformAiMemoryTtl {
+  H24
+  H72
+  D7
+  D30
+}
+
+enum PlatformAiMemoryInvalidReason {
+  GONE
+  STATE_CHANGED
+  AREA_LOST
+  SUPERSEDED
+}
+
+model PlatformAiMemoryFact {
+  id             String                         @id @default(cuid())
+  /// The ONLY owner. RLS: operatorUserId = current_fm_user_id() AND an ACTIVE grant for platformArea.
+  operatorUserId String
+  operator       User                           @relation("PlatformAiMemoryOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  platformArea   PlatformArea
+  factType       PlatformAiMemoryFactType
+  origin         PlatformAiMemoryOrigin
+  concern        PlatformAiMemoryConcern?
+  /// The operator's note (≤ 140 chars plaintext), encryptWithPurpose(…, PLATFORM_AI_MEMORY).
+  noteEncrypted  String?
+  /// Closed enum keys per factType (the insert trigger's allowlist). Never free text.
+  payload        Json
+  /// [{t, id, part?, w?, observedState}] 0..5 — validated key by key by the insert trigger (S2 B2).
+  sourceRefs     Json
+  ttl            PlatformAiMemoryTtl
+  /// The proposal token's jti: a confirm replay hits UNIQUE(operatorUserId, proposalJti).
+  proposalJti    String?
+  /// Set by the insert trigger (= createdAt); not in the INSERT grant.
+  observedAt     DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the insert trigger; not in the INSERT grant.
+  createdAt      DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the insert trigger to createdAt + least(ttl, cap); never moves (the immutability trigger).
+  expiresAt      DateTime                       @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set once (NULL → now()) by the immutability trigger; the store hides an invalidated row.
+  invalidatedAt  DateTime?
+  invalidReason  PlatformAiMemoryInvalidReason?
+  /// Soft delete: ONLY through fm_platform_ai_memory_soft_delete (O1 (b)); fm_app holds no UPDATE on it.
+  deletedAt      DateTime?
+  /// Renew = a new row superseding the old one (the old row is invalidated SUPERSEDED).
+  supersedesId   String?                        @unique
+
+  @@unique([operatorUserId, proposalJti])
+  @@index([operatorUserId, platformArea, deletedAt, expiresAt])
+  @@index([expiresAt])
+  @@index([deletedAt])
 }

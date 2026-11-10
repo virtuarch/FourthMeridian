@@ -487,6 +487,7 @@ export async function GET(
       balance:             a.balance,
       availableBalance:    a.availableBalance,
       creditLimit:         a.creditLimit,
+      providerSubtype:     a.providerSubtype, // Mortgage F2 — a Plaid loan has no available credit
       isSelfCustodyWallet: !!a.walletAddress,
       freshness:           fullFreshness,
     });

@@ -41,7 +41,8 @@ import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@
 import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
-import type { AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { alertSourceUnavailableSentence, unavailableAlertSources, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { ALERT_AUTHORITY_SOURCE_LABEL } from "@/lib/alerts/authority-sources";
 import type { AlertSeverity } from "@/lib/alerts/rules";
 import type { PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import type { SyncIssueSeverity } from "@/lib/platform/sync-issue-semantics";
@@ -49,6 +50,8 @@ import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-cor
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { BriefOps } from "@/lib/platform/ai/brief-ops";
 import { platformViewTarget } from "@/lib/platform/workspaces";
+import { alertEvaluatorSilence, hoursWord } from "@/lib/platform/ops/overview-core";
+import { EVALUATOR_OVERDUE, lastEvaluatedStale } from "@/lib/platform/stale-wording";
 import { describePolicyAssignmentIssue, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 /** PLATFORM OPS PHASE 1 UX — alert rules live in Policies › Alerts (the default
@@ -67,7 +70,7 @@ export type AttentionSeverity = "critical" | "error" | "warning" | "info";
 
 export const ATTENTION_SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, error: 1, warning: 2, info: 3 };
 
-export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "incident" | "customer";
+export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "alert-source" | "incident" | "customer";
 
 export interface AttentionEntity {
   kind: AttentionEntityKind;
@@ -134,8 +137,10 @@ export interface AttentionInputs {
   jobs: { jobs: readonly AttentionJobReport[] } | null;
   providers: ProviderHealthResult | null;
   resources: ResourceFreshnessResult | null;
-  /** `latest: null` = evaluator never ran (an answer); outer null = loader failed. */
-  alerts: { latest: AlertLatestEvaluation | null; titles: Readonly<Record<string, string>> } | null;
+  /** `latest: null` = evaluator never ran (an answer); outer null = loader failed.
+   *  `cadenceHours` (OBS-001) = the evaluate-alerts job's resolved cadence from job
+   *  health, exactly as the Overview chip receives it; absent ⇒ the registry default. */
+  alerts: { latest: AlertLatestEvaluation | null; titles: Readonly<Record<string, string>>; cadenceHours?: number | null } | null;
   incidents: { items: readonly PlatformIncidentProjection[]; activeTotal: number; truncated: boolean } | null;
   /** Owner ruling (2026-10-30) — the policy-assignment read (lib/platform/policy-assignment-health.ts).
    *  Absent (undefined) is treated exactly like null: NOT read, so the authority is named as failed. */
@@ -177,6 +182,8 @@ export const SEVERITY_OF = {
     critical: "critical",
     warning: "warning",
   } as Record<AlertSeverity, AttentionSeverity>,
+  /** B10 monitoring — an alert source that failed to gather (its rules were blind that cycle). */
+  alertSource: "warning" as AttentionSeverity,
   incident: {
     critical: "critical",
     error: "error",
@@ -317,8 +324,20 @@ function resourceItems(r: ResourceFreshnessResult): AttentionItem[] {
   return out;
 }
 
-function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] {
+/**
+ * OBS-001 (Attention) — the same evaluator age gate as the Overview chip
+ * (alertEvaluatorSilence, same cadence handling, same thresholds). When the
+ * latest evaluation is too old to speak for now, its rows still appear (a
+ * possibly-real critical is not hidden) but each says it is the LAST
+ * evaluation's verdict, possibly out of date — never a current condition.
+ */
+function alertItems(a: NonNullable<AttentionInputs["alerts"]>, now: Date): AttentionItem[] {
   if (!a.latest) return [];
+  const silent = alertEvaluatorSilence(a.latest.evaluatedAtISO, a.cadenceHours, now);
+  const staleTail = silent
+    ? ` Evaluator overdue: ${lastEvaluatedStale(Number.isFinite(silent.ageHours) ? `${hoursWord(silent.ageHours)} ago` : null)}.`
+    : "";
+  const staleBasis = silent ? ` — ${EVALUATOR_OVERDUE}: this evaluation is too old to speak for now (possibly out of date)` : "";
   const out: AttentionItem[] = [];
   for (const rule of a.latest.rules) {
     if (!rule.firing) continue;
@@ -328,11 +347,26 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
       id: `alert:${rule.id}`,
       severity,
       entity: { kind: "alert-rule", label: title },
-      problem: `Firing in the latest evaluation — ${rule.breaches} breach${rule.breaches === 1 ? "" : "es"} (${rule.severity ?? "severity not recorded"}).`,
+      problem: `${silent ? "Firing at last evaluation" : "Firing in the latest evaluation"} — ${rule.breaches} breach${rule.breaches === 1 ? "" : "es"} (${rule.severity ?? "severity not recorded"}).${staleTail}`,
       since: a.latest.evaluatedAtISO,
       evidence: { kind: "alert", id: rule.id, workspace: ALERTS_VIEW },
       actions: [{ kind: "open-workspace", workspace: ALERTS_VIEW }],
-      basis: "latest evaluate-alerts run (per-rule outcomes) — the only notion of an active alert; since = that evaluation's time, not the breach's onset",
+      basis: `latest evaluate-alerts run (per-rule outcomes) — the only notion of an active alert; since = that evaluation's time, not the breach's onset${staleBasis}`,
+    });
+  }
+  // B10 monitoring (S2 ruling) — a source that failed to gather contributed NO
+  // signals, so its rules' silence is "not asked", never "no breach". Always a
+  // WARNING; a row predating the field (`unknown`) raises nothing and claims nothing.
+  for (const source of unavailableAlertSources(a.latest)) {
+    out.push({
+      id: `alert-source:${source}`,
+      severity: SEVERITY_OF.alertSource,
+      entity: { kind: "alert-source", label: ALERT_AUTHORITY_SOURCE_LABEL[source] },
+      problem: `${alertSourceUnavailableSentence(source)} — it failed to gather in the ${silent ? "last" : "latest"} evaluation, so its alert rules could not fire (not the same as no breach).${staleTail}`,
+      since: a.latest.evaluatedAtISO,
+      evidence: { kind: "alert", id: source, workspace: ALERTS_VIEW },
+      actions: [{ kind: "open-workspace", workspace: ALERTS_VIEW }],
+      basis: `latest evaluate-alerts run (per-authority gather status) — since = that evaluation's time${staleBasis}`,
     });
   }
   return out;
@@ -418,7 +452,7 @@ export function buildAttention(inputs: AttentionInputs, now: Date): AttentionCor
   if (inputs.jobs) { checked.push("job-health"); items.push(...jobItems(inputs.jobs, now)); } else failed.push("job-health");
   if (inputs.providers) { checked.push("provider-health"); items.push(...providerItems(inputs.providers)); } else failed.push("provider-health");
   if (inputs.resources) { checked.push("resource-freshness"); items.push(...resourceItems(inputs.resources)); } else failed.push("resource-freshness");
-  if (inputs.alerts) { checked.push("alert-evaluation"); items.push(...alertItems(inputs.alerts)); } else failed.push("alert-evaluation");
+  if (inputs.alerts) { checked.push("alert-evaluation"); items.push(...alertItems(inputs.alerts, now)); } else failed.push("alert-evaluation");
 
   if (inputs.incidents) {
     checked.push("incidents");

@@ -35,7 +35,7 @@ import { METRIC_DRIVER_COMPONENTS, METRIC_POSSESSIVE } from "./wealth-metric-fac
 
 /** A move is "good" when net worth rose from it — liabilities are good going DOWN. */
 export function driverGood(d: WealthDriver): boolean {
-  return d.id === "liabilities" ? d.delta < 0 : d.delta > 0;
+  return d.id === "liabilities" || d.id === "liquidDebt" ? d.delta < 0 : d.delta > 0;
 }
 
 export function WealthChangeLedger({

@@ -41,7 +41,8 @@ import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
 import { NoticeRail } from "@/components/notices/NoticeRail";
 import type { AppNoticeStatus } from "@/components/notices/notice-model";
 import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
-import { OPEN_CREATE_SPACE_EVENT, isPrimaryDestActive } from "@/lib/space-nav";
+import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
+import { chromeSurface } from "@/components/ui/chrome-surface";
 import { PlatformNavProvider } from "@/components/ui/PlatformNavContext";
 import type { PlatformSpaceOption } from "@/lib/platform/nav";
 
@@ -71,16 +72,20 @@ export function DashboardChrome({
   const pathname = usePathname() ?? "";
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
 
-  // AI-4 — the AI page is a full-height conversation surface: it owns exactly the
-  // viewport left between the GlobalHeader and the bottom edge, and scrolls inside
-  // itself. Two things in this frame would break that, so on that ONE route:
-  //  • the notice rail shows maintenance only — the 2FA reminder is not shown
-  //    there (AI-4); the rail publishes its height and AiShell subtracts it;
-  //  • <main>'s bottom padding is exactly the BottomNav's footprint (h-14 + its
-  //    1px border-t + the safe-area inset it pads by) instead of pb-24, and 16px on
-  //    lg, so the docked composer sits directly on the bar. AiShell's height
-  //    subtracts the same expression — change one, change both.
-  const conversationSurface = isPrimaryDestActive("ai", pathname);
+  // AI-4 — the AI pages are full-height conversation surfaces: each owns exactly
+  // the viewport left between the GlobalHeader and the bottom edge, and scrolls
+  // inside itself. Parity PR2: Personal Space AI AND Platform AI get this LAYOUT
+  // (components/ui/chrome-surface.ts):
+  //  • <main>'s bottom padding is exactly the bottom bar's footprint (h-14 + its
+  //    1px border-t + the safe-area inset it pads by — identical for BottomNav
+  //    and PlatformBottomBar) instead of pb-24, and 16px on lg, so the docked
+  //    composer sits directly on the bar. AiShell's height subtracts the same
+  //    expression — change one, change both.
+  //  • the notice rail withholds the 2FA reminder on Personal Space AI only
+  //    (AI-4). On Platform AI it is NOT hidden by path (S2 2026-11-07): its own
+  //    TOTP condition decides, and the rail publishes its height so AiShell
+  //    leaves room for it.
+  const { conversationLayout: conversationSurface, noticeConversationSurface } = chromeSurface(pathname);
 
   useEffect(() => {
     function handleOpen() { setCreateSpaceOpen(true); }
@@ -105,9 +110,9 @@ export function DashboardChrome({
               }
             >
               {/* UNIFIED NOTICES — ONE rail for the whole shell: maintenance (highest
-                  priority) and the 2FA reminder (not on the AI surface). Renders
+                  priority) and the 2FA reminder (not on Personal Space AI). Renders
                   nothing when no notice applies. Replaces the S8 TotpNudgeBanner. */}
-              <NoticeRail initialStatus={noticeStatus} conversationSurface={conversationSurface} />
+              <NoticeRail initialStatus={noticeStatus} conversationSurface={noticeConversationSurface} />
               {children}
             </main>
           </div>

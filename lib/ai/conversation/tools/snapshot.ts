@@ -13,7 +13,7 @@
  */
 
 import { FinanceDomains, type AccountsSectionData } from '@/lib/ai/types';
-import { composeInvestments } from '@/lib/ai/economic-concepts';
+import { composeExcludedTotals, composeInvestments } from '@/lib/ai/economic-concepts';
 import { resolveExplorationNode } from '@/lib/history/exploration';
 import { liquidityAccess, LIQUIDITY_ACCESS_MEANING, type LiquidityAccess } from '@/lib/account-classifier';
 import type { ToolDefinition } from './types';
@@ -67,6 +67,21 @@ export const getFinancialSnapshot: ToolDefinition = {
       totalLiabilities: acc.totalLiabilities,
       /** Unrestricted cash. Deliberately not named `cash` — see get_net_worth_history. */
       liquid: acc.totalLiquid,
+      // Mortgage F8 (S2) — the PARTIAL status + DIRECTION of the four totals
+      // above, beside them: an account of unknown balance is excluded (never
+      // counted as 0). Present only when some total is PARTIAL.
+      ...(acc.totalsCoverage ? { totalsCoverage: acc.totalsCoverage } : {}),
+      // Mortgage F8a — WHICH class each excluded account belongs to, by type
+      // ("1 mortgage … debt may be understated"), so an unobserved mortgage is
+      // never read as an unvalued crypto wallet. Present only when one exists.
+      ...((): { excludedBalances?: ReturnType<typeof composeExcludedTotals> } => {
+        const x = composeExcludedTotals(acc);
+        return x ? { excludedBalances: x } : {};
+      })(),
+      // Mortgage F1 (owner 2026-11-08) — liquid net worth WITH its definition and
+      // the loans it excludes, so the answer explains liquid vs total net worth
+      // and never presents liquid net worth as debt-free wealth.
+      ...(acc.liquidNetWorth ? { liquidNetWorth: acc.liquidNetWorth } : {}),
       // The authority's own restricted total: owned (in netWorth/totalAssets), not in `liquid`.
       // ⚠️ THE RELATION IS STATED, NOT LEFT TO INFERENCE. Shown beside `liquid` with no
       // relation, the model read restricted as a PART of liquid and subtracted it again
@@ -86,6 +101,12 @@ export const getFinancialSnapshot: ToolDefinition = {
         amountOwed: a2.amountOwed, creditBalance: a2.creditBalance,
         liabilityState: a2.liabilityState,
         apr: a2.apr, minimumPayment: a2.minimumPayment,
+        // Mortgage F3 — the name of `apr` for this account ("Mortgage rate" /
+        // "APR" / "Interest rate"), the same label the debt UI shows.
+        ...(a2.rateLabel ? { rateLabel: a2.rateLabel } : {}),
+        // Owner 2026-11-08 — the fine-grained debt type + its name ("Auto loan",
+        // "HELOC", "Mortgage", …). Mortgage-only reasoning applies ONLY to "mortgage".
+        ...(a2.debtType ? { debtType: a2.debtType, debtTypeLabel: a2.debtTypeLabel } : {}),
         freshness: a2.balanceFreshness?.band, needsReauth: a2.needsReauth,
         // RWA-1C — a manual asset's balance is the USER'S ESTIMATE, not a market
         // price; the assembler marks it and this row must not drop the mark.
@@ -95,6 +116,10 @@ export const getFinancialSnapshot: ToolDefinition = {
         ...(a2.valuations ? { valuations: a2.valuations } : {}),
         ...(a2.modeledHistory ? { modeledHistory: a2.modeledHistory } : {}),
         ...(a2.valueChangeSinceFirstRecorded ? { valueChangeSinceFirstRecorded: a2.valueChangeSinceFirstRecorded } : {}),
+        // Mortgage F9 — a property's value basis, linked secured debt and DERIVED
+        // equity (already inside netWorth: never added on top), plus the
+        // double-count prompt when its value may have been entered as equity.
+        ...(a2.property ? { property: a2.property } : {}),
         available: a2.availableQuantity?.label && a2.availableQuantity?.amount !== undefined
           ? { label: a2.availableQuantity.label, amount: a2.availableQuantity.amount } : undefined,
         ...accessOf(a2),

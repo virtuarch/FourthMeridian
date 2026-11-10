@@ -52,7 +52,7 @@ const EUR_CTX: ConversionContext = {
 
 let uid = 0;
 const debt = (over: Record<string, unknown>): DebtPerspectiveAccount =>
-  ({ id: `d${uid++}`, name: "Acct", type: "debt", institution: "Bank", balance: 0, currency: "USD", ...over } as unknown as DebtPerspectiveAccount);
+  ({ id: `d${uid++}`, name: "Acct", type: "debt", institution: "Bank", balance: 0, currency: "USD", visibilityLevel: "FULL", ...over } as unknown as DebtPerspectiveAccount);
 
 // Positive balance = owed (lib/debt/balance-semantics amountOwed).
 const ACCOUNTS: DebtPerspectiveAccount[] = [

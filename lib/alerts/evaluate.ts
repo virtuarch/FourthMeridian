@@ -30,7 +30,9 @@ import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness"
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import type { PlatformAiPurgeHealth } from "@/lib/platform/intelligence/ai/conversations/purge-health";
 import type { AlertFlapRecord, AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
+import { ALERT_AUTHORITY_SOURCES, type AlertAuthoritySource, type AlertAuthorityGatherStatus } from "@/lib/alerts/authority-sources";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -369,6 +371,21 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
  *  floor. Critical while the fail-closed switch is enforced (the customer is being
  *  refused now); warning while it is off. The authority decided who is affected; this
  *  only words it. Opaque `user #3fa9c21b` references only — never an email or a name. */
+/**
+ * B11 PR D — the Platform AI conversation purge is LATE (S2 / OD-7 activation
+ * (a)). The authority decides the state; this only classifies it. OFF / OK ⇒
+ * nothing. Timestamps only in the summary.
+ */
+export function evaluatePlatformAiPurgeLate(rule: AlertRuleDefinition, h: PlatformAiPurgeHealth): AlertSignal[] {
+  if (h.state !== "LATE") return [];
+  return [{
+    ruleId: rule.id, kind: rule.kind, severity: "critical",
+    dedupeKey: `${rule.id}:late`,
+    summary: `Platform AI conversations are ON but no successful retention purge run has been recorded in more than ${h.staleAfterHours} h `
+      + `(last success: ${h.lastSuccessAt ?? "never"}). Run the purge (Production: the purge-trash job; Preview: npm run ops:platform-ai-conversations-purge -- --env=preview) or turn conversations OFF.`,
+  }];
+}
+
 export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
   if (p.total <= 0) return [];
   // Review fix: while the switch is OFF nothing is refused, and legacy accounts
@@ -549,6 +566,9 @@ export function evaluateAlertRulesDetailed(
         break;
       case "plaid-call-anomaly":
         anomaly(rule, authorities.plaidCallAnomaly, () => evaluatePlaidCallAnomaly(rule, authorities.plaidCallAnomaly!));
+        break;
+      case "platform-ai-purge-late":
+        if (authorities.platformAiPurge) signals.push(...evaluatePlatformAiPurgeLate(rule, authorities.platformAiPurge));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;
@@ -743,6 +763,29 @@ export interface AlertRunSummary {
   flap?: AlertFlapRecord[];
   /** FLAP PROTECTION — flapping-notice keys delivered by this run (the dedupe record). */
   flapNotices?: string[];
+  /**
+   * B10 monitoring (S2 ruling) — per-authority GATHER status for this cycle:
+   * `ok` = the authority returned output the rules read; `failed` = it threw (or
+   * was absent) and its rules contributed NO signals, so "nothing firing" from
+   * that source means "not asked", not "no breach". One entry per
+   * ALERT_AUTHORITY_SOURCES key; fixed words only — never error text.
+   * Optional: rows written before the field lack it, and every reader treats
+   * absence as `unknown`, never as `ok` (older code simply ignores the key).
+   */
+  authorities?: Partial<Record<AlertAuthoritySource, AlertAuthorityGatherStatus>>;
+}
+
+export { ALERT_AUTHORITY_SOURCES, ALERT_AUTHORITY_SOURCE_LABEL, type AlertAuthoritySource, type AlertAuthorityGatherStatus } from "@/lib/alerts/authority-sources";
+
+/**
+ * Pure: the gather status of every source. A null OR absent output is `failed`
+ * — the gather boundary maps a throw to null, and an absent optional field
+ * means it did not gather either (AuthorityOutputs doc). Never infers `ok`.
+ */
+export function authorityGatherStatus(outputs: AuthorityOutputs): Record<AlertAuthoritySource, AlertAuthorityGatherStatus> {
+  const out = {} as Record<AlertAuthoritySource, AlertAuthorityGatherStatus>;
+  for (const k of ALERT_AUTHORITY_SOURCES) out[k] = outputs[k] == null ? "failed" : "ok";
+  return out;
 }
 
 /**

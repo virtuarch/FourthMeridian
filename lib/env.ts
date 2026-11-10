@@ -171,6 +171,17 @@ const _e = {
   // Platform AI v0 — the operator Q&A kill switch (lib/platform/intelligence/ai).
   // Strict `=== "true"`; unset / anything else = OFF (placeholder page, 404 API).
   PLATFORM_AI_ENABLED: process.env.PLATFORM_AI_ENABLED,
+  // Platform AI conversations (B11) — persistent operator conversations, and the
+  // retention purge that must accompany them. Strict `=== "true"`; unset = OFF.
+  PLATFORM_AI_CONVERSATIONS_ENABLED: process.env.PLATFORM_AI_CONVERSATIONS_ENABLED,
+  PLATFORM_AI_PURGE_ENABLED: process.env.PLATFORM_AI_PURGE_ENABLED,
+  // The on-demand purge trigger (GET /api/jobs/dispatch?only=platform-ai-purge) —
+  // a second, independent switch over the purge flag. Strict `=== "true"`; unset = OFF.
+  PLATFORM_AI_PURGE_ON_DEMAND_ENABLED: process.env.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED,
+  // Platform AI operational memory (design v2; Preview only) — the memory itself,
+  // and the memory retention purge that must accompany it. Strict `=== "true"`; unset = OFF.
+  PLATFORM_AI_MEMORY_ENABLED: process.env.PLATFORM_AI_MEMORY_ENABLED,
+  PLATFORM_AI_MEMORY_PURGE_ENABLED: process.env.PLATFORM_AI_MEMORY_PURGE_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -873,6 +884,61 @@ export const env = {
    * surface platform_ai) — an owner decision per environment.
    */
   get isPlatformAiEnabled() { return _e.PLATFORM_AI_ENABLED === "true"; },
+  /**
+   * Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md
+   * §3.1 step 1) are ON only when PLATFORM_AI_ENABLED === "true" AND
+   * PLATFORM_AI_CONVERSATIONS_ENABLED === "true" AND PLATFORM_AI_PURGE_ENABLED
+   * === "true" (S2 REQUIRED on #424: storage is COUPLED to the purge in code —
+   * storage with no purge would violate retention by configuration). Any of the
+   * three unset ⇒ OFF: every /api/platform/ai/conversations route answers 404
+   * NOT_AVAILABLE before any session, grant or database read. Still never
+   * enabled without S2's retention clearance (design §13).
+   */
+  get isPlatformAiConversationsEnabled() { return _e.PLATFORM_AI_ENABLED === "true" && _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
+  /**
+   * The Platform AI conversation retention purge (jobs/data-retention.ts) runs
+   * only when PLATFORM_AI_PURGE_ENABLED === "true". Unset ⇒ OFF: the rule makes
+   * no database contact. Switched on together with storage (design §13).
+   */
+  get isPlatformAiPurgeEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
+  /**
+   * The ON-DEMAND purge trigger (GET /api/jobs/dispatch?only=platform-ai-purge,
+   * lib/platform/intelligence/ai/conversations/purge-on-demand.ts) is ON only when
+   * PLATFORM_AI_PURGE_ENABLED === "true" AND PLATFORM_AI_PURGE_ON_DEMAND_ENABLED
+   * === "true". Either unset ⇒ OFF: the route answers 409 PURGE_ON_DEMAND_DISABLED
+   * with no database contact (no JobRun either). Production enablement is owner-gated.
+   */
+  get isPlatformAiPurgeOnDemandEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED === "true"; },
+  /**
+   * PR D — the S2 DISABLE-ORDER hazard, as a fact (NEVER an enable): the
+   * conversations flag is set while the purge flag is not. Storage is already OFF
+   * then (isPlatformAiConversationsEnabled needs the purge flag), but rows written
+   * while both were on would sit unpurged. The S2 order (design §13) is
+   * CONVERSATIONS off first, purge what remains, THEN the purge flag; the scheduled
+   * job reports this state as `misordered` and fails its JobRun (jobs/purge-trash.ts).
+   */
+  get isPlatformAiConversationsFlagSetWithoutPurge() { return _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED !== "true"; },
+  /**
+   * Platform AI operational memory (design v2 §6) is EFFECTIVE only when
+   * conversations are effective (isPlatformAiConversationsEnabled: Platform AI +
+   * conversations + the conversation purge) AND PLATFORM_AI_MEMORY_PURGE_ENABLED
+   * === "true" AND PLATFORM_AI_MEMORY_ENABLED === "true". Any unset ⇒ OFF: every
+   * memory route answers 404 first, and the tools and the turn injection are
+   * absent. The 7-day transcript retention (design D1) is verified by the
+   * read-only pre-enable check (npm run report:platform-ai-memory-precheck) BEFORE
+   * the flag is set; the memory module additionally refuses unless the code's
+   * retention constant is ≤ 7 days. Preview only.
+   */
+  get isPlatformAiMemoryEnabled() { return _e.PLATFORM_AI_ENABLED === "true" && _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED === "true" && _e.PLATFORM_AI_MEMORY_PURGE_ENABLED === "true" && _e.PLATFORM_AI_MEMORY_ENABLED === "true"; },
+  /**
+   * The memory retention purge (jobs/data-retention.ts, fm_purge_platform_ai_memory)
+   * runs only when PLATFORM_AI_MEMORY_PURGE_ENABLED === "true". Unset ⇒ OFF: no
+   * database contact. Independent of the memory flag so the purge keeps running
+   * after memory is switched off (disable order: memory off, purge, purge flag).
+   */
+  get isPlatformAiMemoryPurgeEnabled() { return _e.PLATFORM_AI_MEMORY_PURGE_ENABLED === "true"; },
+  /** The memory DISABLE-ORDER hazard, as a fact (never an enable): the memory flag is set while its purge flag is not. */
+  get isPlatformAiMemoryFlagSetWithoutPurge() { return _e.PLATFORM_AI_MEMORY_ENABLED === "true" && _e.PLATFORM_AI_MEMORY_PURGE_ENABLED !== "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
    * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"

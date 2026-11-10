@@ -88,8 +88,17 @@ export interface Account {
   displayName?:  string;  // user-editable override; undefined until the user renames the account
   // Debt fields — effective values prefer the DebtProfile when present and fall
   // back to the legacy flat columns otherwise.
-  creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
+  /** Populated from Plaid balances.limit or manual entry. S2 P1-R1: on a FULL row a
+   *  KNOWN-ABSENT limit is null (never undefined) — undefined means "withheld". */
+  creditLimit?:    number | null;
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  /** S2 PRIVACY P1 — SpaceAccountLink tier this row was disclosed at. Read only
+   *  by the viewer debt-label helpers (lib/debt/liability-kind.ts debtLabelAccess). */
+  visibilityLevel?: string;
+  /** S2 PRIVACY P1-R1 — server-classified debt type (coarse on non-FULL rows,
+   *  whose raw subtypes are withheld). Client math reads it via liabilityKind. */
+  debtType?: import("@/lib/debt/liability-kind").DebtType | null;
+
   /** 2026-10-07 — FinancialAccount.providerSubtype (provider evidence: "hsa",
    *  "401k", "brokerage", …). Read only by liquidityAccess; null/absent = unknown. */
   providerSubtype?: string | null;
@@ -222,6 +231,20 @@ export interface Snapshot {
   // AI consumers need no direct SpaceSnapshot query. Optional: pre-existing
   // constructors of this DTO elsewhere are unaffected.
   netLiquid?: number;
+  /**
+   * Mortgage F1b — SpaceSnapshot.installmentDebt: the installment debt this
+   * row's `netLiquid` EXCLUDED, converted like every other total. ABSENT = a
+   * legacy row (not recorded); its liquid-NW basis is then decided per row by
+   * `liquidNetWorthRowBasis` (lib/debt/liquid-net-worth.ts).
+   */
+  installmentDebt?: number;
+  /**
+   * Mortgage F1b (S2 D2) — PRESENTATION ONLY, on a legacy row (installmentDebt
+   * absent) of a Space that NEVER held an installment liability: the Liquid NW
+   * chart plots it as the current definition (one joined series). Set by the
+   * snapshots route; never changes a basis, a breakdown or the AI payload.
+   */
+  liquidLegacyRowsCurrent?: true;
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
@@ -381,6 +404,11 @@ export interface Transaction {
    *  Absent when the read did not assess the row (e.g. it already had a
    *  persisted counterparty, or it is not transfer-shaped). */
   transferMaturity?:    string | null;
+  /** Owner F6 / S2 D3 — the provider's detailed category (pfcDetailed), exposed
+   *  ONLY on rows the transfer authority matured to UNTRACKED_LOAN_PAYMENT, so
+   *  the unsplit loan-payment label can name the loan type (escrow only for a
+   *  mortgage). Absent on every other row. */
+  loanPaymentDetail?:   string | null;
   /** L8-B1 — the logical event this row projects (pending and posted share one).
    *  Absent when the read did not select it; null outside the banking event
    *  domain (self-custody crypto). */

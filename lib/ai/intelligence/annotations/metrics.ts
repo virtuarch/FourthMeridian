@@ -37,7 +37,7 @@ import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-cl
 // applies the same clamp the headline netCashFlow and the workspace use.
 import { clampEconomicSpend, meanMonthlyEconomicSpend, type MonthlyEconomicSpend } from '@/lib/transactions/cash-flow';
 import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
-import { computeDebtAggregate, type DebtAggregateRow } from '@/lib/debt/aggregates';
+import { computeDebtAggregate, aiRateCoverage, type DebtAggregateRow } from '@/lib/debt/aggregates';
 
 export function getTxnData(ctx: SpaceContext_AI): TransactionsSummaryData | null {
   const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
@@ -478,6 +478,13 @@ export function computeSpendingTrends(
  * Pure function. No DB queries. Must be called after Step 3 (DebtSection).
  */
 
+/** Mortgage F4 — the targeting rule, stated for the model to repeat. */
+export const DEBT_TARGET_POLICY =
+  'Required payments first on every debt; extra goes to ONE revolving debt at a time — avalanche = highest known '
+  + 'rate first (unknown rates last), snowball = smallest balance first. Installment loans (mortgage, auto, student, '
+  + 'personal) get only their scheduled payment and are not avalanche/snowball candidates. Never assume a missing '
+  + 'rate or payment; name it.';
+
 export function computeDebtStrategy(
   accts: AccountsSectionData | null,
   debt:  DebtSection,
@@ -489,9 +496,12 @@ export function computeDebtStrategy(
       avalancheCandidate:         null,
       snowballCandidate:          null,
       weightedAvgApr:             null,
+      weightedAvgAprCoverage:     aiRateCoverage(computeDebtAggregate([]).rateCoverage),
       knownMonthlyInterestBurden: null,
       missingAprAccountNames:     [],
       hasBalanceOnlyDebt:         false,
+      scheduledOnlyAccountNames:  [],
+      targetPolicy:               DEBT_TARGET_POLICY,
     };
   }
 
@@ -517,8 +527,15 @@ export function computeDebtStrategy(
       a.reportingBalance !== null && hasOutstandingDebt(a.reportingBalance),
   );
 
+  // Mortgage F4 (owner 2026-11-08) — only REVOLVING debt (and debt with no kind
+  // evidence) is an extra-payment target. Installment loans (lib/debt/
+  // liability-kind.ts) amortise on schedule: a mortgage is never the avalanche
+  // or snowball candidate, however high its rate or small its balance.
+  const scheduledOnly = valuedDebt.filter((a) => a.liabilityKind === 'installment');
+  const targetable    = valuedDebt.filter((a) => a.liabilityKind !== 'installment');
+
   // Avalanche target: highest APR — FULL visibility, APR known and positive.
-  const fullWithApr = [...valuedDebt]
+  const fullWithApr = [...targetable]
     .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null && a.apr > 0)
     .sort((a, b) => (b.apr ?? 0) - (a.apr ?? 0));
 
@@ -529,7 +546,7 @@ export function computeDebtStrategy(
   // Snowball target: lowest REPORTING amount owed — any indebted debt account.
   // Ranking native magnitudes here would compare unlike currencies (e.g. AED
   // 20,000 vs USD 10,000) and pick the wrong "smallest" account.
-  const byBalance = [...valuedDebt].sort(
+  const byBalance = [...targetable].sort(
     (a, b) => amountOwed(a.reportingBalance) - amountOwed(b.reportingBalance),
   );
   const snowballCandidate: DebtCandidate | null = byBalance.length > 0
@@ -552,15 +569,26 @@ export function computeDebtStrategy(
   //     same population and did not round, so the assessment carried one figure
   //     at two precisions. Rounding is presentation — every consumer already
   //     calls `.toFixed(2)`.
-  const weightedAvgApr: number | null = computeDebtAggregate(
-    valuedDebt
-      .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null)
-      .map((a): DebtAggregateRow => ({
-        balance:        a.reportingBalance,
-        apr:            a.apr ?? null,
-        minimumPayment: null,   // the strategy does not state a monthly obligation
-      })),
-  ).weightedApr;
+  //
+  // Mortgage F3 / S2 — the population is now EVERY owing debt, with an unknown
+  // rate (no APR on file, or a BALANCE_ONLY row whose rate is withheld) as null,
+  // so the aggregate can say what the rate COVERS. The blend itself is unchanged
+  // (unknowns are excluded from both sides), but it is exposed as
+  // `weightedAvgApr` ONLY when every owing debt is rated (COMPLETE). A PARTIAL
+  // blend is the rate of the RATED debts only and travels as
+  // `ratedDebtsAvgRate`, labelled so; NONE ⇒ null, never 0.
+  const rateAgg = computeDebtAggregate(
+    valuedDebt.map((a): DebtAggregateRow => ({
+      balance:        a.reportingBalance,
+      apr:            a.visibilityLevel === 'FULL' && a.apr != null ? a.apr : null,
+      minimumPayment: null,   // the strategy does not state a monthly obligation
+    })),
+  );
+  const weightedAvgAprCoverage = aiRateCoverage(rateAgg.rateCoverage);
+  const weightedAvgApr: number | null = rateAgg.rateCoverage.status === 'COMPLETE' ? rateAgg.weightedApr : null;
+  const ratedDebtsAvgRate = rateAgg.rateCoverage.status === 'PARTIAL' && rateAgg.weightedApr !== null
+    ? { ratePct: rateAgg.weightedApr, meaning: weightedAvgAprCoverage.meaning }
+    : null;
 
   // P2-7D honesty: taint the strategy when any driving debt account had an
   // estimated reporting balance (missing/walked-back FX) — the ranking/weighting is
@@ -581,9 +609,13 @@ export function computeDebtStrategy(
     avalancheCandidate,
     snowballCandidate,
     weightedAvgApr,
+    weightedAvgAprCoverage,
+    ...(ratedDebtsAvgRate ? { ratedDebtsAvgRate } : {}),
     knownMonthlyInterestBurden: debt.monthlyInterestBurden,
     missingAprAccountNames:     debt.aprGapAccountNames,
     hasBalanceOnlyDebt:         debt.hasBalanceOnlyDebt,
+    scheduledOnlyAccountNames:  scheduledOnly.map((a) => a.name),
+    targetPolicy:               DEBT_TARGET_POLICY,
     ...(balancesEstimated ? { balancesEstimated: true } : {}),
   };
 }

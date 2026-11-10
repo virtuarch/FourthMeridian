@@ -8,7 +8,8 @@
  * (lib/debt/payoff.ts). This module formats; it computes nothing.
  */
 
-import { MAX_PAYOFF_PAYMENTS, type PayoffBasis, type PayoffPlan } from "@/lib/debt/payoff";
+import { MAX_PAYOFF_PAYMENTS, type PayoffBasis, type PayoffPlan, type PayoffStrategy, type PayoffUnknownReason, type PayoffUnknownField } from "@/lib/debt/payoff";
+import { formatOwedShare } from "@/lib/debt/aggregates";
 
 /** The basis of a plan that ran a schedule, or null for one that never did. */
 export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
@@ -19,12 +20,32 @@ export function payoffBasisOf(plan: PayoffPlan): PayoffBasis | null {
  * The qualification an estimate must carry, or null for an interest-aware plan.
  * `headline` is the badge; `detail` says what was and was not counted.
  */
-export function payoffEstimateNotice(plan: PayoffPlan): { headline: string; detail: string } | null {
+export function payoffEstimateNotice(
+  plan: PayoffPlan,
+  /** Mortgage F3 — "APR" only when every debt in the plan is revolving credit
+   *  (lib/debt/rate-label.ts blendedRateLabel); otherwise the neutral "rate". */
+  rateWord: "APR" | "rate" = "APR",
+): { headline: string; detail: string } | null {
   const basis = payoffBasisOf(plan);
   if (!basis || basis.interest === "INTEREST_AWARE") return null;
   return basis.interest === "PRINCIPAL_ONLY"
-    ? { headline: "Estimated without interest", detail: "No APR is on file, so this counts payments against the balance only." }
-    : { headline: "Estimated without some interest", detail: "Interest is counted only on the debts with an APR on file." };
+    ? { headline: "Estimated without interest", detail: `No ${rateWord} is on file, so this counts payments against the balance only.` }
+    : { headline: "Estimated without some interest", detail: `Interest is counted only on the debts with ${rateWord === "APR" ? "an APR" : "a rate"} on file.` };
+}
+
+/**
+ * Mortgage F3 (S2 ruling, item 3) — the payoff never assumes 0% SILENTLY: the
+ * rate-unknown note, stating how many debts AND what SHARE of the balance the
+ * known rates cover (S2), from the engine's own counts and balances. Null when
+ * every owing debt has a rate on file.
+ */
+export function payoffUnknownRateNote(plan: PayoffPlan): string | null {
+  const basis = payoffBasisOf(plan);
+  if (!basis || basis.unknownAprCount === 0) return null;
+  const { unknownAprCount: u, owingCount: n, knownAprBalance: k, unknownAprBalance: x } = basis;
+  const share = k + x > 0 ? k / (k + x) : 0;
+  return `Rate known for ${n - u} of ${n} debt${n === 1 ? "" : "s"} (${formatOwedShare(share)} of what you owe) — `
+    + `no rate is assumed for the others, and they are left out of the interest total.`;
 }
 
 /** The one call to action — it points at the Interest cost widget, never at a second APR input. */
@@ -42,9 +63,58 @@ export function isSinglePaymentPayoff(plan: PayoffPlan): boolean {
  * planner.
  */
 export function payoffHeadline(plan: PayoffPlan): { caption: string; label: string } {
-  return isSinglePaymentPayoff(plan)
-    ? { caption: "Paid off with", label: "One payment" }
-    : { caption: "Debt-free in", label: payoffHorizonLabel(plan) };
+  if (isSinglePaymentPayoff(plan)) return { caption: "Paid off with", label: "One payment" };
+  // F4 — a plan with an unprojected loan never claims a debt-free date.
+  if (plan.status === "paid_off" && plan.debtFreeISO === null) return { caption: "Projected debts paid off in", label: payoffHorizonLabel(plan) };
+  return { caption: "Debt-free in", label: payoffHorizonLabel(plan) };
+}
+
+// ── Mortgage F4 — the strategy, the unknowns, the shortfall ──────────────────
+
+/** The strategy's name as a user reads it. */
+export const PAYOFF_STRATEGY_LABEL: Record<PayoffStrategy, string> = {
+  avalanche: "Highest rate first",
+  snowball:  "Smallest balance first",
+};
+
+/** One line saying how the budget is allocated (null when no plan classified the debts). */
+export function payoffStrategyLine(plan: PayoffPlan): string | null {
+  if (!("strategy" in plan)) return null;
+  const order = plan.strategy === "avalanche" ? "the highest known rate first" : "the smallest balance first";
+  const loans = plan.includeInstallmentExtra
+    ? " Installment loans with known terms can receive extra too."
+    : " Installment loans (mortgage, auto, student) get only their scheduled payment.";
+  return `Each debt gets its required payment first; the rest goes to one debt at a time, ${order}, and rolls to the next when it is paid off.${loans}`;
+}
+
+const REASON_WORDS: Record<PayoffUnknownReason, string> = {
+  RATE_UNKNOWN:                   "rate unknown",
+  REQUIRED_PAYMENT_UNKNOWN:       "scheduled payment unknown",
+  MORTGAGE_PAYMENT_SPLIT_UNKNOWN: "principal and interest split of the payment unknown (it may include escrow)",
+};
+const FIELD_WORDS: Record<PayoffUnknownField, string> = {
+  rate:                   "rate",
+  requiredPayment:        "required payment",
+  principalInterestSplit: "principal/interest split",
+};
+
+/** "Mortgage: payoff date unknown — rate unknown; …" per unprojected loan. */
+export function payoffUnprojectedLines(plan: PayoffPlan): string[] {
+  if (!("coverage" in plan)) return [];
+  return plan.coverage.unprojected.map((u) => `${u.label}: payoff date unknown — ${u.reasons.map((r) => REASON_WORDS[r]).join("; ")}.`);
+}
+
+/** "Not on file: Card A (required payment), Mortgage (rate, principal/interest split)." Null when complete. */
+export function payoffCoverageNote(plan: PayoffPlan): string | null {
+  if (!("coverage" in plan) || plan.coverage.unknown.length === 0) return null;
+  return `Not on file: ${plan.coverage.unknown.map((u) => `${u.label} (${u.fields.map((f) => FIELD_WORDS[f]).join(", ")})`).join("; ")}.`;
+}
+
+/** The shortfall, stated with the engine's figures. Null unless the plan is a shortfall. */
+export function payoffShortfallLine(plan: PayoffPlan, fmtMoney: (n: number) => string): string | null {
+  if (plan.status !== "shortfall") return null;
+  return `${fmtMoney(plan.payment)} a month is ${fmtMoney(plan.shortfall)} short of the ${fmtMoney(plan.requiredTotal)} in required payments, `
+    + `so no payoff plan is shown. Required: ${plan.required.map((r) => `${r.label} ${fmtMoney(r.amount)}`).join(", ")}.`;
 }
 
 /**
@@ -83,6 +153,8 @@ export function payoffHorizonLabel(plan: PayoffPlan): string {
       if (plan.paymentCount === 1) return "One payment";
       return plan.basis.interest === "INTEREST_AWARE" ? plan.elapsed.label : `About ${plan.elapsed.label}`;
     case "non_amortizing": return "Payment doesn't cover interest";
+    case "shortfall":      return "Below required payments";
+    case "not_projectable": return "Payoff date unknown";
     case "beyond_horizon": return `Over ${Math.round(MAX_PAYOFF_PAYMENTS / 12)} years`;
     case "nothing_owed":   return "Nothing owed";
     case "invalid_input":  return "Enter a payment";

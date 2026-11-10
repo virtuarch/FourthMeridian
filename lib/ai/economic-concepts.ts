@@ -40,6 +40,10 @@
  */
 
 import type { AccountsSectionData } from '@/lib/ai/types';
+import {
+  describeExcludedTypes, excludedFromAiAccounts, partialTotalStatement,
+  type ExcludedAccount, type ExcludedAccountClass, type ExclusionDirection, type PartialTotalStatement,
+} from '@/lib/balances/unobserved-totals';
 
 /**
  * Whether a component's amount can be stated.
@@ -132,13 +136,15 @@ export function composeInvestments(
       ? 'at least one balance could not be converted to the reporting currency and was excluded from the totals'
       : null;
 
-  // FM-AUDIT-022 — an unvalued wallet was EXCLUDED from the digital-asset total
-  // (never counted at 0). That total is a partial, so it is not assertable; the
-  // exclusion is attributable to digital assets only, so the other class stands.
-  const unvalued = accounts.totalsUnvaluedCount ?? 0;
-  const digitalIndeterminate = unvalued > 0
-    ? `${unvalued} crypto wallet(s) are not yet valued (no price or no observation) and are excluded from the digital-asset total`
-    : null;
+  // FM-AUDIT-022 / Mortgage F8a — an account of unknown balance was EXCLUDED
+  // from its class total (never counted at 0). Attributed BY TYPE through the
+  // one detector: an unvalued crypto wallet makes digital assets indeterminate,
+  // an unobserved investment account makes traditional investments
+  // indeterminate, and an unobserved mortgage (or any debt / cash account)
+  // touches NEITHER — it is a partial debt total (`composeExcludedTotals`).
+  const excluded = excludedFromAiAccounts(accounts);
+  const digitalIndeterminate = classExclusionReason(excluded, ['DIGITAL_ASSET', 'UNKNOWN'], 'digital-asset total');
+  const tradIndeterminate    = classExclusionReason(excluded, ['INVESTMENT', 'UNKNOWN'], 'investment total');
 
   const component = (
     key: string, label: string, amount: number | undefined, accountCount: number,
@@ -163,7 +169,7 @@ export function composeInvestments(
 
   const components = [
     component('TRADITIONAL_INVESTMENTS', 'Traditional investments',
-      accounts.totalInvestments, accounts.counts?.investments ?? 0),
+      accounts.totalInvestments, accounts.counts?.investments ?? 0, tradIndeterminate),
     component('DIGITAL_ASSETS', 'Digital assets',
       accounts.totalDigitalAssets, accounts.counts?.digitalAssets ?? 0, digitalIndeterminate),
   ];
@@ -193,6 +199,91 @@ export function composeInvestments(
       : null,
     currency,
   };
+}
+
+/** Why a class total is withheld, naming the excluded types — or null. */
+function classExclusionReason(
+  excluded: readonly ExcludedAccount[], classes: readonly ExcludedAccountClass[], totalName: string,
+): string | null {
+  const hit = excluded.filter((e) => classes.includes(e.accountClass));
+  if (hit.length === 0) return null;
+  const n = hit.reduce((s, e) => s + e.count, 0);
+  const verb = n === 1 ? 'is' : 'are';
+  const why = hit.every((e) => e.reason === 'UNVALUED')
+    ? `not yet valued (no price or no observation) and ${verb} excluded from the ${totalName}`
+    : `of unknown balance (never observed or not yet valued) and ${verb} excluded from the ${totalName}`;
+  return `${describeExcludedTypes(hit)} ${verb} ${why}`;
+}
+
+// ── Excluded balances, attributed by type (Mortgage F8a) ─────────────────────
+
+/** The class a PARTIAL attribution is reported under. */
+export type ExcludedClassKey =
+  | 'DEBT' | 'CASH' | 'TRADITIONAL_INVESTMENTS' | 'DIGITAL_ASSETS' | 'OTHER_ASSETS' | 'UNATTRIBUTED';
+
+export interface ExcludedClassComponent {
+  key:       ExcludedClassKey;
+  label:     string;
+  state:     'PARTIAL';
+  direction: ExclusionDirection;
+  count:     number;
+  /** In-sentence type names, e.g. ["mortgage"]. */
+  types:     string[];
+  reason:    string;
+}
+
+export interface ExcludedTotalsComposition {
+  concept: 'EXCLUDED_BALANCES';
+  /** One per class with an exclusion, debt first. */
+  classes: ExcludedClassComponent[];
+  /** Each headline total that is PARTIAL, with direction and typed wording. */
+  totals:  PartialTotalStatement[];
+}
+
+const CLASS_KEY: Readonly<Record<ExcludedAccountClass, { key: ExcludedClassKey; label: string; total: string }>> = {
+  DEBT:          { key: 'DEBT',                    label: 'Debt',                    total: 'debt total' },
+  CASH:          { key: 'CASH',                    label: 'Cash',                    total: 'cash total' },
+  INVESTMENT:    { key: 'TRADITIONAL_INVESTMENTS', label: 'Traditional investments', total: 'investment total' },
+  DIGITAL_ASSET: { key: 'DIGITAL_ASSETS',          label: 'Digital assets',          total: 'digital-asset total' },
+  OTHER_ASSET:   { key: 'OTHER_ASSETS',            label: 'Other assets',            total: 'other-asset total' },
+  UNKNOWN:       { key: 'UNATTRIBUTED',            label: 'Unattributed accounts',   total: 'totals' },
+};
+
+const CLASS_ORDER: readonly ExcludedAccountClass[] = ['DEBT', 'CASH', 'INVESTMENT', 'DIGITAL_ASSET', 'OTHER_ASSET', 'UNKNOWN'];
+
+/**
+ * Which class totals are PARTIAL because an account of unknown balance was
+ * excluded, attributed BY TYPE — never misattributed. An unobserved mortgage
+ * is a DEBT partial ("debt may be understated"), never a digital-asset one.
+ * Null when nothing was excluded.
+ */
+export function composeExcludedTotals(
+  accounts: AccountsSectionData | null | undefined,
+): ExcludedTotalsComposition | null {
+  const excluded = excludedFromAiAccounts(accounts);
+  if (excluded.length === 0) return null;
+  const classes: ExcludedClassComponent[] = [];
+  for (const cls of CLASS_ORDER) {
+    const hit = excluded.filter((e) => e.accountClass === cls);
+    if (hit.length === 0) continue;
+    const meta = CLASS_KEY[cls];
+    const n = hit.reduce((s, e) => s + e.count, 0);
+    const types = [...new Set(hit.map((e) => e.label))];
+    const isDebt = cls === 'DEBT';
+    classes.push({
+      key: meta.key, label: meta.label, state: 'PARTIAL',
+      direction: isDebt ? 'TRUE_TOTAL_HIGHER' : 'TRUE_TOTAL_MAY_BE_HIGHER',
+      count: n, types,
+      reason: `${describeExcludedTypes(hit)} of unknown balance ${n === 1 ? 'is' : 'are'} excluded from the ${meta.total} — `
+        + (isDebt
+          ? 'debt may be understated, so net worth may be overstated. Never estimate the missing balance.'
+          : 'it may be understated. Never estimate the missing balance or treat it as zero.'),
+    });
+  }
+  const totals = (['NET_WORTH', 'TOTAL_DEBT', 'TOTAL_ASSETS', 'LIQUID_CASH', 'LIQUID_NET_WORTH'] as const)
+    .map((t) => partialTotalStatement(t, excluded))
+    .filter((t): t is PartialTotalStatement => t !== null);
+  return { concept: 'EXCLUDED_BALANCES', classes, totals };
 }
 
 // ── Breadth ──────────────────────────────────────────────────────────────────

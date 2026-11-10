@@ -49,7 +49,8 @@
  *    a date's data from its neighbours.
  */
 
-import { computeSnapshotFields, snapshotRestrictedCash, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
+import { computeSnapshotFields, snapshotInstallmentDebt, snapshotRestrictedCash, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
+import { storedExcludedInstallmentDebt } from "@/lib/debt/liquid-net-worth";
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import {
   CRYPTO_MATERIALITY_EPSILON, type CryptoValuationStatus,
@@ -258,7 +259,14 @@ export interface DayRegenInput {
    * day to skip — exactly the behaviour that predates per-component
    * authorisation, which is why every existing caller keeps working unchanged.
    */
-  existing?: SnapshotFields | null;
+  existing?: (SnapshotFields & {
+    /**
+     * Mortgage F1b — the stored row's recorded installment debt; null/absent on
+     * a legacy row. Read only when the debt component is PRESERVED, so the row
+     * keeps its own basis (lib/debt/liquid-net-worth.ts).
+     */
+    installmentDebt?: number | null;
+  }) | null;
 }
 
 export type RegenAction =
@@ -346,6 +354,15 @@ export interface DayRegenResult {
    * every skip. Persisted only through `restrictedCashWriteData`.
    */
   restrictedCash?: number | null;
+  /**
+   * Mortgage F1b — the installment debt this day's netLiquid excluded
+   * (`snapshotInstallmentDebt(totals)`), set ONLY when this run RECOMPUTED the
+   * debt component (the row is then on the new basis, exact identity).
+   * UNDEFINED when debt was PRESERVED (the stored row keeps its own
+   * installmentDebt — recorded or a legacy NULL — and therefore its own basis)
+   * and on every skip. Persisted only through `installmentDebtWriteData`.
+   */
+  installmentDebt?: number;
   reason: string;
 }
 
@@ -358,6 +375,17 @@ export interface DayRegenResult {
  */
 export function restrictedCashWriteData(res: { restrictedCash?: number | null }): { restrictedCash?: number | null } {
   return res.restrictedCash === undefined ? {} : { restrictedCash: res.restrictedCash };
+}
+
+/**
+ * Mortgage F1b — THE write-data fragment for `SpaceSnapshot.installmentDebt`,
+ * used by BOTH the full-write upsert and the partial patch: the key is present
+ * only when this run recomputed the debt component, so a preserving write never
+ * NULLs a recorded value nor stamps a legacy row onto a basis it was not
+ * computed on.
+ */
+export function installmentDebtWriteData(res: { installmentDebt?: number }): { installmentDebt?: number } {
+  return res.installmentDebt === undefined ? {} : { installmentDebt: res.installmentDebt };
 }
 
 /** Fields whose recomputed value differs from the stored one by more than a cent. */
@@ -559,6 +587,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     };
   });
   const valueOf = (c: ComponentName) => components.find((d) => d.component === c)!.value;
+  const debtPreserved = components.find((d) => d.component === "debt")!.action === "preserved";
 
   const totals: ClassifyTotals = {
     ...base,
@@ -567,6 +596,14 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     totalChecking:      valueOf("cash"),
     totalSavings:       valueOf("savings"),
     totalLiabilities:   valueOf("debt"),
+    // Mortgage F1 — the installment share excluded from netLiquid travels WITH
+    // the debt component: recomputed debt ⇒ the fresh classification's share;
+    // PRESERVED debt ⇒ the share the stored row already excluded (recovered by
+    // subtraction), so a preserved component keeps its own basis.
+    // F1b: the stored share is the RECORDED column when the row has one.
+    totalInstallmentLiabilities: debtPreserved && existing
+      ? storedExcludedInstallmentDebt(existing)
+      : base.totalInstallmentLiabilities,
   };
   // AGGREGATES ARE ALWAYS RECOMPUTED FROM THE COMPONENTS THE ROW WILL CARRY.
   //
@@ -625,6 +662,9 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     cryptoValuationStatus: cryptoVerdict,
     // Preserved cash/savings ⇒ UNDEFINED: the column is left untouched (never NULLed).
     ...(refusedBy.has("cash") || refusedBy.has("savings") ? {} : { restrictedCash: snapshotRestrictedCash(base) }),
+    // Mortgage F1b — recomputed debt ⇒ record the exclusion (new basis, exact
+    // identity); preserved debt ⇒ UNDEFINED (the row keeps its own column/basis).
+    ...(debtPreserved ? {} : { installmentDebt: snapshotInstallmentDebt(totals) }),
     reason: partial
       ? `PARTIAL: ${refusals.map((r) => `${r.component} preserved — ${r.reason}`).join(" | ")}` +
         (parts.length ? ` || rewritten: ${parts.join(" + ")}` : " || rewritten: cash/savings/debt from the posted ledger")

@@ -771,6 +771,10 @@ const COUNTERPARTY_REFERENCES: Readonly<Record<string, CpRole>> = {
   // counterparty id as EVIDENCE that the other side is owned; it never writes it.
   "lib/transactions/resolved-nature.ts":                 "AUTHORITY",
   "lib/transactions/liquidity.ts":                       "READ",
+  // Owner F6 — the debt-service decomposition reads a counted payment leg's
+  // (already resolved) counterparty id ONLY to look up the receiving liability's
+  // debt type (revolving paydown vs unsplit loan payment); it never writes it.
+  "lib/transactions/debt-service.ts":                    "READ",
   "lib/plaid/syncTransactions.ts":                       "WRITE_NULL",
   "lib/data/transactions.ts":                            "READ",
   "lib/export/csv.ts":                                   "READ",

@@ -194,6 +194,13 @@ export const AuditAction = {
   // — never the address, the name, the balance or the purchase price.
   WALLET_ADD:               "WALLET_ADD",
   MANUAL_ASSET_ADD:         "MANUAL_ASSET_ADD",
+  // Mortgage F9 (owner 2026-11-08; S2 R1) — the owner's property actions, written
+  // in the SAME tenant transaction as the profile write by
+  // lib/assets/property-links.ts. metadata = { propertyId, debtAccountId? } /
+  // { propertyId, from, to } — ids and enum values only, never a balance or name.
+  MANUAL_ASSET_SECURED_DEBT_LINKED:   "MANUAL_ASSET_SECURED_DEBT_LINKED",
+  MANUAL_ASSET_SECURED_DEBT_UNLINKED: "MANUAL_ASSET_SECURED_DEBT_UNLINKED",
+  MANUAL_ASSET_VALUE_BASIS_CHANGED:   "MANUAL_ASSET_VALUE_BASIS_CHANGED",
   REGISTER:                 "REGISTER",
 
   // ── Product events (BETA A1–A8, lib/analytics/product-events.ts) ──────────
@@ -372,6 +379,33 @@ export const AuditAction = {
   // the incident `detail`, provider text or a customer id.
   SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
   SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
+
+  // B11 — Platform AI conversations (docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §7.5).
+  // CREATED / DELETED: the operator's own conversation, written through
+  // recordOperatorAction inside the same tenant transaction (target
+  // PLATFORM_AI_CONVERSATION; detail = area, and messageCount on delete).
+  // PURGED: the retention job (fm_system), counts only, no userId. NEVER a
+  // question, an answer, a derived label or a message id. Reads and individual
+  // messages are not audited (S2 B8). Deliberately absent from every operator
+  // feed: another operator must not learn when a colleague talks to the AI.
+  PLATFORM_AI_CONVERSATION_CREATED:  "PLATFORM_AI_CONVERSATION_CREATED",
+  PLATFORM_AI_CONVERSATION_DELETED:  "PLATFORM_AI_CONVERSATION_DELETED",
+  PLATFORM_AI_CONVERSATIONS_PURGED:  "PLATFORM_AI_CONVERSATIONS_PURGED",
+
+  // Platform AI operational memory (design v2 §7; Preview only). NEVER a note,
+  // a payload or a ref id — types, areas and counts only. CONFIRMED / RENEWED /
+  // DELETED / EXPORTED / PROPOSAL_REFUSED: the operator's own action, written in
+  // the same tenant transaction. INVALIDATED: aggregated per turn (system).
+  // OPERATOR_PURGED: a System Admin's purge of one operator (target id + count).
+  // PURGED: the retention job (fm_system), counts only, no userId.
+  PLATFORM_AI_MEMORY_CONFIRMED:        "PLATFORM_AI_MEMORY_CONFIRMED",
+  PLATFORM_AI_MEMORY_RENEWED:          "PLATFORM_AI_MEMORY_RENEWED",
+  PLATFORM_AI_MEMORY_DELETED:          "PLATFORM_AI_MEMORY_DELETED",
+  PLATFORM_AI_MEMORY_INVALIDATED:      "PLATFORM_AI_MEMORY_INVALIDATED",
+  PLATFORM_AI_MEMORY_PROPOSAL_REFUSED: "PLATFORM_AI_MEMORY_PROPOSAL_REFUSED",
+  PLATFORM_AI_MEMORY_OPERATOR_PURGED:  "PLATFORM_AI_MEMORY_OPERATOR_PURGED",
+  PLATFORM_AI_MEMORY_EXPORTED:         "PLATFORM_AI_MEMORY_EXPORTED",
+  PLATFORM_AI_MEMORY_PURGED:           "PLATFORM_AI_MEMORY_PURGED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -878,6 +912,14 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Accounts",
     actions: [AuditAction.ACCOUNT_SHARED, AuditAction.ACCOUNT_REVOKED],
+  },
+  {
+    label: "Property (Mortgage F9)",
+    actions: [
+      AuditAction.MANUAL_ASSET_SECURED_DEBT_LINKED,
+      AuditAction.MANUAL_ASSET_SECURED_DEBT_UNLINKED,
+      AuditAction.MANUAL_ASSET_VALUE_BASIS_CHANGED,
+    ],
   },
   {
     label: "Imports",

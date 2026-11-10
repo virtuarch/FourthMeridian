@@ -49,6 +49,8 @@
 
 import type { ReadClient } from '@/lib/db/tenant-context';
 import { loadHistoriesFor, type ValuationHistory } from '@/lib/assets/valuations';
+import { loadPropertyProfilesFor } from '@/lib/assets/property-links';
+import { aiPropertyFacts, type AiSpaceDebt } from '@/lib/assets/property-equity';
 import {
   accountDisplayName, ACCOUNT_NAME_SELECT, type AccountNameEvidence,
 } from '@/lib/accounts/display-identity';
@@ -76,6 +78,8 @@ import {
 import { grantsAccountDetail } from '@/lib/ai/visibility';
 import { amountOwed, creditBalance, liabilityState, type LiabilityState } from '@/lib/debt/balance-semantics';
 import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
+import { rateLabel } from '@/lib/debt/rate-label';
+import { debtLabelAccess, debtType, liabilityKind, viewerDebtLabel, viewerDebtType } from '@/lib/debt/liability-kind';
 import { resolveAccountFreshness, ESTIMATE_STALE_AFTER_DAYS } from '@/lib/freshness/observation';
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance } from '@/lib/balances/account-balances';
 import { loadPendingEvidence, NO_PENDING } from '@/lib/balances/pending-evidence';
@@ -89,9 +93,12 @@ import type {
   AccountHealthSummary,
   KnowledgeGap,
   TrackedAccountLite,
+  AiLiquidNetWorth,
 } from '@/lib/ai/types';
+import { aiLiquidNetWorth } from '@/lib/debt/liquid-net-worth';
 import type { SpaceContext } from '@/lib/space';
-import { applyCanonicalWalletBalances } from "@/lib/crypto/wallet-current-value";
+import { applyCanonicalWalletBalances, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
+import { aiExcludedAccountGroups, aiTotalsCoverage, excludedAccountCounts, isBalanceUnobserved, type AiTotalsCoverage } from "@/lib/balances/unobserved-totals";
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -127,6 +134,8 @@ type AccountLinkRow = {
     debtSubtype:     string | null;
     /** 2026-10-07 — provider subtype evidence; read only by liquidityAccess. */
     providerSubtype: string | null;
+    /** FIN-A2 — false ONLY when the provider balance was never observed (the column is a structural 0). */
+    balanceObserved?: boolean | null;
     // Flat fallback debt fields (provider-sourced or legacy)
     interestRate:    number | null;   // FinancialAccount.interestRate — provider APR fallback
     minimumPayment:  number | null;   // FinancialAccount.minimumPayment — provider min-payment fallback
@@ -210,6 +219,10 @@ async function assembleAccounts(
           // in totalLiquid, which is what runway, the Brief and the scenario
           // opening cash read.
           providerSubtype: true,
+          // FIN-A2 / Mortgage F8 — a never-observed balance is EXCLUDED from the
+          // totals (same classification as every product surface) and the
+          // totals carry PARTIAL + direction to the model.
+          balanceObserved: true,
           // Flat fallback debt fields — provider-sourced or legacy
           interestRate:   true,
           minimumPayment: true,
@@ -276,6 +289,16 @@ async function assembleAccounts(
   // FM-AUDIT-022 — wallets with NO value, excluded from every total below and
   // disclosed as `totalsUnvaluedCount`. Never valued at 0 or a stored column.
   const unvaluedIds = new Set(canonicalRows.filter((r) => r.valuationUnknown === true).map((r) => r.id));
+  // FIN-A2 / Mortgage F8 — an account whose balance was never observed (any
+  // type: a Plaid mortgage too) goes through THE same classification the product
+  // surfaces use (resolveWalletBalance's balanceObserved branch): a structural 0
+  // flagged unvalued, so the totals exclude it AND say so with a direction.
+  for (const l of links) {
+    if (!isBalanceUnobserved(l.financialAccount)) continue;
+    const wb = resolveWalletBalance(l.financialAccount.balance, undefined, l.financialAccount.balanceObserved);
+    canonical.set(l.financialAccount.id, wb.balance);
+    if (wb.valuationUnknown) unvaluedIds.add(l.financialAccount.id);
+  }
   for (const l of links) {
     const b = canonical.get(l.financialAccount.id);
     if (b !== undefined) l.financialAccount.balance = b;
@@ -316,6 +339,7 @@ async function assembleAccounts(
       availableBalance: number | null; creditLimit: number | null;
       debtSubtype: string | null; walletAddress: string | null;
       lastUpdated: Date; balanceLastUpdatedAt: Date | null;
+      providerSubtype?: string | null;
     },
     at: Date,
   ) => {
@@ -327,6 +351,7 @@ async function assembleAccounts(
       balance:             fa.balance,
       availableBalance:    fa.availableBalance,
       creditLimit:         fa.creditLimit,
+      providerSubtype:     fa.providerSubtype ?? null, // Mortgage F2 — a Plaid loan has no available credit
       isSelfCustodyWallet: !!fa.walletAddress,
       freshness:           resolveAccountFreshness({
         accountId:         fa.id,
@@ -408,6 +433,13 @@ async function assembleAccounts(
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
     providerSubtype: l.financialAccount.providerSubtype,
+    // Mortgage F1 — liability-kind evidence (liabilityKind) so installment
+    // loans are split out of LIQUID net worth.
+    debtSubtype: l.financialAccount.debtSubtype,
+    creditLimit: l.financialAccount.creditLimit,
+    // S2 PRIVACY P1 — the tier, so the excluded-account groups and the liquid-NW
+    // excluded kinds name a BALANCE_ONLY debt as "loan", never "mortgage".
+    visibilityLevel: l.visibilityLevel,
     ...(unvaluedIds.has(l.financialAccount.id) ? { valuationUnknown: true } : {}),
   }));
 
@@ -528,8 +560,12 @@ async function assembleAccounts(
         accountId:   fa.id,
         accountName: displayName,
         field:       'apr',
-        label:       resolveRateLabel(fa.debtSubtype),
+        // Mortgage F3 — the SAME label the debt UI renders (lib/debt/rate-label.ts):
+        // keyed on the liability KIND, so a Plaid mortgage (debtSubtype null,
+        // providerSubtype "mortgage") is a "Mortgage rate", never an "APR".
+        label:       rateLabel(fa),
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
 
@@ -540,6 +576,7 @@ async function assembleAccounts(
         field:       'minimumPayment',
         label:       'Minimum Payment',
         debtSubtype: fa.debtSubtype,
+        debtType:    debtType(fa),
       });
     }
   }
@@ -572,6 +609,35 @@ async function assembleAccounts(
       })),
     now.toISOString().slice(0, 10),
   );
+
+  // Mortgage F9 (owner 2026-11-08) — a property's value basis, its linked secured
+  // debts and the DERIVED equity, via the ONE builder (aiPropertyFacts). Linked
+  // debts resolve ONLY against this Space's balance-disclosing rows; if ANY
+  // linked debt is not among them the payload is the flag only (S2 R2). Emitted
+  // only for a manual asset whose profile states something — every pre-F9
+  // asset's context is byte-identical.
+  const propertyProfiles = await loadPropertyProfilesFor(
+    client,
+    disclosingLinks
+      .filter((l) => grantsAccountDetail(l.visibilityLevel) && l.financialAccount.syncStatus === 'manual')
+      .map((l) => l.financialAccount.id),
+  );
+  const spaceDebts = new Map<string, AiSpaceDebt>(disclosingLinks
+    .filter((l) => l.financialAccount.type === 'debt')
+    .map((l) => {
+      const d = l.financialAccount;
+      return [d.id, {
+        id: d.id, name: resolveDisplayName(d), balance: d.balance, currency: d.currency,
+        type: d.type, debtSubtype: d.debtSubtype, providerSubtype: d.providerSubtype, creditLimit: d.creditLimit,
+        visibilityLevel: l.visibilityLevel,
+      }];
+    }));
+  const propertyFacts = (fa: { id: string; balance: number; currency: string }): Pick<AccountSummaryItem, 'property'> => {
+    const property = aiPropertyFacts({
+      value: fa.balance, currency: fa.currency, profile: propertyProfiles.get(fa.id), spaceDebts,
+    });
+    return property ? { property } : {};
+  };
 
   const allItems: AccountSummaryItem[] = (() => {
     // FULL rows pass through individually, exactly as before.
@@ -616,6 +682,7 @@ async function assembleAccounts(
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           ...(fa.syncStatus === 'manual' ? { valuationSource: 'USER_ESTIMATE' as const } : {}),
           ...(fa.syncStatus === 'manual' ? valuationFacts(historyByAccount.get(fa.id)) : {}),
+          ...(fa.syncStatus === 'manual' ? propertyFacts(fa) : {}),
           balanceFreshness:     freshnessFact(fa, now),
           ...balanceFacts(fa, now),
           syncStatus:      fa.syncStatus,
@@ -645,6 +712,18 @@ async function assembleAccounts(
             null;
 
           base.apr                  = effectiveApr;
+          // Mortgage F3 — what `apr` IS for this account: "Mortgage rate" /
+          // "Interest rate" (other loans) / "APR" (revolving credit only) / "Interest rate"
+          // (untyped). The model must use this name, never "APR" by default.
+          base.rateLabel            = rateLabel(fa);
+          base.liabilityKind        = liabilityKind(fa);   // Mortgage F4 — payoff targeting (via debtType)
+          // Owner 2026-11-08 — the ONE fine-grained debt type + its name, so the
+          // model calls an auto loan an "Auto loan", never a mortgage, and keeps
+          // mortgage-only reasoning (equity, escrow) to debtType "mortgage".
+          // S2 PRIVACY P1 — through the viewer helper (FINE on this FULL row).
+          const access              = debtLabelAccess({ visibilityLevel: link.visibilityLevel });
+          base.debtType             = viewerDebtType(fa, access);
+          base.debtTypeLabel        = viewerDebtLabel(fa, access);
           base.minimumPayment       = effectiveMinPayment;
           base.rateSource           = rateSource;
           base.dueDay               = dp?.dueDay            ?? null;
@@ -729,7 +808,15 @@ async function assembleAccounts(
         id:       row.id, // authority synthetic id: balance-only:{owner}:{label}:{currency}
         name:     row.name,
         type:     row.type,
+        // S2 PRIVACY P1-R1 — a BALANCE_ONLY debt row tells the model its KIND
+        // only: the normalizer classified it SERVER-side from full evidence and
+        // withheld every raw subtype; debtType is the coarse type of that kind,
+        // and liabilityKind (scenario targeting) is read from it.
         providerSubtype: row.providerSubtype ?? null,
+        ...(row.type === 'debt' && row.debtType
+          ? { debtType: row.debtType, debtTypeLabel: viewerDebtLabel({ type: 'debt', debtType: row.debtType }, 'COARSE'),
+              liabilityKind: liabilityKind({ type: 'debt', debtType: row.debtType }) }
+          : {}),
         balance:  row.balance, // debt: Σ per-member amountOwed (≥ 0); assets: signed member sum
         currency: row.currency,
         reportingBalance: rep.reportingBalance,
@@ -837,6 +924,8 @@ async function assembleAccounts(
       name:       genericAccountName({
                     type:           fa.type,
                     debtSubtype:    fa.debtSubtype,
+                    providerSubtype: fa.providerSubtype,
+                    creditLimit:    fa.creditLimit,
                     ownerFirstName: ownerName,
                   }),
       type:       fa.type,
@@ -866,7 +955,22 @@ async function assembleAccounts(
     // FM-AUDIT-022 — wallets excluded for having no value. OMITTED when 0, so
     // a fully-valued Space's context is byte-identical.
     ...(classification.unvaluedCount > 0 ? { totalsUnvaluedCount: classification.unvaluedCount } : {}),
+    // Mortgage F8 (S2) — PARTIAL + DIRECTION beside each total when an account
+    // of unknown balance was excluded. OMITTED when every total is COMPLETE.
+    ...((): { totalsCoverage?: AiTotalsCoverage } => {
+      const c = aiTotalsCoverage(excludedAccountCounts(classifiableAll));
+      return c ? { totalsCoverage: c } : {};
+    })(),
+    // Mortgage F8c — WHICH accounts were excluded, typed (class, reason, "mortgage"),
+    // so no reader attributes the exclusion to the wrong class. OMITTED when none.
+    ...((): { totalsExcluded?: ReturnType<typeof aiExcludedAccountGroups> } => {
+      const g = aiExcludedAccountGroups(classifiableAll);
+      return g.length > 0 ? { totalsExcluded: g } : {};
+    })(),
 
+    // Mortgage F1 (owner 2026-11-08) — the definition + what was excluded, so
+    // the model explains liquid vs total net worth and never calls it debt-free.
+    liquidNetWorth: aiLiquidNetWorth(classifiableAll, classification) satisfies AiLiquidNetWorth,
     counts: {
       liquid:        classification.liquid.length,
       investments:   classification.investments.length,
@@ -903,24 +1007,6 @@ function resolveDisplayName(fa: AccountNameEvidence): string {
   return accountDisplayName(fa);
 }
 
-/**
- * Resolve the human-readable label for the APR/rate field based on
- * the account's debtSubtype. Produces contextual labels so that the AI
- * (and future UI) can say "Mortgage Rate" instead of "APR" for a mortgage,
- * "Auto Loan Rate" for an auto loan, etc.
- */
-function resolveRateLabel(debtSubtype: string | null | undefined): string {
-  switch (debtSubtype) {
-    case 'mortgage':       return 'Mortgage Rate';
-    case 'auto_loan':      return 'Auto Loan Rate';
-    case 'student_loan':   return 'Student Loan Rate';
-    case 'personal_loan':  return 'Personal Loan Rate';
-    case 'heloc':          return 'HELOC Rate';
-    case 'credit_card':
-    case 'line_of_credit':
-    default:               return 'APR';
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Self-registration

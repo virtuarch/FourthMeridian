@@ -20,6 +20,10 @@
  */
 
 import type { AlertRuleOutcome, AlertRunSummary, AlertUndelivered } from "@/lib/alerts/evaluate";
+import { ALERT_AUTHORITY_SOURCES, ALERT_AUTHORITY_SOURCE_LABEL, type AlertAuthoritySource } from "@/lib/alerts/authority-sources";
+
+/** Read-side gather status: `unknown` = the row predates the field (or the entry is unreadable) — never `ok`. */
+export type AlertAuthorityReadStatus = "ok" | "failed" | "unknown";
 
 /** The latest evaluation, projected for a read surface. No destination. */
 export interface AlertLatestEvaluation {
@@ -40,6 +44,12 @@ export interface AlertLatestEvaluation {
   rules: AlertRuleOutcome[];
   /** ALERT RECOVERY — recovery notices due and NOT delivered in that run (incl. EXPIRED). Optional on the type for older fixtures. */
   recoveryUndelivered?: AlertUndelivered | null;
+  /**
+   * B10 monitoring (S2 ruling) — per-source gather status of that run. Every
+   * source is present; a row written before the field reads `unknown` for all.
+   * Optional on the TYPE for older fixtures; the projector always sets it.
+   */
+  authorities?: Record<AlertAuthoritySource, AlertAuthorityReadStatus>;
 }
 
 /**
@@ -65,7 +75,30 @@ export function latestAlertEvaluation(recent: readonly AlertRunSummary[]): Alert
     counts: newest.counts,
     rules: Array.isArray(newest.rules) ? newest.rules.map(outcomeOnly) : [],
     recoveryUndelivered: undeliveredOnly(newest.recoveryUndelivered),
+    authorities: authoritiesOnly(newest.authorities),
   };
+}
+
+/** Rebuilt per known source; anything but the two persisted words reads `unknown`. */
+function authoritiesOnly(a: AlertRunSummary["authorities"] | unknown): Record<AlertAuthoritySource, AlertAuthorityReadStatus> {
+  const rec = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
+  const out = {} as Record<AlertAuthoritySource, AlertAuthorityReadStatus>;
+  for (const k of ALERT_AUTHORITY_SOURCES) {
+    const v = rec[k];
+    out[k] = v === "ok" || v === "failed" ? v : "unknown";
+  }
+  return out;
+}
+
+/** B10 monitoring — the alert sources that FAILED to gather in the latest run (their rules said nothing). */
+export function unavailableAlertSources(latest: AlertLatestEvaluation | null): AlertAuthoritySource[] {
+  if (!latest?.authorities) return [];
+  return ALERT_AUTHORITY_SOURCES.filter((k) => latest.authorities![k] === "failed");
+}
+
+/** The operator sentence for an unavailable source. Fixed words; no error text. */
+export function alertSourceUnavailableSentence(source: AlertAuthoritySource): string {
+  return `Alert source unavailable: ${ALERT_AUTHORITY_SOURCE_LABEL[source]}`;
 }
 
 /** Rebuilt field by field (reason word + count only). */

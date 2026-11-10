@@ -30,6 +30,17 @@
  * crons) can wake the automation executor without the bank / wallet / FX jobs.
  * With no `only` the wake is exactly as before.
  *
+ * ON-DEMAND PLATFORM AI PURGE (2026-11-05): `?only=platform-ai-purge` — after
+ * the same CRON_SECRET check — does NOT enter the dispatcher's schedule / due
+ * logic. It runs the Platform AI conversation retention purge once, now, as its
+ * own JobRun (`platform-ai-purge-on-demand`, trigger manual), for environments
+ * that run crons (lib/platform/intelligence/ai/conversations/purge-on-demand.ts).
+ * OFF unless PLATFORM_AI_PURGE_ENABLED and PLATFORM_AI_PURGE_ON_DEMAND_ENABLED
+ * are both "true"; off ⇒ 409 PURGE_ON_DEMAND_DISABLED with no database contact.
+ * 200 / 500 answer counts only ({ conversations, messages, batches, exhausted };
+ * exhausted:false ⇒ call again); 409 BUSY (another on-demand run holds the
+ * claim); 503 LEDGER_UNAVAILABLE (the body did not run).
+ *
  * REVERTIBILITY: the three per-job routes (sync-banks, fetch-fx-rates,
  * process-deletions) remain deployed and CRON_SECRET-guarded — any job is
  * individually revertible to its own vercel.json cron entry without a code
@@ -47,7 +58,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
-import { dispatchDueJobs, parseSingleJobDispatch } from "@/lib/jobs/dispatch";
+import { SINGLE_JOB_DISPATCH_ALLOWLIST, dispatchDueJobs, parseSingleJobDispatch } from "@/lib/jobs/dispatch";
 
 // One slot's job(s) per invocation. 60 s was the Hobby-tier maximum; the project
 // is on the paid tier (CH-3), and the 06:00 slot now hosts sync-banks AND the
@@ -62,12 +73,20 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // SINGLE-JOB DISPATCH — `?only=<key>` narrows the wake to ONE allowlisted job (lib/jobs/dispatch.ts
-  // SINGLE_JOB_DISPATCH_ALLOWLIST: comms-automations only). Decided AFTER the CRON_SECRET check; any
-  // other value (or a repeated / empty one) is 400 and nothing runs. Without `only` the wake is unchanged.
+  // SINGLE-JOB DISPATCH — `?only=<key>` narrows the wake to ONE allowlisted key (lib/jobs/dispatch.ts
+  // SINGLE_JOB_DISPATCH_ALLOWLIST: comms-automations, platform-ai-purge). Decided AFTER the CRON_SECRET
+  // check; any other value (or a repeated / empty one) is 400 and nothing runs. Without `only` the wake
+  // is unchanged.
   const narrowed = parseSingleJobDispatch(req.nextUrl.searchParams.getAll("only"));
   if (!narrowed.ok) {
-    return NextResponse.json({ error: "Unknown job for ?only= (allowed: comms-automations)", code: "VALIDATION" }, { status: 400 });
+    return NextResponse.json({ error: `Unknown job for ?only= (allowed: ${SINGLE_JOB_DISPATCH_ALLOWLIST.join(", ")})`, code: "VALIDATION" }, { status: 400 });
+  }
+  // ON-DEMAND PLATFORM AI PURGE — its own flagged, ledgered run; never the schedule / due logic.
+  if (narrowed.only === "platform-ai-purge") {
+    const { platformAiPurgeOnDemandDeps } = await import("@/jobs/data-retention");
+    const { runPlatformAiPurgeOnDemand } = await import("@/lib/platform/intelligence/ai/conversations/purge-on-demand");
+    const r = await runPlatformAiPurgeOnDemand(await platformAiPurgeOnDemandDeps());
+    return NextResponse.json(r.body, { status: r.status });
   }
   const result = narrowed.only ? await dispatchDueJobs(new Date(), { only: narrowed.only }) : await dispatchDueJobs(new Date());
 

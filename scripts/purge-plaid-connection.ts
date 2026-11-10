@@ -76,6 +76,7 @@
 import { db } from "@/lib/db";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { scrubSecuredDebtLinks, type SecuredDebtScrubClient } from "@/lib/assets/secured-debt-scrub";
 
 const APPLY = process.argv.includes("--apply");
 
@@ -256,6 +257,9 @@ async function main() {
     const acctIds = [...new Set(connsForItem.map((c) => c.financialAccountId))];
 
     await db.$transaction(async (tx) => {
+      // Mortgage F9 (S2 D1) — drop these ids from every property's secured-debt
+      // links (array column, no FK cascade) in the same transaction.
+      await scrubSecuredDebtLinks(tx as unknown as SecuredDebtScrubClient, acctIds);
       for (const id of acctIds) {
         await tx.financialAccount.delete({ where: { id } }); // cascades tx/holdings/positions/events/etc.
       }

@@ -12,13 +12,28 @@ export interface AiShellProps {
   lead?: ReactNode;
   aside?: ReactNode;
   contextLabel?: string;
+  /** The h1. Defaults to the Personal Space AI title. */
+  title?: ReactNode;
+  /** Screen-reader prefix announced before `contextLabel`. */
+  contextPrefix?: string;
+  /** Extra header content between the title block and `controls`. */
+  headerExtra?: ReactNode;
+  /** Rendered beside the reading region (e.g. a thread rail) only when given. */
+  side?: ReactNode;
 }
 
 /** Three fixed regions: header, a flexible reading area, and the composer.
  * Keep the composer mounted in one slot so submitting preserves focus and draft.
  * The shell reserves the same navigation footprint as DashboardChrome.
+ * `title` / `contextPrefix` / `headerExtra` / `side` let another conversation
+ * surface reuse the shell; their defaults render Personal Space AI unchanged.
+ * With `side`, the reading region and the dock form one column beside it, so
+ * the composer keeps the message column's width and centre.
  */
-export function AiShell({ mode, controls, children, composer, lead, aside, contextLabel }: AiShellProps) {
+export function AiShell({
+  mode, controls, children, composer, lead, aside, contextLabel,
+  title = "Fourth Meridian AI", contextPrefix = "Space: ", headerExtra, side,
+}: AiShellProps) {
   const empty = mode === "empty";
   const shellRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +49,28 @@ export function AiShell({ mode, controls, children, composer, lead, aside, conte
     return () => viewport.removeEventListener("resize", resize);
   }, []);
 
+  const reading = (
+    <div data-ai-scroll className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      {empty ? (
+        <div className="flex min-h-full flex-col justify-center max-w-3xl mx-auto w-full px-1 py-4">
+          {lead}
+          {aside}
+        </div>
+      ) : children}
+    </div>
+  );
+
+  const dock = (
+    <div data-ai-dock={mode} className="shrink-0 relative pt-1">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -top-8 h-8"
+        style={{ background: "linear-gradient(to top, var(--bg-base), transparent)" }}
+      />
+      {composer}
+    </div>
+  );
+
   return (
     <div
       ref={shellRef}
@@ -44,35 +81,32 @@ export function AiShell({ mode, controls, children, composer, lead, aside, conte
         <AiMark />
         <div className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-2">
           <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">
-            Fourth Meridian AI
+            {title}
           </h1>
           {contextLabel && (
             <p className="min-w-0 truncate text-xs text-[var(--text-muted)]">
-              <span className="sr-only">Space: </span>
+              <span className="sr-only">{contextPrefix}</span>
               {contextLabel}
             </p>
           )}
         </div>
+        {headerExtra}
         {controls && <div className="shrink-0 flex items-center gap-1.5">{controls}</div>}
       </header>
 
-      <div data-ai-scroll className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-        {empty ? (
-          <div className="flex min-h-full flex-col justify-center max-w-3xl mx-auto w-full px-1 py-4">
-            {lead}
-            {aside}
+      {side ? (
+        <div className="flex flex-1 min-h-0 min-w-0">
+          {side}
+          {/* The reading region and the dock share one column, so the composer
+              centres on the message column, not on the full shell width. */}
+          <div data-ai-column className="flex flex-1 min-h-0 min-w-0 flex-col">
+            {reading}
+            {dock}
           </div>
-        ) : children}
-      </div>
-
-      <div data-ai-dock={mode} className="shrink-0 relative pt-1">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 -top-8 h-8"
-          style={{ background: "linear-gradient(to top, var(--bg-base), transparent)" }}
-        />
-        {composer}
-      </div>
+        </div>
+      ) : reading}
+      {/* Kept as the third child without a side: Personal's tree (and its useId ids) is unchanged. */}
+      {side ? null : dock}
     </div>
   );
 }

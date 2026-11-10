@@ -70,6 +70,9 @@ export interface CorrectionRow {
 export interface CorrectionAcct {
   accountType: string | null;
   debtSubtype: string | null;
+  /** Mortgage F5 — liability-kind evidence (installment loan vs revolving). */
+  providerSubtype?: string | null;
+  creditLimit?:     number | null;
 }
 
 // ── Confirmed-create planner (PURE) ───────────────────────────────────────────

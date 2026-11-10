@@ -67,6 +67,11 @@ Point-in-time answers resolve at the nearest snapshot **≤ the as-of date**
 - `WEALTH_CATEGORY_LABELS` (`wealth-time-machine.ts:56`) — the single source of copy for
   composition slices, legend rows, driver rows, and story text ("Real World Assets",
   never "Real Estate"). Presentation only; the backend enums/columns are unchanged.
+  The Liquid-NW `liquidDebt` driver is the one per-window exception: its label comes
+  from `LIQUID_DEBT_DRIVER_LABELS` via `liquidDebtDriverLabel`, decided by BOTH end
+  rows' liquid-NW basis (`liquidNetWorthRowBasis`, never a date) — "Debt excl.
+  long-term loans" only when both ends are on the current definition, otherwise
+  "Debt (previous definition: all debts)" (the amount is then Δ all debts).
 - `WEALTH_EPSILON` (`:49`) — the sub-dollar noise floor; a category at/below it renders
   as no slice, no legend row, no driver.
 - `convertWealthSnapshots()` — `lib/wealth/display-conversion.ts:74`, the display-FX

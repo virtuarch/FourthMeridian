@@ -28,7 +28,12 @@ export type AnswerCardProps = {
   relatedEntities?: never[];
 };
 
-export function AnswerCard({ message, children }: AnswerCardProps) {
+/**
+ * The answer's frame without its renderer: the AI mark in a left gutter, the
+ * body in answer prose, and `extras` beneath. The caller owns what goes in the
+ * body; `AnswerCard` puts the Markdown answer there.
+ */
+export function AnswerFrame({ children, extras }: { children: ReactNode; extras?: ReactNode }) {
   return (
     <div className="flex gap-3">
       <div className="pt-1.5 shrink-0">
@@ -36,10 +41,18 @@ export function AnswerCard({ message, children }: AnswerCardProps) {
       </div>
       <div className="min-w-0 flex-1 space-y-3 text-[15px]" style={{ color: "var(--text-secondary)" }}>
         <div className="leading-relaxed">
-          <Markdown>{message}</Markdown>
+          {children}
         </div>
-        {children}
+        {extras}
       </div>
     </div>
+  );
+}
+
+export function AnswerCard({ message, children }: AnswerCardProps) {
+  return (
+    <AnswerFrame extras={children}>
+      <Markdown>{message}</Markdown>
+    </AnswerFrame>
   );
 }

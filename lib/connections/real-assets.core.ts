@@ -225,10 +225,13 @@ export function manualAssetHealth(asset: Pick<ManualAssetLite, "valuedAsOfISO">,
  * The audit actions that describe a manual asset's life, as written by the
  * existing routes (POST/PATCH/DELETE /api/accounts/manual[/id], its restore,
  * and PATCH /api/accounts/[id] for a rename). Every one carries
- * `metadata.accountId`.
+ * `metadata.accountId`, except the Mortgage F9 property actions
+ * (PATCH /api/accounts/manual/[id]/property), which carry `metadata.propertyId`.
  */
 export const MANUAL_ASSET_ACTIVITY_ACTIONS = [
   "MANUAL_ASSET_ADD", "MANUAL_ASSET_UPDATE", "ACCOUNT_RENAMED", "MANUAL_ASSET_DELETE", "MANUAL_ASSET_RESTORE",
+  // Mortgage F9 — carry `metadata.propertyId` (not accountId); read below.
+  "MANUAL_ASSET_SECURED_DEBT_LINKED", "MANUAL_ASSET_SECURED_DEBT_UNLINKED", "MANUAL_ASSET_VALUE_BASIS_CHANGED",
 ] as const;
 export type ManualAssetActivityAction = (typeof MANUAL_ASSET_ACTIVITY_ACTIONS)[number];
 
@@ -238,6 +241,9 @@ const ACTIVITY_LABEL: Record<ManualAssetActivityAction, string> = {
   ACCOUNT_RENAMED:      "Renamed",
   MANUAL_ASSET_DELETE:  "Removed",
   MANUAL_ASSET_RESTORE: "Restored",
+  MANUAL_ASSET_SECURED_DEBT_LINKED:   "Loan linked",
+  MANUAL_ASSET_SECURED_DEBT_UNLINKED: "Loan unlinked",
+  MANUAL_ASSET_VALUE_BASIS_CHANGED:   "Value type confirmed",
 };
 
 export interface ManualAssetActivity { action: ManualAssetActivityAction; label: string; atISO: string }
@@ -256,7 +262,8 @@ export function groupAssetActivity(
   const out: Record<string, ManualAssetActivity[]> = {};
   for (const r of rows) {
     if (!(MANUAL_ASSET_ACTIVITY_ACTIONS as readonly string[]).includes(r.action)) continue;
-    const accountId = (r.metadata as { accountId?: unknown } | null)?.accountId;
+    const md = r.metadata as { accountId?: unknown; propertyId?: unknown } | null;
+    const accountId = md?.accountId ?? md?.propertyId;
     if (typeof accountId !== "string" || !assetIds.has(accountId)) continue;
     const action = r.action as ManualAssetActivityAction;
     const atISO = (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt)).toISOString();

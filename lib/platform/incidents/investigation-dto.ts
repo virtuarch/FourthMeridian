@@ -21,6 +21,15 @@
  *   cs   none — Customer Success is read-only for incident state.
  * Reopen has no route (an operator reopen would open a NEW episode; not built).
  * The offer is descriptive; the route's guard and the lifecycle CAS decide.
+ *
+ * INCIDENT DETAIL v1 — `summary` (derived display status, customer action,
+ * timestamps, ongoing) and `diagnosis` (allowlisted provider error code, the
+ * connection's attempts summary, the recurrence chain). Both are built from
+ * fields already on the investigation — never `detail`, never provider text —
+ * and are identity-free on every tier. The REMEDIATION RULE: a code the
+ * customer must fix (explanations.ts remedyFor = customer-reconnect /
+ * customer-re-add, or a NEEDS_REAUTH connection) NEVER offers Resync — a
+ * server retry cannot fix it. Resync is offered only where a retry can help.
  */
 
 import type {
@@ -33,8 +42,11 @@ import type {
   IncidentTimeline,
   IncidentVerdict,
   ResolutionEvidenceDigest,
+  IncidentAttemptsSummary,
 } from "./intelligence/types";
 import type { IncidentNavigationLinkDTO } from "./related-navigation";
+import { deriveDisplayStatus, isOpenState, type DisplayStatus } from "./display-status";
+import { remedyFor, type RemedyClass } from "./explanations";
 
 export type IncidentTier = "ops" | "cs";
 
@@ -86,6 +98,43 @@ export interface IncidentListDTO extends Omit<IncidentSearchResult, "items"> {
   fromClamped: boolean;
 }
 
+/** Incident detail v1 — the drawer's top block. Identity-free on every tier. */
+export interface IncidentSummaryDTO {
+  /** DERIVED (display-status.ts) — never stored. */
+  displayStatus: DisplayStatus;
+  /** The customer (not the server) must act for this to recover. Open incidents only. */
+  customerActionRequired: boolean;
+  /** What may help — decides the primary guidance and which recovery actions are offered. */
+  remedy: RemedyClass | null;
+  firstDetectedAt: string;
+  lastObservedAt: string;
+  resolvedAt: string | null;
+  /** Broken now (counts toward the broken-now KPI). False for a closed or needs-verification incident. */
+  ongoing: boolean;
+}
+
+/** Incident detail v1 — the earlier episodes of this incident (counts and ids; no identity). */
+export interface IncidentRecurrenceDTO {
+  generation: number;
+  previousIncidentId: string | null;
+  /** Earlier episodes visible to the read (recurrences + previous episode), a floor when truncated. */
+  earlierEpisodes: number;
+  truncated: boolean;
+  /** The most recent earlier episode's closure time, when one is visible. */
+  lastRecoveredAt: string | null;
+}
+
+export interface IncidentDiagnosisDTO {
+  /** Allowlisted provider error code (explanations.ts), or null. */
+  providerErrorCode: string | null;
+  providerErrorSource: "connection" | "incident" | null;
+  /** A code was recorded but is not a known provider code (it is not shown). */
+  providerErrorUnrecognised: boolean;
+  /** Null when the incident is not connection-scoped or the reader has no attempts seam. */
+  attempts: IncidentAttemptsSummary | null;
+  recurrence: IncidentRecurrenceDTO;
+}
+
 export interface IncidentDetailDTO {
   tier: IncidentTier;
   incident: IncidentRowDTO;
@@ -106,6 +155,9 @@ export interface IncidentDetailDTO {
    * none rendered. The client never builds one.
    */
   navigation?: IncidentNavigationLinkDTO[];
+  /** Incident detail v1. */
+  summary: IncidentSummaryDTO;
+  diagnosis: IncidentDiagnosisDTO;
   checkedAt: string;
 }
 
@@ -137,29 +189,96 @@ const OPEN_STATES: ReadonlySet<IncidentVerdict["state"]> = new Set(["active", "a
 
 /**
  * The EXISTING recovery routes that apply to this incident, for this tier.
- * Ops: a live PLAID item subject of an open incident — resync unless the
- * credential is dead (the route refuses NEEDS_REAUTH / REVOKED with 409), and
- * request-reauth only when the item is already in a credential-problem state
- * (NEEDS_REAUTH / ERROR — never on a healthy connection from an incident page).
- * CS: an open incident attributed to a customer — that customer's Refresh all.
+ * Ops: a live PLAID item subject of an open incident, by REMEDY (explanations.ts):
+ *   customer-reconnect  request-reauth only (prompts the customer) — NEVER resync:
+ *                       a server retry cannot fix a code the customer must fix
+ *   customer-re-add     none (the connection is gone at the provider)
+ *   server-retry        resync only (reconnecting cannot fix a provider outage)
+ *   investigate         ACTIVE ⇒ resync; ERROR with no verified explanation ⇒
+ *                       resync + request-reauth (operator judgement; both audited)
+ * request-reauth is never offered on a healthy (ACTIVE) connection from here.
+ * CS: an open incident attributed to a customer — that customer's Refresh all,
+ * EXCEPT when the customer must act (a refresh is a server retry too).
  * Closed, archived or unattributed ⇒ none.
  */
 export function recoveryActionsFor(
-  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "affected">,
+  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "affected" | "providerError">,
   tier: IncidentTier,
 ): RecoveryActionDTO[] {
   const v = inv.verdict;
   if (v.rowClass !== "incident" || !OPEN_STATES.has(v.state)) return [];
+  const status = inv.affected.itemStatus;
+  const remedy = remedyFor(inv.providerError?.code ?? null, status);
+  const customerMustAct = v.provider === "PLAID" && (remedy === "customer-reconnect" || remedy === "customer-re-add");
   if (tier === "cs") {
+    // A refresh is a server retry: it cannot fix what only the customer can.
+    if (customerMustAct) return [];
     const userId = "subjectUserId" in v ? v.subjectUserId : null;
     return userId ? [{ kind: "refresh-customer", userId }] : [];
   }
   if (v.provider !== "PLAID" || !v.plaidItemId || v.subjectState !== "LIVE") return [];
-  const status = inv.affected.itemStatus;
-  const out: RecoveryActionDTO[] = [];
-  if (status === "ACTIVE" || status === "ERROR") out.push({ kind: "resync", connectionId: v.plaidItemId });
-  if (status === "NEEDS_REAUTH" || status === "ERROR") out.push({ kind: "request-reauth", connectionId: v.plaidItemId });
-  return out;
+  const id = v.plaidItemId;
+  switch (remedy) {
+    case "customer-reconnect":
+      return status === "NEEDS_REAUTH" || status === "ERROR" ? [{ kind: "request-reauth", connectionId: id }] : [];
+    case "customer-re-add":
+      return [];
+    case "server-retry":
+      return status === "ACTIVE" || status === "ERROR" ? [{ kind: "resync", connectionId: id }] : [];
+    case "investigate": {
+      const out: RecoveryActionDTO[] = [];
+      if (status === "ACTIVE" || status === "ERROR") out.push({ kind: "resync", connectionId: id });
+      if (status === "ERROR") out.push({ kind: "request-reauth", connectionId: id });
+      return out;
+    }
+  }
+}
+
+/** Incident detail v1 — the summary block (pure over the investigation). */
+export function incidentSummaryOf(
+  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "affected" | "providerError">,
+): IncidentSummaryDTO {
+  const v = inv.verdict;
+  const open = isOpenState(v.state);
+  const code = inv.providerError?.code ?? null;
+  const itemStatus = inv.affected.itemStatus;
+  const remedy = open && v.provider === "PLAID" && (v.plaidItemId || code) ? remedyFor(code, itemStatus) : null;
+  return {
+    displayStatus: deriveDisplayStatus({ state: v.state, generation: v.recurrence.generation, previousIncidentId: v.recurrence.previousIncidentId, itemStatus, providerErrorCode: code }),
+    customerActionRequired: remedy === "customer-reconnect" || remedy === "customer-re-add",
+    remedy,
+    firstDetectedAt: v.firstSeenAt,
+    lastObservedAt: v.lastSeenAt,
+    resolvedAt: v.resolvedAt,
+    ongoing: open && v.brokenNow,
+  };
+}
+
+/** Incident detail v1 — the diagnosis block (pure over the investigation). */
+export function incidentDiagnosisOf(
+  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "providerError" | "attempts" | "recurrences" | "recurrencesTruncated" | "related">,
+): IncidentDiagnosisDTO {
+  const v = inv.verdict;
+  const earlier = new Map<string, string | null>();
+  for (const r of inv.recurrences) if (r.id !== v.id && r.firstSeenAt < v.firstSeenAt) earlier.set(r.id, r.resolvedAt);
+  for (const l of inv.related) if (l.kind === "PREVIOUS_EPISODE") earlier.set(l.id, l.incident?.resolvedAt ?? earlier.get(l.id) ?? null);
+  const closures = [...earlier.values()].filter((x): x is string => x !== null).sort();
+  const pe = inv.providerError;
+  return {
+    providerErrorCode: pe?.code ?? null,
+    providerErrorSource: pe?.code ? pe.source : null,
+    providerErrorUnrecognised: pe?.unrecognised === true,
+    attempts: inv.attempts
+      ? { ...inv.attempts, counts: { ...inv.attempts.counts }, recent: inv.attempts.recent.map((a) => ({ ...a })) }
+      : null,
+    recurrence: {
+      generation: v.recurrence.generation,
+      previousIncidentId: v.recurrence.previousIncidentId,
+      earlierEpisodes: Math.max(earlier.size, v.recurrence.generation - 1),
+      truncated: inv.recurrencesTruncated,
+      lastRecoveredAt: closures.length ? closures[closures.length - 1] : null,
+    },
+  };
 }
 
 export function incidentListDTO(r: IncidentSearchResult<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, fromClamped: boolean): IncidentListDTO {
@@ -183,6 +302,8 @@ export function incidentDetailDTO(inv: IncidentInvestigation<IncidentVerdict | C
     archive: { ...inv.archive },
     recovery: recoveryActionsFor(inv, tier),
     lifecycleActions: lifecycleActionsFor(inv.verdict, tier),
+    summary: incidentSummaryOf(inv),
+    diagnosis: incidentDiagnosisOf(inv),
     checkedAt: now.toISOString(),
   };
 }

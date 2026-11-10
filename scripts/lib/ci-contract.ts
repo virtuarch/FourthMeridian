@@ -71,6 +71,16 @@ export const ARCHITECTURE_JOB = [
   // `void` result (P2010); this suite runs the production module against a
   // throwaway database, concurrently, and measures the fallback's limit.
   "npm run rls:accept:allowance",
+  // B11 — Platform AI conversations on real PostgreSQL roles: owner-only RLS,
+  // writers never choose time, no fm_system table path, the purge definer under
+  // a BYPASSRLS non-superuser owner (and its negative control), the R6
+  // boundary, the rotation's narrow path, the account-purge cascade.
+  "npm run rls:accept:ai-conversations",
+  // Platform AI operational memory on real PostgreSQL roles: owner + ACTIVE-grant
+  // RLS, the B2 sourceRefs trigger, immutability, the soft-delete definer as the
+  // sole soft-delete path (S2's O1 cases), the purge definers and their negative
+  // control, area revocation, the real store and retention seam, the precheck.
+  "npm run rls:accept:ai-memory",
   // PRIV-004 — the ENCRYPTION_KEY rotation script and engine against a throwaway
   // database with per-run keys: re-encrypts every registered column, CAS-guarded,
   // read-back verified, idempotent, fail-closed on an unknown key id.

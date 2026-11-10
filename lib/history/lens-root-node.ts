@@ -9,7 +9,8 @@
  *
  *   net-worth          `buildNetWorthNode` verbatim — the six-bucket partition
  *   assets             the five asset buckets, totalling the stored totalAssets
- *   liquid-net-worth   cash + savings − debt, totalling the stored netLiquid
+ *   liquid-net-worth   cash + savings − debt, with installment loans NOT
+ *                      subtracted (Mortgage F1), totalling the stored netLiquid
  *   debt / investments the corresponding BUCKET, re-framed as its own root so
  *   crypto / cash      it can be entered directly instead of only beneath
  *   savings            Net Worth
@@ -32,6 +33,8 @@ import {
 } from "@/lib/perspective-engine/reconciliation.core";
 import type { AggregateAuthorisationMap, SnapshotAggregate } from "@/lib/snapshots/aggregate-authorisation.core";
 import { buildNetWorthNode } from "./net-worth-node";
+import { formatCurrency } from "@/lib/currency";
+import { LIQUID_NET_WORTH_FORMULA, storedExcludedInstallmentDebt } from "@/lib/debt/liquid-net-worth";
 import {
   explainedFromComponents, LIQUIDITY_TIERS,
   type BucketKind, type HistoricalBucketNode, type HistoricalCrumb,
@@ -74,6 +77,15 @@ const AGGREGATE_ROOTS: Record<string, {
   formula: string;
   /** Per-root child relabelling. "Investments › Investments" reads as a bug. */
   childLabels?: Partial<Record<BucketKind, string>>;
+  /**
+   * Mortgage F1 — the part of the subtracted buckets this root does NOT
+   * subtract (installment loans under Liquid net worth), recovered from the
+   * stored row. Added back into `explained` so the root reconciles; stated in
+   * the note so the reader sees the exclusion, never a silent residual.
+   */
+  notSubtracted?: (s: Snapshot) => number;
+  /** Mortgage F1 — the note beside a non-zero `notSubtracted`. */
+  notSubtractedNote?: (amount: number, currency: string) => string;
 }> = {
   /**
    * INVESTMENTS IS THE `total` AGGREGATE, NOT THE `investments` BUCKET.
@@ -111,13 +123,25 @@ const AGGREGATE_ROOTS: Record<string, {
   "liquid-net-worth": {
     label: "Liquid net worth",
     aggregate: "netLiquid",
-    // The repository's ACTUAL formula: cash + savings − debt. Investments and
-    // crypto are NOT liquid net worth, and a root that showed them (greyed out
-    // or otherwise) would teach the reader that the total ought to include them.
+    // The repository's ACTUAL formula: cash + savings − debt, where installment
+    // loans (mortgage, auto, student, …) are NOT subtracted — Mortgage F1, owner
+    // 2026-11-08. Investments and crypto are NOT liquid net worth, and a root
+    // that showed them (greyed out or otherwise) would teach the reader that the
+    // total ought to include them. The debt bucket is still ALL debt (it is the
+    // same node Net Worth subtracts); the installment part is added back from
+    // the stored row (F1b: the recorded installmentDebt column; a legacy NULL
+    // row recovers it from its aggregates — lib/debt/liquid-net-worth.ts) and
+    // named in the note.
     adds: ["cash", "savings"],
     subtracts: ["debt"],
     total: (s) => s.netLiquid ?? 0,
-    formula: "Cash + Savings − Debt",
+    formula: LIQUID_NET_WORTH_FORMULA,
+    notSubtracted: (s) => (s.netLiquid == null ? 0 : storedExcludedInstallmentDebt({
+      cash: s.totalCash, savings: s.totalSavings, debt: s.totalDebt, netLiquid: s.netLiquid,
+      installmentDebt: s.installmentDebt ?? null,
+    })),
+    notSubtractedNote: (amount, currency) =>
+      `${LIQUID_NET_WORTH_FORMULA}. ${formatCurrency(amount, currency)} of the debt shown is installment loans — excluded here, still owed, and subtracted in total net worth.`,
   },
 };
 
@@ -310,7 +334,12 @@ export function buildLensRootNode(args: LensRootArgs): HistoricalLensNode | null
 
   const auth = s.aggregateAuthorisation?.[spec.aggregate];
   const stored = spec.total(s);
-  const explained = round2(explainedFromComponents(rebased));
+  // Mortgage F1 — only an in-bounds add-back is honoured; a negative or
+  // oversized one leaves `explained` alone, so the reconciliation below reports
+  // the contradiction instead of absorbing it.
+  const rawNotSubtracted = spec.notSubtracted ? spec.notSubtracted(s) : 0;
+  const notSubtracted = rawNotSubtracted > 0 && rawNotSubtracted <= Math.max(s.totalDebt, 0) + 0.01 ? round2(rawNotSubtracted) : 0;
+  const explained = round2(explainedFromComponents(rebased) + notSubtracted);
 
   let reconciliation: ReconciliationState;
   let unattributed: number | null = null;
@@ -356,7 +385,7 @@ export function buildLensRootNode(args: LensRootArgs): HistoricalLensNode | null
       ...nw.provenance,
       // The root states its OWN formula. A reader who cannot see which terms are
       // included cannot tell a missing component from an excluded one.
-      note: spec.formula,
+      note: notSubtracted > 0 && spec.notSubtractedNote ? spec.notSubtractedNote(notSubtracted, currency) : spec.formula,
     },
     breadcrumb: [rootCrumb],
     components: rebased,
@@ -369,7 +398,7 @@ export function buildLensRootNode(args: LensRootArgs): HistoricalLensNode | null
     ),
     explainedLiabilities: round2(
       rebased.filter((c) => c.subtracts && c.assertable && c.displayedValue != null)
-        .reduce((n, c) => n + (c.displayedValue ?? 0), 0),
+        .reduce((n, c) => n + (c.displayedValue ?? 0), 0) - notSubtracted,
     ),
   };
 }

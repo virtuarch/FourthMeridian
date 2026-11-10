@@ -174,7 +174,9 @@ function main(): void {
     check("totalAssets = total + cash + savings + realAssets",
       /const totalAssets\s*=\s*total \+ cash \+ savings \+ realAssets/.test(src));
     check("netWorth = totalAssets − debt", /const netWorth\s*=\s*totalAssets - debt/.test(src));
-    check("netLiquid = cash + savings − debt", /const netLiquid\s*=\s*cash \+ savings - debt/.test(src));
+    // Mortgage F1 — debt minus the installment share (liquidNetWorthDebt); the
+    // debt COMPONENT still feeds it, so the declared composition is unchanged.
+    check("netLiquid = cash + savings − liquid-NW debt (installment loans excluded)", /const netLiquid\s*=\s*cash \+ savings - liquidNetWorthDebt\(c\)/.test(src));
     check("cashOnHand depends on cash alone", /const cashOnHand\s*=\s*Math\.max\(cash, 0\)/.test(src));
 
     // If the writer's arithmetic changes, this table must change with it.

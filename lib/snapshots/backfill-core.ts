@@ -15,6 +15,9 @@
  * loans) are held flat by the caller (they aren't passed here). No FlowType.
  */
 
+import { liabilityKind, PLAID_CREDIT_SUBTYPES } from "@/lib/debt/liability-kind";
+import { excludedInstallmentDebt, liquidNetWorthDebt } from "@/lib/debt/liquid-net-worth";
+
 // ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
 
 export function isoDate(d: Date): string {
@@ -179,21 +182,16 @@ export function isBoundaryContinuous(
 // ── Reconstructable-card predicate ────────────────────────────────────────────
 
 /**
- * Is this debt account a reconstructable revolving credit card?
+ * Is this debt account a reconstructable REVOLVING line (its history replayed
+ * from posted transactions back from the current balance)?
  *
- * Plaid import never writes debtSubtype (exchangeToken.ts), so Plaid cards have
- * debtSubtype = null. We therefore accept an explicit credit_card OR a
- * null-subtype debt account that carries a creditLimit OR (PB-8) whose Plaid
- * `providerSubtype` is a credit subtype ("credit card", "paypal") — Plaid sends
- * some cards with no limit at all, and those were being held flat. Any account with an explicit NON-card subtype
- * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
- * is excluded and stays flat.
- *
- * Known caveat: a Plaid line_of_credit / HELOC also has a null subtype + a
- * limit, so it would be included here — those are revolving and transaction-
- * driven, so the walk is still directionally correct, but to strictly exclude
- * one, set its FinancialAccount.debtSubtype to a non-"credit_card" value.
- * Installment loans (no limit) are naturally excluded. Never touches non-debt.
+ * Mortgage F7 (S2 ruling) — decided by `liabilityKind` alone (no local subtype
+ * checks): every revolving kind walks (credit card, HELOC, line of credit,
+ * overdraft; FM debtSubtype or Plaid subtype), with or without a creditLimit;
+ * every installment kind (mortgage, auto, student, personal, other loans) never
+ * walks, even with a creditLimit (F2/H5). A row with no kind evidence (legacy
+ * untyped) walks only when it carries a limit. Never touches non-debt.
+ * (Name kept for its many callers; "card" here means "revolving line".)
  *
  * SINGLE AUTHORITY (HIST-1A). Formerly duplicated as four logic-identical copies
  * — backfill.ts, regenerate-history.ts, accounts-asof.core.ts (named), and
@@ -215,14 +213,21 @@ export function isReconstructableCard(a: {
   providerSubtype?: string | null;
 }): boolean {
   if (a.type !== "debt") return false;
-  if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype !== null) return false; // an explicit non-card subtype stays flat
-  if (a.creditLimit != null) return true;
-  // PB-8 — Plaid sends many cards (Capital One among them) with
-  // `balances.limit: null`, so the limit cannot be the only revolving signal.
-  // The provider's own subtype is evidence of the same fact.
-  const sub = a.providerSubtype?.trim().toLowerCase() ?? null;
-  return sub !== null && PLAID_CREDIT_SUBTYPES.has(sub);
+  // Mortgage F7 (S2 ruling) — ONE classification, lib/debt/liability-kind.ts:
+  //   · revolving (credit card, HELOC, line of credit, overdraft — FM debtSubtype
+  //     or Plaid subtype) ⇒ walked, limit or no limit (PB-8: Plaid sends many
+  //     cards with `balances.limit: null`; a HELOC/LOC is just as
+  //     transaction-driven);
+  //   · installment (mortgage, auto, student, personal, any other loan) ⇒ never
+  //     walked, even when a creditLimit is set (F2/H5) — held flat and labelled
+  //     estimated by the as-of ladder;
+  //   · unknown (legacy untyped row, unrecognised subtype) ⇒ a limit is the only
+  //     revolving evidence (the pre-F7 rule, unchanged).
+  switch (liabilityKind(a)) {
+    case "revolving":   return true;
+    case "installment": return false;
+    default:            return a.creditLimit != null;
+  }
 }
 
 /**
@@ -230,7 +235,7 @@ export function isReconstructableCard(a: {
  * whose posted ledger walks back from the current balance. (Plaid `loan`
  * subtypes — mortgage, auto, student, … — are installment and never walk.)
  */
-export const PLAID_CREDIT_SUBTYPES: ReadonlySet<string> = new Set(["credit card", "paypal"]);
+export { PLAID_CREDIT_SUBTYPES };
 
 // ── Derived snapshot fields (parity with lib/snapshots/regenerate.ts) ─────────
 
@@ -241,6 +246,12 @@ export interface ClassifyTotals {
   totalSavings:       number;
   totalLiabilities:   number;
   totalRealAssets:    number;
+  /**
+   * Mortgage F1 — `classifyAccounts.totalInstallmentLiabilities`: the part of
+   * totalLiabilities EXCLUDED from netLiquid. Optional: absent (a hand-built
+   * total) ⇒ nothing excluded, the conservative all-debt figure.
+   */
+  totalInstallmentLiabilities?: number;
   /**
    * FIN-005 — the classifier's unrestricted/restricted split of the SAME cash
    * (`classifyAccounts.totalLiquid` / `totalRestrictedCash`). Optional, because
@@ -284,7 +295,7 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
   return {
     liquid:         c.totalLiquid,
     restrictedCash: c.totalRestrictedCash,
-    netLiquidUnrestricted: c.totalLiquid - c.totalLiabilities,
+    netLiquidUnrestricted: c.totalLiquid - liquidNetWorthDebt(c), // Mortgage F1
   };
 }
 
@@ -300,6 +311,20 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
  */
 export function snapshotRestrictedCash(c: Pick<ClassifyTotals, "totalRestrictedCash">): number | null {
   return typeof c.totalRestrictedCash === "number" && Number.isFinite(c.totalRestrictedCash) ? c.totalRestrictedCash : null;
+}
+
+/**
+ * Mortgage F1b (S2 ruling) — THE value every snapshot writer stores in
+ * `SpaceSnapshot.installmentDebt`: the installment debt the row's `netLiquid`
+ * EXCLUDED, from the SAME `c` `computeSnapshotFields` reads, so
+ * `netLiquid = cash + savings − debt + installmentDebt` holds exactly. ≥ 0; a
+ * recorded 0 (nothing excluded) still marks the row as written on the new basis.
+ * Kept OUT of `SnapshotFields` (like `restrictedCash`) so the regeneration diff
+ * and every pre-existing stored-row reader are untouched. Used by all three
+ * writers (regenerate, regenerate-history, backfill).
+ */
+export function snapshotInstallmentDebt(c: Pick<ClassifyTotals, "totalLiabilities" | "totalInstallmentLiabilities">): number {
+  return excludedInstallmentDebt(c);
 }
 
 export interface SnapshotFields {
@@ -411,9 +436,12 @@ export function computeAccountFloors(
  *                 (FIN-015 — real assets ARE in net worth; the schema comment on
  *                 `SpaceSnapshot.netWorth` omits them and no `realAssets` column
  *                 is stored, so the component is a read-time residual)
- *   netLiquid   = cash + savings − debt   — ALL checking + savings, restricted
- *                 cash included (FIN-005; see `computeLiquidSplit`); real
- *                 assets, investments and crypto excluded
+ *   netLiquid   = cash + savings − (debt − installment debt)
+ *                 — ALL checking + savings, restricted cash included (FIN-005;
+ *                 see `computeLiquidSplit`); real assets, investments and
+ *                 crypto excluded; Mortgage F1 (owner 2026-11-08): installment
+ *                 loans (mortgage, auto, student, …) are excluded too — they
+ *                 stay in `debt` and `netWorth` (lib/debt/liquid-net-worth.ts)
  *   cashOnHand  = max(cash, 0)
  */
 export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
@@ -427,7 +455,7 @@ export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
 
   const totalAssets = total + cash + savings + realAssets;
   const netWorth    = totalAssets - debt;
-  const netLiquid   = cash + savings - debt;
+  const netLiquid   = cash + savings - liquidNetWorthDebt(c);
   const cashOnHand  = Math.max(cash, 0);
 
   return { stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };

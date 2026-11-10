@@ -451,6 +451,102 @@ async function main() {
       JSON.stringify({ commsDelivery: live.commsDelivery, touched: touched.slice(0, 3) }));
   }
 
+  // ── B11: the Platform AI conversation purge — registered DISABLED, fail-safe ──
+  {
+    console.log("\nB11 — the Platform AI conversation purge rule");
+    const calls: number[] = [];
+    const audits: unknown[] = [];
+    const seam = (enabled: boolean, rows: Array<{ conversations: number; messages: number } | Error>) => ({
+      enabled,
+      call: async (limit: number) => { calls.push(limit); const r = rows.shift() ?? { conversations: 0, messages: 0 }; if (r instanceof Error) throw r; return r; },
+      audit: async (d: unknown) => { audits.push(d); },
+    });
+    const { client } = makeClient({});
+    const off = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(false, [{ conversations: 9, messages: 9 }]) }));
+    check("DISABLED: no call, no audit row, result enabled:false", calls.length === 0 && audits.length === 0 && off.platformAiConversations?.enabled === false, JSON.stringify(off.platformAiConversations));
+    const { env } = await import("@/lib/env");
+    check("the flag defaults OFF (PLATFORM_AI_PURGE_ENABLED unset ⇒ false)", process.env.PLATFORM_AI_PURGE_ENABLED === undefined && env.isPlatformAiPurgeEnabled === false);
+    const dry = await quiet(() => runDataRetention(client, NOW, undefined, { dryRun: true, platformAiPurge: seam(true, [{ conversations: 1, messages: 2 }]) }));
+    check("a dry run never calls it (the function has no dry-run mode)", calls.length === 0 && dry.platformAiConversations === undefined);
+    const on = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 3, messages: 8 }]) }));
+    check("ENABLED: one call (below both bounds ⇒ exhausted), counts reported, one counts-only audit row",
+      calls.length === 1 && calls[0] === 500 && on.platformAiConversations?.conversations === 3 && on.platformAiConversations?.messages === 8
+        && on.platformAiConversations?.exhausted === true && audits.length === 1
+        && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 3, messages: 8, batches: 1, exhausted: true }), JSON.stringify({ calls, audits, r: on.platformAiConversations }));
+    calls.length = 0; audits.length = 0;
+    const zero = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 0, messages: 0 }]) }));
+    check("SCHEDULED with nothing expired: one call, NO audit row", calls.length === 1 && audits.length === 0 && zero.platformAiConversations?.exhausted === true, JSON.stringify({ calls, audits }));
+    calls.length = 0; audits.length = 0;
+    const { runPlatformAiConversationPurge } = await import("@/lib/platform/intelligence/ai/conversations/purge");
+    const manual = await quiet(() => runPlatformAiConversationPurge({ ...seam(true, [{ conversations: 0, messages: 0 }]), auditEveryRun: true }));
+    check("MANUAL dispatch (auditEveryRun): a counts-only audit row EVERY run, zero included (proof of the Preview cadence)",
+      calls.length === 1 && audits.length === 1 && manual.exhausted === true
+        && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 0, messages: 0, batches: 1, exhausted: true }), JSON.stringify({ calls, audits }));
+    calls.length = 0; audits.length = 0;
+    const failing = makeClient({ aiInvocation: [{ id: "x", occurredAt: daysAgo(100) }] });
+    const bad = await quiet(() => runDataRetention(failing.client, NOW, undefined, { platformAiPurge: seam(true, [new Error("boom")]) }));
+    check("a throwing purge is reported as an error and never blocks the other rules (aiInvocation still pruned)",
+      bad.platformAiConversations?.error === "boom" && bad.aiInvocation.deleted === 1 && audits.length === 0, JSON.stringify({ p: bad.platformAiConversations, ai: bad.aiInvocation }));
+
+    // ── PR D — the S2 disable order + "a failed run is a failed JobRun" (§7.4 R6, §13) ──
+    console.log("\nB11 PR D — disable order and JobRun failure");
+    const { platformAiPurgeJobFailure } = await import("@/lib/platform/intelligence/ai/conversations/purge");
+    calls.length = 0; audits.length = 0;
+    const mis = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: { ...seam(false, [{ conversations: 9, messages: 9 }]), misordered: true } }));
+    check("MISORDERED (purge off, conversations flag set): NO contact, NO audit row, reported misordered — it enables nothing",
+      calls.length === 0 && audits.length === 0 && mis.platformAiConversations?.enabled === false && mis.platformAiConversations?.misordered === true, JSON.stringify(mis.platformAiConversations));
+    const onMis = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: { ...seam(true, [{ conversations: 0, messages: 0 }]), misordered: true } }));
+    check("with the purge ON the misorder fact is irrelevant (never set on an enabled run)", onMis.platformAiConversations?.misordered === undefined && calls.length === 1, JSON.stringify(onMis.platformAiConversations));
+    check("platformAiPurgeJobFailure: misordered ⇒ a fixed MISORDERED message (fails the purge-trash JobRun)",
+      /^platform-ai-conversations purge MISORDERED:/.test(platformAiPurgeJobFailure(mis.platformAiConversations) ?? ""));
+    check("platformAiPurgeJobFailure: an errored purge ⇒ a fixed FAILED message that never echoes the error text",
+      /^platform-ai-conversations purge FAILED/.test(platformAiPurgeJobFailure(bad.platformAiConversations) ?? "") && !(platformAiPurgeJobFailure(bad.platformAiConversations) ?? "").includes("boom"));
+    check("platformAiPurgeJobFailure: DISABLED (the shipped state), a healthy run and a dry run (absent) ⇒ null — no JobRun failure",
+      platformAiPurgeJobFailure(off.platformAiConversations) === null && platformAiPurgeJobFailure(on.platformAiConversations) === null && platformAiPurgeJobFailure(undefined) === null);
+    {
+      const { platformAiPurgeDeps } = await import("./data-retention");
+      const shipped = await platformAiPurgeDeps("SCHEDULED");
+      check("the SHIPPED state (real lib/env, both flags unset in this process): scheduled deps disabled and NOT misordered",
+        process.env.PLATFORM_AI_CONVERSATIONS_ENABLED === undefined && shipped.enabled === false && shipped.misordered === false && env.isPlatformAiConversationsFlagSetWithoutPurge === false);
+      const f = (purge: boolean, misordered: boolean) => ({ isPlatformAiPurgeEnabled: purge, isPlatformAiConversationsFlagSetWithoutPurge: misordered });
+      const wrong = await platformAiPurgeDeps("SCHEDULED", f(false, true));
+      check("conversations flag set, purge flag unset ⇒ scheduled deps disabled AND misordered", wrong.enabled === false && wrong.misordered === true);
+      const middle = await platformAiPurgeDeps("SCHEDULED", f(true, false));
+      check("the S2 order's middle state (conversations OFF first, purge still ON) ⇒ enabled, not misordered — the remaining rows keep being purged",
+        middle.enabled === true && middle.misordered === false);
+      const manual = await platformAiPurgeDeps("MANUAL_DISPATCH", f(false, true));
+      check("the manual dispatch is never 'misordered' (it is the remedy) and always enabled", manual.misordered === false && manual.enabled === true);
+      const onDemand = await platformAiPurgeDeps("ON_DEMAND", f(false, true));
+      const onDemandOn = await platformAiPurgeDeps("ON_DEMAND", f(true, false));
+      check("the on-demand trigger is NOT forced on: enabled = the purge flag, misordered as for SCHEDULED, an audit row every run",
+        onDemand.enabled === false && onDemand.misordered === true && onDemandOn.enabled === true && onDemandOn.misordered === false && onDemandOn.auditEveryRun === true && shipped.auditEveryRun === false);
+    }
+    {
+      // S2 / OD-7 activation (a): EVERY scheduled run leaves evidence — the JobRun summary IS the
+      // purge-trash result, so the zero-count section is stored, and the staleness authority reads it as a success.
+      const { toJsonSummary } = await import("@/lib/jobs/run");
+      const { isSuccessfulPurgeSummary } = await import("@/lib/platform/intelligence/ai/conversations/purge-health");
+      const stored = toJsonSummary({ purgedGoals: 0, retention: zero }) as { retention?: { platformAiConversations?: Record<string, unknown> } };
+      check("a ZERO-count enabled run is stored in the JobRun summary with its counts (no content) and reads as a successful purge",
+        JSON.stringify(stored.retention?.platformAiConversations) === JSON.stringify({ enabled: true, conversations: 0, messages: 0, batches: 1, exhausted: true })
+          && isSuccessfulPurgeSummary(stored));
+      check("…a misordered or errored run is NOT read as a success", !isSuccessfulPurgeSummary(toJsonSummary({ purgedGoals: 0, retention: mis })) && !isSuccessfulPurgeSummary(toJsonSummary({ purgedGoals: 0, retention: bad })));
+      calls.length = 0; audits.length = 0;
+      await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 500, messages: 5 }, new Error("mid-run")]) }));
+      check("a run that ERRORS after removing rows still writes its counts-only audit row, marked failed: true (never read as a successful purge)",
+        audits.length === 1 && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 500, messages: 5, batches: 1, exhausted: false, failed: true }), JSON.stringify(audits));
+    }
+    {
+      const { readFileSync } = await import("node:fs");
+      const src = readFileSync("jobs/purge-trash.ts", "utf8");
+      check("purge-trash throws the purge failure (conversations, then Platform AI memory) ONLY after runDataRetention returned (every rule has run), carrying the counts summary (S2 N1)",
+        /const retention = await runDataRetention\([^;]*\);\s*(\/\/[^\n]*\n\s*)*const result: PurgeTrashResult = \{ purgedGoals: 0, retention \};\s*const purgeFailure = platformAiPurgeJobFailure\(retention\.platformAiConversations\) \?\? platformAiMemoryPurgeJobFailure\(retention\.platformAiMemory\);\s*if \(purgeFailure\) throw new JobFailedWithSummaryError\(purgeFailure, result\);\s*return result;/.test(src));
+      const envSrc = readFileSync("lib/env.ts", "utf8");
+      check("the misorder getter is a FACT (conversations set AND purge not), never an enable",
+        /get isPlatformAiConversationsFlagSetWithoutPurge\(\) \{ return _e\.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e\.PLATFORM_AI_PURGE_ENABLED !== "true"; \}/.test(envSrc));
+    }
+  }
+
   if (failures > 0) { console.error(`\n❌ data retention: ${failures} check(s) failed`); process.exit(1); }
   console.log("\n✅ data retention: all checks passed");
 }

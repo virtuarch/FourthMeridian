@@ -20,7 +20,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { UserRole } from "@prisma/client";
-import { METRICS, drillLinks, metricDefinitionProblems, metricKey, type MetricDefinition } from "./registry";
+import { ALERT_EVALUATION_MAX_AGE_MS, METRICS, READ_ON_REQUEST_MAX_AGE_MS, drillLinks, metricDefinitionProblems, metricKey, metricStaleness, type MetricDefinition } from "./registry";
+import { BRIEFING_DOMAINS } from "@/lib/platform/intelligence/ai/core";
+import { SCHEDULED_JOB_FACTS } from "@/lib/jobs/registry.core";
+import { slotPeriodHours } from "@/lib/jobs/cadence";
 import { describeMetric, isMetricAccessToken, listMetrics, metricAccessFor, type MetricAccessToken } from "./access";
 import { PROVIDER_OUTCOME_DEFINITION } from "@/lib/platform/verdicts/provider-outcome";
 import { PROVIDER_CONNECTION_DEFINITION } from "@/lib/platform/verdicts/provider-connection";
@@ -182,7 +185,7 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
   check("describeMetric by bare id = the highest version; by id@version = that version", describeMetric(mo, "merchant-identity-linked")?.version === 1 && describeMetric(mo, "merchant-identity-linked@2") === null);
   check("SYSTEM_ADMIN break-glass sees every metric", listMetrics(admin).length === METRICS.length);
   check("domain and area filters narrow, never widen",
-    listMetrics(ops, { domain: "providers" }).every((m) => m.domain === "providers") && listMetrics(ops, { domain: "providers" }).length === 2
+    listMetrics(ops, { domain: "providers" }).every((m) => m.domain === "providers") && listMetrics(ops, { domain: "providers" }).length === 3
     && listMetrics(ops, { area: "CUSTOMER_SUCCESS" }).length === 0 && listMetrics(admin, { area: "MERCHANT_OPS" }).map(metricKey).join() === "merchant-identity-linked@1");
   const forged = Object.freeze({ grants: [{ area: "PLATFORM_OPS", level: "CONTROL" }] }) as unknown as MetricAccessToken;
   check("a hand-built / cast token is refused at runtime (lists nothing, describes nothing)",
@@ -214,6 +217,35 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
   check("metric access tokens are issued in exactly one module (access.ts)",
     /ISSUED\.add\(/.test(code(src("lib/platform/intelligence/metrics/access.ts") ?? "")) && importers.every((f) => !/ISSUED\.add\(/.test(code(src(f) ?? ""))));
   check("access.ts is imported only by tests, retrieve-core.ts, navigation/access.ts, or API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
+}
+
+// ── STALENESS LIMITS (owner rule: stale facts are never shown as current) ────
+console.log("staleness limits — maxAgeMs lives in the registry, per metric");
+{
+  const H = 3_600_000;
+  const byKey = new Map(METRICS.map((m) => [metricKey(m), m]));
+  const briefingKeys = BRIEFING_DOMAINS.flatMap((d) => [...d.metrics]);
+  const missing = briefingKeys.filter((k) => { const m = byKey.get(k); return !m || !(typeof m.maxAgeMs === "number" && Number.isFinite(m.maxAgeMs) && m.maxAgeMs > 0); });
+  check("every BRIEFING_DOMAINS metric declares a positive maxAgeMs in the registry", briefingKeys.length > 0 && missing.length === 0, missing.join(", "));
+  const all = METRICS.filter((m) => !(typeof m.maxAgeMs === "number" && m.maxAgeMs > 0)).map(metricKey);
+  check("…and so does every registered metric", all.length === 0, all.join(", "));
+  const job = SCHEDULED_JOB_FACTS.find((j) => j.name === "evaluate-alerts")!;
+  check("alerts: maxAgeMs = 2 × the widest gap of the evaluate-alerts slots (00:30 06:30 07:30 12:30 18:30 UTC ⇒ 6 h ⇒ 12 h)",
+    ALERT_EVALUATION_MAX_AGE_MS === 2 * slotPeriodHours(job.hourUTC) * H && ALERT_EVALUATION_MAX_AGE_MS === 12 * H, String(ALERT_EVALUATION_MAX_AGE_MS / H));
+  check("alerts-firing-now@1 uses the evaluator limit; every read-on-request metric the read limit (1 h)",
+    byKey.get("alerts-firing-now@1")?.maxAgeMs === ALERT_EVALUATION_MAX_AGE_MS
+    && METRICS.filter((m) => m.id !== "alerts-firing-now").every((m) => m.maxAgeMs === READ_ON_REQUEST_MAX_AGE_MS) && READ_ON_REQUEST_MAX_AGE_MS === H);
+  check("the limit is declared in the registry, not in the composer", !/maxAgeMs\s*[:=]\s*\d/.test(code(src("lib/platform/intelligence/ai/briefing.ts") ?? "")) && !/\d+\s*\*\s*3_?600_?000/.test(code(src("lib/platform/intelligence/ai/briefing.ts") ?? "")));
+  const now = Date.parse("2026-11-09T12:00:00.000Z");
+  const ago = (h: number) => new Date(now - h * H).toISOString();
+  const v = (asOf: string | null | undefined, max: number | null | undefined = 12 * H) => metricStaleness(asOf, max, now);
+  check("metricStaleness: fresh (1 h) ⇒ not stale", !v(ago(1)).stale && v(ago(1)).reason === null);
+  check("metricStaleness: exactly at the limit is current; past it ⇒ STALE (PAST_LIMIT)", !v(ago(12)).stale && v(ago(12.01)).stale && v(ago(13)).reason === "PAST_LIMIT");
+  check("metricStaleness: a MISSING timestamp ⇒ STALE (NO_TIMESTAMP)", v(null).stale && v(undefined).stale && v("").reason === "NO_TIMESTAMP");
+  check("metricStaleness: an unparseable timestamp ⇒ STALE (UNREADABLE_TIMESTAMP)", v("not-a-date").stale && v("not-a-date").reason === "UNREADABLE_TIMESTAMP");
+  check("metricStaleness: a missing limit ⇒ STALE (never assumed current)", v(ago(1), null).stale && v(ago(1), 0).stale);
+  const bad = metricDefinitionProblems({ ...METRICS[0], maxAgeMs: 0 });
+  check("a definition without a positive maxAgeMs is a structural problem", bad.some((p) => /maxAgeMs/.test(p)), bad.join("; "));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

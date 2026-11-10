@@ -8,6 +8,7 @@
  */
 
 import type { Account, Snapshot, Transaction } from "@/types";
+import type { ExportPlatformAiConversation, ExportPlatformAiOmission } from "@/lib/platform/intelligence/ai/conversations/export";
 
 /**
  * A visible account tagged with the Space it was exported through.
@@ -122,4 +123,32 @@ export interface ExportData {
   dailyBriefs: Record<string, unknown>[];
   /** PB-1 Phase 1 — sync incidents about the user (live + 13-month archive), allowlisted fields only. */
   syncIncidents: { live: Record<string, unknown>[]; archived: Record<string, unknown>[] };
+  /**
+   * B11 PR D — the operator's own LIVE Platform AI conversations in areas they
+   * hold today, in full (soft-deleted excluded). Empty for every non-operator.
+   */
+  platformAiConversations: ExportPlatformAiConversation[];
+  /**
+   * S2 STRICT — live conversations in areas the operator NO LONGER holds: a
+   * count and a fixed line per area, never any content.
+   */
+  platformAiConversationsOmitted: ExportPlatformAiOmission[];
+  /**
+   * Platform AI operational memory (design v2 D13) — the operator's own visible
+   * facts in areas they hold today: type, note plaintext, refs and dates. A lost
+   * area exports nothing (its facts are hidden and removed at the next purge).
+   */
+  platformAiMemory: ExportPlatformAiMemoryFact[];
+}
+
+export interface ExportPlatformAiMemoryFact {
+  area: string;
+  factType: string;
+  origin: string;
+  concern: string | null;
+  note: string | null;
+  refs: Array<{ t: string; id: string; part?: string; w?: number; observedState: string }>;
+  ttl: string;
+  notedAt: string;
+  expiresAt: string;
 }

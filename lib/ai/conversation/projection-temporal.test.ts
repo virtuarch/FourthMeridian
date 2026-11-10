@@ -71,7 +71,7 @@ async function main(): Promise<void> {
 
   // ── B. liability obligations ─────────────────────────────────────────────
   console.log('B. one minimum per obligation month');
-  const card = (id = 'card', balance = 5_000, min = 100): LiabilityLine => ({ id, label: id, balance, apr: 24, minimumPayment: min });
+  const card = (id = 'card', balance = 5_000, min = 100): LiabilityLine => ({ kind: 'revolving', id, label: id, balance, apr: 24, minimumPayment: min });
   const sp = (dates: string[]): SpinePoint[] => dates.map((date) => ({ date, liquid: 20_000, isCheckpoint: isMonthEndISO(date) }));
   const mins = (dates: string[], asOf: string, lines: LiabilityLine[] = [card()]) => {
     const r = settleMovements([], [], sp(dates), 20_000, lines, asOf);

@@ -36,6 +36,7 @@
 
 import type { ReadClient } from "@/lib/db/tenant-context";
 import type { FreshnessBasis } from "@/lib/freshness/observation";
+import type { UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 
 // ── Lens identity ─────────────────────────────────────────────────────────────
 
@@ -254,6 +255,19 @@ export interface LensResult {
    * `estimated`. Rides the same channel as `estimated`.
    */
   unconverted?: boolean;
+  /**
+   * Mortgage F8 (S2) — the headline total excludes an account of UNKNOWN
+   * balance (FIN-A2 `balanceObserved === false`, or not yet valued), so it is
+   * PARTIAL with a stated direction. Present ONLY when PARTIAL — a lens over
+   * fully observed accounts serializes byte-identically.
+   */
+  totalsCoverage?: UnobservedTotalCoverage;
+  /**
+   * Mortgage F8b — the liquidity lens: LIQUID NET WORTH is PARTIAL (an excluded
+   * cash account or revolving / unknown debt; never an installment loan, F1).
+   * Present ONLY when PARTIAL.
+   */
+  liquidNetWorthCoverage?: UnobservedTotalCoverage;
   /**
    * A5-S1 — the trust envelope. Present whenever `asOf` was supplied (may be
    * present otherwise); absent on every current context-less call, so existing

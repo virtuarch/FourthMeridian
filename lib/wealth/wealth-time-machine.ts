@@ -27,6 +27,7 @@
 
 import { formatCurrencyWhole } from "@/lib/currency";   // MONEY-PRECISION-2 — `fmt` below is used ONLY by the story sentence
 import { derivedRealAssets } from "@/lib/snapshots/aggregate-authorisation.core";
+import { LIQUID_NW_DEFINITION_CHANGE_LABEL, liquidNetWorthDefinitionChange, liquidNetWorthRowBasis, type StoredLiquidRow } from "@/lib/debt/liquid-net-worth";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -58,10 +59,59 @@ export interface WealthComposition {
   crypto:      number;
   real:        number;
   liabilities: number;
+  /**
+   * Mortgage F1 — the debt LIQUID net worth subtracts: `cash − liquidNetWorth`,
+   * i.e. every liability except installment loans (mortgage, auto, student, …).
+   * Recovered from the row's stored aggregates (no installment column exists),
+   * so Liquid NW's drivers reconcile: Δ liquidNetWorth = Δ cash − Δ liquidDebt.
+   * A Liquid-NW-only component: never an asset slice, never a Net Worth driver.
+   * On a previous-definition (legacy) row it is ALL debt — the driver's label
+   * follows the end rows' bases (`liquidDebtDriverLabel`).
+   */
+  liquidDebt:  number;
+  /**
+   * Mortgage F1/F1b (S2) — DELTA-ONLY: 0 on every state. In a change between
+   * two rows on DIFFERENT liquid-NW bases (per-row, `liquidNetWorthRowBasis` —
+   * never a date), the part of the liquid-NW change that is the definition
+   * change (installment loans no longer subtracted) — never reported as
+   * liquid-debt movement. Same-basis comparisons carry 0 here and are exact.
+   */
+  liquidDefinitionChange: number;
 }
 
 /** Sub-dollar noise floor — a value at/below this never renders as a category. */
 export const WEALTH_EPSILON = 0.5;
+
+/**
+ * Mortgage F1 — THE copy for the Liquid-NW `liquidDebt` driver (the one label
+ * source; every surface renders the driver's `label`). Which one a window gets
+ * is decided by its two END rows' liquid-NW BASES (`liquidNetWorthRowBasis`,
+ * per row, never a date) — `liquidDebtDriverLabel`:
+ *
+ *   current  — both ends on the current definition: the amount is the change in
+ *              debt EXCLUDING installment loans.
+ *   previous — either end on the previous definition (installmentDebt NULL ⇒
+ *              liquid NW subtracted ALL debt). The amount is then the change in
+ *              ALL debts: legacy→legacy by construction, and across a basis
+ *              change because the definition-change driver already carries the
+ *              new-basis row's installment debt (liquidDebt Δ = Δ total debt).
+ *              A legacy row never recorded its installment debt, so no
+ *              "excl. long-term loans" amount exists for it (nothing inferred).
+ *
+ * P1-R1: coarse wording only — no loan type, no account.
+ */
+export const LIQUID_DEBT_DRIVER_LABELS = {
+  current:  "Debt excl. long-term loans",
+  previous: "Debt (previous definition: all debts)",
+} as const;
+
+/**
+ * The `liquidDebt` driver label for a compare → asOf window, from each END
+ * row's presentation basis (`true` ⇒ that row is on the previous definition).
+ */
+export function liquidDebtDriverLabel(compareOnPreviousBasis: boolean, asOfOnPreviousBasis: boolean): string {
+  return compareOnPreviousBasis || asOfOnPreviousBasis ? LIQUID_DEBT_DRIVER_LABELS.previous : LIQUID_DEBT_DRIVER_LABELS.current;
+}
 
 /**
  * User-facing category labels — the single source of copy for composition slices,
@@ -74,6 +124,8 @@ export const WEALTH_CATEGORY_LABELS: Record<keyof WealthComposition, string> = {
   crypto:      "Crypto",
   real:        "Real World Assets",
   liabilities: "Liabilities",
+  liquidDebt:  LIQUID_DEBT_DRIVER_LABELS.current, // per-window: liquidDebtDriverLabel
+  liquidDefinitionChange: LIQUID_NW_DEFINITION_CHANGE_LABEL,
 };
 
 export interface WealthCompositionItem {
@@ -119,6 +171,13 @@ export interface WealthChartPoint extends WealthMetrics {
    * and `totalAssets` include that component; the other series never did.
    */
   realAssetsModeled?: true;
+  /**
+   * Mortgage F1b — present (true) ONLY when this point's stored row is on the
+   * PREVIOUS liquid-NW definition (installment loans subtracted; per-row basis).
+   * Its `liquidNetWorth` is not comparable with a current-definition point, so
+   * the Liquid NW chart draws it as a separate "previous definition" segment.
+   */
+  liquidBasisPrevious?: true;
 }
 
 export interface WealthDriver {
@@ -201,6 +260,7 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     netLiquid: s.netLiquid ?? 0, cashOnHand: s.cashOnHand,
   });
   const liabilities = s.totalDebt;
+  const liquidNetWorth = s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt);
   return {
     date:           s.date,
     isEstimated:    s.isEstimated ?? false,
@@ -213,10 +273,10 @@ function toState(s: Snapshot): Omit<WealthState, "found"> {
     // `cash + savings − debt` here produced the same number by luck of both
     // copies agreeing, and would silently disagree the moment one was fixed.
     // The `??` fallback covers a pre-column DTO only.
-    liquidNetWorth: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    liquidNetWorth,
     cash,
     invested:       investments + crypto,
-    composition:    { cash, investments, crypto, real, liabilities },
+    composition:    { cash, investments, crypto, real, liabilities, liquidDebt: cash - liquidNetWorth, liquidDefinitionChange: 0 },
   };
 }
 
@@ -224,7 +284,7 @@ const EMPTY_STATE: WealthState = {
   found: false, date: null, isEstimated: false,
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
   cash: 0, invested: 0,
-  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
+  composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, liquidDebt: 0, liquidDefinitionChange: 0 },
 };
 
 /** A snapshot → chart point (every metric series + the estimated flag). */
@@ -237,6 +297,30 @@ function toChartPoint(s: Snapshot): WealthChartPoint {
     cash: st.cash, invested: st.invested,
     // RWA-2B — only ever carried, never decided here; absent ⇒ byte-identical.
     ...(s.realAssetsModeled && st.isEstimated ? { realAssetsModeled: true as const } : {}),
+    // Mortgage F1b — the row's own liquid-NW basis; absent ⇒ current definition.
+    // D2: a legacy row of a Space that never held an installment liability
+    // (`liquidLegacyRowsCurrent`) is presented as the current definition.
+    ...(onPreviousLiquidBasis(s) ? { liquidBasisPrevious: true as const } : {}),
+  };
+}
+
+/**
+ * Mortgage F1b — is this stored row PRESENTED on the previous liquid-NW
+ * definition? Its own basis (`liquidNetWorthRowBasis`, never a date), except
+ * D2: a legacy row of a Space that never held an installment liability
+ * (`liquidLegacyRowsCurrent`) is numerically the current definition. One rule
+ * for the chart's segment flag and the liquid-debt driver label.
+ */
+function onPreviousLiquidBasis(s: Snapshot): boolean {
+  return liquidNetWorthRowBasis(storedLiquidRow(s)) === "INSTALLMENTS_SUBTRACTED" && !s.liquidLegacyRowsCurrent;
+}
+
+/** Mortgage F1b — a Snapshot DTO's stored liquid-NW columns (installmentDebt absent ⇒ legacy row). */
+function storedLiquidRow(s: Snapshot): StoredLiquidRow {
+  return {
+    cash: s.totalCash, savings: s.totalSavings, debt: s.totalDebt,
+    netLiquid: s.netLiquid ?? (s.totalCash + s.totalSavings - s.totalDebt),
+    installmentDebt: s.installmentDebt ?? null,
   };
 }
 
@@ -255,8 +339,11 @@ function addDaysIso(iso: string, n: number): string {
  * last-match-wins scan; `preferOnTie: always-replace` reproduces that exactly
  * even were two rows to share a date.
  */
+function resolveSnapshot(sorted: Snapshot[], date: string): Snapshot | null {
+  return nearestOnOrBefore(sorted, date, (s) => s.date, { preferOnTie: () => true }) ?? null;
+}
 function resolveState(sorted: Snapshot[], date: string): WealthState {
-  const picked = nearestOnOrBefore(sorted, date, (s) => s.date, { preferOnTie: () => true });
+  const picked = resolveSnapshot(sorted, date);
   return picked ? { ...toState(picked), found: true } : EMPTY_STATE;
 }
 
@@ -335,6 +422,18 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   let drivers: WealthDriver[] | null = null;
   if (asOfState.found && compareState?.found) {
     const c = compareState;
+    // Mortgage F1b (S2) — the two rows' liquid-NW BASES (per row, never a
+    // date) decide: different bases ⇒ the definition change is its own driver
+    // (= the new-basis row's installment debt) and liquidDebt's delta is
+    // restated so the mortgage is never reported as liquid debt paid down; the
+    // same basis ⇒ 0, and the comparison is exact.
+    const compareRow = resolveSnapshot(series, compareTo!)!;
+    const asOfRow    = resolveSnapshot(series, asOf)!;
+    const definitionChange = liquidNetWorthDefinitionChange(storedLiquidRow(compareRow), storedLiquidRow(asOfRow));
+    // Mortgage F1 — the liquidDebt driver's label names what its amount
+    // measures: Δ debt excl. long-term loans only when BOTH end rows are on the
+    // current basis; otherwise Δ all debts (LIQUID_DEBT_DRIVER_LABELS).
+    const liquidDebtLabel = liquidDebtDriverLabel(onPreviousLiquidBasis(compareRow), onPreviousLiquidBasis(asOfRow));
     deltas = {
       netWorth:         delta(asOfState.netWorth, c.netWorth),
       totalAssets:      delta(asOfState.totalAssets, c.totalAssets),
@@ -348,10 +447,12 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
         crypto:      asOfState.composition.crypto      - c.composition.crypto,
         real:        asOfState.composition.real        - c.composition.real,
         liabilities: asOfState.composition.liabilities - c.composition.liabilities,
+        liquidDebt:  asOfState.composition.liquidDebt  - c.composition.liquidDebt + definitionChange,
+        liquidDefinitionChange: definitionChange,
       },
     };
     drivers = (Object.keys(WEALTH_CATEGORY_LABELS) as (keyof WealthComposition)[])
-      .map((id) => ({ id, label: WEALTH_CATEGORY_LABELS[id], delta: deltas!.composition[id] }))
+      .map((id) => ({ id, label: id === "liquidDebt" ? liquidDebtLabel : WEALTH_CATEGORY_LABELS[id], delta: deltas!.composition[id] }))
       .filter((d) => Math.abs(d.delta) > EPS)
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
   }

@@ -660,7 +660,7 @@
                     "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
                   },
                   "target": {
-                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next; unknown rates go last), `smallest_balance` (the snowball: smallest balance first, rolling over the same way), or a liability account id from get_financial_snapshot. Stated minimums are always paid first. Neither strategy word ever picks an INSTALLMENT loan (mortgage, auto, student, personal — liabilityKind \"installment\"): it keeps its scheduled payment; extra reaches it only when its id is named. When you describe the result, say which strategy ran and name any debt whose rate or minimum is unknown — never assume one. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -987,7 +987,7 @@
                     "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
                   },
                   "target": {
-                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next; unknown rates go last), `smallest_balance` (the snowball: smallest balance first, rolling over the same way), or a liability account id from get_financial_snapshot. Stated minimums are always paid first. Neither strategy word ever picks an INSTALLMENT loan (mortgage, auto, student, personal — liabilityKind \"installment\"): it keeps its scheduled payment; extra reaches it only when its id is named. When you describe the result, say which strategy ran and name any debt whose rate or minimum is unknown — never assume one. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -1273,7 +1273,7 @@
               "description": "What the target is a target FOR. Default netWorth. `debt` solves DOWNWARD: the smallest value that brings debt at `by` to at or below the target (\"what extra monthly payment gets me debt free by December\" = monthlyContribution, measure debt, target 0, contributionTarget highest_apr)."
             },
             "contributionTarget": {
-              "description": "For solveFor monthlyContribution: where the solved monthly amount goes — `investments` (default), `highest_apr`, a liability id, or an ordered list, exactly as `contributions[].target`.",
+              "description": "For solveFor monthlyContribution: where the solved monthly amount goes — `investments` (default), `highest_apr` (avalanche), `smallest_balance` (snowball), a liability id, or an ordered list, exactly as `contributions[].target`. The two strategy words never pick an installment loan (mortgage, auto, student) — it keeps its scheduled payment; name its id to send extra there.",
               "anyOf": [
                 {
                   "type": "string"
@@ -1357,7 +1357,7 @@
                     "description": "The share of cash ABOVE `liquidFloor` to move each month-end: 1 for \"everything above it\", 0.5 for \"half of what is above it\". Goes with `liquidFloor` or `liquidFloorMonthsOfExpenses`."
                   },
                   "target": {
-                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next), or a liability account id from get_financial_snapshot. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
+                    "description": "WHERE the money goes. `investments` (the default), `highest_apr` (the liability with the highest known rate first — the avalanche; when it is cleared the same month's remainder continues to the next; unknown rates go last), `smallest_balance` (the snowball: smallest balance first, rolling over the same way), or a liability account id from get_financial_snapshot. Stated minimums are always paid first. Neither strategy word ever picks an INSTALLMENT loan (mortgage, auto, student, personal — liabilityKind \"installment\"): it keeps its scheduled payment; extra reaches it only when its id is named. When you describe the result, say which strategy ran and name any debt whose rate or minimum is unknown — never assume one. An ORDERED LIST waterfalls: [\"highest_apr\",\"investments\"] pays debt while any remains and invests the rest — \"pay the cards first, then invest\" in one scenario. A payment never exceeds the balance; what is left over stays in cash unless a later target takes it. This allocates cash the user already has — it is NOT a way to borrow.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -1809,7 +1809,8 @@
                       "type": "string",
                       "enum": [
                         "investments",
-                        "highest_apr"
+                        "highest_apr",
+                        "smallest_balance"
                       ]
                     },
                     {
@@ -1818,7 +1819,8 @@
                         "type": "string",
                         "enum": [
                           "investments",
-                          "highest_apr"
+                          "highest_apr",
+                          "smallest_balance"
                         ]
                       }
                     }

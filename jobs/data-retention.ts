@@ -76,6 +76,15 @@
  *     their v1 digest, labelled "v1" — digests correlate only within a version.
  *   - uaFamily: browser | script | headless | empty | other.
  * See runBetaIntakeNetworkMinimisation.
+ *
+ * PLATFORM AI CONVERSATIONS (B11, design §7.2 / §7.4 R6) — NOT a delete rule:
+ * fm_system holds no grant on either table. The rule calls the one SECURITY
+ * DEFINER function fm_purge_platform_ai_conversations (counts in, counts out),
+ * batch-bounded, audited counts only (lib/platform/intelligence/ai/
+ * conversations/purge.ts). ⚠️ REGISTERED DISABLED: PLATFORM_AI_PURGE_ENABLED
+ * (lib/env.ts) defaults OFF and, while off, the rule makes no database contact.
+ * It runs after the rules, never in a dry run, and its failure never affects
+ * them (reported as `platformAiConversations`).
  */
 
 import { createHmac } from "node:crypto";
@@ -83,6 +92,15 @@ import { liveSessionCutoffs } from "@/lib/auth/session-proof";
 import { AUTOMATION_RETENTION_DAYS } from "@/lib/notifications/automations/types";
 import { BLOCKLIST_REMOVED_GRACE_DAYS } from "@/lib/platform/growth/beta-blocklist-core";
 import { rollupClientFrom, runCommsDeliveryRollup, type CommsRollupResult, type PrismaRollupLike, type RollupClient } from "@/lib/notifications/delivery/rollup";
+import {
+  PLATFORM_AI_PURGE_AUDIT_ACTION, PLATFORM_AI_PURGE_SQL, parsePurgeRow, runPlatformAiConversationPurge,
+  type PlatformAiPurgeDeps, type PlatformAiPurgeResult,
+} from "@/lib/platform/intelligence/ai/conversations/purge";
+import type { PlatformAiPurgeOnDemandDeps } from "@/lib/platform/intelligence/ai/conversations/purge-on-demand";
+import {
+  PLATFORM_AI_MEMORY_PURGE_AUDIT_ACTION, PLATFORM_AI_MEMORY_PURGE_SQL, parseMemoryPurgeRow, runPlatformAiMemoryPurge,
+  type PlatformAiMemoryPurgeDeps, type PlatformAiMemoryPurgeResult,
+} from "@/lib/platform/intelligence/ai/memory/purge";
 
 const DAY_MS = 86_400_000;
 export const RETENTION_BATCH = 1000;
@@ -224,6 +242,10 @@ export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> &
   commsDelivery: CommsRollupResult | null;
   /** R2 — BETA_ACCESS_REQUESTED network-field minimisation (absent when the client has no auditLog). */
   betaIntakeNetwork?: MinimisationResult;
+  /** B11 — the Platform AI conversation purge (absent in a dry run, or when an injected client carried no purge seam). */
+  platformAiConversations?: PlatformAiPurgeResult;
+  /** Platform AI operational memory purge (absent in a dry run, or when an injected client carried no purge seam). */
+  platformAiMemory?: PlatformAiMemoryPurgeResult;
 };
 
 // ── R2 — BETA_ACCESS_REQUESTED network-field minimisation ─────────────────────
@@ -421,6 +443,110 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
   return new Date(now.getTime() - rule.days * DAY_MS);
 }
 
+/**
+ * The real Platform AI purge seams: the definer function and one counts-only
+ * audit row, both through systemDb (fm_system: EXECUTE on the function, INSERT on
+ * AuditLog — nothing on the conversation tables).
+ *
+ *   SCHEDULED        the daily job; `enabled` = PLATFORM_AI_PURGE_ENABLED, read at
+ *                    call time; an audit row only when something was removed.
+ *   MANUAL_DISPATCH  scripts/platform-ai-conversations-purge-dispatch.ts — the
+ *                    operator's run on an environment with no crons (Preview).
+ *                    Always enabled (the operator asked for exactly this run; the
+ *                    definer's predicates are fixed, so it can only remove what
+ *                    retention already requires), and an audit row EVERY run,
+ *                    zero included, tagged trigger: "MANUAL_DISPATCH".
+ *   ON_DEMAND        GET /api/jobs/dispatch?only=platform-ai-purge — the on-demand
+ *                    trigger for an environment that runs crons (Production),
+ *                    behind PLATFORM_AI_PURGE_ON_DEMAND_ENABLED (purge-on-demand.ts).
+ *                    `enabled` = PLATFORM_AI_PURGE_ENABLED, exactly as SCHEDULED
+ *                    (NOT forced on: the route is a trigger, not an override);
+ *                    misordered reported as for SCHEDULED; an audit row EVERY run,
+ *                    zero included, tagged trigger: "ON_DEMAND".
+ */
+export async function platformAiPurgeDeps(
+  trigger: "SCHEDULED" | "MANUAL_DISPATCH" | "ON_DEMAND",
+  /** Test seam only: the two env facts (default: lib/env, read at call time). */
+  flags?: { isPlatformAiPurgeEnabled: boolean; isPlatformAiConversationsFlagSetWithoutPurge: boolean },
+): Promise<PlatformAiPurgeDeps> {
+  const manual = trigger === "MANUAL_DISPATCH";
+  const env = flags ?? (await import("@/lib/env")).env;
+  const enabled = manual ? true : env.isPlatformAiPurgeEnabled;
+  const tag = trigger === "SCHEDULED" ? null : trigger;
+  return {
+    enabled,
+    // PR D — the S2 disable-order hazard (purge off, conversations flag still set):
+    // reported, never acted on — it enables nothing (platformAiPurgeJobFailure).
+    misordered: !manual && env.isPlatformAiConversationsFlagSetWithoutPurge,
+    auditEveryRun: tag !== null,
+    call: async (limit) => {
+      const { systemDb } = await import("@/lib/db");
+      return parsePurgeRow(await systemDb.$queryRawUnsafe(PLATFORM_AI_PURGE_SQL, limit));
+    },
+    audit: async (detail) => {
+      const { systemDb } = await import("@/lib/db");
+      const { auditInsert } = await import("@/lib/audit");
+      await auditInsert(systemDb, {
+        action: PLATFORM_AI_PURGE_AUDIT_ACTION,
+        metadata: { ...detail, actorType: "SYSTEM", ...(tag ? { trigger: tag } : {}) },
+      }).write;
+    },
+  };
+}
+
+/**
+ * The on-demand trigger's deps (lib/platform/intelligence/ai/conversations/
+ * purge-on-demand.ts), so GET /api/jobs/dispatch stays thin. `enabled` =
+ * env.isPlatformAiPurgeOnDemandEnabled (BOTH flags), read at call time; the
+ * purge seams are built only inside the ledgered body, so a disabled trigger
+ * touches nothing.
+ */
+export async function platformAiPurgeOnDemandDeps(
+  /** Test seam only: the env facts (default: lib/env, read at call time). */
+  flags?: { isPlatformAiPurgeOnDemandEnabled: boolean; isPlatformAiPurgeEnabled: boolean; isPlatformAiConversationsFlagSetWithoutPurge: boolean },
+): Promise<PlatformAiPurgeOnDemandDeps> {
+  const env = flags ?? (await import("@/lib/env")).env;
+  return {
+    enabled: env.isPlatformAiPurgeOnDemandEnabled,
+    purgeDeps: () => platformAiPurgeDeps("ON_DEMAND", flags),
+  };
+}
+
+/**
+ * The real Platform AI MEMORY purge seams: the definer function
+ * fm_purge_platform_ai_memory and one counts-only audit row, both through
+ * systemDb (fm_system: EXECUTE on the function, INSERT on AuditLog — nothing on
+ * the memory table). SCHEDULED: `enabled` = PLATFORM_AI_MEMORY_PURGE_ENABLED,
+ * an audit row only when something was removed. MANUAL_DISPATCH
+ * (scripts/platform-ai-memory-purge-dispatch.ts, Preview runs no crons): always
+ * enabled, an audit row every run, tagged trigger: "MANUAL_DISPATCH".
+ */
+export async function platformAiMemoryPurgeDeps(
+  trigger: "SCHEDULED" | "MANUAL_DISPATCH",
+  /** Test seam only: the two env facts (default: lib/env, read at call time). */
+  flags?: { isPlatformAiMemoryPurgeEnabled: boolean; isPlatformAiMemoryFlagSetWithoutPurge: boolean },
+): Promise<PlatformAiMemoryPurgeDeps> {
+  const manual = trigger === "MANUAL_DISPATCH";
+  const env = flags ?? (await import("@/lib/env")).env;
+  return {
+    enabled: manual ? true : env.isPlatformAiMemoryPurgeEnabled,
+    misordered: !manual && env.isPlatformAiMemoryFlagSetWithoutPurge,
+    auditEveryRun: manual,
+    call: async (limit) => {
+      const { systemDb } = await import("@/lib/db");
+      return parseMemoryPurgeRow(await systemDb.$queryRawUnsafe(PLATFORM_AI_MEMORY_PURGE_SQL, limit));
+    },
+    audit: async (detail) => {
+      const { systemDb } = await import("@/lib/db");
+      const { auditInsert } = await import("@/lib/audit");
+      await auditInsert(systemDb, {
+        action: PLATFORM_AI_MEMORY_PURGE_AUDIT_ACTION,
+        metadata: { ...detail, actorType: "SYSTEM", ...(manual ? { trigger: "MANUAL_DISPATCH" } : {}) },
+      }).write;
+    },
+  };
+}
+
 /** The production client: systemDb, with the archive-before-delete prune wired in. */
 async function realRetentionClient(): Promise<RetentionClient> {
   const base = (await import("@/lib/db")).systemDb as unknown as RetentionClient;
@@ -438,7 +564,7 @@ export async function runDataRetention(
   client?: RetentionClient,
   now: Date = new Date(),
   comms?: RollupClient,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; platformAiPurge?: PlatformAiPurgeDeps; platformAiMemoryPurge?: PlatformAiMemoryPurgeDeps } = {},
 ): Promise<DataRetentionResult> {
   const c = client ?? (await realRetentionClient());
   // An injected rules client never implies the real database for the rollup.
@@ -485,5 +611,12 @@ export async function runDataRetention(
   // runCommsDeliveryRollup never throws (its failure is reported in the result).
   // It has no dry-run mode (it writes rollups and deletes), so a dry run skips it.
   if (commsClient && !dryRun) out.commsDelivery = await runCommsDeliveryRollup(commsClient, now);
+  // B11 — the Platform AI conversation purge: DISABLED by default (no contact while off);
+  // never in a dry run (the function has no dry-run mode); never throws.
+  const purgeDeps = opts.platformAiPurge ?? (client ? null : await platformAiPurgeDeps("SCHEDULED"));
+  if (purgeDeps && !dryRun) out.platformAiConversations = await runPlatformAiConversationPurge(purgeDeps);
+  // Platform AI operational memory purge: DISABLED by default (no contact while off); never in a dry run; never throws.
+  const memoryDeps = opts.platformAiMemoryPurge ?? (client ? null : await platformAiMemoryPurgeDeps("SCHEDULED"));
+  if (memoryDeps && !dryRun) out.platformAiMemory = await runPlatformAiMemoryPurge(memoryDeps);
   return out;
 }

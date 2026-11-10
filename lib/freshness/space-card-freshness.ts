@@ -23,6 +23,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { resolveSpaceFreshness, type SpaceFreshness } from "./space-freshness";
+import { excludedAccountCounts, isBalanceUnobserved, unobservedTotalCoverage, type UnobservedTotalCoverage } from "@/lib/balances/unobserved-totals";
 
 /** The card-facing projection — the claim plus what it hides. */
 export interface SpaceCardFreshness {
@@ -36,6 +37,12 @@ export interface SpaceCardFreshness {
   claim: SpaceFreshness["claim"];
   accountCount: number;
   staleAccountCount: number;
+  /**
+   * Mortgage F8 (S2) — the card's net worth excludes an account whose balance
+   * was never observed (FIN-A2 `balanceObserved === false`), so the figure is
+   * PARTIAL with a direction. Present ONLY when PARTIAL.
+   */
+  netWorthCoverage?: UnobservedTotalCoverage;
 }
 
 /**
@@ -59,7 +66,8 @@ export async function getSpaceCardFreshness(
       spaceId: true,
       financialAccount: {
         // RWA-1 — syncStatus marks a USER ESTIMATE (manual asset); compared, never returned.
-        select: { id: true, balance: true, lastUpdated: true, balanceLastUpdatedAt: true, syncStatus: true },
+        // Mortgage F8 — type + balanceObserved say whether (and which way) the card's total is partial.
+        select: { id: true, type: true, balance: true, balanceObserved: true, lastUpdated: true, balanceLastUpdatedAt: true, syncStatus: true },
       },
     },
   });
@@ -92,6 +100,13 @@ export async function getSpaceCardFreshness(
       claim:             f.claim,
       accountCount:      f.accountCount,
       staleAccountCount: f.staleAccountCount,
+      ...((): { netWorthCoverage?: UnobservedTotalCoverage } => {
+        const c = unobservedTotalCoverage("NET_WORTH", excludedAccountCounts(rows.map((r) => ({
+          type: r.financialAccount.type,
+          ...(isBalanceUnobserved(r.financialAccount) ? { valuationUnknown: true } : {}),
+        }))));
+        return c.status === "PARTIAL" ? { netWorthCoverage: c } : {};
+      })(),
     };
   }
   return out;

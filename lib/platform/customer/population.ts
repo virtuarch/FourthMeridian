@@ -167,3 +167,34 @@ export function engagedPopulation<T>(engaged: Set<T>, policy: UndecidedPopulatio
   onlyUndecided(policy);
   return engaged;
 }
+
+// ── Test-account LABEL (OD-4 stays undecided) ────────────────────────────────
+
+/**
+ * Reserved e-mail domains (RFC 2606 / RFC 6761): no real mailbox can exist
+ * there, so an account on one was made by a script, a seed or a test — the
+ * synthetic Preview operator is `@example.test` (scripts/lib/synthetic-operator.core.ts).
+ * Suffixes of the e-mail address, lower case.
+ *
+ * A LABEL, NOT A FILTER. OD-4 (exclude test accounts?) is undecided: nothing
+ * here removes anyone from a population or a count. Surfaces may only SHOW a
+ * "test" label beside an account that matches. It is a floor: a test account
+ * on a real domain is not detected (no test-account flag exists — OD-4).
+ */
+export const RESERVED_TEST_EMAIL_SUFFIXES = [
+  "@example.com", "@example.net", "@example.org", ".example.com", ".example.net", ".example.org",
+  ".test", ".example", ".invalid", ".localhost",
+] as const;
+
+/** True when the address is on a reserved test domain (a label only — see RESERVED_TEST_EMAIL_SUFFIXES). */
+export function isReservedTestEmail(email: string | null | undefined): boolean {
+  if (typeof email !== "string") return false;
+  const e = email.trim().toLowerCase();
+  if ((e.match(/@/g) ?? []).length !== 1) return false;
+  return RESERVED_TEST_EMAIL_SUFFIXES.some((s) => e.endsWith(s));
+}
+
+/** The same rule as a UserWhereInput fragment (ids-only reads; the label, never an exclusion). */
+export const RESERVED_TEST_EMAIL_WHERE = {
+  OR: RESERVED_TEST_EMAIL_SUFFIXES.map((s) => ({ email: { endsWith: s, mode: "insensitive" as const } })),
+};

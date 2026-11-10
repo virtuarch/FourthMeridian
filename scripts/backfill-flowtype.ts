@@ -247,7 +247,7 @@ async function main(): Promise<void> {
         pfcConfidenceLevel: true,
         categorySource:     true,
         merchantEntityId:   true,
-        financialAccount:   { select: { type: true, debtSubtype: true } },
+        financialAccount:   { select: { type: true, debtSubtype: true, providerSubtype: true, creditLimit: true } },
       },
     });
     if (rows.length === 0) break;
@@ -256,6 +256,9 @@ async function main(): Promise<void> {
       const acct = {
         accountType: (r.financialAccount?.type as string | null) ?? null,
         debtSubtype: r.financialAccount?.debtSubtype ?? null,
+        // Mortgage F5 — liability-kind evidence the classifier reads.
+        providerSubtype: r.financialAccount?.providerSubtype ?? null,
+        creditLimit: r.financialAccount?.creditLimit ?? null,
       };
 
       // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind
