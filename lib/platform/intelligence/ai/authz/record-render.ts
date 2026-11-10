@@ -43,6 +43,7 @@ import type { T2FieldName } from "../evidence/record-envelope";
 import type { ToolTier } from "../tools/contract";
 import type { FreshGuard } from "./recheck";
 import { customerRecordSource } from "../tools/packs/customers.server";
+import { incidentRecordSource } from "../tools/packs/incidents.server";
 
 /** The record segment the renderer reads (= conversations/answer.ts StoredRecordSegment / compose/record.ts RecordSpan). */
 export interface RecordRef { readonly rk: string; readonly rid: string; readonly a: string; readonly f: string }
@@ -56,20 +57,26 @@ export interface RecordRenderSource {
    * (a CUSTOMER_SUCCESS-tier record only for a CS guard), or null ⇒ not visible.
    */
   revalidate(rid: string, area: PlatformArea, guard: FreshGuard): Promise<ToolTier | null>;
-  /** The T1 reference (the HMAC opaque user ref, a code-derived label) — never a T2 value. */
-  t1(rid: string, area: PlatformArea): Promise<string | null>;
+  /**
+   * The T1 reference (the HMAC opaque user ref, a code-derived label) — never a T2 value. `guard` = the
+   * area's FRESH guard of this render (P8: a kind whose T1 needs a read — INCIDENT — reads with ITS token).
+   */
+  t1(rid: string, area: PlatformArea, guard?: FreshGuard): Promise<string | null>;
   /** The customers this record links to (the audit targets). */
-  linkedUserIds(rid: string, area: PlatformArea): Promise<readonly string[]>;
+  linkedUserIds(rid: string, area: PlatformArea, guard?: FreshGuard): Promise<readonly string[]>;
   /** The T2 value — called ONLY after the audit rows were written. */
-  t2(rid: string, area: PlatformArea, field: T2FieldName): Promise<string | null>;
+  t2(rid: string, area: PlatformArea, field: T2FieldName, guard?: FreshGuard): Promise<string | null>;
 }
 
 /**
  * The RECORD sources by kind (each pack PR registers its own, S2-reviewed). P5: CUSTOMER — the
- * customers pack's keyed-rid source (tools/packs/customers.server.ts customerRecordSource).
+ * customers pack's keyed-rid source (tools/packs/customers.server.ts customerRecordSource). P8:
+ * INCIDENT — the incidents pack's source (tools/packs/incidents.server.ts incidentRecordSource): every
+ * read through the incident module with the area's fresh audience token; T2 only on the CS tier.
  */
 export const PLATFORM_AI_RECORD_SOURCES: Readonly<Record<string, RecordRenderSource>> = Object.freeze({
   CUSTOMER: customerRecordSource(),
+  INCIDENT: incidentRecordSource(),
 });
 
 /** The audit row a T2 render writes (codes + the linked customer; never a value). */
@@ -115,7 +122,10 @@ export async function renderRecordSegments(segments: readonly RecordRef[], viewe
   for (const a of new Set(segments.map((s) => s.a))) {
     if (!isArea(a)) continue;
     const g = await safe(() => viewer.recheck(a), null);
-    if (g && g.auth?.user?.id === viewer.operatorId && g.auth.grant !== null && g.auth.grant?.area === a) guards.set(a, { auth: g.auth, csTier: g.csTier === true });
+    if (g && g.auth?.user?.id === viewer.operatorId && g.auth.grant !== null && g.auth.grant?.area === a) {
+      // P8: the audience token minted from THIS guard rides with it (a kind that reads the incident module needs it; never kept).
+      guards.set(a, { auth: g.auth, csTier: g.csTier === true, ...(g.incidentToken ? { incidentToken: g.incidentToken } : {}) });
+    }
   }
 
   // 2. per record: source + revalidate (fresh).
@@ -140,7 +150,7 @@ export async function renderRecordSegments(segments: readonly RecordRef[], viewe
     const seen = new Set<string>();
     let linkageOk = true;
     for (const l of t2Candidates) {
-      const users = await safe(() => l.src.linkedUserIds(l.seg.rid, l.area), null);
+      const users = await safe(() => l.src.linkedUserIds(l.seg.rid, l.area, l.guard), null);
       if (!users || !users.every((u) => typeof u === "string" && u.length > 0)) { linkageOk = false; break; }
       for (const u of users) {
         const k = `${l.area}|${u}`;
@@ -157,10 +167,10 @@ export async function renderRecordSegments(segments: readonly RecordRef[], viewe
   for (const l of live) {
     if (!l) { out.push({ text: RECORD_GONE_TEXT, outcome: "GONE" }); continue; }
     if (audited && wantsT2(l)) {
-      const v = await safe(() => l.src.t2(l.seg.rid, l.area, l.seg.f as T2FieldName), null);
+      const v = await safe(() => l.src.t2(l.seg.rid, l.area, l.seg.f as T2FieldName, l.guard), null);
       if (typeof v === "string" && v.length > 0 && v.length <= 200) { out.push({ text: v, outcome: "T2" }); continue; }
     }
-    const t1 = await safe(() => l.src.t1(l.seg.rid, l.area), null);
+    const t1 = await safe(() => l.src.t1(l.seg.rid, l.area, l.guard), null);
     const masked = isT2Field(l.seg.f);
     if (typeof t1 === "string" && t1.length > 0 && t1.length <= 120) out.push({ text: t1, outcome: masked ? "MASKED" : "T1" });
     else out.push({ text: RECORD_PENDING_TEXT, outcome: masked ? "MASKED" : "T1" });

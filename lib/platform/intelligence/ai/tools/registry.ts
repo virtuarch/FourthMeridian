@@ -33,6 +33,7 @@ import type { PlatformArea } from "@prisma/client";
 import type { FreshGuard } from "../authz/recheck";
 import type { PlatformAiToolContract, ToolAreas } from "./contract";
 import { CUSTOMERS_PACK_TOOLS } from "./packs/customers.server";
+import { INCIDENTS_PACK_TOOLS } from "./packs/incidents.server";
 
 /** What the existing executor needs for one call — the per-turn context P1b passes through unchanged. */
 export interface LegacyToolContext {
@@ -117,6 +118,10 @@ const TOOLS: PlatformAiTool[] = [
   // P5 — the customers pack (tools/packs/customers.ts): CS-tier, customer-linkable RECORD tools,
   // behind PLATFORM_AI_PACK_CUSTOMERS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
   ...(CUSTOMERS_PACK_TOOLS as PlatformAiTool[]),
+  // P8 — the incidents pack (tools/packs/incidents.ts): an identity-free aggregate, OPS-tier RECORD tools on
+  // PLATFORM_OPS and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS, behind
+  // PLATFORM_AI_PACK_INCIDENTS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(INCIDENTS_PACK_TOOLS as PlatformAiTool[]),
 ];
 
 export const PLATFORM_AI_TOOL_REGISTRY: readonly PlatformAiTool[] = Object.freeze(TOOLS);

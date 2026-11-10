@@ -48,7 +48,7 @@ import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
 import type { ScopedArea } from "../authz/boundary";
-import { extractSubjects, storedSubjectText, type SubjectIdentifier } from "../authz/subject";
+import { extractSubjects, storedSubjectText, type SubjectFlags, type SubjectIdentifier } from "../authz/subject";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -115,6 +115,12 @@ export interface TurnRunDeps {
   runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess; subjects?: TurnSubjects }): Promise<ConversationTurnOutcome>;
   /** P5 — the customers pack flag (strict, default OFF). Absent / false ⇒ the question is scrubbed exactly as before. */
   subjectsEnabled?(): boolean;
+  /**
+   * P8 — the customers / incidents flags (authz/subject.server.ts platformAiSubjectFlags): which slots are
+   * customer lookups decides the STORED text (an incident id or a passthrough identifier is never `[customer]`).
+   * Absent ⇒ every slot stores `[customer]` (P5 behaviour).
+   */
+  subjectFlags?(): SubjectFlags;
 }
 
 /** P5 — the subject slots of one question (authz/subject.ts). Never stored, never logged. */
@@ -124,16 +130,19 @@ export interface TurnSubjects { readonly slotted: string; readonly ids: readonly
  * P5 — one scrub for both sinks, with subject resolution: exact identifiers are cut out of the RAW
  * question BEFORE the scrub; the STORED text shows `[customer]` per identifier (no identifier, no
  * handle is ever stored); the slots + identifiers go to the runner. Off / none ⇒ exactly as before.
+ * P8 — with `flags`: a full cuid while the incidents flag is ON stores `[id]` (it may be an incident id), and
+ * with the customers flag OFF every identifier stores its scrubbed form (authz/subject.ts storedSubjectText).
  */
-export function scrubWithSubjects(question: string, enabled: boolean): { stored: string; subjects?: TurnSubjects } {
+export function scrubWithSubjects(question: string, enabled: boolean, flags?: SubjectFlags): { stored: string; subjects?: TurnSubjects } {
   if (!enabled) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
   const ex = extractSubjects(question);
   if (ex.ids.length === 0) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
   const slotted = scrubOperatorText(ex.text, PLATFORM_AI_MESSAGE_MAX);
-  return { stored: storedSubjectText(slotted), subjects: { slotted, ids: ex.ids } };
+  return { stored: storedSubjectText(slotted, ex.ids, flags), subjects: { slotted, ids: ex.ids } };
 }
 
 const subjectsOn = (deps: TurnRunDeps): boolean => { try { return deps.subjectsEnabled?.() === true; } catch { return false; } };
+const subjectFlagsOf = (deps: TurnRunDeps): SubjectFlags | undefined => { try { return deps.subjectFlags?.(); } catch { return { customers: false, incidents: false }; } };
 
 export interface ConversationDeps {
   /** Step 6: a FRESH guard on `area` for THIS operator; null on any refusal (⇒ 404). */
@@ -417,7 +426,7 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
     if (!access) return notFound();
     // One scrub for both sinks (S2 B3): this exact string is stored AND sent (P5: with subjects, the
     // stored text has `[customer]` and the model text the resolved slot — see scrubWithSubjects).
-    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps));
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps), subjectFlagsOf(deps));
     const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
     switch (out.kind) {
       case "LIMIT":
@@ -475,7 +484,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   const cost = await holdSpend(v, deps);
   if (cost.refused) return cost.refused;
   try {
-    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps));
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps), subjectFlagsOf(deps));
     const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
     switch (out.kind) {
       case "NOT_FOUND":

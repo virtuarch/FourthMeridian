@@ -79,6 +79,16 @@ async function main() {
   const routerSrc = readFileSync(path.join(process.cwd(), "lib/platform/intelligence/ai/engine/router.ts"), "utf8");
   check("PACK_FLAG.customers reads exactly e.isPlatformAiPackCustomersEnabled (source pin)",
     /customers: \(e\) => e\.isPlatformAiEnabled === true && e\.isPlatformAiPackCustomersEnabled === true,/.test(routerSrc));
+  // P8 (PACK-PR-CONDITIONS 3): incidents is wired to ITS strict getter (master AND PLATFORM_AI_PACK_INCIDENTS_ENABLED).
+  const withIncidents = (master: boolean, pack: boolean | undefined) => ({ ...fakeEnv(master, false), ...(pack === undefined ? {} : { isPlatformAiPackIncidentsEnabled: pack }) });
+  check("incidents pack flag = isPlatformAiPackIncidentsEnabled (and the master); absent getter ⇒ OFF; the customers getter does not turn it on",
+    platformAiPackEnabled("incidents", withIncidents(true, true)) && !platformAiPackEnabled("incidents", withIncidents(true, false))
+    && !platformAiPackEnabled("incidents", withIncidents(false, true)) && !platformAiPackEnabled("incidents", withIncidents(true, undefined))
+    && !platformAiPackEnabled("incidents", withCustomers(true, true)) && !platformAiPackEnabled("customers", withIncidents(true, true)));
+  check("incidents pack flag over the LIVE env: PLATFORM_AI_PACK_INCIDENTS_ENABLED=\" true\" here ⇒ OFF (strict; default OFF)",
+    platformAiPackEnabled("incidents") === env.isPlatformAiPackIncidentsEnabled && env.isPlatformAiPackIncidentsEnabled === false);
+  check("PACK_FLAG.incidents reads exactly e.isPlatformAiPackIncidentsEnabled (source pin)",
+    /incidents: \(e\) => e\.isPlatformAiEnabled === true && e\.isPlatformAiPackIncidentsEnabled === true,/.test(routerSrc));
   const OPS: PlatformArea[] = ["PLATFORM_OPS"];
   const r = (memory: boolean, e: ReturnType<typeof fakeEnv>, q: string | null = null, areas: PlatformArea[] = OPS) => routePlatformAiPacks({ question: q, areas, memory }, e).join();
   check("core routing: memory only with the turn's memory hooks",
@@ -112,7 +122,8 @@ async function p3(fakeEnv: FakeEnv) {
   const { platformAiToolSchemas } = await import("../core");
   const ALL: PlatformArea[] = ["PLATFORM_OPS", "SECURITY_OPS", "GROWTH_REVENUE", "CUSTOMER_SUCCESS", "MERCHANT_OPS"];
   const synRegistry: PlatformAiTool[] = [
-    ...PLATFORM_AI_TOOL_REGISTRY,
+    // P8: the real incidents pack is replaced by its synthetic stand-in here (these checks pin the rule table).
+    ...PLATFORM_AI_TOOL_REGISTRY.filter((t) => t.pack !== "incidents"),
     synTool("syn_incidents", "incidents", ["PLATFORM_OPS"]),
     synTool("syn_connections", "connections", ["PLATFORM_OPS", "CUSTOMER_SUCCESS"], "RECORD"),
     synTool("syn_jobs", "jobs", ["PLATFORM_OPS"]),

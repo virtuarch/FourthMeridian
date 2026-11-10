@@ -97,7 +97,7 @@ async function main() {
       && /modelQuestion = fillSubjectSlots\(subjects\.slotted, r\.fills\)/.test(tr) && /question: modelQuestion/.test(tr));
     const h = src("lib/platform/intelligence/ai/conversations/handlers.ts");
     check("handlers: the STORED question is scrubWithSubjects(…).stored (never a filled slot)",
-      (h.match(/const \{ stored: scrubbedQuestion, subjects \} = scrubWithSubjects\(parsed\.question, subjectsOn\(deps\)\);/g) ?? []).length === 2 && !/fillSubjectSlots/.test(h));
+      (h.match(/const \{ stored: scrubbedQuestion, subjects \} = scrubWithSubjects\(parsed\.question, subjectsOn\(deps\), subjectFlagsOf\(deps\)\);/g) ?? []).length === 2 && !/fillSubjectSlots/.test(h));
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

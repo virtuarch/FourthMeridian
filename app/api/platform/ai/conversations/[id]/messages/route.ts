@@ -34,7 +34,7 @@ import {
 } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { conversationAreaAccess } from "../../area-access";
-import { isSubjectResolutionEnabled } from "@/lib/platform/intelligence/ai/authz/subject.server";
+import { isSubjectResolutionEnabled, platformAiSubjectFlags } from "@/lib/platform/intelligence/ai/authz/subject.server";
 import { runConversationTurnForRoute } from "../../turn-runner";
 
 export const runtime = "nodejs";
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       spend: (uid, now) => reservePlatformAiSpend(uid, now, { model: platformAiModel().model }),
       runTurn: runConversationTurnForRoute,
       // P5 — subject resolution only while the customers pack flag is ON (strict, default OFF).
-      subjectsEnabled: isSubjectResolutionEnabled,
+      subjectsEnabled: isSubjectResolutionEnabled, subjectFlags: platformAiSubjectFlags,
     }));
   } catch (e) {
     return INTERNAL("message", e);

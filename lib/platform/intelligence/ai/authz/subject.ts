@@ -10,8 +10,8 @@
  *               NOT the ≥ 6-char tail form the Customer Success list search accepts)
  *   USER_ID     a full user cuid (`c` + 24 lowercase alphanumerics)
  *
- * No name, prefix, partial id, wildcard or fuzzy form is ever looked up. (Incident ids join with
- * the incidents pack, P8, behind its own flag.)
+ * No name, prefix, partial id, wildcard or fuzzy form is ever looked up. P8: a full INCIDENT id (the same
+ * cuid shape as a user id) is disambiguated explicitly, behind the incidents flag — see resolveOne.
  *
  * WHEN. Server-side, BEFORE the scrub (lib/ai/privacy/scrub.ts) and before any model call:
  *   1. extractSubjects(raw)   — every identifier is cut out of the text and replaced by a private
@@ -50,6 +50,7 @@
  */
 
 import type { PlatformArea } from "@prisma/client";
+import { OPERATOR_TEXT_PLACEHOLDERS, scrubOperatorText } from "@/lib/ai/privacy/scrub";
 
 export const SUBJECT_FLOOR_MS = 300;
 export const SUBJECT_ABORT_MS = 1_500;
@@ -68,6 +69,18 @@ export const SUBJECT_ID_KINDS = ["EMAIL", "OPAQUE_REF", "USER_ID"] as const;
 export type SubjectIdKind = (typeof SUBJECT_ID_KINDS)[number];
 export const SUBJECT_OUTCOMES = ["MATCHED", "NOT_FOUND", "NO_ACCESS", "LIMITED", "UNAVAILABLE"] as const;
 export type SubjectOutcome = (typeof SUBJECT_OUTCOMES)[number];
+/**
+ * P8 — a slot's outcome: a customer lookup's SubjectOutcome, or INCIDENT (an exact incident id resolved to an
+ * incident handle — not a customer lookup: no limiter count, no subject audit row) or PASSTHROUGH (not a
+ * subject lookup at all: the slot gets the scrub's own text, exactly as without subject resolution).
+ */
+export type SubjectSlotOutcome = SubjectOutcome | "INCIDENT" | "PASSTHROUGH";
+
+/** P8 — the pack flags subject resolution follows (each strict, default OFF). */
+export interface SubjectFlags { readonly customers: boolean; readonly incidents: boolean }
+
+/** P8 — the model text of a resolved incident id: `[incident h_…]` (a handle of THIS turn). */
+export const incidentSubjectText = (handle: string): string => `[incident ${handle}]`;
 
 export interface SubjectIdentifier {
   readonly kind: SubjectIdKind;
@@ -119,10 +132,22 @@ export function fillSubjectSlots(slotted: string, fills: readonly string[]): str
   return slotted.replace(SLOT, (_m, n: string) => fills[Number(n)] ?? SUBJECT_UNRESOLVED_TEXT).replace(SLOT_CHARS, "");
 }
 
-/** The STORED / displayed text: every slot ⇒ `[customer]` (no handle, no identifier). */
-export function storedSubjectText(slotted: string): string {
-  return slotted.replace(SLOT, SUBJECT_STORED_TEXT).replace(SLOT_CHARS, "");
+/**
+ * The STORED / displayed text: every slot ⇒ `[customer]` (no handle, no identifier). P8 — with `flags`
+ * (the pack flags subject resolution follows): a slot that is NOT a customer lookup stores exactly what the
+ * scrub would have stored — a full cuid while the incidents flag is ON may be an incident id ⇒ `[id]`; with
+ * the customers flag OFF every identifier ⇒ its scrubbed form (`[email]`, `[id]`, the T1 `user #` ref).
+ */
+export function storedSubjectText(slotted: string, ids?: readonly SubjectIdentifier[], flags?: SubjectFlags): string {
+  return slotted.replace(SLOT, (_m, n: string) => {
+    const id = ids?.[Number(n)];
+    if (!flags || !id || (flags.customers && !(flags.incidents && id.kind === "USER_ID"))) return SUBJECT_STORED_TEXT;
+    return passthroughText(id);
+  }).replace(SLOT_CHARS, "");
 }
+
+/** What the scrub (lib/ai/privacy/scrub.ts) turns this identifier into — the text when it is NOT a subject lookup. */
+export const passthroughText = (id: SubjectIdentifier): string => scrubOperatorText(id.normalized, 120) || OPERATOR_TEXT_PLACEHOLDERS.id;
 
 /** True when the text still carries a slot (the caller must fill or store it). */
 export const hasSubjectSlots = (text: string): boolean => /\d{1,2}/.test(text);
@@ -169,20 +194,61 @@ export interface SubjectDeps {
   /** The keyed PRIV-ref digest (8 hex) of the normalised identifier. */
   keyHash(id: SubjectIdentifier): string;
   readonly clock: SubjectClock;
+  /**
+   * P8 — present ONLY while the incidents pack flag is ON: an exact incident id → a handle of THIS turn
+   * (authz/boundary.ts adoptRecord: fresh recheck + the INCIDENT source's revalidate, per the incident
+   * audience rules), or null when it is not an incident this operator may see.
+   */
+  readonly incident?: { resolve(incidentId: string): Promise<string | null> };
 }
 
 export interface SubjectResult {
   /** Per identifier (slot order): the model text for its slot. */
   readonly fills: readonly string[];
-  readonly outcomes: readonly SubjectOutcome[];
+  readonly outcomes: readonly SubjectSlotOutcome[];
   /** SUBJECT_UNRESOLVED_NOTE when any identifier did not resolve, else null. */
   readonly note: string | null;
 }
 
 const ABORTED = Symbol("aborted");
 
-async function resolveOne(id: SubjectIdentifier, index: number, d: SubjectDeps): Promise<{ fill: string; outcome: SubjectOutcome }> {
+const HANDLE_KEY = /^h_[A-Za-z0-9_-]{16}$/;
+
+async function padToFloor(d: SubjectDeps, start: number): Promise<void> {
+  const elapsed = d.clock.now() - start;
+  if (elapsed < SUBJECT_FLOOR_MS) await d.clock.sleep(SUBJECT_FLOOR_MS - elapsed);
+}
+
+/**
+ * P8 — PACK-PR-CONDITIONS 8: a full cuid may be an INCIDENT id or a user id. With the incidents flag ON
+ * (`d.incident` present), a USER_ID-shaped identifier is FIRST tried as an exact incident id visible to this
+ * operator (incident audience rules; the boundary's fresh recheck + the INCIDENT source) ⇒ `[incident h_…]`,
+ * outcome INCIDENT — NOT a customer lookup: no limiter count, no PLATFORM_AI_SUBJECT_LOOKUP row. Otherwise the
+ * customer path below runs exactly as before (customers flag ON), or — customers flag OFF — the slot gets the
+ * scrub's own text (PASSTHROUGH: no lookup, no audit). Every path is padded to the same timing floor.
+ * Without `d.incident` (incidents flag OFF) nothing changes: today's behaviour.
+ */
+async function resolveOne(id: SubjectIdentifier, index: number, d: SubjectDeps): Promise<{ fill: string; outcome: SubjectSlotOutcome }> {
   const start = d.clock.now();
+  if (!d.incident) return resolveCustomer(id, index, d, start);
+  let customersOn = false;
+  try { customersOn = d.enabled() === true; } catch { customersOn = false; }
+  if (id.kind === "USER_ID" && index < SUBJECT_MAX_PER_QUESTION) {
+    let handle: unknown = null;
+    try {
+      handle = await Promise.race([d.incident.resolve(id.normalized).catch(() => ABORTED), d.clock.after(SUBJECT_ABORT_MS).then(() => ABORTED)]);
+    } catch { handle = null; }
+    if (typeof handle === "string" && HANDLE_KEY.test(handle)) {
+      await padToFloor(d, start);
+      return { fill: incidentSubjectText(handle), outcome: "INCIDENT" };
+    }
+  }
+  if (customersOn) return resolveCustomer(id, index, d, start);
+  await padToFloor(d, start);
+  return { fill: passthroughText(id), outcome: "PASSTHROUGH" };
+}
+
+async function resolveCustomer(id: SubjectIdentifier, index: number, d: SubjectDeps, start: number): Promise<{ fill: string; outcome: SubjectOutcome }> {
   let outcome: SubjectOutcome = "UNAVAILABLE";
   let userId: string | null = null;
   let actorArea: PlatformArea = d.primaryArea;
@@ -223,22 +289,22 @@ async function resolveOne(id: SubjectIdentifier, index: number, d: SubjectDeps):
   if (outcome === "MATCHED" && audited && userId) {
     try { handle = await d.mint(userId); } catch { handle = null; }
   }
-  const elapsed = d.clock.now() - start;
-  if (elapsed < SUBJECT_FLOOR_MS) await d.clock.sleep(SUBJECT_FLOOR_MS - elapsed);
-  const resolved = typeof handle === "string" && /^h_[A-Za-z0-9_-]{16}$/.test(handle);
+  await padToFloor(d, start);
+  const resolved = typeof handle === "string" && HANDLE_KEY.test(handle);
   return { fill: resolved ? `[customer ${handle}]` : SUBJECT_UNRESOLVED_TEXT, outcome: resolved ? "MATCHED" : outcome === "MATCHED" ? "UNAVAILABLE" : outcome };
 }
 
 /** Resolve every extracted identifier, in order. Never throws; never returns an identifier. */
 export async function resolveSubjects(ids: readonly SubjectIdentifier[], deps: SubjectDeps): Promise<SubjectResult> {
   const fills: string[] = [];
-  const outcomes: SubjectOutcome[] = [];
+  const outcomes: SubjectSlotOutcome[] = [];
   for (let i = 0; i < ids.length; i++) {
     const r = await resolveOne(ids[i], i, deps);
     fills.push(r.fill);
     outcomes.push(r.outcome);
   }
-  return { fills, outcomes, note: outcomes.some((o) => o !== "MATCHED") ? SUBJECT_UNRESOLVED_NOTE : null };
+  // The customer note only for a CUSTOMER lookup that did not resolve (an incident / passthrough slot is not one).
+  return { fills, outcomes, note: outcomes.some((o) => o !== "MATCHED" && o !== "INCIDENT" && o !== "PASSTHROUGH") ? SUBJECT_UNRESOLVED_NOTE : null };
 }
 
 /** The real clock (Production). The abort sleep never holds the process open. */

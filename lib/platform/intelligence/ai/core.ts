@@ -85,6 +85,7 @@ import {
   RECORD_GONE_TEXT, RECORD_PENDING_TEXT, RECORD_PRIVATE_CHARS, RECORD_SENTINEL, extractRecordPlaceholders, hasHandleText, identityShapesIn, markInferred, renderInferred,
   type RecordSpan, type TurnRecordLookup,
 } from "./compose/record";
+import { causalInPlay, markUnbackedCausal } from "./compose/causal";
 import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
 import {
   DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
@@ -1034,6 +1035,13 @@ export async function runPlatformAiTurn(input: {
     modelRaw = markInferred(modelRaw).text;
     const rec = extractRecordPlaceholders(modelRaw, input.records);
     modelRaw = rec.text;
+    // P8 (design v2 §9, compose/causal.ts): with the incident contract in play, an unmarked causal sentence not
+    // backed by a CONFIRMED cause of an incident it places is marked inferred ("Likely: …") — UNMARKED_CAUSAL.
+    const causal = markUnbackedCausal(modelRaw, {
+      inPlay: causalInPlay({ traceTools: ev.trace.filter((t) => t.outcome === "OK").map((t) => String(t.tool)), spans: rec.spans, question }),
+      spans: rec.spans, facts: rec.facts,
+    });
+    modelRaw = causal.text;
     if (memory) {
       modelRaw = modelRaw.replace(MEM_PLACEHOLDER, (_m, id: string) => {
         const t = memory.renderPlaceholder(id.toLowerCase());
@@ -1054,6 +1062,7 @@ export async function runPlatformAiTurn(input: {
     }
     if (identityShapesIn(placed.modelProse).length > 0) placed.summary.verdict = "IDENTITY_LEAK";
     else if (rec.unresolved > 0 || hasHandleText(placed.modelProse)) placed.summary.verdict = "RECORD_UNRESOLVED";
+    else if (causal.marked > 0 && (placed.summary.verdict === "RESOLVED" || placed.summary.verdict === "NONE")) placed.summary.verdict = "UNMARKED_CAUSAL";
     return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans };
   };
   let first = evaluate(raw);

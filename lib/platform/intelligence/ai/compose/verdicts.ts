@@ -38,6 +38,13 @@ export const PLACEHOLDER_VERDICTS = [
    * authz/record-render.ts.
    */
   "IDENTITY_LEAK",
+  /**
+   * P8 (design v2 §9, the inferred-cause contract — compose/causal.ts) — with the incident contract in play,
+   * the model stated a cause as fact without a CONFIRMED cause behind it. The answer is KEPT: each such
+   * sentence is deterministically marked inferred (rendered "Likely: …" in the display and the stored answer)
+   * and counted. Passing (never replaced, never retried).
+   */
+  "UNMARKED_CAUSAL",
 ] as const;
 export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
 
@@ -280,4 +287,4 @@ export function periodCorrectionText(affected: readonly MetricEnvelope[], asked:
   return `Correction: the figures for ${listLabels(labels)} cover ${listLabels(phrases)}, not the ${period} you asked about; that period cannot be measured for them.`;
 }
 
-export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE" || v === "RESOLVED_WITH_STALE_NOTE";
+export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE" || v === "RESOLVED_WITH_STALE_NOTE" || v === "UNMARKED_CAUSAL";

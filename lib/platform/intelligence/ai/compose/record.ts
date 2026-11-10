@@ -80,6 +80,12 @@ export interface TurnRecordRef {
   readonly a: string;
   /** The field codes `{{r:h|f}}` may name for this record: "ref" + the schema's t2Fields. */
   readonly fields: readonly string[];
+  /**
+   * P8 — the record's CLOSED field values as the model received them (codes / counts / times / flags; never a T2
+   * value). Present for records a tool returned this turn; absent for a re-minted / adopted record (unknown).
+   * compose/causal.ts reads a placed incident's causeStatus / cause from here.
+   */
+  readonly facts?: Readonly<Record<string, unknown>>;
 }
 
 /** The turn's handle → record lookup (authz/boundary.ts `recordRef`). */
@@ -100,6 +106,8 @@ export interface RecordExtraction {
   unresolved: number;
   /** Well-formed record placeholders the model wrote (claims). */
   claims: number;
+  /** P8 — per span (same index): the record's closed facts (TurnRecordRef.facts) or null. Never stored. */
+  facts: (Readonly<Record<string, unknown>> | null)[];
 }
 
 /**
@@ -108,6 +116,7 @@ export interface RecordExtraction {
  */
 export function extractRecordPlaceholders(raw: string, lookup: TurnRecordLookup | undefined): RecordExtraction {
   const spans: RecordSpan[] = [];
+  const facts: (Readonly<Record<string, unknown>> | null)[] = [];
   let unresolved = 0, claims = 0;
   let text = raw.replace(RECORD_PLACEHOLDER, (_m, handle: string, field: string) => {
     claims++;
@@ -117,10 +126,11 @@ export function extractRecordPlaceholders(raw: string, lookup: TurnRecordLookup 
       && spans.length < RECORD_SPANS_MAX;
     if (!ok) { unresolved++; return " "; }
     spans.push({ kind: "record", text: RECORD_PENDING_TEXT, rk: ref!.rk, rid: ref!.rid, a: ref!.a, f: field });
+    facts.push(ref!.facts ?? null);
     return `${RECORD_OPEN}${String.fromCharCode(97 + spans.length - 1)}${RECORD_CLOSE}`;
   });
   text = text.replace(RECORD_PLACEHOLDER_LOOSE, () => { unresolved++; return " "; });
-  return { text, spans, unresolved, claims };
+  return { text, spans, unresolved, claims, facts };
 }
 
 /** Mark every paired `{{inferred}}…{{/inferred}}` with private sentinels (rendered "Likely: …" later). */

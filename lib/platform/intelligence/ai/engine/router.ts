@@ -51,7 +51,7 @@ import { CORE_TOOL_NAMES, PLATFORM_AI_TOOL_REGISTRY, platformAiRegistrySchemas }
 
 /** The env getters the pack flags read (a test passes its own; an absent pack getter is OFF). */
 export type PackFlagEnv = Pick<typeof liveEnv, "isPlatformAiEnabled" | "isPlatformAiMemoryEnabled">
-  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled">>;
+  & Partial<Pick<typeof liveEnv, "isPlatformAiPackCustomersEnabled" | "isPlatformAiPackIncidentsEnabled">>;
 
 const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   metrics: (e) => e.isPlatformAiEnabled === true,
@@ -59,6 +59,8 @@ const PACK_FLAG: Readonly<Record<ToolPack, (e: PackFlagEnv) => boolean>> = {
   memory: (e) => e.isPlatformAiEnabled === true && isMemoryEffective(e),
   // P5 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_CUSTOMERS_ENABLED === "true"; default OFF).
   customers: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackCustomersEnabled === true,
+  // P8 (PACK-PR-CONDITIONS 3): the strict getter (master AND PLATFORM_AI_PACK_INCIDENTS_ENABLED === "true"; default OFF).
+  incidents: (e) => e.isPlatformAiEnabled === true && e.isPlatformAiPackIncidentsEnabled === true,
 };
 
 /** Is this pack's server flag ON? Unknown pack ⇒ false. */

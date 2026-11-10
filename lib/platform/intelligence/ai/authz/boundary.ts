@@ -172,6 +172,11 @@ export interface TurnBoundary {
    * the source must re-validate the record for that guard. Anything else ⇒ null.
    */
   adoptSubject(subject: { rk: string; rid: string; area: PlatformArea }): Promise<string | null>;
+  /**
+   * P8 — a handle of THIS turn for a record the server resolved (an exact incident id): the first of `areas`
+   * in scope whose FRESH recheck passes and whose source re-validates it (OPS, or CS with the CS tier). null otherwise.
+   */
+  adoptRecord(subject: { rk: string; rid: string }, areas: readonly PlatformArea[]): Promise<string | null>;
 }
 
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
@@ -265,7 +270,9 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     const binding = bindingFor(surviving);
     if (!binding) return refuse("RECHECK_REFUSED");
     // P5: a RECORD tool reads through THIS call's fresh guards (the token minted from them); never kept past the call.
-    const ctx: LegacyToolContext = { binding, ev: c.ev, paramKeys: c.paramKeys, asked: c.asked, ...(c.memory ? { memory: c.memory } : {}), ...(tool.scope === "RECORD" ? { fresh } : {}) };
+    // P8: so does a pack AGGREGATE tool (incident_overview reads the incident module with its token); the six core
+    // tools (the executor) ignore it.
+    const ctx: LegacyToolContext = { binding, ev: c.ev, paramKeys: c.paramKeys, asked: c.asked, ...(c.memory ? { memory: c.memory } : {}), fresh };
 
     // 7. record-level revalidation.
     if (tool.revalidate) {
@@ -372,7 +379,11 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     // 12. handles minted; the record id stays here.
     const records: ModelRecord[] = kept.map((r) => {
       const handle = handles.mint({ kind: r.ref.kind, area: r.ref.area, tier: r.ref.tier, recordId: r.ref.recordId });
-      recordRefs.set(handle, Object.freeze({ rk: r.ref.kind, rid: r.ref.recordId, a: r.ref.area, fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])]) }));
+      // P8: the record's CLOSED field values ride with the handle (compose/causal.ts reads a placed incident's causeStatus / cause).
+      recordRefs.set(handle, Object.freeze({
+        rk: r.ref.kind, rid: r.ref.recordId, a: r.ref.area, fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])]),
+        facts: Object.freeze({ ...withoutT2(r.fields) }),
+      }));
       return {
         handle,
         kind: schema.kind,
@@ -431,6 +442,29 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     return null;
   }
 
+  /**
+   * P8 — a handle of THIS turn for a record the SERVER resolved from an exact identifier (never model input):
+   * the first of `areas` (in order) that is in scope, passes a FRESH per-call recheck (a refusal removes the
+   * area) and whose kind's source re-validates the record for that guard — OPS tier, or CUSTOMER_SUCCESS with
+   * the guard's CS tier. Anything else ⇒ null. (The incident id of a question: authz/subject.ts.)
+   */
+  async function adoptRecord(subject: { rk: string; rid: string }, areas: readonly PlatformArea[]): Promise<string | null> {
+    const src = Object.prototype.hasOwnProperty.call(recordSources, subject.rk) ? recordSources[subject.rk] : undefined;
+    if (!src || typeof subject.rid !== "string" || subject.rid.length === 0) return null;
+    for (const area of areas) {
+      if (!scope.has(area)) continue;
+      const guard = await scope.recheck(area);
+      if (!guard) continue;
+      let tier: ToolTier | null = null;
+      try { tier = await src.revalidate(subject.rid, area, guard); } catch { tier = null; }
+      if (!(tier === "OPS" || (tier === "CUSTOMER_SUCCESS" && guard.csTier === true))) continue;
+      const handle = handles.mint({ kind: subject.rk, area, tier, recordId: subject.rid });
+      recordRefs.set(handle, Object.freeze({ rk: subject.rk, rid: subject.rid, a: area, fields: Object.freeze([RECORD_REF_FIELD, ...src.t2Fields]) }));
+      return handle;
+    }
+    return null;
+  }
+
   async function adoptSubject(subject: { rk: string; rid: string; area: PlatformArea }): Promise<string | null> {
     const src = Object.prototype.hasOwnProperty.call(recordSources, subject.rk) ? recordSources[subject.rk] : undefined;
     if (!src || typeof subject.rid !== "string" || subject.rid.length === 0 || !scope.has(subject.area)) return null;
@@ -448,6 +482,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     invoke,
     subjectEligibility,
     adoptSubject,
+    adoptRecord,
     recordRef: (handle) => (typeof handle === "string" && handles.owns(handle) ? recordRefs.get(handle) ?? null : null),
     remint,
     trace: () => [...trace],

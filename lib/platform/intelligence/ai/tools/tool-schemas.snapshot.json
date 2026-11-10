@@ -373,6 +373,140 @@
           }
         }
       }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "incident_overview",
+          "description": "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_incidents",
+          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "broken-now",
+                  "needs-verification",
+                  "history",
+                  "all"
+                ],
+                "description": "default broken-now"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "error",
+                  "warning",
+                  "info"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "investigate_incident",
+          "description": "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "incident": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "incident"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_incidents_cs",
+          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "broken-now",
+                  "needs-verification",
+                  "history",
+                  "all"
+                ],
+                "description": "default broken-now"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "error",
+                  "warning",
+                  "info"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "investigate_incident_cs",
+          "description": "Customer Success view of investigate_incident (+ customer).",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "incident": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "incident"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ]
 }
