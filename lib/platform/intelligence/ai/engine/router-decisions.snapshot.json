@@ -1,0 +1,39 @@
+{
+  "note": "Platform AI router decisions (engine/router.ts) for a fixed question list, every area in scope, memory on. Update deliberately: UPDATE_PLATFORM_AI_ROUTER_SNAPSHOT=1 (see schema-budget.test.ts).",
+  "today": {
+    "How are we looking today?": "metrics,navigation,memory",
+    "What's costing me the most money in the past 30 days?": "metrics,navigation,memory",
+    "Any open incidents right now?": "metrics,navigation,memory",
+    "Why did the refresh pipeline fail overnight?": "metrics,navigation,memory",
+    "Which customers need attention?": "metrics,navigation,memory",
+    "Are bank connections healthy? Any reauth needed?": "metrics,navigation,memory",
+    "How many imports failed during onboarding this week?": "metrics,navigation,memory",
+    "Is the email provider bouncing?": "metrics,navigation,memory",
+    "How much AI spend and how many tokens today?": "metrics,navigation,memory",
+    "Who changed the refresh policy? Show the audit log.": "metrics,navigation,memory",
+    "Is the kill switch or the cost freeze on?": "metrics,navigation,memory",
+    "How are sign-ups and churn trending?": "metrics,navigation,memory",
+    "Any merchant descriptors uncategorised?": "metrics,navigation,memory",
+    "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory",
+    "Open the platform ops page": "metrics,navigation,memory",
+    "Remember that the scheduler is degraded.": "metrics,navigation,memory"
+  },
+  "everyPlannedPackDeclared": {
+    "How are we looking today?": "metrics,navigation,memory",
+    "What's costing me the most money in the past 30 days?": "metrics,navigation,memory",
+    "Any open incidents right now?": "metrics,navigation,memory,incidents",
+    "Why did the refresh pipeline fail overnight?": "metrics,navigation,memory,jobs",
+    "Which customers need attention?": "metrics,navigation,memory,customers",
+    "Are bank connections healthy? Any reauth needed?": "metrics,navigation,memory,connections",
+    "How many imports failed during onboarding this week?": "metrics,navigation,memory,onboarding",
+    "Is the email provider bouncing?": "metrics,navigation,memory,providers",
+    "How much AI spend and how many tokens today?": "metrics,navigation,memory,ai_usage",
+    "Who changed the refresh policy? Show the audit log.": "metrics,navigation,memory,jobs,audit_history,policies",
+    "Is the kill switch or the cost freeze on?": "metrics,navigation,memory,policies",
+    "How are sign-ups and churn trending?": "metrics,navigation,memory,growth",
+    "Any merchant descriptors uncategorised?": "metrics,navigation,memory,merchants",
+    "Customers hit by incidents after the jobs refresh broke their connections from a provider": "metrics,navigation,memory,incidents,connections,jobs",
+    "Open the platform ops page": "metrics,navigation,memory",
+    "Remember that the scheduler is degraded.": "metrics,navigation,memory,incidents,jobs"
+  }
+}

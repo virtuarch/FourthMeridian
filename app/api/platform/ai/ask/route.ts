@@ -50,7 +50,7 @@ import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import { createTurnBoundary, type ScopedArea } from "@/lib/platform/intelligence/ai/authz/boundary";
 import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
-import { platformAiPackEnabled, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
+import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
@@ -124,7 +124,9 @@ export async function POST(req: NextRequest) {
   const boundary = binding ? createTurnBoundary({
     operatorId: auth.user.id, correlationId, areas: scoped, binding,
     recheck: platformAiFreshRecheck,
-    packs: routePlatformAiPacks({ memory: false }),
+    // P3: core packs until the turn routes its scrubbed question (engine/router.ts); more_tools within the bounds.
+    packs: routePlatformAiPacks({ question: null, areas: scoped.map((s) => s.scope.area), memory: false }),
+    router: platformAiTurnRouter({ memory: false }),
     packEnabled: (p) => platformAiPackEnabled(p),
     onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${PLATFORM_AI_ROUTE_KEY})`),
   }) : null;
@@ -139,7 +141,7 @@ export async function POST(req: NextRequest) {
     turns: (id, now) => readPlatformAiTurns(id, now),
     spend: (id, now) => reservePlatformAiSpend(id, now, { model }),
     generate: makePlatformAiGenerate({ operatorId: auth.user.id, turnId: correlationId }),
-    ...(boundary ? { invoke: boundary.invoke } : {}),
+    ...(boundary ? { invoke: boundary.invoke, ...(boundary.tools ? { tools: boundary.tools } : {}) } : {}),
     model,
     reasoningModel: reasoning,
     now: () => new Date(),

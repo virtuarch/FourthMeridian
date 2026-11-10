@@ -47,6 +47,17 @@
  * AGGREGATE tools (the six existing ones) run the executor unchanged (tools/registry.ts
  * `run`); their result is returned as before. Steps 10–12 apply to RECORD tools; no
  * RECORD tool is registered in P2 (the boundary tests use a synthetic one).
+ *
+ * P3 — ROUTING (engine/router.ts, injected as `router`): the routed packs are per-turn state
+ * here. They start as `packs` (the pre-question routing: core packs only); `tools.route(q)`
+ * (called by core.ts once, with the SCRUBBED question, before any tool call) re-routes with
+ * the keyword rules; `tools.schemas(paramKeys)` is what each model call is offered — routed
+ * packs' tools callable in the LIVE scope, plus `more_tools` while a pack is expandable.
+ * `more_tools` is dispatched HERE like any tool: 1 offered (some pack expandable, the
+ * expansion bound not reached), 2 strict parse (pack ∈ the closed enum of expandable packs),
+ * the pack flag re-read, 3 a tool of the pack callable in the live scope, 4 the per-call
+ * recheck of those areas — then the pack joins the routed set. Any refusal is the same
+ * NOT_FOUND. Without a router (tests), `packs` is fixed and `more_tools` is UNKNOWN_TOOL.
  */
 
 import "server-only";
@@ -55,12 +66,13 @@ import type { PlatformArea } from "@prisma/client";
 import type { AuditActionType } from "@/lib/audit-actions";
 import {
   NOT_FOUND, composePlatformAiBindings,
-  type PlatformAiBinding, type PlatformAiToolInvoker, type PlatformAiTraceStep,
+  type PlatformAiBinding, type PlatformAiToolInvoker, type PlatformAiTraceStep, type PlatformAiTurnTools,
 } from "../core";
 import {
   RECORD_LIST_MAX, T2_FIELD_NAMES, validateRecordFields, validateRecordRunShape, validateRecordSchema,
   type ModelRecord, type RawRecord, type RecordFields, type RecordRunResult,
 } from "../evidence/record-envelope";
+import { MORE_TOOLS_NAME, toolCallableIn, type PlatformAiTurnRouter } from "../engine/router";
 import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack } from "../tools/contract";
 import { PLATFORM_AI_TOOL_REGISTRY, type LegacyToolContext, type PlatformAiTool } from "../tools/registry";
 import { createHandleTable } from "./handles";
@@ -104,8 +116,10 @@ export interface TurnBoundaryOptions {
   /** The turn's binding over ALL of `areas` (what core.ts was given) — used while no area has been removed. */
   readonly binding: PlatformAiBinding;
   readonly recheck: PlatformAiRecheck;
-  /** The router's packs for this turn (engine/router.ts routePlatformAiPacks). */
+  /** The router's packs for this turn (engine/router.ts routePlatformAiPacks) — with a `router`, the pre-question packs. */
   readonly packs: readonly ToolPack[];
+  /** P3 — the turn router (engine/router.ts platformAiTurnRouter): question routing, schemas, more_tools. */
+  readonly router?: PlatformAiTurnRouter;
   /** The pack's server flag, re-read on every call (engine/router.ts platformAiPackEnabled). */
   packEnabled(pack: ToolPack): boolean;
   /** P5 (authz/audit.ts). Absent ⇒ every customer-linkable tool is UNAVAILABLE (fail closed). */
@@ -123,6 +137,10 @@ export interface TurnBoundary {
   trace(): readonly BoundaryTraceStep[];
   /** The areas still in scope. */
   scopeAreas(): PlatformArea[];
+  /** P3 — the packs routed now (grows with more_tools). */
+  routedPacks(): ToolPack[];
+  /** P3 — handed to core.ts (`tools`) when a router is injected: question routing + the schemas each model call is offered. */
+  readonly tools?: PlatformAiTurnTools;
 }
 
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
@@ -135,6 +153,10 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   const handles = createHandleTable({ operatorId: opts.operatorId, correlationId: opts.correlationId });
   const denials = createDenialLog(opts.onDenial);
   const trace: BoundaryTraceStep[] = [];
+  // P3 — routing state, per turn (this closure only).
+  const router = opts.router;
+  let routed: ToolPack[] = [...opts.packs];
+  let routedByQuestion = false, expansions = 0, calls = 0;
 
   /** The binding over exactly these areas: the turn's own while nothing was removed, else recomposed from the surviving parts. */
   const bindingFor = (areas: readonly PlatformArea[]): PlatformAiBinding | null => {
@@ -145,22 +167,24 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   };
 
   const invoke: PlatformAiToolInvoker = async (name, rawArgs, c) => {
+    calls++;
+    if (router && name === MORE_TOOLS_NAME) return invokeMoreTools(rawArgs, c);
     const tool = registry.find((t) => t.name === name) ?? null;
-    const routed = !!tool && opts.packs.includes(tool.pack) && (tool.pack !== "memory" || !!c.memory);
+    const isRouted = !!tool && routed.includes(tool.pack) && (tool.pack !== "memory" || !!c.memory);
     const toolCode = tool ? tool.name : "unknown";
     const packCode = tool ? tool.pack : "none";
 
     const refuse = (reason: BoundaryDenialReason): unknown => {
       denials.emit({ tool: toolCode, pack: packCode, reason });
       // The executor's own trace codes: the tool's name only when the executor would have known it.
-      c.ev.trace.push({ tool: (routed ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      c.ev.trace.push({ tool: (isRouted ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
       trace.push({ tool: toolCode, pack: packCode, outcome: reason });
       return NOT_FOUND;
     };
 
     // 1. registered, routed, flag ON.
     if (!tool) return refuse("UNKNOWN_TOOL");
-    if (!routed) return refuse("PACK_NOT_ROUTED");
+    if (!isRouted) return refuse("PACK_NOT_ROUTED");
     let packOn = false;
     try { packOn = opts.packEnabled(tool.pack) === true; } catch { packOn = false; }
     if (!packOn) return refuse("PACK_DISABLED");
@@ -226,6 +250,42 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     return runRecordTool(tool, runArgs, ctx, surviving, csFresh, fresh);
   };
 
+  /**
+   * P3 — `more_tools` (engine/router.ts): steps 1–4 for the meta-tool, then the pack joins the
+   * routed set for the rest of the turn. Reads no data; one tool call (core.ts counts it).
+   */
+  async function invokeMoreTools(rawArgs: string, c: Parameters<PlatformAiToolInvoker>[2]): Promise<unknown> {
+    const refuse = (reason: BoundaryDenialReason): unknown => {
+      denials.emit({ tool: MORE_TOOLS_NAME, pack: "router", reason });
+      c.ev.trace.push({ tool: "unknown", outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: reason });
+      return NOT_FOUND;
+    };
+    // 1. offered: some pack is expandable now (flag ON, in scope, under both bounds).
+    const expandable = [...router!.expandable(routed, scope.areas(), expansions)];
+    if (expandable.length === 0) return refuse("PACK_NOT_ROUTED");
+    // 2. strict parse: the pack is one of exactly those (a closed enum).
+    const args = parseClosedArgs({ properties: { pack: { kind: "enum", values: expandable } } }, rawArgs);
+    if (!args) return refuse("ARGS_INVALID");
+    const pack = args.pack as ToolPack;
+    let packOn = false;
+    try { packOn = opts.packEnabled(pack) === true; } catch { packOn = false; }
+    if (!packOn) return refuse("PACK_DISABLED");
+    // 3. a tool of the pack callable in the live scope.
+    const packTools = registry.filter((t) => t.pack === pack);
+    const areas = scope.areas().filter((a) => packTools.some((t) => t.requires.areas.includes(a)));
+    if (!packTools.some((t) => toolCallableIn(t, scope.areas()))) return refuse("AREA_NOT_IN_SCOPE");
+    // 4. the per-call recheck of those areas (a refused area leaves the scope).
+    for (const a of areas) await scope.recheck(a);
+    const live = scope.areas();
+    const callable = packTools.filter((t) => toolCallableIn(t, live)).map((t) => t.name);
+    if (callable.length === 0) return refuse("RECHECK_REFUSED");
+    routed = [...routed, pack];
+    expansions++;
+    trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: "OK" });
+    return { added: pack, tools: callable };
+  }
+
   /** Steps 8–13 for a RECORD tool. Nothing of the reader's output leaves unless every step passed. */
   async function runRecordTool(tool: PlatformAiTool, runArgs: Record<string, unknown>, ctx: LegacyToolContext,
     areas: readonly PlatformArea[], csFresh: boolean, fresh: ReadonlyMap<PlatformArea, FreshGuard>): Promise<unknown> {
@@ -288,10 +348,25 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     return { status: run.status, asOf: run.asOf, records, truncated };
   }
 
+  const tools: PlatformAiTurnTools | undefined = router ? {
+    route(question) {
+      // Once, before any tool call (core.ts calls it right after scrubbing); later calls change nothing.
+      if (routedByQuestion || calls > 0) return;
+      routedByQuestion = true;
+      routed = [...router.route(question, scope.areas())];
+    },
+    schemas(paramKeys) {
+      const areas = scope.areas();
+      return router.schemas({ packs: routed, areas, paramKeys, expandable: router.expandable(routed, areas, expansions) });
+    },
+  } : undefined;
+
   return {
     invoke,
     trace: () => [...trace],
     scopeAreas: () => scope.areas(),
+    routedPacks: () => [...routed],
+    ...(tools ? { tools } : {}),
   };
 }
 

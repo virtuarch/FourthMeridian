@@ -31,7 +31,7 @@ import * as memoryStore from "@/lib/platform/intelligence/ai/memory/store";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { createTurnBoundary } from "@/lib/platform/intelligence/ai/authz/boundary";
 import { platformAiFreshRecheck } from "@/lib/platform/intelligence/ai/authz/recheck.server";
-import { platformAiPackEnabled, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
+import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -69,7 +69,9 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     areas: access.scope ? [{ scope: access.scope, binding: access.binding }] : [],
     binding: access.binding,
     recheck: platformAiFreshRecheck,
-    packs: routePlatformAiPacks({ memory: !!memory }),
+    // P3: core packs until the turn routes its scrubbed question (engine/router.ts); more_tools within the bounds.
+    packs: routePlatformAiPacks({ question: null, areas: access.scope ? [access.scope.area] : [], memory: !!memory }),
+    router: platformAiTurnRouter({ memory: !!memory }),
     packEnabled: (p) => platformAiPackEnabled(p),
     onDenial: (r) => console.warn(`[platform-ai] tool refused: tool=${r.tool} pack=${r.pack} reason=${r.reason} (${ROUTE_KEY})`),
   });
@@ -81,6 +83,7 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
     } : {}),
     generate: makePlatformAiGenerate({ operatorId, conversationId, turnId: correlationId }),
     invoke: boundary.invoke,
+    ...(boundary.tools ? { tools: boundary.tools } : {}),
     model, reasoningModel: reasoning, classify: classifyPlatformAiFailure,
     onUngrounded: (verdict, unresolved) => console.warn(`[platform-ai] answer replaced: verdict=${verdict} unresolved=${unresolved} (${ROUTE_KEY})`),
     onTrace: (line) => console.info(`[platform-ai] turn ${line} (${ROUTE_KEY})`),
