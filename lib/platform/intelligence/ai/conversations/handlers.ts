@@ -27,6 +27,11 @@
  *                authz/record-render.ts (AreaAccess.renderRecords: a fresh area check per
  *                render, revalidate, T2 only with a fresh CS tier + the audit row first);
  *                absent ⇒ "[no longer available]" (fail closed). Never the stored id.
+ *   P4b areas    a TURN binds the areas the operator holds NOW (deps.heldAccess, ./multi-area.ts):
+ *                the own area (step 6, unchanged) + every other held area behind ITS OWN fresh
+ *                guard; the boundary rechecks per tool call. An answer that read an area the
+ *                operator no longer holds renders "[no longer available]" whole (view, replay,
+ *                history) and its records are never rendered. Absent dep ⇒ the pre-P4b single area.
  */
 
 import type { PlatformArea } from "@prisma/client";
@@ -49,6 +54,7 @@ import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
 import type { ScopedArea } from "../authz/boundary";
 import { extractSubjects, storedSubjectText, type SubjectFlags, type SubjectIdentifier } from "../authz/subject";
+import { answerReadable, type TurnAreaPart } from "./multi-area";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -81,6 +87,16 @@ export interface AreaAccess {
    * check per area per call). Absent ⇒ every record segment renders "[no longer available]".
    */
   renderRecords?(segments: readonly StoredRecordSegment[]): Promise<ReadonlyMap<StoredRecordSegment, string>>;
+  /**
+   * P4b — the TURN's areas: `scope` first, then every other area the operator holds now, each
+   * from its own fresh guard (./multi-area.ts widenConversationAccess). Absent ⇒ [scope] only.
+   */
+  turnAreas?: readonly TurnAreaPart[];
+  /**
+   * P4b — the areas this viewer holds NOW (own + widened). A stored answer that read any other
+   * area is shown / replayed as "[no longer available]". Absent ⇒ no such filter (pre-P4b).
+   */
+  heldAreas?: ReadonlySet<PlatformArea>;
 }
 
 export interface ConversationStoreSeam {
@@ -147,6 +163,12 @@ const subjectFlagsOf = (deps: TurnRunDeps): SubjectFlags | undefined => { try { 
 export interface ConversationDeps {
   /** Step 6: a FRESH guard on `area` for THIS operator; null on any refusal (⇒ 404). */
   areaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null>;
+  /**
+   * P4b — widen the conversation's OWN access (already fresh) to every other area the operator
+   * holds, each behind its own fresh guard (area-access.ts conversationHeldAccess). Absent ⇒ the
+   * pre-P4b single-area access; a throw ⇒ the own area only (fail closed).
+   */
+  heldAccess?(own: AreaAccess, operatorId: string): Promise<AreaAccess>;
   store: ConversationStoreSeam;
   now(): Date;
 }
@@ -219,7 +241,8 @@ export type RenderedRecords = ReadonlyMap<StoredRecordSegment, string>;
  * segment ⇒ no call, no read). A throw or no renderer ⇒ an empty map (each renders gone).
  */
 export async function renderMessageRecords(messages: readonly MessageRecord[], access: AreaAccess | null): Promise<RenderedRecords> {
-  const segs = messages.flatMap((m) => (m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string"
+  // P4b: an answer that read an area the viewer no longer holds is never rendered (no recheck, no audit, no T2).
+  const segs = messages.flatMap((m) => (m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" && answerReadable(m.evidenceRefs, m.content, access?.heldAreas)
     ? m.content.segments.filter((x): x is StoredRecordSegment => x.kind === "record") : []));
   if (segs.length === 0 || !access?.renderRecords) return new Map();
   try { return await access.renderRecords(segs); } catch { return new Map(); }
@@ -240,7 +263,16 @@ export function renderStoredAnswer(a: StoredAnswer, access: AreaAccess | null, r
 }
 
 export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: boolean, records: RenderedRecords = new Map()): Record<string, unknown> {
-  const answer = m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" ? m.content : null;
+  const stored = m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" ? m.content : null;
+  // P4b: an answer that read an area the viewer no longer holds ⇒ the one marker, nothing of it (no figure, citation or note).
+  const lost = stored !== null && !answerReadable(m.evidenceRefs, stored, access?.heldAreas);
+  const answer = lost ? null : stored;
+  if (lost) {
+    return {
+      id: m.id, role: m.role, status: m.status, createdAt: m.createdAt.toISOString(), completedAt: m.completedAt ? m.completedAt.toISOString() : null,
+      content: [{ kind: "text", text: RECORD_GONE_TEXT }], citations: [], notes: [], failureCode: m.failureCode, unavailable: m.unreadable, stale: stale && m.role === "ASSISTANT",
+    };
+  }
   return {
     id: m.id,
     role: m.role,
@@ -277,6 +309,16 @@ async function pairResponse(status: number, conversation: ConversationRecord | n
       ...(memoryProposal && pair.assistant.status === "COMPLETE" ? { memoryProposal } : {}),
     },
   };
+}
+
+/**
+ * P4b — the access for a TURN and for showing its answers: the own access widened to every other
+ * held area (deps.heldAccess). Absent ⇒ `own` (pre-P4b). A throw ⇒ the own area only (fail closed:
+ * the turn binds one area and any answer that read another renders "[no longer available]").
+ */
+async function heldAccessFor(deps: Pick<ConversationDeps, "heldAccess">, own: AreaAccess, operatorId: string): Promise<AreaAccess> {
+  if (!deps.heldAccess) return own;
+  try { return await deps.heldAccess(own, operatorId); } catch { return { ...own, heldAreas: new Set(own.area ? [own.area] : []) }; }
 }
 
 /** Seconds to the next UTC midnight (the daily cap's Retry-After, as v0). */
@@ -415,7 +457,7 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
     if (!access) return notFound();
     const pair = await deps.store.findTurnPair(v.operatorId, prior.conversation.id, parsed.clientRequestId);
     if (!pair) return notFound();
-    return pairResponse(200, prior.conversation, pair, access);
+    return pairResponse(200, prior.conversation, pair, await heldAccessFor(deps, access, v.operatorId));
   }
   const refused = await admit(v, deps);
   if (refused) return refused;
@@ -437,11 +479,13 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
         // A concurrent create with the same key won: answer as a replay (no turn here).
         const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
         if (!a) return notFound();
-        return pairResponse(200, out.conversation, out.pair, a);
+        return pairResponse(200, out.conversation, out.pair, await heldAccessFor(deps, a, v.operatorId));
       }
       case "CREATED": {
-        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps, subjects);
-        return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
+        // P4b: the turn binds the areas the operator holds NOW (own + each other area's own fresh guard).
+        const turnAccess = await heldAccessFor(deps, access, v.operatorId);
+        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
+        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal);
       }
     }
   } finally {
@@ -478,7 +522,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   const parsed = parseTurnBody(body);
   if (!parsed) return VALIDATION();
   const prior = await deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId);
-  if (prior) return pairResponse(200, null, prior, access);
+  if (prior) return pairResponse(200, null, prior, await heldAccessFor(deps, access, v.operatorId));
   const refused = await admit(v, deps);
   if (refused) return refused;
   const cost = await holdSpend(v, deps);
@@ -494,10 +538,12 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
       case "FULL":
         return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
       case "REPLAY":
-        return pairResponse(200, null, out.pair, access);
+        return pairResponse(200, null, out.pair, await heldAccessFor(deps, access, v.operatorId));
       case "APPENDED": {
-        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps, subjects);
-        return pairResponse(200, null, r.pair, access, r.memoryProposal);
+        // P4b: the turn binds the areas the operator holds NOW — fresh guards at turn time; a lost area is simply absent.
+        const turnAccess = await heldAccessFor(deps, access, v.operatorId);
+        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
+        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal);
       }
     }
   } finally {
@@ -514,12 +560,14 @@ export async function handleGetConversation(v: Viewer, id: string, deps: Convers
   if (!access) return notFound();
   const read = await deps.store.readConversation(v.operatorId, id, deps.now());
   if (!read) return notFound();
-  const records = await renderMessageRecords(read.messages, access);
+  // P4b: shown for the areas held NOW (an answer that read a lost area ⇒ "[no longer available]").
+  const view = await heldAccessFor(deps, access, v.operatorId);
+  const records = await renderMessageRecords(read.messages, view);
   return {
     status: 200,
     body: {
       conversation: { ...conversationDto(read.conversation), messageCount: read.messages.length, full: isFull(read.messages.length) },
-      messages: read.messages.map((m) => messageDto(m, access, true, records)),
+      messages: read.messages.map((m) => messageDto(m, view, true, records)),
     },
   };
 }

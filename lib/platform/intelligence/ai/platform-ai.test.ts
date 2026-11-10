@@ -1944,9 +1944,12 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
     && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route)
     && /const otherScope = scopeFromGuard\(otherAuth, other, auth\.user\.id\);\s*if \(!otherScope\) continue;/.test(route) && /bindArea\(otherScope,/.test(route) && /composePlatformAiBindings\(/.test(route));
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
-  check("conversations stay single-area (S2 #483 B1(b)): the access helper binds only the conversation's own area — no composition",
-    /if \(err\) return null;\s*[^]*?const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(access)
-    && !/composePlatformAiBindings|platformAiAreasFor/.test(access));
+  // P4b (design v2 §8.3): a conversation TURN binds every held area; the own-area gate is unchanged and composition is pure (conversations/multi-area.ts).
+  const ownGate = access.slice(access.indexOf("export async function conversationAreaAccess"), access.indexOf("async function heldAreaAccess"));
+  check("P4b: the conversation's own-area gate binds only its own area (no composition); other held areas are each fresh-guarded on their own and composed by multi-area.ts",
+    /if \(err\) return null;\s*[^]*?const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(ownGate)
+    && !/composePlatformAiBindings|platformAiAreasFor/.test(ownGate) && !/composePlatformAiBindings/.test(access)
+    && /composePlatformAiBindings\(/.test(code(src("lib/platform/intelligence/ai/conversations/multi-area.ts"))));
 
   // Prompt: the briefing protocol, in the owner's order.
   const order = ["(1) overall health", "(2) customer-impacting failures", "(3) incidents", "(4) sync and connection problems", "(5) job and provider reliability", "(6) costs or unusual activity, ONLY if", "(7) at most three recommended next actions"];
