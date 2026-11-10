@@ -126,13 +126,15 @@ console.log("E. Display only — no authority, no persistence, no fetch; a serve
   const header = read("components", "ui", "GlobalHeader.tsx");
   check("GlobalHeader mounts the switch ONCE in its centre slot, fed by the prop",
     (header.match(/<PlatformContextSwitch\b/g) ?? []).length === 1 &&
-      /<PlatformContextSwitch hasPlatformGrants=\{hasPlatformGrants\} \/>/.test(header));
+      /<PlatformContextSwitch hasPlatformGrants=\{hasPlatformGrants\} operatorTotpPending=\{operatorTotpPending\} \/>/.test(header));
+  // Owner D4 — the enrolment-pending flag rides the same server-prop path and defaults to false.
+  check("the header's operatorTotpPending defaults to false", /operatorTotpPending = false/.test(header));
   check("GlobalHeader geometry untouched (h-12, border-b)", /flex h-12 items-center/.test(header) && /border-b/.test(header));
   check("the header's flag defaults to false (every other mount unchanged)", /hasPlatformGrants = false/.test(header));
 
   const chrome = read("components", "ui", "DashboardChrome.tsx");
   check("DashboardChrome passes the flag through to the header (no fetch of its own)",
-    /<GlobalHeader hasPlatformGrants=\{hasPlatformGrants\} \/>/.test(chrome) && !/fetch\(/.test(code(chrome)));
+    /<GlobalHeader hasPlatformGrants=\{hasPlatformGrants\} operatorTotpPending=\{operatorTotpPending\} \/>/.test(chrome) && !/fetch\(/.test(code(chrome)));
 
   const layout = read("app", "(shell)", "dashboard", "layout.tsx");
   check("the layout computes the flag server-side through the one read site (decision N2)",

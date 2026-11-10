@@ -28,6 +28,7 @@ import { ChangeEmailForm } from "@/components/security/ChangeEmailForm";
 import { DeactivateAccountCard } from "@/components/security/DeactivateAccountCard";
 import { DeleteAccountCard } from "@/components/security/DeleteAccountCard";
 import { TotpSection } from "@/components/dashboard/TotpSection";
+import { twoFactorAudience } from "@/lib/auth/operator-2fa-prompt";
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -47,7 +48,8 @@ function RevealButton({ shown, onToggle }: { shown: boolean; onToggle: () => voi
   );
 }
 
-export function SecuritySettings({ email }: { email: string }) {
+/** `operator` — a SERVER fact (lib/settings/loaders getSecurity): the 2FA widget's wording + return path. */
+export function SecuritySettings({ email, operator = false }: { email: string; operator?: boolean }) {
   const { toast } = useToast();
   // ── Password change (validation + API unchanged) ────────────────────────────
   const [currentPw, setCurrentPw] = useState("");
@@ -150,7 +152,7 @@ export function SecuritySettings({ email }: { email: string }) {
       {/* Two-factor */}
       <SettingsSection icon={ShieldCheck} title="Two-Factor Authentication">
         <Suspense fallback={<div className="h-16 rounded-xl animate-pulse" style={{ background: "var(--surface-inset)" }} />}>
-          <TotpSection />
+          <TotpSection audience={twoFactorAudience(operator)} />
         </Suspense>
       </SettingsSection>
 
