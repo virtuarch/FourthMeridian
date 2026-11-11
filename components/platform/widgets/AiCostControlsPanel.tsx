@@ -55,6 +55,8 @@ import {
   firingText, lastUpdatedText, modelView, originChip, patchBody, resolveDraft,
   restoreDefaultsChanges, stateWord, usdText, valueText, validateThresholdInput, type AnyControlView, type CardKey, type ControlDraft,
 } from "./ai-cost-controls-view";
+import { BLANKET_TITLE, READ_ONLY_CARD_TITLE, READ_ONLY_EDITED_BY, capValueText, fitsText, sourceText } from "@/components/admin/platform-ai-caps-view";
+import type { PlatformAiCapsSummary } from "@/lib/platform/ai/cost-controls.types";
 
 // ── Reading one control ───────────────────────────────────────────────────────
 
@@ -344,6 +346,43 @@ function KillSwitchCard({ model, editable, onModel }: { model: AiCostControlsRea
   );
 }
 
+/**
+ * PLATFORM AI CAPS D5 PR5 — "Platform AI (operators)": the two blanket Platform AI
+ * caps and their sources, READ-ONLY for every PLATFORM_OPS READ holder. No button,
+ * no input, no network call: the values arrive appended to this panel's own read
+ * model, and the caps are edited only by System Admins in Admin → Platform AI caps.
+ * Never the per-operator list.
+ */
+export function PlatformAiOperatorsCard({ caps }: { caps: PlatformAiCapsSummary | null | undefined }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-3 rounded-2xl border border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] p-5 sm:p-6" aria-label={READ_ONLY_CARD_TITLE}>
+      <div className="flex flex-col items-start gap-2">
+        <h3 className="text-sm font-semibold leading-6 text-[var(--text-primary)]">{READ_ONLY_CARD_TITLE}</h3>
+        <ToneBadge word="Read only" tone="muted" />
+      </div>
+      {caps ? (
+        <dl className="flex flex-col gap-3">
+          {(["perOperator", "platform"] as const).map((k) => {
+            const c = caps[k];
+            return (
+              <div key={k} className="flex flex-col gap-0.5">
+                <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
+                  <dt className="text-[var(--text-muted)]">{BLANKET_TITLE[k === "perOperator" ? "per_operator" : "platform"]}</dt>
+                  <dd className="tabular-nums text-[var(--text-primary)]">{capValueText(c)}{c.usd !== null ? ` · ${sourceText(c)}` : ""}</dd>
+                </div>
+                <p className="text-[11px] text-[var(--text-secondary)]">{fitsText(c.fitsTurns, c)}</p>
+              </div>
+            );
+          })}
+        </dl>
+      ) : (
+        <p className="text-xs text-[var(--text-secondary)]">Platform AI cap values are not available right now.</p>
+      )}
+      <p className="text-xs leading-5 text-[var(--text-muted)]">Estimated daily spend caps for Platform AI. {READ_ONLY_EDITED_BY}</p>
+    </section>
+  );
+}
+
 // ── The panel ─────────────────────────────────────────────────────────────────
 
 /** Prop-driven and fetch-free: the host passes the shared read and the publish side. `editable` disables affordances without granting authority. */
@@ -370,6 +409,7 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
             <AllowanceCard model={data} editable={editable} onModel={onModel} />
             <AlertCard card="userAlert" model={data} editable={editable} onModel={onModel} />
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />
+            <PlatformAiOperatorsCard caps={data.platformAiCaps} />
           </div>
           <KillSwitchCard model={data} editable={editable} onModel={onModel} />
         </>
