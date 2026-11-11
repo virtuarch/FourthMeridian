@@ -258,10 +258,10 @@ at **read** time, so they self-heal as accounts are linked or reclassified.
 - **Consumers:** `classifyLiquidity` (venue/payment-app/cash evidence resolves an otherwise-UNRESOLVED transfer) and `groupCashFlowContext` (the "moved, not spent" labels).
 
 ### RelationshipResolver
-- **Purpose:** read-time resolution of transaction relationships — matching the two legs of a transfer so `classifyLiquidity` can resolve a counterparty tier (turning UNRESOLVED into Internal transfer / Asset deployment / Asset liquidation).
-- **Authority:** `lib/transactions/RelationshipResolver.ts` `matchTransferCandidate`. Pure, deterministic, zero-import; relationships are NOT persisted (recomputed at read time).
-- **Outputs:** a target row + caller-supplied candidate rows → structured relationship facts (ids/roles), never prose.
-- **Must NOT be used for:** fuzzy matching or persistence. Deterministic/low-risk only (exact provider match, exact fingerprint, owned-account transfer). Ownership is a resolved RELATIONSHIP fact fed into disposition — **"ownership is not evidence."**
+- **Purpose:** read-time pairing of the two legs of an owned transfer, so `classifyLiquidity` can resolve a counterparty tier (Internal transfer / Asset deployment / Asset liquidation) instead of UNRESOLVED.
+- **Authority:** `lib/transactions/RelationshipResolver.ts` `matchTransferCandidate` (per row), delegating to the transfer resolution ladder in `lib/transactions/transfer-maturation.ts`; read boundary `resolveTransferAssessments` (`transfer-resolution.ts`). Relationships are recomputed at read time, not persisted.
+- **Contract:** the ladder, admission, pigeonhole rule, external leaves, unresolved reasons and privacy rules are specified once in [systems/transactions.md § Transfer resolution authority](../systems/transactions.md#transfer-resolution-authority); why matching stays local (no global/greedy matching, wider window, scores or chains) is [ADR-009](../decisions/ADR-009-transfer-resolution-local-matching.md).
+- **Must NOT be used for:** fuzzy or probabilistic matching. Ownership is a resolved RELATIONSHIP fact fed into disposition — **"ownership is not evidence."**
 
 ---
 
