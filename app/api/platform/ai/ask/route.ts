@@ -42,7 +42,9 @@
  * AiInvocation ledger keeps metadata only (surface platform_ai, overhead). One
  * log line per answered turn carries the METADATA-ONLY tool trace (traceLine:
  * tool names, outcome codes, server-returned registry ids, placeholder counts —
- * never text, never a value).
+ * never text, never a value). S2 09hu G1: the 200 body also carries `toolTrace`
+ * (tools/tool-trace.ts — tool / pack / tier / outcome / calls per tool, never an
+ * argument, result, ref or id; the same for every operator; nothing stored).
  */
 
 import { randomUUID } from "node:crypto";
@@ -63,6 +65,7 @@ import { resolveSubjects } from "@/lib/platform/intelligence/ai/authz/subject";
 import { isSubjectResolutionEnabled, platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subject.server";
 import { platformAiPickerGuard } from "@/lib/platform/intelligence/ai/authz/people.server";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
+import { platformAiToolTrace } from "@/lib/platform/intelligence/ai/tools/tool-trace";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
@@ -174,6 +177,8 @@ export async function POST(req: NextRequest) {
     countUngrounded: (verdict, unresolved) => console.warn(`[platform-ai] answer replaced: verdict=${verdict} unresolved=${unresolved} (${PLATFORM_AI_ROUTE_KEY})`),
     // Metadata only (tool codes + registry ids): what the turn read, for acceptance / incident review.
     traceTurn: (line) => console.info(`[platform-ai] turn ${line} (${PLATFORM_AI_ROUTE_KEY})`),
+    // S2 09hu G1 — the response's metadata-only tool trace (tool / pack / tier / outcome / calls), the same for every operator.
+    toolTrace: platformAiToolTrace,
   });
   return NextResponse.json(res.body, { status: res.status, headers: { ...NO_STORE, ...(res.headers ?? {}) } });
 }

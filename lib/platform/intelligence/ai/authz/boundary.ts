@@ -184,6 +184,13 @@ export interface TurnBoundary {
   adoptRecord(subject: { rk: string; rid: string }, areas: readonly PlatformArea[]): Promise<string | null>;
 }
 
+/**
+ * S2 09hu G1 — the metadata `refused` flag for a denial: every reason except UNKNOWN_TOOL (no such
+ * tool ⇒ "not_found") and ARGS_INVALID (already the INVALID_ARGS outcome). Never the reason itself.
+ */
+const refusedFlag = (reason: BoundaryDenialReason): { refused?: true } =>
+  (reason === "UNKNOWN_TOOL" || reason === "ARGS_INVALID" ? {} : { refused: true });
+
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
 
 export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
@@ -224,7 +231,8 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     const refuse = (reason: BoundaryDenialReason): unknown => {
       denials.emit({ tool: toolCode, pack: packCode, reason });
       // The executor's own trace codes: the tool's name only when the executor would have known it.
-      c.ev.trace.push({ tool: (isRouted ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      // S2 09hu G1: a scope / pack / tier / handle refusal is flagged `refused` (metadata only; the model sees the same NOT_FOUND).
+      c.ev.trace.push({ tool: (isRouted ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [], ...refusedFlag(reason) });
       trace.push({ tool: toolCode, pack: packCode, outcome: reason });
       return NOT_FOUND;
     };
@@ -308,7 +316,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   async function invokeMoreTools(rawArgs: string, c: Parameters<PlatformAiToolInvoker>[2]): Promise<unknown> {
     const refuse = (reason: BoundaryDenialReason): unknown => {
       denials.emit({ tool: MORE_TOOLS_NAME, pack: "router", reason });
-      c.ev.trace.push({ tool: "unknown", outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      c.ev.trace.push({ tool: "unknown", outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [], ...refusedFlag(reason) });
       trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: reason });
       return NOT_FOUND;
     };
@@ -334,6 +342,8 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     routed = [...routed, pack];
     expansions++;
     trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: "OK" });
+    // S2 09hu G1: the meta-tool's own metadata step (no ref, no argument), so the response trace counts it.
+    c.ev.trace.push({ tool: (MORE_TOOLS_NAME as string) as PlatformAiTraceStep["tool"], outcome: "OK", refs: [] });
     return { added: pack, tools: callable };
   }
 

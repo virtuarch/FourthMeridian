@@ -124,7 +124,7 @@ async function main() {
       const body = r.body as Record<string, unknown>;
       for (const q of requests) corpus.push({ sink: "provider_request", text: q });
       corpus.push({ sink: "response_body", text: JSON.stringify(body) });
-      corpus.push({ sink: "response_evidence", text: JSON.stringify({ citations: body.citations, trace: body.trace, notes: body.notes, claims: body.claims, grounding: body.grounding }) });
+      corpus.push({ sink: "response_evidence", text: JSON.stringify({ citations: body.citations, trace: body.trace, toolTrace: body.toolTrace, notes: body.notes, claims: body.claims, grounding: body.grounding }) });
       for (const x of toolResults) { const st = (x as { status?: unknown } | null)?.status; if (typeof st === "string") envelopeStatuses.set(st, (envelopeStatuses.get(st) ?? 0) + 1); }
       obs.push({ status: r.status, body, requests, toolResults, returnedHrefs: hrefsOf(toolResults) });
     }
