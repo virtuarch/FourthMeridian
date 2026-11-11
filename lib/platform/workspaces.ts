@@ -108,11 +108,13 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
 
 // ── Composition: which workspaces each area exposes, and their section-widgets ───
 
-/** The variants a composed section may render in (PLATFORM OPS PHASE 1 UX). Only
- *  `ops_policies` takes one today: its widget renders a slice of itself per view
- *  (components/platform/widgets/OpsPoliciesWidget.tsx `variant`). Absent ⇒ the
- *  widget's full, unchanged render. */
-export type PlatformSectionVariant = "groups" | "defaults" | "emergency";
+/** The variants a composed section may render in (PLATFORM OPS PHASE 1 UX).
+ *  `ops_policies` renders a slice of itself per view
+ *  (components/platform/widgets/OpsPoliciesWidget.tsx `variant`); `cs_customers`
+ *  renders its audited profile panel ALONE as "customer-profile" when the CS
+ *  incidents lead hosts it (incident drawer PR-A). Absent ⇒ the widget's full,
+ *  unchanged render. */
+export type PlatformSectionVariant = "groups" | "defaults" | "emergency" | "customer-profile";
 
 /** One entry of a view: a bare section key, or a key rendered in a variant. */
 export type PlatformViewSection = string | { readonly key: string; readonly variant: PlatformSectionVariant };
@@ -142,7 +144,17 @@ export interface PlatformWorkspaceView {
    *  the workspace's `sections` union, so reachability and parity guards read
    *  hosted keys as composed (pinned in workspaces.test.ts). */
   readonly hosted?: readonly string[];
+  /** Incident drawer PR-A — keys a lead may render ONLY as a panel, in exactly
+   *  the named variant (a detail panel: no list, no URL params, no tiles). NOT
+   *  composed: a panel renders none of the widget's sections, params or tiles,
+   *  so it adds none to the view's `sections`, navigation params or metrics. The
+   *  widget still needs its enabled DB row and keeps its own gating; the server
+   *  route decides every read. */
+  readonly hostedPanels?: Readonly<Record<string, PlatformSectionVariant>>;
 }
+
+/** The CS incidents views host the Customers widget's audited profile panel only. */
+const CS_PROFILE_PANEL: Readonly<Record<string, PlatformSectionVariant>> = { cs_customers: "customer-profile" };
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
 export type PlatformViewLead =
@@ -424,9 +436,11 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       workspaceId: "platform-incidents",
       views: [
         { id: "summary", label: "Summary", sections: ["cs_sync_issues"] },
-        { id: "open", label: "Broken now", lead: "incidents-cs", sections: [] },
-        { id: "verify", label: "Needs verification", lead: "incidents-cs", sections: [] },
-        { id: "history", label: "History", lead: "incidents-cs", sections: [] },
+        // Incident drawer PR-A — the drawer's CS-only "Open customer profile" opens the audited
+        // profile panel in-page: cs_customers as a PANEL ONLY ("customer-profile"), not composed.
+        { id: "open", label: "Broken now", lead: "incidents-cs", sections: [], hostedPanels: CS_PROFILE_PANEL },
+        { id: "verify", label: "Needs verification", lead: "incidents-cs", sections: [], hostedPanels: CS_PROFILE_PANEL },
+        { id: "history", label: "History", lead: "incidents-cs", sections: [], hostedPanels: CS_PROFILE_PANEL },
       ],
     }),
     // COMMUNICATIONS CENTER (owner-approved, 2026-10-31) — four views, each a

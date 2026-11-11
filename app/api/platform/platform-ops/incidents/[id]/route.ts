@@ -51,7 +51,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const navToken = metricAccessFor(auth);
     return navToken
       ? incidentNavigationLinks(
-        { verdict: inv.verdict, itemCount: inv.affected.itemCount, recurrences: inv.recurrences },
+        { verdict: inv.verdict, itemCount: inv.affected.itemCount, recurrences: inv.recurrences, component: inv.component ?? null },
         (target, params) => resolveNavigationTarget("PLATFORM_OPS", navToken, target, params, { now }),
       )
       : [];

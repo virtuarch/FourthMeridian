@@ -97,6 +97,7 @@ const detail = (r: IncidentRowDTO, tier: "ops" | "cs"): IncidentDetailDTO => ({
   summary: { displayStatus: "active", customerActionRequired: false, remedy: "investigate", firstDetectedAt: r.firstSeenAt, lastObservedAt: r.lastSeenAt, resolvedAt: r.resolvedAt, ongoing: true },
   diagnosis: { providerErrorCode: null, providerErrorSource: null, providerErrorUnrecognised: false, attempts: null,
     recurrence: { generation: r.generation, previousIncidentId: null, earlierEpisodes: 0, truncated: false, lastRecoveredAt: null } },
+  component: null,
   checkedAt: "2026-11-03T12:00:00.000Z",
 });
 
@@ -127,7 +128,8 @@ console.log("\n4. Ops renders no identity; CS does");
   const csRow = row({ subjectUserId: "u_cust_0000000001" });
   const csHtml = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(csRow), tier: "cs" }, onSelect: () => {}, onPage: () => {} }));
   const csDetail = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: detail(csRow, "cs"), canWrite: true, onSelect: () => {}, onRecover: () => {} }));
-  check("CS list + detail name the attributed customer (control)", csHtml.includes("u_cust_0000000001") && csDetail.includes("Customer u_cust_0000000001") && csDetail.includes("Refresh all for this customer"));
+  check("CS list names the attributed customer; the CS detail names them by PRIV-ref only, never the raw id (control)",
+    csHtml.includes("u_cust_0000000001") && csDetail.includes("data-incident-customer-ref") && !csDetail.includes("u_cust_0000000001") && csDetail.includes("Refresh all for this customer"));
   const empty = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(row()), items: [], total: 30, page: 3 }, onSelect: () => {}, onPage: () => {} }));
   check("a page past the end says so and keeps the pager", empty.includes("No incidents on this page.") && empty.includes("data-pager"));
 }

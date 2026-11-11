@@ -49,6 +49,7 @@ import { RefreshCw, Loader2, ShieldCheck, Layers, Search, ChevronRight } from "l
 import { Block, Surface } from "@/components/atlas/Surface";
 import { UtcStamp, WidgetMessage, fmtUtc, timeAgo, type PlatformSection } from "../widget-kit";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
+import type { PlatformSectionVariant } from "@/lib/platform/workspaces";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
 import type { CustomerDetailResponse } from "@/app/api/platform/customer-success/customers/[userId]/route";
@@ -106,9 +107,18 @@ function presenceText(c: { presence: string; presenceLabel: string; lastActive: 
 export const CS_READ_ONLY_LINE =
   "Changing policy, the AI allowance or cohorts, and Refresh all, need WRITE access to Customer Success.";
 
-export function CsCustomersWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+export function CsCustomersWidget({ section, access, variant }: { section: PlatformSection; access?: SpaceMountAccess; variant?: PlatformSectionVariant }) {
   // UI-001 — descriptive only (the server gate decides); absent ⇒ READ (fail-safe).
   const canWrite = access?.canWrite === true;
+  /**
+   * Incident drawer PR-A — the "customer-profile" variant renders the audited
+   * profile panel ONLY: no list, no list read, no `?attention=` URL handling.
+   * It opens on cs-open-customer.ts's in-page event; every open is a fresh
+   * read of customers/[userId] (CUSTOMER_SUCCESS READ, CUSTOMER_PROFILE_VIEWED).
+   */
+  const profileOnly = variant === "customer-profile";
+  /** Bumped on every in-page open request, so re-opening the same customer re-reads (and re-audits). */
+  const [openSeq, setOpenSeq] = useState(0);
   const spaceUrl = useSpaceUrl();
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [search, setSearch] = useState("");
@@ -188,10 +198,11 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     await loadList("", null);
   }, [loadList, spaceUrl]);
   useEffect(() => {
+    if (profileOnly) return;
     let alive = true;
     (async () => { if (alive) await openFromUrl(() => alive); })();
     return () => { alive = false; };
-  }, [openFromUrl]);
+  }, [openFromUrl, profileOnly]);
   /** THE one filter setter: state, the URL mirror (REPLACE — a refinement, never a history step), the read. */
   const applyAttention = useCallback((f: AttentionFilter | null, q: string) => {
     setAttention(f); setShowAll(false); setUrlNotice(null);
@@ -199,7 +210,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     void loadList(q, f);
   }, [loadList, spaceUrl]);
   // Back/Forward into an entry with another `?attention=` — rebuild from the URL (the commit then finds it in sync).
-  useEffect(() => spaceUrl.subscribe(() => { void openFromUrl(); }), [openFromUrl, spaceUrl]);
+  useEffect(() => (profileOnly ? undefined : spaceUrl.subscribe(() => { void openFromUrl(); })), [openFromUrl, spaceUrl, profileOnly]);
   // PB-4 — the dashboard's "Who needs help, and why" rows only SET the filter (search cleared,
   // so the list's total is the count the operator clicked).
   useEffect(() => {
@@ -215,7 +226,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   useEffect(() => {
     if (!selectedId) return;
     let alive = true; (async () => { if (alive) await loadDetail(selectedId); })(); return () => { alive = false; };
-  }, [selectedId, loadDetail]);
+  }, [selectedId, openSeq, loadDetail]);
 
   /** Selection is the one place the detail state changes hands (no setState in an effect). */
   const select = (id: string | null) => { setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote(""); };
@@ -225,7 +236,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     const onOpen = (e: Event) => {
       const id = openCustomerIdOf(e);
       if (!id) return;
-      setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote("");
+      setSelectedId(id); setOpenSeq((n) => n + 1); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote("");
     };
     window.addEventListener(CS_OPEN_CUSTOMER_EVENT, onOpen);
     return () => window.removeEventListener(CS_OPEN_CUSTOMER_EVENT, onOpen);
@@ -252,7 +263,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
       }
       onDone?.(body);
       if (selectedId) await loadDetail(selectedId);
-      await loadList(search, attention);
+      if (!profileOnly) await loadList(search, attention);
     } catch (e) { setActionError(e instanceof Error ? e.message : "Action failed"); }
     finally { setActing(null); }
   }
@@ -283,105 +294,9 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const toggleActive = () => detail?.actions.deactivate && reason && run("active", detail.actions.deactivate.url,
     json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason }));
 
-  return (
-    <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
-      <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
-      {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search, attention); }}>
-        <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
-          <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
-          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
-            className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
-        </label>
-        <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
-        {/* PB-4 — the "Needs help" filter; the reasons are named by the server (the same ones the dashboard counts). */}
-        <select value={attention ?? ""} onChange={(e) => applyAttention(e.target.value === "" ? null : (e.target.value as AttentionFilter), search)}
-          aria-label="Needs help filter" data-attention-filter
-          className="min-h-11 min-w-0 max-w-full rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8" style={{ borderColor: "var(--border-hairline)" }}>
-          <option value="">All accounts</option>
-          <option value="any">Needs help — any reason</option>
-          {(list?.attentionReasons ?? []).map((r) => <option key={r.key} value={r.key}>{`Needs help — ${r.label}`}</option>)}
-        </select>
-        {/* Its own line below sm (it never squeezes the search field or widens the page). */}
-        {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
-      </form>
-
-      {urlNotice && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-attention-notice>{urlNotice}</p>}
-      {attention && (
-        <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-secondary)]" data-attention-active>
-          <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}${list?.attentionFloor ? " · at least these (read cap reached)" : ""}`}</span>
-          <button type="button" onClick={() => applyAttention(null, search)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
-        </p>
-      )}
-      {/* PRIV-ref — a pasted reference that resolved to nothing says so (and whether the scan was capped); never a silent empty list. */}
-      {!loading && list?.refSearch?.note && <p className="text-[11px] text-[var(--text-secondary)]" role="status" data-ref-search-note>{list.refSearch.note}</p>}
-      {!loading && list?.refSearch && list.refSearch.matches > 1 && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-ref-search-collision>{`${list.refSearch.matches} accounts share this reference — check each`}</p>}
-      {loading && <WidgetMessage loading />}
-      {error && <WidgetMessage error={error} />}
-      {!loading && !error && list && (
-        <>
-          {list.customers.length === 0 ? <WidgetMessage empty={attention ? "No one needs help for this reason." : "No customers match."} /> : (
-            <>
-            <table className="w-full table-fixed text-xs max-lg:hidden" aria-label="Customers">
-              <thead className="border-b border-[var(--border-hairline)]">
-                <tr>
-                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-[30%]">Customer</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Onboarding</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Policy</th>
-                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-24">Connections</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-28">Presence</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-8"><span className="sr-only">Open</span></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border-hairline)]">
-                {list.customers.map((c) => (
-                  <tr key={c.id} onClick={() => select(c.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
-                    <td className="px-2 py-2.5 align-middle">
-                      <button type="button" onClick={(e) => { e.stopPropagation(); select(c.id); }} aria-haspopup="dialog" className="block max-w-full truncate text-left font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{operatorDisplayName(c)}</button>
-                      <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
-                      </span>
-                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
-                    </td>
-                    <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
-                    <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
-                      <span className="block truncate" title={c.policyGroup}>{policyGroupName(c.policyGroup)}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
-                      <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
-                    </td>
-                    <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
-                    <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : presenceText(c)}</td>
-                    <td className="px-2 py-2.5 align-middle text-[var(--text-faint)]"><ChevronRight size={12} aria-hidden /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {/* < lg — a clean two-line row: who, where they are, when last active.
-                Policy, cohorts and usage live in the customer's profile (tap). */}
-            <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Customers">
-              {list.customers.slice(0, showAll ? undefined : MOBILE_ROWS).map((c) => (
-                <li key={c.id}>
-                  <button type="button" onClick={() => select(c.id)} aria-haspopup="dialog"
-                    className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate font-medium text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
-                      <span className="truncate text-[11px] text-[var(--text-muted)]">
-                        {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
-                      </span>
-                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
-                    </span>
-                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : presenceText(c)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {list.customers.length > MOBILE_ROWS && (
-              <button type="button" onClick={() => setShowAll((v) => !v)} className="inline-flex min-h-11 items-center self-start text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:hidden">
-                {showAll ? "Show fewer" : `Show all ${list.customers.length}`}
-              </button>
-            )}
-            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{ROLLUP_NOTE}</p>
-            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{PRESENCE_EXPLANATION}</p>
-            </>
-          )}
-        </>
-      )}
-
+  // The audited profile panel. The incidents drawer's CS-only "Open customer profile" hosts this widget in the
+  // "customer-profile" variant: the panel ALONE (no list, no list read, no URL), opened by cs-open-customer.ts.
+  const profilePanel = (
       <RightPanel open={selectedId != null} dirty={dirty} onClose={() => select(null)} ariaLabel="Customer detail">
         {selectedId && (
           <>
@@ -607,6 +522,109 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
           </>
         )}
       </RightPanel>
+  );
+  if (profileOnly) return profilePanel;
+
+  return (
+    <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
+      <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
+      {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search, attention); }}>
+        <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
+          <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
+          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
+            className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
+        </label>
+        <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
+        {/* PB-4 — the "Needs help" filter; the reasons are named by the server (the same ones the dashboard counts). */}
+        <select value={attention ?? ""} onChange={(e) => applyAttention(e.target.value === "" ? null : (e.target.value as AttentionFilter), search)}
+          aria-label="Needs help filter" data-attention-filter
+          className="min-h-11 min-w-0 max-w-full rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8" style={{ borderColor: "var(--border-hairline)" }}>
+          <option value="">All accounts</option>
+          <option value="any">Needs help — any reason</option>
+          {(list?.attentionReasons ?? []).map((r) => <option key={r.key} value={r.key}>{`Needs help — ${r.label}`}</option>)}
+        </select>
+        {/* Its own line below sm (it never squeezes the search field or widens the page). */}
+        {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
+      </form>
+
+      {urlNotice && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-attention-notice>{urlNotice}</p>}
+      {attention && (
+        <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-secondary)]" data-attention-active>
+          <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}${list?.attentionFloor ? " · at least these (read cap reached)" : ""}`}</span>
+          <button type="button" onClick={() => applyAttention(null, search)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
+        </p>
+      )}
+      {/* PRIV-ref — a pasted reference that resolved to nothing says so (and whether the scan was capped); never a silent empty list. */}
+      {!loading && list?.refSearch?.note && <p className="text-[11px] text-[var(--text-secondary)]" role="status" data-ref-search-note>{list.refSearch.note}</p>}
+      {!loading && list?.refSearch && list.refSearch.matches > 1 && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-ref-search-collision>{`${list.refSearch.matches} accounts share this reference — check each`}</p>}
+      {loading && <WidgetMessage loading />}
+      {error && <WidgetMessage error={error} />}
+      {!loading && !error && list && (
+        <>
+          {list.customers.length === 0 ? <WidgetMessage empty={attention ? "No one needs help for this reason." : "No customers match."} /> : (
+            <>
+            <table className="w-full table-fixed text-xs max-lg:hidden" aria-label="Customers">
+              <thead className="border-b border-[var(--border-hairline)]">
+                <tr>
+                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-[30%]">Customer</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Onboarding</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Policy</th>
+                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-24">Connections</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-28">Presence</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-8"><span className="sr-only">Open</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-hairline)]">
+                {list.customers.map((c) => (
+                  <tr key={c.id} onClick={() => select(c.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
+                    <td className="px-2 py-2.5 align-middle">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); select(c.id); }} aria-haspopup="dialog" className="block max-w-full truncate text-left font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{operatorDisplayName(c)}</button>
+                      <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
+                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
+                      </span>
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
+                    </td>
+                    <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
+                    <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
+                      <span className="block truncate" title={c.policyGroup}>{policyGroupName(c.policyGroup)}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
+                      <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
+                    </td>
+                    <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
+                    <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : presenceText(c)}</td>
+                    <td className="px-2 py-2.5 align-middle text-[var(--text-faint)]"><ChevronRight size={12} aria-hidden /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {/* < lg — a clean two-line row: who, where they are, when last active.
+                Policy, cohorts and usage live in the customer's profile (tap). */}
+            <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Customers">
+              {list.customers.slice(0, showAll ? undefined : MOBILE_ROWS).map((c) => (
+                <li key={c.id}>
+                  <button type="button" onClick={() => select(c.id)} aria-haspopup="dialog"
+                    className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate font-medium text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
+                      <span className="truncate text-[11px] text-[var(--text-muted)]">
+                        {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
+                      </span>
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} detail={c.attentionDetail} testAccount={c.testAccount} />
+                    </span>
+                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : presenceText(c)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {list.customers.length > MOBILE_ROWS && (
+              <button type="button" onClick={() => setShowAll((v) => !v)} className="inline-flex min-h-11 items-center self-start text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:hidden">
+                {showAll ? "Show fewer" : `Show all ${list.customers.length}`}
+              </button>
+            )}
+            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{ROLLUP_NOTE}</p>
+            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{PRESENCE_EXPLANATION}</p>
+            </>
+          )}
+        </>
+      )}
+
+      {profilePanel}
       </Surface>
     </Block>
   );

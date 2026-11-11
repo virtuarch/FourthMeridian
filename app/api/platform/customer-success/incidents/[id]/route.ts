@@ -29,6 +29,7 @@ import { incidentDetailDTO, type IncidentDetailDTO } from "@/lib/platform/incide
 import { csIncidentNavigationLinks, navigationOrEmpty } from "@/lib/platform/incidents/related-navigation";
 import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 
 export const runtime = "nodejs";
 
@@ -48,7 +49,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   try { inv = await incidentAccessors.investigate(token, id, { now }); }
   catch { return NextResponse.json({ error: "Incident read failed." }, { status: 500, headers: NO_STORE }); }
   if (!inv) return NextResponse.json({ error: "Incident not found." }, { status: 404, headers: NO_STORE });
-  const dto = incidentDetailDTO(inv, "cs", now);
+  // PRIV-ref (P3): the drawer shows the opaque customer reference, computed here (server-only key).
+  const dto = incidentDetailDTO(inv, "cs", now, { subjectRefOf: opaqueUserRef });
   // A navigation failure never hides the incident: any throw (mint, registry, builder) ⇒ no links.
   const navigation = navigationOrEmpty(() => {
     const navToken = metricAccessFor(auth);

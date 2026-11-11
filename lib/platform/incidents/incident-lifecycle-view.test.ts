@@ -250,7 +250,7 @@ async function main(): Promise<void> {
       check(`${name}: acknowledger worded by kind only`, ms(incidentLifecycleView(dto), "acknowledged")?.note === "Ownership taken by an operator (audited)");
     }
     check("both tiers produce the same lifecycle view", JSON.stringify(incidentLifecycleView(d)) === JSON.stringify(incidentLifecycleView(dcs)));
-    check("control: the CS drawer still names the customer in its summary (tiered elsewhere)", render(dcs).includes(ITEM.userId) && !render(d).includes(ITEM.userId));
+    check("control: the CS drawer names the customer in its summary by PRIV-ref only (never the raw id)", render(dcs).includes("data-incident-customer-ref") && !render(dcs).includes(ITEM.userId) && !render(d).includes(ITEM.userId));
     check("lifecycle adds no controls beyond episode links", !/data-lifecycle-action|data-recovery-action/.test(lifecycleHtml(render(d))));
   }
 

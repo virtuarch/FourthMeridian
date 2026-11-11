@@ -21,7 +21,13 @@
  *                      component state; no URL param exists, so the link is the
  *                      unfiltered view and says so. Only when the incident has a
  *                      connection subject.
- *   previous-episode   PLATFORM_OPS:platform-incidents:history · iid (incidents-url.ts,
+ *   jobs               PLATFORM_OPS:platform-overview:jobs · none (incident
+ *                      drawer PR-A, S2 09gg a). The Jobs view keeps its job
+ *                      selection in component state; no URL param filters it to
+ *                      a job or a run, so the link is the unfiltered view and
+ *                      says so ("Jobs (all)"). Only when the incident's newest
+ *                      occurrence names a job (the DTO's `component`).
+ *   previous-episode  PLATFORM_OPS:platform-incidents:history · iid (incidents-url.ts,
  *                      the workspace's own drawer param). Only when the verdict
  *                      carries a previousIncidentId.
  *   same-subject-open  PLATFORM_OPS:platform-incidents:open · iid. The OTHER open
@@ -37,12 +43,15 @@
  *                      resolves today — by design (no customer-detail target exists).
  *
  * No user id, connection id or other subject id is ever passed as a param.
+ * The CS-only "Open customer profile" action is NOT a link and never comes
+ * from here: it is an in-page button on the CS drawer (cs-open-customer.ts),
+ * so no user id is ever in an href, a URL or a history entry.
  */
 
 import type { IncidentVerdict } from "./intelligence/types";
 import type { IncidentDetailDTO } from "./investigation-dto";
 
-export type IncidentNavigationKind = "provider-health" | "connection-health" | "previous-episode" | "same-subject-open" | "customer-success";
+export type IncidentNavigationKind = "provider-health" | "connection-health" | "jobs" | "previous-episode" | "same-subject-open" | "customer-success";
 
 export interface IncidentNavigationLinkDTO {
   kind: IncidentNavigationKind;
@@ -69,6 +78,7 @@ export type IncidentNavigationResolver = (targetId: string, params?: Readonly<Re
 export const INCIDENT_NAVIGATION_TARGETS = {
   providerHealth: "PLATFORM_OPS:platform-providers:health",
   connectionHealth: "PLATFORM_OPS:platform-overview:pipeline",
+  jobs: "PLATFORM_OPS:platform-overview:jobs",
   opsIncidentsOpen: "PLATFORM_OPS:platform-incidents:open",
   opsIncidentsHistory: "PLATFORM_OPS:platform-incidents:history",
   csIncidentsOpen: "CUSTOMER_SUCCESS:platform-incidents:open",
@@ -87,7 +97,13 @@ export interface IncidentNavigationInput {
   itemCount: number;
   /** Other episodes of the same incident key (IncidentInvestigation.recurrences). */
   recurrences: readonly (Pick<IncidentVerdict, "id" | "state"> & { recurrence: Pick<IncidentVerdict["recurrence"], "generation"> })[];
+  /** The newest occurrence's job (IncidentInvestigation.component). A job ⇒ the unfiltered Jobs link. */
+  component?: { jobName: string | null } | null;
 }
+
+/** The Jobs link's words: the view is unfiltered, and the label and note say so. */
+export const JOBS_LINK_LABEL = "Jobs (all)";
+export const JOBS_LINK_NOTE = "Opens the Jobs view (it has no per-job or per-run filter).";
 
 export function incidentNavigationLinks(input: IncidentNavigationInput, resolve: IncidentNavigationResolver): IncidentNavigationLinkDTO[] {
   const v = input.verdict;
@@ -101,6 +117,9 @@ export function incidentNavigationLinks(input: IncidentNavigationInput, resolve:
   push("provider-health", `${v.provider} provider health`, "Opens the Providers view (it has no per-provider filter).", INCIDENT_NAVIGATION_TARGETS.providerHealth, null);
   if (input.itemCount > 0) {
     push("connection-health", "Connection health", "Opens the fleet connection-health view (it has no per-connection filter).", INCIDENT_NAVIGATION_TARGETS.connectionHealth, null);
+  }
+  if (typeof input.component?.jobName === "string" && input.component.jobName !== "") {
+    push("jobs", JOBS_LINK_LABEL, JOBS_LINK_NOTE, INCIDENT_NAVIGATION_TARGETS.jobs, null);
   }
   const prev = v.recurrence.previousIncidentId;
   if (prev && prev !== v.id) push("previous-episode", "Previous episode", null, INCIDENT_NAVIGATION_TARGETS.opsIncidentsHistory, prev);

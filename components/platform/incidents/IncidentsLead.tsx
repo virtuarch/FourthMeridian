@@ -33,6 +33,14 @@
  * confirmation with a reason and a note; Customer Success never gets them. The server guard decides; each
  * route audits through recordOperatorAction. Presentation only: nothing here
  * derives a verdict.
+ *
+ * INCIDENT DRAWER PR-A (owner 11-08, S2 09gg a) — the Summary carries a "Job"
+ * stamp when the newest occurrence names a job (the run id, Ops only, sits in
+ * Technical details); "Go to" gains the unfiltered "Jobs (all)" link from the
+ * resolver. On the CS tier ONLY, the customer line shows the opaque PRIV-ref
+ * (never the raw id) and an "Open customer profile" BUTTON opens the audited
+ * profile panel in-page (cs-open-customer.ts → the hosted cs_customers panel,
+ * whose every open re-reads customers/[userId]); no user id in any URL.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -48,7 +56,11 @@ import { ExecutionTimelinePanel } from "../widgets/ExecutionTimelinePanel";
 import type { PlatformViewLeadProps } from "../leads/lead-contract";
 import { DEFAULT_SEARCH, SEVERITY_FILTERS, retentionFloorDay } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery } from "@/lib/platform/incidents/intelligence/types";
-import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, IncidentTier, LifecycleActionDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
+import type {
+  IncidentComponentDTO, IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, IncidentTier, LifecycleActionDTO, RecoveryActionDTO,
+} from "@/lib/platform/incidents/investigation-dto";
+import { OPAQUE_USER_REF_FALLBACK } from "@/lib/platform/opaque-user-ref-format";
+import { requestOpenCustomer } from "../leads/cs-open-customer";
 import type { IncidentNavigationLinkDTO } from "@/lib/platform/incidents/related-navigation";
 import {
   incidentDetailApiPath, incidentsApiPath, incidentsUrlUpdate, readIncidentsUrl, statusOfView, type IncidentsUrlState,
@@ -316,6 +328,12 @@ function Disclosure({ title, hint, children, attr }: { title: string; hint?: str
   );
 }
 
+/** Technical details: the job / component in words (the run id rides the Ops tier only — the DTO decides). */
+export function componentLine(c: IncidentComponentDTO): string {
+  return [`Job: ${c.jobLabel}`, c.operationLabel ?? null, c.domain ? `domain ${c.domain}` : null, c.jobRunId ? `run ${c.jobRunId}` : null]
+    .filter((x): x is string => !!x).join(" · ");
+}
+
 function Stamp({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
@@ -325,8 +343,13 @@ function Stamp({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle, viewId, onOpenInPlace, slots }: {
+export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle, viewId, onOpenInPlace, onOpenCustomer, slots }: {
   d: IncidentDetailDTO;
+  /**
+   * Incident drawer PR-A — CS tier ONLY: open the attributed customer's audited
+   * profile in-page (cs-open-customer.ts). Ignored on the Ops tier (never rendered there).
+   */
+  onOpenCustomer?: (userId: string) => void;
   canWrite: boolean;
   onSelect: (id: string) => void;
   /** The current incidents view, and the in-place opener for a "Go to" link on it (IncidentRelatedNavigation). */
@@ -384,9 +407,23 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
           <Stamp label="Last observed" value={whenText(s.lastObservedAt)} />
           <Stamp label="Resolved" value={s.resolvedAt ? whenText(s.resolvedAt) : "Not yet"} />
           <Stamp label="Occurrences" value={`${r.occurrenceCount.toLocaleString("en-US")}`} />
+          {d.component && <div className="min-w-0" data-incident-component><Stamp label="Job" value={d.component.jobLabel} /></div>}
         </dl>
         <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-affected>{affectedLine(d.affected)}</p>
-        {"subjectUserId" in r && <p className="break-all font-mono text-[11px] text-[var(--text-muted)]">{r.subjectUserId ? `Customer ${r.subjectUserId}` : "No attributed customer"}</p>}
+        {d.tier === "cs" && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5" data-incident-customer>
+            {/* PRIV-ref — the opaque customer reference, never the raw id (as elsewhere in Customer Success). */}
+            <p className="min-w-0 break-words font-mono text-[11px] text-[var(--text-muted)]" data-incident-customer-ref>
+              {r.subjectUserId ? `Customer ${d.subjectRef ?? OPAQUE_USER_REF_FALLBACK}` : "No attributed customer"}
+            </p>
+            {/* CS ONLY — an in-page button (never a link): opens the audited profile panel; no id in any URL. */}
+            {r.subjectUserId && onOpenCustomer && (
+              <button type="button" className={`${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onOpenCustomer(r.subjectUserId!)} aria-haspopup="dialog" data-open-customer-profile>
+                Open customer profile
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Primary action / guidance — guidance TEXT for what only the customer can do; real, audited actions only. */}
@@ -604,6 +641,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
           ) : (
             <p className="text-[11px] text-[var(--text-muted)]">{`No resolution evidence recorded. Attempt evidence: last attempt ${whenText(r.recovery.lastAttemptAt)}, last skip ${whenText(r.recovery.lastSkipAt)}${r.recovery.evidenceBasis === "unreadable" ? " (unreadable)" : r.recovery.evidenceBasis === "unsupported" ? " (not tracked for this provider yet)" : r.recovery.evidenceBasis === "not-needed" ? " (not needed: inside its window)" : ""}.`}</p>
           )}
+          {d.component && <p className="break-words text-[11px] text-[var(--text-muted)]" data-incident-component-detail>{componentLine(d.component)}</p>}
           <p className="text-xs text-[var(--text-secondary)]">{archiveLine(d.archive)}</p>
           <p className="break-all font-mono text-[10px] text-[var(--text-faint)]">{`${r.kind} · ${r.id}`}{r.causeCode ? ` · ${codeText(r.causeCode)}` : ""}</p>
         </Disclosure>
@@ -678,9 +716,11 @@ export function LifecycleFormFields({ action, form, onChange, disabled }: { acti
   );
 }
 
-function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpenInPlace }: {
+function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpenInPlace, customerProfileHosted = false }: {
   tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void; onChanged?: () => void;
   viewId?: string | null; onOpenInPlace?: (id: string) => void;
+  /** CS only: the view hosts the audited profile panel (cs_customers, "customer-profile"). */
+  customerProfileHosted?: boolean;
 }) {
   const [generation, setGeneration] = useState(0);
   const [lifecyclePending, setLifecyclePending] = useState<LifecycleActionDTO | null>(null);
@@ -756,6 +796,7 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
       {notice && <p role="status" className="mb-3 text-xs text-[var(--text-secondary)]">{notice}</p>}
       <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
         onLifecycle={tier === "ops" ? openLifecycle : undefined}
+        onOpenCustomer={tier === "cs" && customerProfileHosted ? requestOpenCustomer : undefined}
         slots={{ remember: <RememberButton area={tier === "ops" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS"} kind="INCIDENT" id={data.incident.id} /> }} />
       {lifecyclePending && (
         <ConfirmDialog icon={lifecyclePending === "resolve" ? CheckCircle2 : UserCheck} title={LIFECYCLE_CONFIRM[lifecyclePending].title}
@@ -773,8 +814,13 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
 
 // ── The workspace ───────────────────────────────────────────────────────────
 
-function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & PlatformViewLeadProps) {
+/** The hosted section whose "customer-profile" variant is the audited CS profile panel. */
+export const CUSTOMER_PROFILE_HOST_KEY = "cs_customers";
+
+function IncidentsWorkspace({ tier, viewId, access, renderHosted, hasHosted }: { tier: IncidentTier } & PlatformViewLeadProps) {
   const spaceUrl = useSpaceUrl();
+  // Incident drawer PR-A — CS ONLY: the audited profile panel, hosted in-page (never on the Ops tier).
+  const customerProfileHosted = tier === "cs" && hasHosted(CUSTOMER_PROFILE_HOST_KEY);
   const status = statusOfView(viewId);
   // First paint is the view's bare preset (SSR-safe); the URL is read after mount and on Back/Forward.
   const [state, setState] = useState<IncidentsUrlState>(() => ({ query: { ...DEFAULT_SEARCH, status }, selectedId: null, fromClamped: false }));
@@ -813,8 +859,9 @@ function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & P
       <DetailDrawer open={state.selectedId !== null} onClose={() => select(null)} eyebrow={tier === "ops" ? "Platform Ops · Incident" : "Customer Success · Incident"}
         title={title ? incidentTitle(title) : "Incident"} size="xl">
         {state.selectedId ? <IncidentDetail tier={tier} id={state.selectedId} canWrite={access?.canWrite === true} onSelect={(id) => select(id)} onChanged={() => setListGeneration((g) => g + 1)}
-          viewId={viewId ?? null} onOpenInPlace={openInPlace} /> : null}
+          viewId={viewId ?? null} onOpenInPlace={openInPlace} customerProfileHosted={customerProfileHosted} /> : null}
       </DetailDrawer>
+      {customerProfileHosted ? renderHosted(CUSTOMER_PROFILE_HOST_KEY, undefined, "customer-profile") : null}
     </div>
   );
 }
