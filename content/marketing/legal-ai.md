@@ -2,6 +2,8 @@
 
 Fourth Meridian uses artificial intelligence in two places: the Daily Brief and Conversations. This page explains, plainly, what that involves, what is shared with the model provider, what Fourth Meridian records, and the limits of what the AI produces.
 
+Our support and operations staff may also use AI-assisted tools to understand account and connection problems; see "Operator tools and AI" in our [Privacy Policy](/privacy).
+
 ## What the AI does
 
 **The Daily Brief.** For a Space you can read, Fourth Meridian can produce a short, plain-language summary of what changed — balances, holdings, activity and history — and what may deserve your attention. The figures in a Brief are computed by Fourth Meridian from your connected data; the model describes them.

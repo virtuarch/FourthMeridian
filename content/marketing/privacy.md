@@ -36,13 +36,13 @@ The Daily Brief and Conversations send relevant portions of your financial conte
 
 <!-- DRAFT (owner decision D3) — wording pending owner approval. The "Last updated" date (LEGAL.privacy.updated in copy.ts) and the "Effective" line above are left unchanged; the owner updates them on publish. -->
 
-When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. These tools are available only to authorized staff, who must sign in with two-factor authentication, and daily spending limits restrict how much they can be used.
+When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. Only authorized staff can use them, and daily spending limits cap their use.
 
-What is sent to the AI provider is limited to technical facts: status and error codes, counts, times, and anonymous references that do not identify you. We never send your name, email address or username, your account balances or other amounts, or any message or other text written by you or your financial institution.
+What is sent to the AI provider is technical facts such as status and error codes, counts, times, the name of your financial institution, and the stage of your account setup, with coded references (pseudonymous identifiers) instead of your name or email, plus the question the staff member asks. Our tools do not include your name, email address or username in what they send to the AI provider, and staff are instructed not to type them into questions. Nor do they include your account balances or other amounts from your accounts, or any message or other text written by you or your financial institution.
 
-Your name, email address and username can be shown only to authorized support staff, on their own screen, and every such view is recorded. The AI never sees them.
+When these tools show your name, email address or username to authorized support staff, it appears only on their screen and the view is recorded.
 
-Staff conversations with these tools expire after 7 days, and the tools keep no memory between conversations.
+Staff conversations with these tools expire after 7 days, and the tools keep no memory between conversations. Records of staff access are kept for security purposes.
 
 [OWNER TO CONFIRM: provider data-retention terms]
 
