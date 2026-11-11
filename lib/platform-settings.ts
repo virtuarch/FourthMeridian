@@ -147,6 +147,19 @@ export const PlatformSettingKey = {
   // and the catalogue loader; written through the validated setter behind
   // CONTROL (scripts/set-platform-setting.ts until an operator surface exists).
   PLATFORM_COST_FROZEN: "platform_cost_frozen",
+  // PLATFORM AI CAPS D5 PR2 (S2 rulings 09fb / 09fg / 09fa) — the two BLANKET
+  // Platform AI daily $ caps: per operator and platform-wide, whole USD, integer
+  // ≥ 0 (0 refuses every turn, never "unlimited"). ABSENT ⇒ not set: the env var,
+  // then the preview/development test default, then a refusal in Production
+  // (lib/platform/ai/platform-ai-spend.core.ts resolvePlatformAiCaps, which also
+  // clamps them to the code ceilings). Read ONLY inside the Platform AI
+  // reservation transaction (lib/platform/ai/platform-ai-spend.ts resolveCapsInTx),
+  // through the transaction client, never a cache. The literal keys equal
+  // PLATFORM_AI_CAP_SETTING_KEYS there (pinned by a test).
+  // NO APPLICATION WRITE PATH: no write surface, not a Policies / AI Cost Controls
+  // key (S2 09fb C1: a later, separate SA-only /admin action edits them).
+  PLATFORM_AI_DAILY_USD_PER_OPERATOR: "platform_ai_daily_usd_per_operator",
+  PLATFORM_AI_DAILY_USD_PLATFORM:     "platform_ai_daily_usd_platform",
 } as const;
 
 /** Bounds + default of beta_intake_global_limit_per_hour (owner ruling, R2). */
@@ -230,6 +243,11 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   beta_intake_global_limit_per_hour: String(BETA_INTAKE_GLOBAL_LIMIT_DEFAULT),
   // Ships OFF, and absence IS off (ABSENT_MEANS_OFF) — lib/platform/cost-freeze.core.ts.
   platform_cost_frozen: "false",
+  // PLATFORM AI CAPS D5 PR2 — NO value (the fleet-ceiling precedent): the empty string
+  // documents "not set" and fails the integer descriptor, so it can never be read as a
+  // cap; the reader resolves the row itself (platform-ai-spend.ts resolveCapsInTx).
+  platform_ai_daily_usd_per_operator: "",
+  platform_ai_daily_usd_platform:     "",
 };
 
 /** The catalogue ceiling of the per-customer daily allowance — the platform value's upper bound, derived. */
@@ -315,6 +333,23 @@ const aiCostBoolean = (
   missingRow,
   writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
   operatorConfigurable: true, resettable: true,
+});
+
+/**
+ * PLATFORM AI CAPS D5 PR2 — a blanket Platform AI daily $ cap. SECURITY_SENSITIVE
+ * (a spend guardrail): that class can never carry a PLATFORM_OPS surface (pinned in
+ * platform-settings.test.ts). NO write surface at all — so no route, the admin
+ * security console included (its allow-list is the ADMIN_SECURITY surface), can
+ * write it; the later SA-only /admin action adds its own surface deliberately.
+ * ABSENT_MEANS_OFF with an empty default: absence is "not set", never a value.
+ * Integer ≥ 0; the ceiling is the resolver's, not the descriptor's.
+ */
+const platformAiCap = (key: PlatformSettingKeyType, label: string, description: string): Descriptor => ({
+  key, label, description,
+  class: "SECURITY_SENSITIVE", valueType: "integer", min: 0,
+  default: DEFAULTS[key], missingRow: "ABSENT_MEANS_OFF",
+  writeSurfaces: [], writeCapability: "SYSTEM_ADMIN",
+  operatorConfigurable: false, resettable: false,
 });
 
 /**
@@ -454,6 +489,14 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
     operatorConfigurable: true, resettable: true,
   },
+  platform_ai_daily_usd_per_operator: platformAiCap(
+    "platform_ai_daily_usd_per_operator", "Platform AI daily cap — per operator (USD / UTC day)",
+    "The estimated Platform AI spend one operator may reach in a UTC day before their next turn is refused. Whole dollars; 0 refuses every turn. Absent means not set: the deployment's environment value applies, then (Preview / development only) a test default; Production with nothing set refuses. Clamped to the code ceiling.",
+  ),
+  platform_ai_daily_usd_platform: platformAiCap(
+    "platform_ai_daily_usd_platform", "Platform AI daily cap — platform (USD / UTC day)",
+    "The estimated Platform AI spend across every operator in a UTC day before the next turn is refused. Whole dollars; 0 refuses every turn. Absent means not set: the deployment's environment value applies, then (Preview / development only) a test default; Production with nothing set refuses. Clamped to the code ceiling.",
+  ),
 };
 
 export function listSettingDescriptors(): Descriptor[] {

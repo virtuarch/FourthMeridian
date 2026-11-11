@@ -333,6 +333,9 @@ async function main(): Promise<void> {
   console.log("\n9. the closed contract and the absence of side effects");
   {
     check("only BANK and WALLET are editable", Object.keys(EDITABLE_POLICIES).sort().join() === "BANK,WALLET" && EDITABLE_POLICIES.WALLET === "refresh_cadence_wallet");
+    // PLATFORM AI CAPS D5 PR2 (S2 09fb C1): the blanket Platform AI cap keys are not Policies (a later SA-only /admin action edits them).
+    check("the blanket Platform AI cap keys are NOT editable policies",
+      !(Object.values(EDITABLE_POLICIES) as string[]).some((k) => k === "platform_ai_daily_usd_per_operator" || k === "platform_ai_daily_usd_platform"));
     check("isEditableSourceKind refuses every other name", !isEditableSourceKind("maintenance_mode") && !isEditableSourceKind("ingestion_paused") && !isEditableSourceKind("product_status") && isEditableSourceKind("BANK"));
     const code = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
     const svc = code("lib/platform/policies/mutate.ts");
