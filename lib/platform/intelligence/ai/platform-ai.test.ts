@@ -504,10 +504,12 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   const counted: unknown[][] = [];
   const traced: string[] = [];
   const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...two, { content: "{{m:provider-outcome@1|part=failing}} failing, 40 calls." }]).generate,
-    countUngrounded: (...a) => counted.push(a), traceTurn: (l) => traced.push(l) }));
+    countUngrounded: (...a) => counted.push(a), traceTurn: (l) => traced.push(l), toolTrace: (tr) => tr.map((x) => ({ tool: x.tool, outcome: x.outcome })) }));
   check("the handler counts a replaced answer with the verdict CODE and the unresolved count only", h.status === 200 && JSON.stringify(counted) === JSON.stringify([["UNRESOLVED_PLACEHOLDER", 1]]), counted);
   check("…the response's claims are counts; no value in grounding / claims / trace", JSON.stringify((h.body as { claims: unknown }).claims) === JSON.stringify({ claims: 1, resolved: 0, unresolved: 1, admitted: 0 })
-    && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.trace]) + traced.join()), [h.body.grounding, traced]);
+    && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.toolTrace]) + traced.join()), [h.body.grounding, traced]);
+  check("S2 09hz: the 200 body has no legacy `trace` key (the trace is the log line only) and still carries `toolTrace`",
+    h.status === 200 && !Object.prototype.hasOwnProperty.call(h.body, "trace") && Object.prototype.hasOwnProperty.call(h.body, "toolTrace") && traced.length === 1, Object.keys(h.body));
   check("the route's counter line logs codes and counts only", /countUngrounded: \(verdict, unresolved\) => console\.warn\(`\[platform-ai\] answer replaced: verdict=\$\{verdict\} unresolved=\$\{unresolved\}/.test(src("app/api/platform/ai/ask/route.ts")));
   check("the prompt and get_metric's description teach COPYING the server's placeholder string verbatim (guidance; enforcement is the server)",
     /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string from your get_metric result VERBATIM/.test(PLATFORM_AI_SYSTEM_PROMPT)

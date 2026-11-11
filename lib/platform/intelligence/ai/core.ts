@@ -58,7 +58,9 @@
  *                   outcome code, for an UNAVAILABLE read its retrieval
  *                   UnavailableCode, registry ids the server itself returned) so an
  *                   operator or reviewer can see what the turn read; never an
- *                   argument the model wrote, never prompt or answer text.
+ *                   argument the model wrote, never prompt or answer text. It is
+ *                   LOGGED (traceLine) and never in the HTTP body (S2 09hz): the
+ *                   200 body carries only the `toolTrace` projection.
  *
  * PURE apart from the injected `generate` and binding: no I/O, no clock beyond
  * the injected `now`, no module state.
@@ -1604,7 +1606,10 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
-    return { status: 200, body: { ...result, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(result.trace) } : {}) } };
+    // S2 09hz — the legacy `trace` stays in the server log line above (traceLine) and is NOT in the 200 body;
+    // the client-facing trace is `toolTrace` only (tool / pack / tier / outcome / calls — never a ref).
+    const { trace, ...answer } = result;
+    return { status: 200, body: { ...answer, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(trace) } : {}) } };
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);
