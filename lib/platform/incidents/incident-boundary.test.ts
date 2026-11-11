@@ -459,7 +459,9 @@ function main() {
     const posting = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
     // S2 ruling 09gg (d) — the drawer's Platform AI ASSESSMENT: exactly one POST per tier. It spends (one
     // Platform AI turn) but NEVER changes incident state, so it is not a mutation: named here, and pinned
-    // below to a fresh READ guard on its own area, the limiter, and no SyncIssue / lifecycle / DB / audit write.
+    // below to a fresh READ guard on its own area, the limiter, and no SyncIssue / lifecycle / direct DB / direct
+    // audit write in the route. Its ONLY writes are the Platform AI turn-ledger rows and, on the CS tier, the
+    // PLATFORM_AI_RECORD_VIEWED audit the governed tool boundary records (S2 09he Q1).
     const AI_ASSESSMENT = [
       "app/api/platform/customer-success/incidents/[id]/assessment/route.ts",
       "app/api/platform/platform-ops/incidents/[id]/assessment/route.ts",
@@ -476,7 +478,7 @@ function main() {
       check(`${f}: the #352 per-operator limiter, after the guard`,
         /const limited = await limitPlatformMutation\(auth\.user\.id, "(cs-)?incident-ai-assessment"\);\s*if \(limited\) return limited;/.test(s2)
         && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
-      check(`${f}: never touches incident state (no SyncIssue / lifecycle / audit / direct DB)`,
+      check(`${f}: never touches incident state (no SyncIssue / lifecycle / direct DB / direct audit write in the route; only turn-ledger rows + the boundary RECORD_VIEWED audit on CS)`,
         !/syncIssue\.|auditLog\.|systemDb|applyOperatorTransition|runIncidentOperatorAction|lifecycleState/.test(s2));
     }
     const mutating = posting.filter((f) => !AI_ASSESSMENT.includes(f));
