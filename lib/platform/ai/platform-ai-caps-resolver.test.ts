@@ -6,7 +6,8 @@
  * 2. a present but invalid SETTING refuses CAP_INVALID (S2 R2, 09fp); since D5 PR4 a present
  *    invalid OVERRIDE refuses CAP_INVALID OPERATOR too (S2 09fq); null = absent = not set;
  * 3. 0 is a cap of 0 (every turn refused), never "unlimited";
- * 4. the code ceilings ($20 / $100) clamp EVERY source with the clamped flag — ENV too
+ * 4. the code ceilings ($20 / $100) clamp SETTING / ENV / TEST_DEFAULT with the clamped flag — ENV too
+ *    since D5 PR2 (S2 E1); an OVERRIDE above the ceiling refuses CAP_INVALID instead (Q2, S2 09fu);
  *    since D5 PR2 (S2 E1); an INVALID env refuses even when a higher source wins (S2 E2);
  * 5. the test default is preview/development only; Production with nothing set ⇒ CAP_MISSING;
  * 6. equivalence: env-only resolution equals the PRE-D5 resolver, a frozen copy below,
@@ -174,7 +175,13 @@ function main() {
   {
     check("ceilings are $20 operator / $100 platform", PLATFORM_AI_OPERATOR_CAP_CEILING_USD === 20 && PLATFORM_AI_PLATFORM_CAP_CEILING_USD === 100);
     const hi = resolvePlatformAiCaps(input({ operatorOverrideUsd: 500, settingPlatformUsd: 1000 }));
-    check("override 500 ⇒ 20, source CEILING, askedUsd 500, clamped", is(hi.operator, 20, "CEILING", { askedUsd: 500, clamped: true }) && hi.operator.ok && hi.operator.askedSource === "OPERATOR_OVERRIDE", hi.operator);
+    check("Q2 (S2 09fu): override 500 ⇒ CAP_INVALID for OPERATOR (never clamped)", refused(hi.operator, "CAP_INVALID"), hi.operator);
+    for (const v of [21, 1000]) {
+      const r = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: v, settingPerOperatorUsd: 5 }));
+      check(`Q2: override ${v} above the ceiling ⇒ CAP_INVALID OPERATOR (the setting $5 / env do NOT rescue it); platform unaffected`,
+        refused(r.operator, "CAP_INVALID") && is(r.platform, 70, "ENV") && (() => { const c = toResolvedCaps(r); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "OPERATOR"; })(), r);
+    }
+    check("Q2: override exactly 20 ⇒ 20, own source (not clamped, not refused)", is(resolvePlatformAiCaps(input({ operatorOverrideUsd: 20, settingPlatformUsd: 100 })).operator, 20, "OPERATOR_OVERRIDE"));
     check("platform setting 1000 ⇒ 100, source CEILING, askedUsd 1000, clamped", is(hi.platform, 100, "CEILING", { askedUsd: 1000, clamped: true }) && hi.platform.ok && hi.platform.askedSource === "PLATFORM_SETTING", hi.platform);
     const ps = resolvePlatformAiCaps(input({ settingPerOperatorUsd: 21 }));
     check("per-operator setting 21 ⇒ 20 clamped (askedSource PLATFORM_SETTING)", is(ps.operator, 20, "CEILING", { askedUsd: 21, clamped: true }) && ps.operator.ok && ps.operator.askedSource === "PLATFORM_SETTING", ps.operator);

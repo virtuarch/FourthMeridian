@@ -19,7 +19,7 @@
  *      record — lives in lib/platform/ai/platform-ai-caps-admin.ts.
  *
  *   200  { result, model }                     applied (or a no-op: changed=false)
- *   400  { error, code }                       VALIDATION | NOT_ELIGIBLE | PLATFORM_CAP_NOT_SET | ABOVE_PLATFORM_CAP
+ *   400  { error, code }                       VALIDATION | NOT_ELIGIBLE | PLATFORM_CAP_NOT_SET | PLATFORM_CAP_INVALID | ABOVE_PLATFORM_CAP
  *   403  { error, code: "FORBIDDEN" }          not a System Admin (defence in depth)
  *   404  { error, code: "NOT_FOUND" }          a clear / reset with nothing set
  *   409  { error, code: "CONFLICT" }           the row moved; nothing written
@@ -42,7 +42,7 @@ export const runtime = "nodejs";
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 const STATUS: Record<PlatformAiCapsRefusalCode, number> = {
-  VALIDATION: 400, NOT_ELIGIBLE: 400, PLATFORM_CAP_NOT_SET: 400, ABOVE_PLATFORM_CAP: 400,
+  VALIDATION: 400, NOT_ELIGIBLE: 400, PLATFORM_CAP_NOT_SET: 400, PLATFORM_CAP_INVALID: 400, ABOVE_PLATFORM_CAP: 400,
   FORBIDDEN: 403, NOT_FOUND: 404, CONFLICT: 409,
 };
 

@@ -15,12 +15,15 @@
  *                   Audited PLATFORM_POLICY_CHANGED / PLATFORM_POLICY_RESET. Lowering the
  *                   platform cap below existing overrides is ALLOWED (09fb Q2); the result
  *                   carries a warning with the COUNT of overrides now above it.
- *   SET_OVERRIDE    { targetUserId, dailyUsd: int 0..20, reason, expectedUpdatedAt? }
+ *   SET_OVERRIDE    { targetUserId, dailyUsd: int 0..20, reason, expectedUpdatedAt }
  *                   target = a current SYSTEM_ADMIN or ACTIVE platform-grant holder (C3);
- *                   the platform cap must resolve (else PLATFORM_CAP_NOT_SET); dailyUsd must
+ *                   the platform cap must resolve (missing ⇒ PLATFORM_CAP_NOT_SET, invalid ⇒
+ *                   PLATFORM_CAP_INVALID, S2 09fu Q3); dailyUsd must
  *                   not exceed the EFFECTIVE platform cap (09fb Q2 — a UX check: the
  *                   reservation stays the real bound). Audited PLATFORM_AI_OPERATOR_CAP_CHANGED.
- *   RESET_OVERRIDE  { targetUserId, reason, expectedUpdatedAt? } — deletes the row.
+ *   RESET_OVERRIDE  { targetUserId, reason, expectedUpdatedAt } — deletes the row.
+ * expectedUpdatedAt is REQUIRED on every action (null = expect no row); a stale value
+ * ⇒ CONFLICT, nothing written (S2 09fu Q6).
  *                   Audited PLATFORM_AI_OPERATOR_CAP_RESET.
  * A body carrying a field of another action is refused VALIDATION: the blanket value
  * and an override can never change in one request.
@@ -86,7 +89,7 @@ export const ACTION_FIELDS: Readonly<Record<PlatformAiCapsAction, readonly strin
 });
 
 export type PlatformAiCapsRefusalCode =
-  | "VALIDATION" | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "ABOVE_PLATFORM_CAP" | "NOT_FOUND" | "CONFLICT";
+  | "VALIDATION" | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "PLATFORM_CAP_INVALID" | "ABOVE_PLATFORM_CAP" | "NOT_FOUND" | "CONFLICT";
 
 export const PLATFORM_AI_CAPS_CONTROL = "platform-ai-caps" as const;
 
@@ -369,9 +372,10 @@ export async function applyPlatformAiCapsAction(
   try { reason = parseOperatorReason(body.reason); }
   catch (e) { return refuse("VALIDATION", e instanceof OperatorActionValidationError ? e.message : "A reason is required."); }
 
-  // 4. The concurrency token's shape.
+  // 4. The concurrency token: REQUIRED on every action (S2 09fu Q6) — the version observed, or null for "no row".
   const expected = body.expectedUpdatedAt;
-  if (expected !== undefined && expected !== null && typeof expected !== "string") {
+  if (expected === undefined) return refuse("VALIDATION", "expectedUpdatedAt is required (null when nothing is set).");
+  if (expected !== null && typeof expected !== "string") {
     return refuse("VALIDATION", "expectedUpdatedAt must be the version you observed (an ISO instant) or null.");
   }
 
@@ -396,7 +400,6 @@ async function setBlanket(
   const name = body.key;
   if (typeof name !== "string" || !(name in BLANKET_CAP_KEYS)) return refuse("VALIDATION", "key must be per_operator or platform.");
   const key = BLANKET_CAP_KEYS[name as BlanketCapName];
-  if (body.expectedUpdatedAt === undefined) return refuse("VALIDATION", "expectedUpdatedAt is required (null when no value is set).");
   const expected = body.expectedUpdatedAt as string | null;
   const value = body.valueUsd;
   const clearing = value === null;
@@ -456,13 +459,13 @@ async function setOrResetOverride(
   if (action === "SET_OVERRIDE" && !isWholeInRange(dailyUsd, PLATFORM_AI_OPERATOR_CAP_CEILING_USD)) {
     return refuse("VALIDATION", `dailyUsd must be a whole number of dollars from 0 to ${PLATFORM_AI_OPERATOR_CAP_CEILING_USD}.`);
   }
-  const expected = body.expectedUpdatedAt as string | null | undefined;
+  const expected = body.expectedUpdatedAt as string | null;
   const selfEdit = actor.id === targetUserId;
   const targetRef = refOf(targetUserId);
 
   const changed = await client.$transaction(async (tx) => {
     const before = await tx.platformAiOperatorCap.findUnique({ where: { userId: targetUserId }, select: { dailyUsd: true, updatedAt: true } });
-    if (expected !== undefined && !versionMatches(expected, before)) throw new Refusal("CONFLICT", "This operator's cap changed since you opened the editor.");
+    if (!versionMatches(expected, before)) throw new Refusal("CONFLICT", "This operator's cap changed since you opened the editor.");
     const previous = before ? before.dailyUsd : null;
 
     if (action === "RESET_OVERRIDE") {
@@ -493,9 +496,9 @@ async function setOrResetOverride(
     const rows = await tx.platformSetting.findMany({ where: BLANKET_WHERE, select: { key: true, value: true } }) as Array<{ key: string; value: string }>;
     const platform = resolveForAdmin(capInputs, rows, null).platform;
     if (!platform.ok) {
-      throw new Refusal("PLATFORM_CAP_NOT_SET", platform.cause === "CAP_MISSING"
-        ? "Set the platform cap before setting an operator override."
-        : "The platform cap is invalid; fix it before setting an operator override.");
+      throw platform.cause === "CAP_MISSING"
+        ? new Refusal("PLATFORM_CAP_NOT_SET", "Set the platform cap before setting an operator override.")
+        : new Refusal("PLATFORM_CAP_INVALID", "The platform cap is invalid; fix it before setting an operator override.");
     }
     const next = dailyUsd as number;
     if (next > platform.usd) throw new Refusal("ABOVE_PLATFORM_CAP", `An override may not exceed the platform cap ($${platform.usd}).`);

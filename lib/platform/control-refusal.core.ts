@@ -17,8 +17,8 @@ export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" |
   | "pause" | "resume" | "end" | "freeze" | "unfreeze";
 export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE"
   // Platform AI caps D5 PR4 — the caller is not a System Admin; the target is not an
-  // operator; the platform cap is unresolved; the override is above the platform cap.
-  | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "ABOVE_PLATFORM_CAP";
+  // operator; the platform cap is missing / invalid; the override is above the platform cap.
+  | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "PLATFORM_CAP_INVALID" | "ABOVE_PLATFORM_CAP";
 
 export interface ControlRefusal {
   control: ControlName;

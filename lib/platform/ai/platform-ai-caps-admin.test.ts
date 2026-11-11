@@ -9,7 +9,8 @@
  *   3. reason required on every write;
  *   4. SET_BLANKET — the descriptor max (20 / 100) refused at write (R4); clear = RESET;
  *      lowering the platform cap below overrides is ALLOWED with the COUNT (Q2);
- *   5. SET_OVERRIDE — target eligibility (C3); PLATFORM_CAP_NOT_SET; above the EFFECTIVE
+ *   5. SET_OVERRIDE — target eligibility (C3); PLATFORM_CAP_NOT_SET / PLATFORM_CAP_INVALID (09fu Q3);
+ *      expectedUpdatedAt required, stale ⇒ CONFLICT (09fu Q6); above the EFFECTIVE
  *      platform cap refused (Q2); 0..20 integers only; selfEdit iff actor == target (09fa);
  *      the audit detail shape with the PRIV-ref (C4); concurrency;
  *   6. RESET_OVERRIDE — deletes + audits; NOT_FOUND when there is nothing to reset;
@@ -80,8 +81,12 @@ async function main() {
   const meta = (a: Record<string, unknown>) => a.metadata as Record<string, any>;
   const setPlatform = (actor: string, valueUsd: number | null, expectedUpdatedAt: string | null, capInputs = ENV) =>
     applyPlatformAiCapsAction({ action: "SET_BLANKET", key: "platform", valueUsd, reason, expectedUpdatedAt }, actorOf(actor), deps(capInputs));
+  /** The override row's current version (what an editor observed), or null when there is no row. */
+  const versionOf = (userId: string) => { const r = fake.one("PlatformAiOperatorCap", { userId }); return r ? (r.updatedAt as Date).toISOString() : null; };
   const setOverride = (actor: string, targetUserId: string, dailyUsd: unknown, capInputs: typeof ENV | typeof PROD = ENV, extra: Record<string, unknown> = {}) =>
-    applyPlatformAiCapsAction({ action: "SET_OVERRIDE", targetUserId, dailyUsd, reason, ...extra }, actorOf(actor), deps(capInputs));
+    applyPlatformAiCapsAction({ action: "SET_OVERRIDE", targetUserId, dailyUsd, reason, expectedUpdatedAt: versionOf(targetUserId), ...extra }, actorOf(actor), deps(capInputs));
+  const resetOverride = (actor: string, targetUserId: string, extra: Record<string, unknown> = {}) =>
+    applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId, reason, expectedUpdatedAt: versionOf(targetUserId), ...extra }, actorOf(actor), deps());
 
   t.section("1. distinct actions (S2 09fa-3 / 09fb C1): one action per request, never blanket + override together");
   {
@@ -214,7 +219,8 @@ async function main() {
         !r.ok && r.code === "PLATFORM_CAP_NOT_SET" && caps().length === 0 && audits().length === 0, r);
       fake.seed("PlatformSetting", { key: K.platform, value: "abc", updatedById: w.sa });
       const inv = await setOverride(w.sa, w.op, 5, ENV);
-      t.check("platform setting INVALID ⇒ PLATFORM_CAP_NOT_SET (the cap does not resolve), nothing written", !inv.ok && inv.code === "PLATFORM_CAP_NOT_SET" && caps().length === 0, inv);
+      t.check("Q3 (S2 09fu): platform setting INVALID ⇒ PLATFORM_CAP_INVALID (distinct from NOT_SET), recorded with that code, nothing written",
+        !inv.ok && inv.code === "PLATFORM_CAP_INVALID" && refusals.at(-1)?.code === "PLATFORM_CAP_INVALID" && caps().length === 0 && audits().length === 0, inv);
       fake.table("PlatformSetting").length = 0;
     }
     for (const bad of [21, -1, 2.5, "5", null, undefined]) {
@@ -249,7 +255,14 @@ async function main() {
       const a2 = audits(AuditAction.PLATFORM_AI_OPERATOR_CAP_CHANGED).at(-1)!;
       t.check("change 7 → 3 with the observed version ⇒ previous 7, next 3", change.ok && caps()[0].dailyUsd === 3 && meta(a2).previous === 7 && meta(a2).next === 3, meta(a2));
       const stale = await setOverride(w.sa, w.op, 4, ENV, { expectedUpdatedAt: v });
-      t.check("a stale expectedUpdatedAt ⇒ CONFLICT, the row stands at 3", !stale.ok && stale.code === "CONFLICT" && caps()[0].dailyUsd === 3, stale);
+      t.check("Q6: a stale expectedUpdatedAt ⇒ CONFLICT, the row stands at 3", !stale.ok && stale.code === "CONFLICT" && caps()[0].dailyUsd === 3, stale);
+      const nullSet = await setOverride(w.sa, w.op, 4, ENV, { expectedUpdatedAt: null });
+      t.check("Q6: expecting no row (null) while one exists ⇒ CONFLICT, the row stands at 3", !nullSet.ok && nullSet.code === "CONFLICT" && caps()[0].dailyUsd === 3, nullSet);
+      const nAudits = audits().length;
+      const noVersion = await applyPlatformAiCapsAction({ action: "SET_OVERRIDE", targetUserId: w.op, dailyUsd: 4, reason }, actorOf(w.sa), deps());
+      t.check("Q6: SET_OVERRIDE without expectedUpdatedAt ⇒ VALIDATION (required), nothing written", !noVersion.ok && noVersion.code === "VALIDATION" && caps()[0].dailyUsd === 3 && audits().length === nAudits, noVersion);
+      const badVersion = await setOverride(w.sa, w.op, 4, ENV, { expectedUpdatedAt: 12345 });
+      t.check("Q6: a non-string version ⇒ VALIDATION", !badVersion.ok && badVersion.code === "VALIDATION", badVersion);
       const n = audits().length;
       const same = await setOverride(w.sa, w.op, 3);
       t.check("setting the same value ⇒ ok, changed=false, no write, no audit", same.ok && same.changed === false && audits().length === n, same);
@@ -270,19 +283,26 @@ async function main() {
   {
     const w = await world();
     fake.seed("PlatformAiOperatorCap", { userId: w.op, dailyUsd: 9, updatedById: w.sa });
-    const r = await applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId: w.op, reason }, actorOf(w.sa), deps());
+    // Q6 (S2 09fu): expectedUpdatedAt is REQUIRED; a stale or null-while-present version ⇒ CONFLICT, the row stands.
+    const missing = await applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId: w.op, reason }, actorOf(w.sa), deps());
+    t.check("Q6: RESET_OVERRIDE without expectedUpdatedAt ⇒ VALIDATION, the row stands", !missing.ok && missing.code === "VALIDATION" && caps().length === 1, missing);
+    const staleReset = await resetOverride(w.sa, w.op, { expectedUpdatedAt: new Date(Date.now() - 3_600_000).toISOString() });
+    t.check("Q6: RESET_OVERRIDE with a stale version ⇒ CONFLICT, the row stands, no audit", !staleReset.ok && staleReset.code === "CONFLICT" && caps().length === 1 && audits().length === 0, staleReset);
+    const nullReset = await resetOverride(w.sa, w.op, { expectedUpdatedAt: null });
+    t.check("Q6: RESET_OVERRIDE expecting no row (null) while one exists ⇒ CONFLICT", !nullReset.ok && nullReset.code === "CONFLICT" && caps().length === 1, nullReset);
+    const r = await resetOverride(w.sa, w.op);
     const a = audits(AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET).at(-1);
     t.check("reset ⇒ the row is deleted", r.ok && caps().length === 0, r);
     t.check("…audit { targetRef, previous 9, next null, selfEdit false, reason }, no raw id",
       !!a && meta(a).targetRef === opaqueUserRef(w.op) && meta(a).previous === 9 && meta(a).next === null && meta(a).selfEdit === false && meta(a).reason.code === "TESTING"
       && a.userId == null && !JSON.stringify(a.metadata).includes(w.op), a);
-    const none = await applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId: w.op, reason }, actorOf(w.sa), deps());
+    const none = await resetOverride(w.sa, w.op);
     t.check("reset with no row ⇒ NOT_FOUND, no audit", !none.ok && none.code === "NOT_FOUND" && audits(AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET).length === 1, none);
     fake.seed("PlatformAiOperatorCap", { userId: w.revoked, dailyUsd: 4, updatedById: w.sa });
-    const cleanup = await applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId: w.revoked, reason }, actorOf(w.sa), deps());
+    const cleanup = await resetOverride(w.sa, w.revoked);
     t.check("a former operator's leftover override can still be reset (cleanup)", cleanup.ok && caps().length === 0, cleanup);
     fake.seed("PlatformAiOperatorCap", { userId: w.sa, dailyUsd: 4, updatedById: w.sa });
-    const self = await applyPlatformAiCapsAction({ action: "RESET_OVERRIDE", targetUserId: w.sa, reason }, actorOf(w.sa), deps());
+    const self = await resetOverride(w.sa, w.sa);
     t.check("self reset ⇒ selfEdit=true", self.ok && self.selfEdit === true && meta(audits(AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET).at(-1)!).selfEdit === true, self);
   }
 
@@ -319,7 +339,7 @@ async function main() {
     t.check("route GET as an SA ⇒ 200 with the read model, no-store", g.status === 200 && Array.isArray(g.body.operators) && g.body.blanket?.platform?.ceilingUsd === 100 && /no-store/.test(g.headers.get("cache-control") ?? ""), g.status);
     const p = await invoke<Record<string, any>>(POST as never, request("/api/admin/platform-ai-caps", { method: "POST", cookie: s.cookie, body: { action: "SET_BLANKET", key: "platform", valueUsd: 50, reason, expectedUpdatedAt: null } }));
     t.check("route POST SET_BLANKET as an SA ⇒ 200 { result, model }", p.status === 200 && p.body.result?.ok === true && p.body.model?.blanket?.platform?.effective?.usd === 50, p.body);
-    const p2 = await invoke<Record<string, any>>(POST as never, request("/api/admin/platform-ai-caps", { method: "POST", cookie: s.cookie, body: { action: "SET_OVERRIDE", targetUserId: w.customer, dailyUsd: 5, reason } }));
+    const p2 = await invoke<Record<string, any>>(POST as never, request("/api/admin/platform-ai-caps", { method: "POST", cookie: s.cookie, body: { action: "SET_OVERRIDE", targetUserId: w.customer, dailyUsd: 5, reason, expectedUpdatedAt: null } }));
     t.check("route POST SET_OVERRIDE on a customer ⇒ 400 NOT_ELIGIBLE + one PLATFORM_CONTROL_REFUSED row", p2.status === 400 && p2.body.code === "NOT_ELIGIBLE" && audits(AuditAction.PLATFORM_CONTROL_REFUSED).length === 1, p2.body);
     const p3 = await invoke<Record<string, any>>(POST as never, request("/api/admin/platform-ai-caps", { method: "POST", cookie: s.cookie, body: { action: "SET_BLANKET", key: "platform", valueUsd: 60, reason, expectedUpdatedAt: null } }));
     t.check("route POST with a stale version ⇒ 409 CONFLICT", p3.status === 409 && p3.body.code === "CONFLICT", p3.body);

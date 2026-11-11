@@ -118,15 +118,16 @@ export function resolveOneCap(raw: string | undefined, vercelEnv: string | undef
 // R2 for the OVERRIDE (D5 PR4, S2 09fq): a PRESENT override (a PlatformAiOperatorCap row)
 // that is not a candidate refuses CAP_INVALID too (the operator cap). The row reader
 // (parseOperatorCapRow, §1d) also treats a value outside 0..PLATFORM_AI_OPERATOR_CAP_CEILING_USD
-// as invalid (the table's CHECK bounds), so a corrupt row never reaches the clamp.
+// as invalid (the table's CHECK bounds). Q2 (S2 09fu): the resolver itself refuses an
+// override ABOVE the operator ceiling CAP_INVALID — an override is never clamped (a
+// SETTING / ENV above its ceiling still clamps, unchanged).
 //
 // E2 (S2 ruling, D5 PR2): ENV is resolved FIRST. An INVALID env value refuses
 // CAP_INVALID EVEN WHEN an override or setting would win: a malformed deployment
 // variable is a configuration defect we surface, never one a higher source hides.
 // A MISSING env stays non-blocking when a higher source exists.
 //
-// The code CEILING ($20 operator / $100 platform) clamps EVERY source: OPERATOR_OVERRIDE,
-// PLATFORM_SETTING, ENV (E1, S2 ruling, D5 PR2) and TEST_DEFAULT (the test defaults sit
+// The code CEILING ($20 operator / $100 platform) clamps PLATFORM_SETTING, ENV (E1, S2 ruling, D5 PR2) and TEST_DEFAULT (the test defaults sit
 // below it: a no-op). A clamped result reports source CEILING with the asked source and
 // value kept (askedSource / askedUsd, clamped=true). No cap env var is set on any
 // environment today, so the ENV clamp changes nothing in practice.
@@ -181,8 +182,10 @@ function resolveCap(
   const env = resolveOneCap(raw, vercelEnv, testDefault);
   if (!env.ok && env.cause === "CAP_INVALID") return env;
   // R2: a present but invalid SETTING or OVERRIDE refuses (null = absent = not set).
-  for (const [, value] of ordered) {
+  for (const [source, value] of ordered) {
     if (value !== null && value !== undefined && !isCapCandidate(value)) return { ok: false, cause: "CAP_INVALID" };
+    // Q2 (S2 09fu): an override above the ceiling is invalid, never clamped.
+    if (source === "OPERATOR_OVERRIDE" && isCapCandidate(value) && value > ceiling) return { ok: false, cause: "CAP_INVALID" };
   }
   for (const [source, value] of ordered) {
     if (isCapCandidate(value)) return clampTo(source, value, ceiling);
