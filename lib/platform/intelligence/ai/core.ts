@@ -1358,7 +1358,7 @@ async function runComposedBriefing(input: {
 
 // ── The request handler (the route calls it AFTER its own guards) ───────────
 
-export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER";
+export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER" | "GUARD_UNAVAILABLE";
 
 /**
  * P2b (design v2 §10, I-10) — the daily $ caps' reservation, as the handlers see it
@@ -1436,6 +1436,44 @@ export interface PlatformAiAskDeps {
    * `[customer h_…]` or the one `[customer not resolved]` literal. Absent ⇒ exactly as before.
    */
   subjects?: { resolve(ids: readonly SubjectIdentifier[]): Promise<SubjectResult> };
+  /**
+   * The bare-username guard (authz/people.ts runPickerGuard; S2 09fc G1–G6) on the RAW question, after the
+   * admission gates and BEFORE the spend reservation, the scrub, the subject slots and any provider call.
+   * A refusal ⇒ 422 USE_PEOPLE_PICKER (P5 callers) / EMAIL_REMINDER (others): no turn, no provider call.
+   * S2 09fl C1: REQUIRED for every deps object (type level); a deps object that still lacks it at run time
+   * (a JS caller, an `as` cast) is refused fail-closed — 503 GUARD_UNAVAILABLE, no provider call.
+   */
+  guard: PlatformAiGuard;
+}
+
+/**
+ * The guard's verdict, declared structurally (authz/people.ts PickerGuardVerdict is assignable to it): core.ts imports
+ * nothing new (its import list is pinned). The bodies' copy equals authz/people-chip.ts (pinned in people.test.ts).
+ * kind EMAIL is the verdict of a caller WITHOUT P5 authority (S2 09fl C3: a distinct code that never mentions the picker).
+ */
+export type PlatformAiGuardVerdict = { readonly pass: true } | { readonly pass: false; readonly kind: string };
+export type PlatformAiGuard = (rawQuestion: string) => Promise<PlatformAiGuardVerdict>;
+/** P5 callers: the picker is offered. */
+export const USE_PEOPLE_PICKER_BODY = Object.freeze({
+  error: "Looks like you typed a customer's username or email. Use @ to pick the customer so their details stay private.",
+  code: "USE_PEOPLE_PICKER", reason: "USE_PEOPLE_PICKER",
+});
+/** Callers without P5 authority: no picker exists for them, so the copy never mentions it. */
+export const EMAIL_REMINDER_BODY = Object.freeze({
+  error: "Don't type customer emails or usernames into questions.",
+  code: "EMAIL_REMINDER", reason: "EMAIL_REMINDER",
+});
+export const USE_PEOPLE_PICKER_STATUS = 422;
+/** A deps object without its guard at run time (C1): fail closed, before anything else of the turn. */
+export const GUARD_UNAVAILABLE_BODY = Object.freeze({ error: "Platform AI is unavailable right now.", code: "AI_UNAVAILABLE", reason: "GUARD_UNAVAILABLE" });
+
+/** Run the injected guard; absent or throwing ⇒ refused (fail closed). null ⇒ admitted. */
+export async function pickerGuardRefusal(guard: PlatformAiGuard | undefined, raw: string): Promise<PlatformAiHttp | null> {
+  if (typeof guard !== "function") return { status: 503, body: { ...GUARD_UNAVAILABLE_BODY } };
+  let v: PlatformAiGuardVerdict;
+  try { v = await guard(raw); } catch { v = { pass: false, kind: "UNAVAILABLE" }; }
+  if (v.pass) return null;
+  return { status: USE_PEOPLE_PICKER_STATUS, body: v.kind === "EMAIL" ? { ...EMAIL_REMINDER_BODY } : { ...USE_PEOPLE_PICKER_BODY } };
 }
 
 /**
@@ -1499,7 +1537,8 @@ export function parseAskBody(body: unknown): string | null {
 
 /**
  * ORDER: the flag (nothing else runs when it is off) → the body → the binding →
- * the kill switch → the global cost freeze → the daily turn cap → the daily $ caps
+ * the kill switch → the global cost freeze → the daily turn cap → the bare-username guard
+ * (authz/people.ts, on the RAW question; 422 USE_PEOPLE_PICKER, not a turn) → the daily $ caps
  * (operator, then platform; P2b — a reservation released after the turn) → the turn.
  * Every refusal happens BEFORE `generate` is called.
  */
@@ -1524,6 +1563,9 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       ? refuse(429, "DAILY_TURNS", { "Retry-After": String(secondsToUtcMidnight(now)) })
       : refuse(503, "ALLOWANCE_UNAVAILABLE");
   }
+  // S2 09fc G6 — the bare-username guard on the RAW question: before the spend, the scrub, the slots and the provider.
+  const guarded = await pickerGuardRefusal(deps.guard, question);
+  if (guarded) return guarded;
   const held = await admitPlatformAiSpend(deps.spend, deps.operatorId, now);
   if (held.refusal) {
     return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);

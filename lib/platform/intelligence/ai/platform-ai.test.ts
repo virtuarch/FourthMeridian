@@ -213,7 +213,7 @@ function askDeps(over: Partial<PlatformAiAskDeps> = {}): PlatformAiAskDeps & { c
   const calls: string[] = [];
   return {
     calls,
-    enabled: true, operatorId: "op_1", binding: opsBinding(OPS),
+    enabled: true, operatorId: "op_1", binding: opsBinding(OPS), guard: async () => ({ pass: true as const }), // S2 09fl C1: required
     admission: async () => { calls.push("admission"); return { paused: false, state: "OFF" }; },
     freeze: async () => { calls.push("freeze"); return { frozen: false, state: "OFF" }; },
     turns: async () => { calls.push("turns"); return { allowed: true, remaining: 5 }; },

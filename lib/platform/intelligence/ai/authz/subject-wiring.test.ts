@@ -54,7 +54,7 @@ async function main() {
       let resolved = false;
       const wrapped = subjects ? { resolve: async (ids: Parameters<NonNullable<typeof subjects>["resolve"]>[0]) => { resolved = true; return subjects.resolve(ids); } } : undefined;
       const res = await handlePlatformAiAsk({ question }, {
-        enabled: true, operatorId: "cop00000000000000000000cs1", binding: binding as never,
+        enabled: true, operatorId: "cop00000000000000000000cs1", binding: binding as never, guard: async () => ({ pass: true as const }), // S2 09fl C1: required
         admission: async () => ({ paused: false, state: "RUNNING" }), freeze: async () => ({ frozen: false, state: "OFF" }), turns: async () => ({ allowed: true, remaining: 5 }),
         generate: async ({ messages }) => {
           if (resolvedBeforeModel === null) resolvedBeforeModel = resolved;

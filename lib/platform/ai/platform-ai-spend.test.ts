@@ -269,7 +269,7 @@ async function main() {
     const binding = { surfaceLabel: "Ops", listMetrics: () => [], describeMetric: () => null, readMetric: async () => null, listPages: () => [], resolvePage: () => null } as unknown as PlatformAiBinding;
     const gate = (verdict: PlatformAiSpendGate["verdict"], log: string[]): PlatformAiSpendGate => ({ verdict, release: async () => { log.push("release"); } });
     const ask = (log: string[], spend: PlatformAiAskDeps["spend"], generate?: PlatformAiAskDeps["generate"]): PlatformAiAskDeps => ({
-      enabled: true, operatorId: "op_1", binding,
+      enabled: true, operatorId: "op_1", binding, guard: async () => ({ pass: true as const }), // S2 09fl C1: required (this test is about the $ gate)
       admission: async () => { log.push("admission"); return { paused: false, state: "OFF" }; },
       freeze: async () => { log.push("freeze"); return { frozen: false, state: "OFF" }; },
       turns: async () => { log.push("turns"); return { allowed: true, remaining: 5 }; },
@@ -312,7 +312,7 @@ async function main() {
     const conv = { id: "c".repeat(25), area: "PLATFORM_OPS", createdAt: NOW, lastMessageAt: NOW, deletedAt: null, firstQuestion: null };
     const access = { binding, scope: null } as unknown;
     const convDeps = (log: string[], spend: (() => Promise<PlatformAiSpendGate>) | undefined, kind: "LIMIT" | "FULL") => ({
-      areaAccess: async () => access, now: () => NOW,
+      areaAccess: async () => access, now: () => NOW, guard: async () => ({ pass: true as const }), // S2 09fl C1: required
       admission: async () => ({ paused: false }), freeze: async () => ({ frozen: false }), turns: async () => ({ allowed: true }),
       ...(spend ? { spend: async () => { log.push("spend"); return spend(); } } : {}),
       runTurn: async () => { log.push("runTurn"); return { status: "FAILED", failureCode: "PROVIDER" }; },

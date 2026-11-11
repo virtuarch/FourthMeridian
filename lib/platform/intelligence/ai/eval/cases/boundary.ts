@@ -84,8 +84,19 @@ export const BOUNDARY_CASES: readonly RouteCase[] = [
   },
   {
     kind: "route", id: "boundary.operator-typed-identity-is-scrubbed", pack: "boundary", gates: ["IDENTITY_LEAK"], operator: "cs",
-    // The OPERATOR types a customer's email and id (exact-identifier subject resolution is P5); the provider must receive them scrubbed.
-    turns: [{ question: `Is ${E0_CUSTOMERS[0].email} (${E0_CUSTOMERS[0].id}) affected by an incident?`, steps: [{ content: "I cannot look up a customer." }] }],
+    // The OPERATOR types a customer's id (exact-identifier subject resolution is P5); the provider must receive it scrubbed.
+    // (An EMAIL from a caller without P5 authority is now refused before the provider — the next case, S2 09fc G5.)
+    turns: [{ question: `Is ${E0_CUSTOMERS[0].id} affected by an incident?`, steps: [{ content: "I cannot look up a customer." }] }],
     check: ([o]) => [...(o.status === 200 ? [] : [`status ${o.status}`]), ...(o.requests.length > 0 ? [] : ["no provider request (the case would be vacuous)"])],
+  },
+  {
+    kind: "route", id: "boundary.operator-typed-email-is-refused", pack: "boundary", gates: ["IDENTITY_LEAK", "PEOPLE_PICKER_PRIVACY"], operator: "cs",
+    // S2 09fc G5 — the customers pack is OFF here, so no caller has P5 authority: an email-shaped string is refused
+    // 422 EMAIL_REMINDER (S2 09fl C3 — the non-P5 code; its copy never mentions the picker) by the REAL route's guard, before the spend and the provider (zero requests).
+    turns: [{ question: `Is ${E0_CUSTOMERS[0].email} (${E0_CUSTOMERS[0].id}) affected by an incident?`, steps: [{ content: "unreachable" }] }],
+    check: ([o]) => [
+      ...(o.status === 422 && o.body.code === "EMAIL_REMINDER" ? [] : [`status ${o.status} (want 422 EMAIL_REMINDER)`]),
+      ...(o.requests.length === 0 ? [] : [`${o.requests.length} provider request(s) (want 0)`]),
+    ],
   },
 ];

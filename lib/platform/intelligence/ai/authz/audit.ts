@@ -12,6 +12,10 @@
  *                           value is read; failure ⇒ masked.
  *   platformAiSubjectAudit  authz/subject.ts — PLATFORM_AI_SUBJECT_LOOKUP for EVERY outcome;
  *                           failure ⇒ the subject is not resolved.
+ *   platformAiPeopleSearchAudit  authz/people.ts — PLATFORM_AI_PEOPLE_SEARCH per @ picker search, BEFORE any
+ *                           label leaves; detail { surface, queryLength, resultCount, fingerprint? } (keyed);
+ *                           failure ⇒ the uniform empty response.
+ *   platformAiPeopleGuardAudit   authz/people.ts — PLATFORM_AI_PEOPLE_GUARD per refused question, code only.
  *
  * THE ACTOR is the operator of the FRESH guard of that call (the per-call recheck's result for
  * the row's area) — never a value from the request. A row whose area has no fresh guard, a
@@ -36,6 +40,7 @@ import type { BoundaryAuditRow, BoundaryAuditWriter } from "./boundary";
 import type { RecordRenderAudit, RecordViewedRow } from "./record-render";
 import type { FreshGuard } from "./recheck";
 import type { SubjectAuditRow, SubjectAuditWriter } from "./subject";
+import type { PeopleSearchAuditRow, PickerGuardAuditRow } from "./people";
 
 export const PLATFORM_AI_AUDIT_SURFACE = "platform-ai";
 
@@ -78,6 +83,37 @@ export function platformAiRenderAudit(client: OperatorActionWriteClient = system
   return (rows, guards) => {
     if (rows.some((r) => r.action !== AuditAction.PLATFORM_AI_RECORD_VIEWED)) return Promise.reject(new PlatformAiAuditRefused("ROW_INVALID"));
     return writeRecordRows(client, rows, guards);
+  };
+}
+
+/** authz/people.ts searchPeople `audit` — PLATFORM_AI_PEOPLE_SEARCH, counts + keyed fingerprint only (throws ⇒ the uniform empty response). */
+export function platformAiPeopleSearchAudit(client: OperatorActionWriteClient = systemDb): (row: PeopleSearchAuditRow) => Promise<void> {
+  return async (row) => {
+    if (!row.operatorId || !Number.isInteger(row.queryLength) || !Number.isInteger(row.resultCount) || (row.fingerprint !== null && !/^[0-9a-f]{8}$/.test(row.fingerprint))) {
+      throw new PlatformAiAuditRefused("ROW_INVALID");
+    }
+    await recordOperatorAction(client, {
+      actor: { userId: row.operatorId, via: "PLATFORM_GRANT", area: "CUSTOMER_SUCCESS" },
+      action: AuditAction.PLATFORM_AI_PEOPLE_SEARCH,
+      target: { kind: "PLATFORM_AI_SUBJECT", id: "people-search" },
+      result: "SUCCESS",
+      detail: { surface: PLATFORM_AI_AUDIT_SURFACE, queryLength: row.queryLength, resultCount: row.resultCount, ...(row.fingerprint ? { fingerprint: row.fingerprint } : {}) },
+    });
+  };
+}
+
+/** authz/people.ts runPickerGuard `audit` — PLATFORM_AI_PEOPLE_GUARD, a code-only row (never a token). */
+export function platformAiPeopleGuardAudit(primaryArea: PlatformArea, client: OperatorActionWriteClient = systemDb): (row: PickerGuardAuditRow) => Promise<void> {
+  return async (row) => {
+    if (!row.operatorId || !["USERNAME", "EMAIL", "LIMITED", "UNAVAILABLE"].includes(row.kind)) throw new PlatformAiAuditRefused("ROW_INVALID");
+    await recordOperatorAction(client, {
+      // A P5 caller's authority is its fresh CUSTOMER_SUCCESS grant; any other caller acts through the turn's area.
+      actor: { userId: row.operatorId, via: "PLATFORM_GRANT", area: row.p5 ? "CUSTOMER_SUCCESS" : primaryArea },
+      action: AuditAction.PLATFORM_AI_PEOPLE_GUARD,
+      target: { kind: "PLATFORM_AI_SUBJECT", id: "people-guard" },
+      result: "REFUSED",
+      detail: { surface: PLATFORM_AI_AUDIT_SURFACE, code: "USE_PEOPLE_PICKER", kind: row.kind },
+    });
   };
 }
 

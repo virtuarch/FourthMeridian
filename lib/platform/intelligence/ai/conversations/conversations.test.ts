@@ -212,6 +212,7 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   const noBinding = {} as PlatformAiBinding;
   const turnCalls: string[] = [];
   const deps: ConversationDeps & TurnRunDeps & { store: typeof store } = {
+    guard: async () => ({ pass: true as const }), // S2 09fl C1: required (the guard itself is covered in authz/people.test.ts)
     areaAccess: async (area, op): Promise<AreaAccess | null> => (areaCalls.push(area), grants.get(op)?.has(area))
       ? { resolvePage: (page) => (resolvable.has(page) ? { href: `/dashboard/platform/incidents?view=open` } : null), binding: noBinding } : null,
     store,

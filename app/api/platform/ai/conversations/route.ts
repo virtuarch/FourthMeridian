@@ -40,6 +40,7 @@ import {
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { conversationAreaAccess, conversationHeldAccess } from "./area-access";
 import { isSubjectResolutionEnabled, platformAiSubjectFlags } from "@/lib/platform/intelligence/ai/authz/subject.server";
+import { platformAiPickerGuard } from "@/lib/platform/intelligence/ai/authz/people.server";
 import { runConversationTurnForRoute } from "./turn-runner";
 
 export const runtime = "nodejs";
@@ -105,6 +106,8 @@ export async function POST(req: NextRequest) {
       runTurn: runConversationTurnForRoute,
       // P5 — subject resolution only while the customers pack flag is ON (strict, default OFF).
       subjectsEnabled: isSubjectResolutionEnabled, subjectFlags: platformAiSubjectFlags,
+      // S2 09fc G6 — the bare-username guard on every turn's RAW question (before anything is stored).
+      guard: (v, raw) => platformAiPickerGuard({ operatorId: v.operatorId, primaryArea: v.area })(raw),
     }));
   } catch (e) {
     return INTERNAL("create", e);

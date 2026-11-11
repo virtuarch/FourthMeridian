@@ -7,7 +7,8 @@
  *
  *   EMAIL       a full email address, a whole token, case-folded
  *   OPAQUE_REF  a full opaque reference `user #` + 8 lowercase hex (lib/platform/opaque-user-ref.ts;
- *               NOT the ≥ 6-char tail form the Customer Success list search accepts)
+ *               NOT the ≥ 6-char tail form the Customer Success list search accepts), or the @ people
+ *               picker's chip `[[cust:<8 hex>]]` (authz/people-chip.ts — the same reference, never a label)
  *   USER_ID     a full user cuid (`c` + 24 lowercase alphanumerics)
  *
  * No name, prefix, partial id, wildcard or fuzzy form is ever looked up. P8: a full INCIDENT id (the same
@@ -51,6 +52,7 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { OPERATOR_TEXT_PLACEHOLDERS, scrubOperatorText } from "@/lib/ai/privacy/scrub";
+import { CHIP_TOKEN_SOURCE } from "./people-chip";
 
 export const SUBJECT_FLOOR_MS = 300;
 export const SUBJECT_ABORT_MS = 1_500;
@@ -96,6 +98,10 @@ const SLOT_CHARS = /[]/g;
 
 /** Whole-token boundaries: an identifier is not part of a longer word / address. */
 const PATTERNS: readonly { kind: SubjectIdKind; re: RegExp; norm(s: string): string }[] = [
+  // The @ people picker's chip (authz/people-chip.ts): `[[cust:<8 hex>]]` IS an opaque reference — the same
+  // OPAQUE_REF path as a typed `user #<8 hex>` (limiter, fresh CS tier, digest lookup, audit, handle). First, so
+  // it owns its span. A forged chip is exactly a typed ref: unknown ⇒ the uniform `[customer not resolved]`.
+  { kind: "OPAQUE_REF", re: new RegExp(CHIP_TOKEN_SOURCE, "g"), norm: (s) => `user #${s.slice(7, 15)}` },
   { kind: "EMAIL", re: /(?<![A-Za-z0-9._%+@-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}(?![A-Za-z0-9_%+@-]|\.[A-Za-z0-9])/g, norm: (s) => s.toLowerCase() },
   { kind: "OPAQUE_REF", re: /(?<![A-Za-z0-9_#-])user #[0-9a-f]{8}(?![A-Za-z0-9_-])/g, norm: (s) => s },
   { kind: "USER_ID", re: /(?<![A-Za-z0-9_-])c[a-z0-9]{24}(?![A-Za-z0-9_-])/g, norm: (s) => s },

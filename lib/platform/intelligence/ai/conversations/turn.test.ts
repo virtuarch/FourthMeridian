@@ -319,7 +319,7 @@ async function main(): Promise<void> {
     });
     const throwing0 = (): Partial<TurnAdmissionDeps> => ({ admission: async () => { throw new Error("must not run"); }, turns: async () => { throw new Error("must not run"); } });
     const deps = (over: Partial<TurnAdmissionDeps> = {}) => ({
-      ...gates(over), store, now: () => NOW,
+      ...gates(over), store, now: () => NOW, guard: async () => ({ pass: true as const }), // S2 09fl C1: required
       areaAccess: async () => { calls.push("area"); return granted ? access : null; },
       runTurn: async () => { calls.push("turn"); return { status: "COMPLETE", answer: { v: 1, segments: [{ kind: "text", text: "ok" }], citations: [], notes: [], stop: "ANSWERED" }, evidenceRefs: [] } as ConversationTurnOutcome; },
     });

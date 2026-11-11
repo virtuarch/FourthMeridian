@@ -542,13 +542,18 @@ console.log("\n8. reuse (§11) — shared presentation only; nothing customer-on
     "@/components/ai/FailedTurn", "@/components/ai/MessageCard",
     "@/components/atlas/ConfirmDialog", "@/components/atlas/panels/Panel", "@/components/atlas/panels/PanelParts",
     "lucide-react", "react",
+    // Owner 2026-11-10 / S2 09fc: the @ people picker hook (sends chip tokens, never a label; stores nothing).
+    "./platform-ai-people-picker",
   ].sort().join(), importsOf(cmp));
   check("shared presentation imports: exactly these modules (the shared AI primitives + the model)", importsOf(pres).join() === [
     "./platform-ai-conversations-model", "./platform-ai-memory-model", "@/components/ai/Composer", "@/components/ai/Markdown",
     "@/components/ai/StarterLine", "@/components/ai/SuggestedPrompt", "lucide-react", "react",
     // P5 (S2 09dp): the customer-lookup notice text (pure, import-free).
     "@/lib/platform/intelligence/ai/authz/subject-notice",
+    // Owner 2026-11-10 / S2 09fc: the @ people picker binding — a TYPE only (the composer's seams).
+    "./platform-ai-people-picker",
   ].sort().join(), importsOf(pres));
+  check("…the picker import in the shared presentation is type-only", /^import type \{ PeoplePickerBinding \} from "\.\/platform-ai-people-picker";$/m.test(src(PRESENTATION)));
   const named = (c: string, mod: string) => (c.match(new RegExp(`import \\{([^}]*)\\} from "${mod.replace(/[/@]/g, "\\$&")}";`)) ?? [])[1]?.split(",").map((x) => x.trim()).filter(Boolean).sort().join() ?? "";
   check("from ConversationView only ConversationLog + ThinkingIndicator; from Composer only ComposerFrame; nothing from the barrel",
     named(cmp, "@/components/ai/ConversationView") === "ConversationLog,ThinkingIndicator" && named(pres, "@/components/ai/Composer") === "ComposerFrame"
