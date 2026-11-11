@@ -75,7 +75,7 @@ export interface ObservedTurn {
   segments: readonly ObservedSegment[];
   /** Citation values as rendered. */
   citations: readonly string[];
-  /** Tool names the turn called, in order (the runner reads them from the response trace). */
+  /** Tool names the turn called, in order (the runner reads them from the response `toolTrace`; the ask 200 body has no legacy `trace`, S2 09hz). */
   toolTrace: readonly string[];
   /** Error / refusal codes from the response body (e.g. a 422 code). */
   bodyCodes?: readonly string[];
