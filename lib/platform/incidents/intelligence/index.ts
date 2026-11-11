@@ -46,6 +46,7 @@ import {
   timelineEventOf,
 } from "./search-core";
 import { isRegistryCode } from "../codes";
+import { jobCommandForJob } from "../job-commands";
 import { attemptEndpointsFor, isPastStaleWindow, UNKNOWN_EVIDENCE } from "./staleness";
 import type {
   ArchivedIncidentFacts,
@@ -589,6 +590,29 @@ export async function incidentBelongsToItem(
     return row !== null && row.plaidItemId === plaidItemId;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Incident drawer PR-B (S2 09gg b) — the registered operations command incident
+ * `incidentId`'s OWN evidence maps to: the incident must exist (one primary-key
+ * read), and its newest occurrence's job (newestOccurrenceComponent) must map
+ * through job-commands.ts. Null otherwise. The operations route records the
+ * incident id ONLY when this equals the command it ran (action-context.ts
+ * verifiedJobIncidentId). Decides nothing about open/closed. Never throws.
+ */
+export async function incidentJobCommandId(
+  incidentId: string,
+  client: { syncIssue: Pick<Db["syncIssue"], "findUnique"> } & Pick<IncidentFactsReader, "syncIssueOccurrence"> = systemDb,
+): Promise<string | null> {
+  if (!INCIDENT_ID.test(incidentId)) return null;
+  try {
+    const row = await client.syncIssue.findUnique({ where: { id: incidentId }, select: { id: true } });
+    if (!row) return null;
+    const component = await newestOccurrenceComponent(incidentId, client);
+    return jobCommandForJob(component?.jobName ?? null)?.commandId ?? null;
+  } catch {
+    return null;
   }
 }
 
