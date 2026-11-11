@@ -169,7 +169,7 @@ async function main(): Promise<void> {
       "Your bank connection needs you to sign in again.",
     ];
     for (const t of nearMisses) check(`near-miss allowed: "${t}"`, lintIncidentCustomerUpdate(t, { verifiedRecovery: false, institution: "Example Bank" }).ok, codes(t));
-    check("another institution's name is not this incident's identifier (the lexicon is the guard)", !has("Chase", "IDENTIFIER", false, "Example Bank"));
+    check("another institution's name is not this incident's identifier (the lexicon is the guard)", !has("Institution B", "IDENTIFIER", false, "Example Bank"));
     check("an institution name shorter than 3 characters is never matched", !has("an update", "IDENTIFIER", false, "an"));
     const at600 = ("Our team is looking into it. ".repeat(30)).slice(0, INCIDENT_UPDATE_PARAGRAPH_MAX - 1) + "x";
     check("the cap is 600 characters: exactly 600 passes", at600.length === 600 && !has(at600, "TOO_LONG"), at600.length);
