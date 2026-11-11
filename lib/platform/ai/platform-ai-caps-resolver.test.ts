@@ -3,7 +3,8 @@
  *
  * 1. precedence matrix: OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/dev) > REFUSE
  *    for the operator cap; PLATFORM_SETTING > ENV > TEST_DEFAULT > REFUSE for the platform cap;
- * 2. invalid override / setting values are skipped (the next source wins);
+ * 2. a present but invalid SETTING refuses CAP_INVALID (S2 R2, 09fp); an invalid override is
+ *    still skipped (no override source yet; R2 applies to it in PR4); null = absent = not set;
  * 3. 0 is a cap of 0 (every turn refused), never "unlimited";
  * 4. the code ceilings ($20 / $100) clamp EVERY source with the clamped flag — ENV too
  *    since D5 PR2 (S2 E1); an INVALID env refuses even when a higher source wins (S2 E2);
@@ -110,19 +111,31 @@ function main() {
     check("an INVALID env value with no higher source still refuses CAP_INVALID", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "5.", vercelEnv: "preview" })); return refused(r.operator, "CAP_INVALID"); })());
   }
 
-  console.log("2. invalid override / setting values are skipped");
+  console.log("2. a present but invalid SETTING refuses CAP_INVALID (S2 R2); an invalid override is skipped (PR4: R2)");
   {
     const bad: unknown[] = [-1, 1.5, 0.01, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.5];
     for (const v of bad) {
-      const r = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: v as number, settingPerOperatorUsd: v as number, settingPlatformUsd: v as number }));
-      check(`${String(v)} skipped ⇒ ENV wins for both caps`, is(r.operator, 7, "ENV") && is(r.platform, 70, "ENV"), r);
+      const op = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", settingPerOperatorUsd: v as number }));
+      check(`R2: per-operator setting ${String(v)} ⇒ CAP_INVALID for OPERATOR (env 7 does NOT rescue it); platform unaffected`,
+        refused(op.operator, "CAP_INVALID") && is(op.platform, 70, "ENV") && (() => { const c = toResolvedCaps(op); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "OPERATOR"; })(), op);
+      const pl = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", settingPlatformUsd: v as number }));
+      check(`R2: platform setting ${String(v)} ⇒ CAP_INVALID for PLATFORM (env 70 does NOT rescue it); operator unaffected`,
+        refused(pl.platform, "CAP_INVALID") && is(pl.operator, 7, "ENV") && (() => { const c = toResolvedCaps(pl); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "PLATFORM"; })(), pl);
+      // Overrides: unchanged skip semantics until PR4 (no override source exists yet).
+      const ov = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: v as number }));
+      check(`override ${String(v)} still skipped ⇒ ENV wins (TODO PR4: R2)`, is(ov.operator, 7, "ENV"), ov.operator);
     }
     const r = resolvePlatformAiCaps(input({ operatorRaw: "7", operatorOverrideUsd: 2.5, settingPerOperatorUsd: 4 }));
     check("an invalid override falls through to a valid setting", is(r.operator, 4, "PLATFORM_SETTING"), r.operator);
+    check("R2: an invalid setting refuses even when a valid override would win", (() => { const x = resolvePlatformAiCaps(input({ operatorRaw: "7", operatorOverrideUsd: 3, settingPerOperatorUsd: 2.5 })); return refused(x.operator, "CAP_INVALID"); })());
     const t = resolvePlatformAiCaps(input({ vercelEnv: "development", operatorOverrideUsd: -3, settingPerOperatorUsd: -3, settingPlatformUsd: 1.25 }));
-    check("invalid override + settings, no env, development ⇒ TEST_DEFAULT", is(t.operator, 10, "TEST_DEFAULT") && is(t.platform, 50, "TEST_DEFAULT"), t);
+    check("R2: invalid settings in development ⇒ CAP_INVALID (the test default does NOT rescue them)", refused(t.operator, "CAP_INVALID") && refused(t.platform, "CAP_INVALID"), t);
     const p = resolvePlatformAiCaps(input({ vercelEnv: "production", operatorOverrideUsd: -1, settingPerOperatorUsd: 2.5, settingPlatformUsd: Number.NaN }));
-    check("invalid override + settings, nothing else, production ⇒ CAP_MISSING", refused(p.operator, "CAP_MISSING") && refused(p.platform, "CAP_MISSING"), p);
+    check("R2: invalid settings in production ⇒ CAP_INVALID (not CAP_MISSING)", refused(p.operator, "CAP_INVALID") && refused(p.platform, "CAP_INVALID"), p);
+    const absent = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", settingPerOperatorUsd: null, settingPlatformUsd: null }));
+    check("absent (null) settings are unchanged: not set ⇒ ENV", is(absent.operator, 7, "ENV") && is(absent.platform, 70, "ENV"), absent);
+    const absentProd = resolvePlatformAiCaps(input({ vercelEnv: "production" }));
+    check("absent settings + nothing else in production ⇒ CAP_MISSING (unchanged)", refused(absentProd.operator, "CAP_MISSING") && refused(absentProd.platform, "CAP_MISSING"), absentProd);
   }
 
   console.log("3. 0 means refuse every turn, never unlimited");

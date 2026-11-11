@@ -15,8 +15,9 @@
  *   1b. reads the two blanket cap PlatformSettings (D5 PR2) through THIS transaction
  *      client (no settings cache) and resolves both caps (platform-ai-spend.core.ts
  *      resolvePlatformAiCaps: setting > env > test default; ceilings clamp). An
- *      unreadable setting ⇒ the transaction throws ⇒ RESERVATION_UNAVAILABLE. Caps
- *      that refuse (MISSING outside preview/development) refuse here, before the
+ *      unreadable setting ⇒ the transaction throws ⇒ RESERVATION_UNAVAILABLE. A present
+ *      but invalid setting row ⇒ CAP_INVALID (S2 R2, 09fp). Caps that refuse (that, or
+ *      MISSING outside preview/development) refuse here, before the
  *      ledger reads. An INVALID env value refuses BEFORE the transaction (S2 E2);
  *   2. reads today's RETURNED platform_ai ledger rows (ONE read; the operator's are
  *      a subset by userId), the in-flight buckets (RateLimit
@@ -109,7 +110,7 @@ export async function resolveCapsInTx(tx: Pick<SpendTxClient, "platformSetting">
   const perOperator = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.perOperator);
   const platform = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.platform);
   for (const [scope, r] of [["OPERATOR", perOperator], ["PLATFORM", platform]] as const) {
-    if (r.state === "INVALID") console.error(`[platform-ai] cost cap setting invalid: scope=${scope}; ignored (next source applies)`);
+    if (r.state === "INVALID") console.error(`[platform-ai] cost cap setting invalid: scope=${scope}; refusing (CAP_INVALID)`);
   }
   return toResolvedCaps(resolvePlatformAiCaps({
     ...capInputs, operatorOverrideUsd: null,

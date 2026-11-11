@@ -8,7 +8,7 @@
  * 4. the reservation: locks (operator, then fleet) first, concurrency bounded, release idempotent,
  *    every failure a refusal (no transaction ⇒ RESERVATION_UNAVAILABLE, failing ledger ⇒ LEDGER_UNTRUSTED);
  * 4b. D5 PR2: the two blanket cap settings, read in the transaction after both locks through the tx
- *    client — setting > env > test default > CAP_MISSING; 0 refuses; invalid row skipped; read error
+ *    client — setting > env > test default > CAP_MISSING; 0 refuses; invalid row ⇒ CAP_INVALID (R2); read error
  *    ⇒ RESERVATION_UNAVAILABLE with zero provider calls; PLATFORM_AI_ENABLED off ⇒ no read at all;
  * 5. the handlers: COST_CAP ⇒ 429 + Retry-After before any provider call / store write; unavailable ⇒ 503;
  *    an admitted reservation is released after the turn, whatever the turn did;
@@ -351,15 +351,32 @@ async function main() {
       const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL });
       check("settings above the ceilings are clamped ($500 / $1000 ⇒ $20 / $100)", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 20 - reserve) && close(r.verdict.platformRemainingUsd, 100 - reserve), r.verdict);
     }
+    // S2 R2 (09fp): a PRESENT but invalid row refuses CAP_INVALID (env / test default never rescue it); ABSENT stays "not set".
+    for (const [label, settings, scope] of [
+      ["per-operator setting \"abc\"", { [K.perOperator]: "abc" }, "OPERATOR"],
+      ["per-operator setting \"-1\"", { [K.perOperator]: "-1" }, "OPERATOR"],
+      ["per-operator setting \"5.5\"", { [K.perOperator]: "5.5" }, "OPERATOR"],
+      ["platform setting \"abc\"", { [K.platform]: "abc" }, "PLATFORM"],
+      ["platform setting \"5.5\"", { [K.platform]: "5.5" }, "PLATFORM"],
+      ["platform setting \"\" (present, empty)", { [K.platform]: "" }, "PLATFORM"],
+    ] as const) {
+      for (const input of [caps("1", "2", "production"), caps(undefined, undefined, "preview")]) {
+        const c = makeClient({ settings });
+        const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL }));
+        check(`R2: ${label} (VERCEL_ENV=${input.vercelEnv}, env ${input.operatorRaw ?? "missing"}) ⇒ REFUSED CAP_INVALID, nothing reserved, no ledger read; codes-only log scope=${scope}`,
+          !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_INVALID" && c.inflight() === 0 && c.reads.length === 0
+          && lines.some((l) => l === `[platform-ai] cost cap setting invalid: scope=${scope}; refusing (CAP_INVALID)`)
+          && lines.every((l) => !/abc|5\.5|-1|op_a/.test(l)), { v: r.verdict, lines });
+      }
+    }
     {
-      const c = makeClient({ settings: { [K.perOperator]: "abc", [K.platform]: "1.5" } });
-      const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("1", "2", "production"), model: MODEL }));
-      check("an invalid setting row is skipped (the next source, env, applies) and logged as codes only",
-        r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 1 - reserve) && close(r.verdict.platformRemainingUsd, 2 - reserve)
-        && lines.length === 2 && lines.every((l) => /cost cap setting invalid: scope=(OPERATOR|PLATFORM)/.test(l) && !/abc|1\.5|op_a/.test(l)), { v: r.verdict, lines });
-      const p = makeClient({ settings: { [K.perOperator]: "-1", [K.platform]: "" } });
-      const { value: rp } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: p.client, caps: prodCapsMissing, model: MODEL }));
-      check("…in Production with no env an invalid row does NOT supply a cap ⇒ REFUSED CAP_MISSING", !rp.verdict.allowed && rp.verdict.detail === "UNAVAILABLE" && rp.verdict.cause === "CAP_MISSING", rp.verdict);
+      // The decision's ordering: operator before platform when both are invalid.
+      const c = makeClient({ settings: { [K.perOperator]: "x", [K.platform]: "y" } });
+      const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("1", "2", "production"), model: MODEL }));
+      check("R2: both rows invalid ⇒ CAP_INVALID", !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_INVALID", r.verdict);
+      const a = makeClient({ settings: {} });
+      const ra = await reservePlatformAiSpend("op_a", NOW, { client: a.client, caps: caps("1", "2", "production"), model: MODEL });
+      check("ABSENT rows unchanged: not set ⇒ env applies", ra.verdict.allowed && close(ra.verdict.operatorRemainingUsd, 1 - reserve), ra.verdict);
     }
     {
       const c = makeClient({ settingsFail: true, settings: { [K.perOperator]: "5", [K.platform]: "9" } });

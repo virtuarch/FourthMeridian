@@ -107,9 +107,16 @@ export function resolveOneCap(raw: string | undefined, vercelEnv: string | undef
 //   OPERATOR cap:  OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
 //   PLATFORM cap:                      PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
 //
-// An override / setting is a candidate only when it is a whole, finite, non-negative
-// number; anything else is skipped and the next source wins. 0 is a candidate and
-// refuses every turn, never "unlimited". ENV keeps its strict parse (resolveOneCap).
+// A setting / override is a candidate only when it is a whole, finite, non-negative
+// number. 0 is a candidate and refuses every turn, never "unlimited". ENV keeps its
+// strict parse (resolveOneCap).
+//
+// R2 (S2 ruling 09fp, D5 PR2): a PLATFORM_SETTING that is PRESENT (non-null) but not a
+// candidate REFUSES CAP_INVALID: a stored row is intended config, and skipping it could
+// silently raise the cap. null = absent = "not set" (the next source applies). Judged
+// regardless of the override, like the env rule E2. An invalid OVERRIDE is still
+// skipped (there is no override source yet).
+// TODO(D5 PR4): apply the same R2 rule to OPERATOR_OVERRIDE (a present invalid override ⇒ CAP_INVALID).
 //
 // E2 (S2 ruling, D5 PR2): ENV is resolved FIRST. An INVALID env value refuses
 // CAP_INVALID EVEN WHEN an override or setting would win: a malformed deployment
@@ -171,6 +178,11 @@ function resolveCap(
   // E2: env first — an INVALID env value refuses whatever a higher source says.
   const env = resolveOneCap(raw, vercelEnv, testDefault);
   if (!env.ok && env.cause === "CAP_INVALID") return env;
+  // R2: a present but invalid SETTING refuses (null = absent = not set).
+  for (const [source, value] of ordered) {
+    if (source === "PLATFORM_SETTING" && value !== null && value !== undefined && !isCapCandidate(value)) return { ok: false, cause: "CAP_INVALID" };
+  }
+  // An invalid OVERRIDE is skipped for now. TODO(D5 PR4): R2 applies to it too.
   for (const [source, value] of ordered) {
     if (isCapCandidate(value)) return clampTo(source, value, ceiling);
   }
@@ -225,7 +237,7 @@ export const PLATFORM_AI_CAP_SETTING_KEYS = Object.freeze({
 export type CapSettingRow =
   | { state: "ABSENT" }
   | { state: "SET"; usd: number }
-  /** A stored row that is not a whole, non-negative number of dollars. Skipped (the next source wins) and logged by the caller. */
+  /** A stored row that is not a whole, non-negative number of dollars. REFUSES CAP_INVALID (S2 R2, 09fp); logged by the caller (codes only). */
   | { state: "INVALID" };
 
 /** PURE — one blanket cap setting from its stored row (null/undefined = no row). */
@@ -237,9 +249,13 @@ export function parseCapSettingRow(raw: string | null | undefined): CapSettingRo
   return isCapCandidate(usd) ? { state: "SET", usd } : { state: "INVALID" };
 }
 
-/** The resolver's value for a parsed row: the dollars when SET, else null (not set). */
+/**
+ * The resolver's value for a parsed row: the dollars when SET, null when ABSENT (not set),
+ * and NaN when INVALID: a present non-candidate, which the resolver refuses CAP_INVALID (R2).
+ */
 export function capSettingUsdOf(r: CapSettingRow): number | null {
-  return r.state === "SET" ? r.usd : null;
+  if (r.state === "SET") return r.usd;
+  return r.state === "ABSENT" ? null : Number.NaN;
 }
 
 /** PURE — both caps from env only (no override, no settings). A thin wrapper over resolvePlatformAiCaps, kept for tests. */
