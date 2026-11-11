@@ -34,7 +34,7 @@ The Daily Brief and Conversations send relevant portions of your financial conte
 
 ### Operator tools and AI
 
-<!-- DRAFT (owner decision D3) — wording pending owner approval. The "Last updated" date (LEGAL.privacy.updated in copy.ts) and the "Effective" line above are left unchanged; the owner updates them on publish. -->
+<!-- DRAFT (owner decision D3) — wording, including the AI-provider retention paragraph, still pending owner approval. The "Last updated" date (LEGAL.privacy.updated in copy.ts) and the "Effective" line above are left unchanged; the owner updates them on publish. -->
 
 When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. Only authorized staff can use them, and daily spending limits cap their use.
 
@@ -44,7 +44,7 @@ When these tools show your name, email address or username to authorized support
 
 Staff conversations with these tools expire after 7 days, and the tools keep no memory between conversations. Records of staff access are kept for security purposes.
 
-[OWNER TO CONFIRM: provider data-retention terms]
+Our AI provider, OpenAI, does not use this information to train its models under its API terms, and we have not opted in to any data sharing. We do not ask OpenAI to store these requests. Under its current API data policy, OpenAI may keep them for up to 30 days to monitor for abuse before deleting them, unless the law requires it to keep them longer or it is needed to protect against harm.
 
 ## 5. Sharing
 
