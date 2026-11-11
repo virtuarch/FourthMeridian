@@ -116,7 +116,7 @@ function main(): void {
   const models = [...readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8").matchAll(/^model (\w+) \{/gm)].map((m) => m[1]);
   const unreplayed = models.filter((m) => !state.tables.has(m));
   check("every schema model is a table the replay knows (the parser misses nothing)", unreplayed.length === 0, unreplayed.join(", "));
-  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit", "AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsProviderEvent"]) {
+  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit", "AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsProviderEvent", "PlatformAiOperatorCap"]) {
     check(`${t}: enabled + forced`, state.enabled.has(t) && state.forced.has(t));
   }
 
