@@ -386,6 +386,16 @@ export const AuditAction = {
   // the incident `detail`, provider text or a customer id.
   SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
   SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
+  // Incident customer update (owner yes; S2 ruling 09gg (c)) — a Customer Success
+  // operator APPROVED one customer update for an incident, from
+  // POST /api/platform/customer-success/incidents/[id]/customer-update/send
+  // (lib/platform/incidents/customer-update/service.ts). Reason REQUIRED. Written
+  // BEFORE the notification is created (an approval whose send then fails stays
+  // on record; nothing is marked sent). Target = SYNC_INCIDENT (the incident id);
+  // the customer appears ONLY as a PRIV-ref (opaqueUserRef) in detail.recipientRef.
+  // NEVER the message text: its length and a hash only (paragraphLength,
+  // paragraphHash, draftHash, edited), plus the remedy class and verifiedRecovery.
+  INCIDENT_CUSTOMER_UPDATE_APPROVED: "INCIDENT_CUSTOMER_UPDATE_APPROVED",
 
   // B11 — Platform AI conversations (docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §7.5).
   // CREATED / DELETED: the operator's own conversation, written through
@@ -783,6 +793,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.WALLET_HISTORY_RESUMED,
   AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
   AuditAction.SYNC_INCIDENT_RESOLVED,
+  AuditAction.INCIDENT_CUSTOMER_UPDATE_APPROVED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.

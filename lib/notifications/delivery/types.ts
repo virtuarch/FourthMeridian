@@ -103,6 +103,13 @@ export interface CommsDeliveryRow {
    * COMPLAINED / BOUNCED row of the same message); a send never sets it.
    */
   deliveredAt?: Date | null;
+  /**
+   * Incident customer update (S2 09gg c / 09gh) — the Platform Ops incident
+   * (SyncIssue.id, soft ref) an operator-approved INCIDENT_CUSTOMER_UPDATE send
+   * belongs to; stamped by createNotification's ledgerTag. Absent / null on
+   * every other row. Never rendered to a customer.
+   */
+  incidentId?: string | null;
 }
 
 /** The single write the ledger performs. Injected so tests never need a database. */

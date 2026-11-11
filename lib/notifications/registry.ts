@@ -44,6 +44,7 @@ import type {
 import { connectionAttentionCopy } from "@/lib/notifications/connection-attention";
 import { walletAttentionCopy } from "@/lib/notifications/wallet-attention";
 import { CONNECTION_REMOVED_EMAIL_ENABLED } from "@/lib/notifications/connection-removed-switch";
+import { renderIncidentCustomerUpdate } from "@/lib/notifications/incident-customer-update";
 
 // ── Shared policy values ──────────────────────────────────────────────────────
 
@@ -552,6 +553,34 @@ export const NOTIFICATION_REGISTRY = {
         "Your history is kept. You can reconnect it from Connections, or reply to support if you have questions.",
       href: "/dashboard/connections",
     }),
+  },
+  // WIRED (owner yes 2026-11-11; S2 ruling 09gg (c)): an operator-drafted,
+  // operator-APPROVED customer update about one Platform Ops incident. Produced
+  // ONLY by lib/platform/incidents/customer-update/service.ts, from the CS route
+  // POST /api/platform/customer-success/incidents/[id]/customer-update/send —
+  // reason-required audit (INCIDENT_CUSTOMER_UPDATE_APPROVED) written BEFORE this
+  // create, and the whole send behind INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED
+  // (strict "true"; absent ⇒ OFF in every environment). The frame is FIXED
+  // (lib/notifications/incident-customer-update.ts); only one linted paragraph
+  // varies. IN_APP only: EMAIL is excluded for the type (no preference can turn
+  // an email on), so every leg is a createNotification ledger row carrying the
+  // incident id. ONE per incident episode, for good: the ":once" key is never
+  // released (dismissing the notice cannot let a second one through).
+  INCIDENT_CUSTOMER_UPDATE: {
+    ...FINANCIAL,
+    status: "WIRED" as const,
+    id: "INCIDENT_CUSTOMER_UPDATE",
+    priority: "NORMAL" as const,
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    excludedChannels: ["EMAIL"] as const satisfies readonly NotificationChannel[],
+    dedupe: "suppress" as const,
+    dedupeKeyTemplate: "INCIDENT_CUSTOMER_UPDATE:incident:{incidentId}:once",
+    dedupeNeverReleases: true as const,
+    icon: "life-buoy",
+    // incidentId: SyncIssue.id (an opaque incident reference, never a customer id);
+    // paragraph: the operator-approved, linted paragraph (display payload).
+    pointerContract: ["incidentId", "paragraph"],
+    render: (d) => renderIncidentCustomerUpdate(d),
   },
   // VOCABULARY by Wave-3 investigation ruling (repository drift from the
   // original inventory): the ONLY DuplicateAccountCandidate writer today is

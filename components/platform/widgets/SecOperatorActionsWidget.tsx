@@ -63,6 +63,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   WALLET_HISTORY_RESUMED:       "Resumed wallet history",
   SYNC_INCIDENT_ACKNOWLEDGED:   "Acknowledged an incident",
   SYNC_INCIDENT_RESOLVED:       "Resolved an incident",
+  INCIDENT_CUSTOMER_UPDATE_APPROVED: "Approved an incident update to a customer",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",
   ACCOUNT_REACTIVATED:          "Reactivated an account",
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.
