@@ -50,7 +50,7 @@ const read = (f: string) => readFileSync(path.join(process.cwd(), f), "utf8");
 const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 const FIELDS = recordFieldCodes();
-const METRIC_KEYS = new Set(METRICS.map(metricKey));
+const METRIC_KEYS: ReadonlySet<string> = new Set<string>(METRICS.map(metricKey));
 const valid = (e: FigureSourceEntry): boolean => {
   const keys = JSON.stringify(Object.keys(e));
   if (e.source === "record") {
@@ -119,7 +119,8 @@ console.log("\nB1 — /ask positioning: the slice is exactly the rendered span; 
   const tampered = answer.map((s, i) => (i === 1 ? { ...s, text: s.text.replace("3", "4") } : s));
   check("a display answer that differs from the typed answer anywhere ⇒ [] (never a guessed position)", alignedFigureSources(typed, tampered, (t) => rendered.get(t) ?? "").length === 0);
   check("trailing display text the typed answer does not explain ⇒ []", alignedFigureSources(typed, [...answer, { kind: "text", text: "extra" }], (t) => rendered.get(t) ?? "").length === 0);
-  check("a link where text was expected ⇒ []", alignedFigureSources([txt("a"), fig("3", SCALAR)], [{ kind: "link", text: "a3", href: "/x" }], () => "").length === 0);
+  const linkOnly: AnswerSegment[] = [{ kind: "link", text: "a3", href: "/x" }];
+  check("a link where text was expected ⇒ []", alignedFigureSources([txt("a"), fig("3", SCALAR)], linkOnly, () => "").length === 0);
   check("not arrays (defensive) ⇒ []", alignedFigureSources(null as never, answer, () => "").length === 0);
 }
 
