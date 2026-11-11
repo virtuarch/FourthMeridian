@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   CI_ONLY_TURNS, LIVE_CASES, LIVE_CASES_MIN_PER_PACK, LIVE_TOOL_TIER, MAX_LIVE_CASES_PER_FACT, PA1_PACKS, PLACEHOLDER,
-  distinctFactKey, isCiOnly, livePackCounts, operatorTier, turnCounts, type LiveCase, type LiveTool,
+  distinctFactKey, formatGlobalFactLine, isCiOnly, liveGlobalFactReport, livePackCounts, operatorTier, turnCounts, type LiveCase, type LiveTool,
 } from "./cases";
 import { E0_T2_SENTINELS } from "../fixtures";
 import { expectedFacts, LIVE_ONLY_FACTS, PAYLOAD_COLUMNS, SENTINEL_FIRST, SENTINEL_LAST } from "@/scripts/e0-live/fixture-spec";
@@ -69,6 +69,39 @@ for (const p of PA1_PACKS) {
   check(`${p}: ≤${MAX_LIVE_CASES_PER_FACT} live cases per distinct fact`, (packs[p]?.maxLiveCasesPerFact ?? 0) <= MAX_LIVE_CASES_PER_FACT, packs[p]);
 }
 check("no distinct fact over the cap (case ids)", overCap.length === 0, overCap);
+
+console.log("\ne0-live cases — GLOBAL fact line (S2 09hc; information, not a gate)\n");
+const globalReport = liveGlobalFactReport();
+const pa1Live = LIVE_CASES.filter((c) => (PA1_PACKS as readonly string[]).includes(c.pack) && !isCiOnly(c));
+check("global: live cases = the PA-1 live cases (suite R excluded)", globalReport.liveCases === pa1Live.length && globalReport.liveCases === PA1_PACKS.reduce((n, p) => n + (packs[p]?.liveCases ?? 0), 0));
+check("global: distinct live facts = distinct keys over all PA-1 live cases", globalReport.distinctLiveFacts === new Set(pa1Live.map(distinctFactKey)).size);
+check("global: distinct overall ≤ Σ per-pack distinct (a fact reused across packs counts once)",
+  globalReport.distinctLiveFacts <= PA1_PACKS.reduce((n, p) => n + (packs[p]?.distinctLiveFacts ?? 0), 0));
+check("global: every listed fact is used >3× globally, with its case ids and packs", globalReport.overused.every((o) =>
+  o.uses > MAX_LIVE_CASES_PER_FACT && o.caseIds.length === o.uses && o.caseIds.every((id) => pa1Live.some((c) => c.id === id && distinctFactKey(c) === o.factKey))
+  && o.packs.length > 0 && o.packs.every((p) => o.caseIds.some((id) => pa1Live.find((c) => c.id === id)?.pack === p))));
+check("global: every fact used >3× globally is listed (none missed)", (() => {
+  const tally = new Map<string, number>();
+  for (const c of pa1Live) tally.set(distinctFactKey(c), (tally.get(distinctFactKey(c)) ?? 0) + 1);
+  return [...tally].filter(([, n]) => n > MAX_LIVE_CASES_PER_FACT).length === globalReport.overused.length;
+})());
+check("global: a fact reused across two packs >3× is listed, while each pack stays under the per-pack cap", (() => {
+  const base = pa1Live.find((c) => c.oracle.kind === "guarded-route");
+  if (!base) return false;
+  const synth: LiveCase[] = (["customers", "connections"] as const).flatMap((pack) => [1, 2].map((i) => ({ ...base, id: `L.x.${pack}.${i}`, pack })));
+  const r = liveGlobalFactReport(synth);
+  return r.liveCases === 4 && r.distinctLiveFacts === 1 && r.overused.length === 1 && r.overused[0].uses === 4
+    && r.overused[0].packs.join() === "connections,customers" && /facts used >3× globally: 1 — /.test(formatGlobalFactLine(r));
+})());
+check("global: ciOnly and suite-R cases are not counted", (() => {
+  const ci = LIVE_CASES.find(isCiOnly);
+  const rev = LIVE_CASES.find((c) => c.pack === "revocation");
+  return !!ci && !!rev && liveGlobalFactReport([ci, rev]).liveCases === 0 && /facts used >3× globally: 0$/.test(formatGlobalFactLine(liveGlobalFactReport([ci, rev])));
+})());
+check("global: the line carries no fixture identity (codes and placeholders only)", (() => {
+  const line = formatGlobalFactLine(globalReport);
+  return !/@|\bc[a-z0-9]{24}\b|[0-9a-f]{8}-[0-9a-f]{4}-/.test(line);
+})());
 check("distinctFactKey: rephrasing the same oracle read is the same fact", (() => {
   const a = LIVE_CASES.find((c) => c.oracle.kind === "guarded-route");
   return !!a && distinctFactKey({ ...a, id: "L.x.y", turns: ["a different phrasing"] }) === distinctFactKey(a);
@@ -170,6 +203,7 @@ console.log("\ne0-live cases — counts (turns; codes only)\n");
 for (const [p, n] of Object.entries(counts)) console.log(`  ${p.padEnd(12)} total=${n.total} live=${n.live} ciOnly=${n.ciOnly}`);
 console.log("  per pack (cases): total / live / distinct live facts / max per fact / ciOnly");
 for (const [p, n] of Object.entries(packs)) console.log(`  ${p.padEnd(12)} ${n.cases} / ${n.liveCases} / ${n.distinctLiveFacts} / ${n.maxLiveCasesPerFact} / ${n.ciOnly}`);
+console.log(`  ${formatGlobalFactLine(liveGlobalFactReport())}`);
 console.log("  ciOnly cases:");
 for (const c of LIVE_CASES.filter(isCiOnly)) console.log(`    ${c.id} (${c.turns.length} turn) — ${c.oracle.kind === "ci-only" ? c.oracle.reason : ""}`);
 

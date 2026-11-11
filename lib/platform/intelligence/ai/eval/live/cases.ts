@@ -742,6 +742,49 @@ export function livePackCounts(cases: readonly LiveCase[] = LIVE_CASES): Record<
   return out;
 }
 
+/**
+ * S2 09hc — the GLOBAL report line. INFORMATION ONLY, NOT A GATE: the ≤3 cap stays PER PACK
+ * (a fact reused across packs exercises different routing and tier). Over the LIVE cases of
+ * the PA-1 packs (suite R is separate, §4.6): the distinct facts overall, and every fact
+ * (distinctFactKey) used by more than MAX_LIVE_CASES_PER_FACT live cases globally, listed by
+ * its key with its packs and case ids. Plus each pack's distinct / live ratio (reported, not
+ * gated). Codes and placeholders only.
+ */
+export interface LiveGlobalFactReport {
+  liveCases: number;
+  distinctLiveFacts: number;
+  /** Facts used by > MAX_LIVE_CASES_PER_FACT live cases across all PA-1 packs, most-used first, then by key. */
+  overused: ReadonlyArray<{ factKey: string; uses: number; packs: readonly LivePack[]; caseIds: readonly string[] }>;
+  /** Per PA-1 pack: distinct live facts / live cases. */
+  ratios: ReadonlyArray<{ pack: LivePack; distinct: number; live: number }>;
+}
+
+export function liveGlobalFactReport(cases: readonly LiveCase[] = LIVE_CASES): LiveGlobalFactReport {
+  const pa1 = new Set<string>(PA1_PACKS);
+  const live = cases.filter((c) => pa1.has(c.pack) && !isCiOnly(c));
+  const byKey = new Map<string, LiveCase[]>();
+  for (const c of live) {
+    const k = distinctFactKey(c);
+    byKey.set(k, [...(byKey.get(k) ?? []), c]);
+  }
+  const overused = [...byKey]
+    .filter(([, cs]) => cs.length > MAX_LIVE_CASES_PER_FACT)
+    .map(([factKey, cs]) => ({ factKey, uses: cs.length, packs: [...new Set(cs.map((c) => c.pack))].sort(), caseIds: cs.map((c) => c.id) }))
+    .sort((a, b) => b.uses - a.uses || a.factKey.localeCompare(b.factKey));
+  const counts = livePackCounts(cases);
+  const ratios = PA1_PACKS.map((pack) => ({ pack, distinct: counts[pack]?.distinctLiveFacts ?? 0, live: counts[pack]?.liveCases ?? 0 }));
+  return { liveCases: live.length, distinctLiveFacts: byKey.size, overused, ratios };
+}
+
+/** The GLOBAL line as printed in the case-catalogue output and the run results (S2 09hc; information only). */
+export function formatGlobalFactLine(r: LiveGlobalFactReport): string {
+  const low = [...r.ratios].filter((x) => x.live > 0).sort((a, b) => a.distinct / a.live - b.distinct / b.live)[0];
+  const over = r.overused.length === 0 ? "none" : r.overused.map((o) => `${o.factKey} ×${o.uses} (${o.packs.join(",")})`).join("; ");
+  return `GLOBAL (information, not a gate): live cases ${r.liveCases}, distinct live facts ${r.distinctLiveFacts}`
+    + `; lowest per-pack distinct ratio ${low ? `${low.pack} ${low.distinct}/${low.live}` : "n/a"}`
+    + `; facts used >${MAX_LIVE_CASES_PER_FACT}× globally: ${r.overused.length}${r.overused.length ? ` — ${over}` : ""}`;
+}
+
 /** Turns per pack, split live / ciOnly (counts only). */
 export function turnCounts(cases: readonly LiveCase[] = LIVE_CASES): Record<LivePack, { total: number; live: number; ciOnly: number }> {
   const out = {} as Record<LivePack, { total: number; live: number; ciOnly: number }>;
