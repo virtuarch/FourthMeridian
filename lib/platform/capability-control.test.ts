@@ -393,6 +393,11 @@ function main() {
       // PLATFORM_OPS WRITE (never CONTROL), reason required, audited in the transition.
       "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
       "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
+      // Incident customer update (S2 ruling 09gg (c)) — preview and approve-and-send one
+      // customer update: fresh CUSTOMER_SUCCESS WRITE (never CONTROL), reason required on the
+      // send, audited before it; the send itself is behind INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED.
+      "app/api/platform/customer-success/incidents/[id]/customer-update/preview/route.ts",
+      "app/api/platform/customer-success/incidents/[id]/customer-update/send/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

@@ -297,6 +297,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // `resolved`) shows; both carry a reason.
   AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
   AuditAction.SYNC_INCIDENT_RESOLVED,
+  // Incident customer update (S2 09gg c) — approving a message to a customer is
+  // consequential (it is sent in the platform's name); reason required.
+  AuditAction.INCIDENT_CUSTOMER_UPDATE_APPROVED,
   // SEC-PLAT-2 — platform-wide signup / product switches, revoking a sent
   // invitation, and cross-tenant merchant merge decisions are consequential and
   // now carry a reason. Approve / deny / resend / direct invite stay

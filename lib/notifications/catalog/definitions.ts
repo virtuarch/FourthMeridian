@@ -425,6 +425,21 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     trigger: event("connection.removed_by_operator", "lib/platform/connections/operator-removal.ts"),
     registryEmailPreviewSlugs: ["notification--connection-removed-by-support"],
   },
+  INCIDENT_CUSTOMER_UPDATE: {
+    // BUILD_OFF: built, but the send is behind INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED (strict "true"; absent ⇒ OFF
+    // in every environment), so nothing sends it until the owner turns it on. Never editable, never automatable,
+    // no operator test send: the only producer is the reason-required CS approve-and-send route.
+    audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", status: "BUILD_OFF", displayName: "Incident update from support",
+    description:
+      "An operator-approved in-app update to the customer an incident affects: a fixed frame around ONE operator paragraph " +
+      "(≤ 600 characters, linted: no links, figures, account or institution identifiers, advice, or fixed / resolved / restored " +
+      "promises unless recovery is verified), drafted deterministically from the incident's remedy class, no AI. The approval is " +
+      "audited (reason required) before the send. At most one per incident episode, and none within 24 hours of a reconnect " +
+      "request notice for the same connection. In-app only (email excluded). Built and shipped OFF: the send needs " +
+      "INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED = \"true\".",
+    payload: { incidentId: ptr(), paragraph: disp() },
+    trigger: site("lib/platform/incidents/customer-update/service.ts", "app/api/platform/customer-success/incidents/[id]/customer-update/send/route.ts"),
+  },
   DUPLICATE_DETECTED: {
     audience: "ACCOUNT_HOLDER", consentClass: "AWARENESS", displayName: "Possible duplicate accounts",
     description: "Declared only: no human-review duplicate flow exists, so nothing produces it.",
