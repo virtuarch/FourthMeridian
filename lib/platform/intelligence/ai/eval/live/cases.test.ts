@@ -2,7 +2,8 @@
  * lib/platform/intelligence/ai/eval/live/cases.test.ts  (Platform AI E0-LIVE — case-catalogue integrity)
  *
  * Pins design E0-LIVE v1 §4 under S2 09ec (R-3, R-7), 09gs and 09gt:
- *   · exactly 50 turns per PA-1 pack; unique ids; plants ⊆ the fixture's payload columns;
+ *   · S2 09ha Q1: ≥50 LIVE cases per PA-1 pack, ≤3 live cases per distinct fact (no padding by
+ *     rephrasing), the ciOnly turns unchanged; unique ids; plants ⊆ the fixture's payload columns;
  *   · every expected fact id exists in scripts/e0-live/fixture-spec.ts (expectedFacts ∪ LIVE_ONLY_FACTS);
  *   · no fixture identity (sentinel names, e-mail / cuid shapes, E0-CI T2 sentinels) and no real
  *     institution name (the fixture-institution census) anywhere in the catalogue;
@@ -18,8 +19,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  LIVE_CASES, LIVE_TOOL_TIER, PA1_PACKS, PLACEHOLDER, TURNS_PER_PACK, isCiOnly, operatorTier, turnCounts,
-  type LiveCase, type LiveTool,
+  CI_ONLY_TURNS, LIVE_CASES, LIVE_CASES_MIN_PER_PACK, LIVE_TOOL_TIER, MAX_LIVE_CASES_PER_FACT, PA1_PACKS, PLACEHOLDER,
+  distinctFactKey, isCiOnly, livePackCounts, operatorTier, turnCounts, type LiveCase, type LiveTool,
 } from "./cases";
 import { E0_T2_SENTINELS } from "../fixtures";
 import { expectedFacts, LIVE_ONLY_FACTS, PAYLOAD_COLUMNS, SENTINEL_FIRST, SENTINEL_LAST } from "@/scripts/e0-live/fixture-spec";
@@ -39,7 +40,15 @@ const read = (f: string) => readFileSync(path.join(ROOT, f), "utf8");
 
 console.log("\ne0-live cases — shape\n");
 const counts = turnCounts();
-for (const p of PA1_PACKS) check(`${p}: exactly ${TURNS_PER_PACK} turns`, counts[p]?.total === TURNS_PER_PACK, counts[p]);
+const packs = livePackCounts();
+for (const p of PA1_PACKS) {
+  check(`${p}: ≥${LIVE_CASES_MIN_PER_PACK} live cases (S2 09ha Q1)`, (packs[p]?.liveCases ?? 0) >= LIVE_CASES_MIN_PER_PACK, packs[p]);
+  check(`${p}: ≥${LIVE_CASES_MIN_PER_PACK} live turns`, (counts[p]?.live ?? 0) >= LIVE_CASES_MIN_PER_PACK, counts[p]);
+  check(`${p}: ciOnly turns unchanged (${CI_ONLY_TURNS[p]})`, counts[p]?.ciOnly === CI_ONLY_TURNS[p], counts[p]);
+  check(`${p}: total turns = live + ciOnly`, counts[p]?.total === (counts[p]?.live ?? 0) + (counts[p]?.ciOnly ?? 0), counts[p]);
+}
+check("ciOnly turns total 40 (09ha Q1)", PA1_PACKS.reduce((n, p) => n + (counts[p]?.ciOnly ?? 0), 0) === 40);
+check("every ciOnly case is single-turn", LIVE_CASES.filter(isCiOnly).every((c) => c.turns.length === 1));
 check("suite R present (rev operator only)", LIVE_CASES.some((c) => c.pack === "revocation") && LIVE_CASES.filter((c) => c.pack === "revocation").every((c) => c.operator === "rev" && (c.attempts ?? 0) > 0));
 check("rev operator only in suite R", LIVE_CASES.filter((c) => c.operator === "rev").every((c) => c.pack === "revocation"));
 const ids = LIVE_CASES.map((c) => c.id);
@@ -50,6 +59,31 @@ check("every case carries the leak + injection gates", LIVE_CASES.every((c) => c
 check("plants ⊆ the fixture payload columns", LIVE_CASES.every((c) => (c.plants ?? []).every((p) => (PAYLOAD_COLUMNS as readonly string[]).includes(p))));
 check("expected tools are known pack tools", LIVE_CASES.every((c) => c.expectedTools.every((t) => t in LIVE_TOOL_TIER)));
 check("subjectLookups is a non-negative integer", LIVE_CASES.every((c) => Number.isInteger(c.subjectLookups) && c.subjectLookups >= 0));
+
+console.log("\ne0-live cases — ≤3 live cases per distinct fact (S2 09ha Q1)\n");
+const overCap: string[] = [];
+for (const p of PA1_PACKS) {
+  const tally = new Map<string, string[]>();
+  for (const c of LIVE_CASES.filter((x) => x.pack === p && !isCiOnly(x))) tally.set(distinctFactKey(c), [...(tally.get(distinctFactKey(c)) ?? []), c.id]);
+  for (const [, cs] of tally) if (cs.length > MAX_LIVE_CASES_PER_FACT) overCap.push(cs.join(" + "));
+  check(`${p}: ≤${MAX_LIVE_CASES_PER_FACT} live cases per distinct fact`, (packs[p]?.maxLiveCasesPerFact ?? 0) <= MAX_LIVE_CASES_PER_FACT, packs[p]);
+}
+check("no distinct fact over the cap (case ids)", overCap.length === 0, overCap);
+check("distinctFactKey: rephrasing the same oracle read is the same fact", (() => {
+  const a = LIVE_CASES.find((c) => c.oracle.kind === "guarded-route");
+  return !!a && distinctFactKey({ ...a, id: "L.x.y", turns: ["a different phrasing"] }) === distinctFactKey(a);
+})());
+check("distinctFactKey: another subject or another field is another fact", (() => {
+  const a = LIVE_CASES.find((c) => c.oracle.kind === "guarded-route" && !!c.oracle.params);
+  if (!a || a.oracle.kind !== "guarded-route") return false;
+  const otherSubject = { ...a, oracle: { ...a.oracle, params: { ...Object.fromEntries(Object.keys(a.oracle.params ?? {}).map((k) => [k, "{userId:C30}"])) } } };
+  const otherField = { ...a, oracle: { ...a.oracle, fields: [...a.oracle.fields, "checkedAt"] } };
+  return distinctFactKey(otherSubject) !== distinctFactKey(a) && distinctFactKey(otherField) !== distinctFactKey(a);
+})());
+check("distinctFactKey: an adversarial probe keys on its refs, plants and outcome — not its wording", (() => {
+  const a = LIVE_CASES.find((c) => c.oracle.kind === "none" && c.pack !== "revocation");
+  return !!a && distinctFactKey({ ...a, turns: [a.turns[0] + " Please."] }) === distinctFactKey(a);
+})());
 
 console.log("\ne0-live cases — fact ids and refusals\n");
 const FACT_IDS = new Set([...expectedFacts().map((f) => f.id), ...LIVE_ONLY_FACTS.map((f) => f.id)]);
@@ -134,6 +168,8 @@ check("a CS-operator live case with an e-mail placeholder spends ≥1 subject lo
 
 console.log("\ne0-live cases — counts (turns; codes only)\n");
 for (const [p, n] of Object.entries(counts)) console.log(`  ${p.padEnd(12)} total=${n.total} live=${n.live} ciOnly=${n.ciOnly}`);
+console.log("  per pack (cases): total / live / distinct live facts / max per fact / ciOnly");
+for (const [p, n] of Object.entries(packs)) console.log(`  ${p.padEnd(12)} ${n.cases} / ${n.liveCases} / ${n.distinctLiveFacts} / ${n.maxLiveCasesPerFact} / ${n.ciOnly}`);
 console.log("  ciOnly cases:");
 for (const c of LIVE_CASES.filter(isCiOnly)) console.log(`    ${c.id} (${c.turns.length} turn) — ${c.oracle.kind === "ci-only" ? c.oracle.reason : ""}`);
 
