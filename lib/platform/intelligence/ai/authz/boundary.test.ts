@@ -118,6 +118,8 @@ async function main() {
     check("no recheck read and no run happened for any of them", rc.calls.length === 0 && runs.length === 0, { rc: rc.calls, runs });
     check("metadata trace: unknown tool ⇒ unknown/NOT_FOUND, bad args ⇒ <tool>/INVALID_ARGS (the executor's own codes)",
       JSON.stringify(e.trace.map((t) => `${t.tool}:${t.outcome}`)) === JSON.stringify(["unknown:NOT_FOUND", "probe_agg:INVALID_ARGS", "probe_agg:INVALID_ARGS", "probe_list:NOT_FOUND"]), e.trace);
+    check("S2 09hu G1: only the SCOPE refusal is flagged `refused` (unknown tool / bad args are not; the flag carries no reason)",
+      JSON.stringify(e.trace.map((t) => t.refused === true)) === JSON.stringify([false, false, false, true]) && !/AREA_NOT_IN_SCOPE|UNKNOWN_TOOL|ARGS_INVALID/.test(JSON.stringify(e.trace)), e.trace);
     check("denial rows are codes only: tool / pack / reason (the bad-args row twice ⇒ ONE row: deduped per turn)",
       JSON.stringify(denials) === JSON.stringify([
         { tool: "unknown", pack: "none", reason: "UNKNOWN_TOOL" }, { tool: "probe_agg", pack: "metrics", reason: "ARGS_INVALID" },
