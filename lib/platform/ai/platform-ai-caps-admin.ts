@@ -57,6 +57,7 @@ import {
   updateSettingIfVersion, validateSetting, type PlatformSettingKeyType, type SettingWriteClient,
 } from "@/lib/platform-settings";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { OPEN_ACCOUNT_WHERE } from "@/lib/platform/customer/population";
 import { recordControlRefusal, type ControlRefusal } from "@/lib/platform/control-refusal";
 import { todayUTCISO } from "@/lib/time/clock";
 import {
@@ -216,7 +217,7 @@ async function loadOperators(client: CapsAdminReadClient): Promise<Array<UserRow
   const grants = await client.platformGrant.findMany({ where: { status: "ACTIVE" }, select: { userId: true }, distinct: ["userId"] });
   const grantIds = [...new Set(grants.map((g) => g.userId))];
   const users = await client.user.findMany({
-    where: { deactivatedAt: null, OR: [{ role: "SYSTEM_ADMIN" }, { id: { in: grantIds } }] },
+    where: { ...OPEN_ACCOUNT_WHERE, OR: [{ role: "SYSTEM_ADMIN" }, { id: { in: grantIds } }] },
     select: { id: true, name: true, username: true, role: true, deactivatedAt: true },
     orderBy: { username: "asc" },
   });
