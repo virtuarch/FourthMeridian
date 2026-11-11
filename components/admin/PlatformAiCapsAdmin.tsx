@@ -33,6 +33,8 @@ import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import { AlertTriangle, Gauge, Loader2, Pencil, RefreshCw, RotateCcw } from "lucide-react";
 import { BTN, BTN_NEUTRAL, BTN_QUIET, CadenceForm, FIELD, Notice, type OperatorReasonInput, type PolicyNotice } from "@/components/platform/widgets/policy-editor-kit";
 import { TONE_COLOR } from "@/components/platform/platform-surface";
+import { PlatformAiUsageTodayCard } from "@/components/platform/widgets/PlatformAiUsageToday";
+import { operatorTodayLine, refusalText, stateBadge } from "@/components/platform/widgets/platform-ai-usage-view";
 import {
   BLANKET_CAPTION, BLANKET_TITLE, CLEAR_TEXT, PAGE_INTRO, PAGE_TITLE, PLATFORM_AI_CAPS_URL, RESET_OVERRIDE_TEXT, SELF_EDIT_NOTE, VIA_WORD, YOU_BADGE,
   appliedText, blanketBody, capValueText, fitsText, isSelf, loweringWarningText, newCapLine, overrideBody, overrideText, platformCapUsd, resetBody,
@@ -188,7 +190,19 @@ function BlanketCap({ view, reserveUsd, submit, onReload }: { view: BlanketCapVi
 
 // ── Operators: one responsive grid (a table on desktop, stacked cards at 390px) ─
 
-const ROW_GRID = "md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.2fr)_auto] md:items-center md:gap-4";
+const ROW_GRID = "md:grid md:grid-cols-[minmax(0,1.6fr)_minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1.8fr)_auto] md:items-center md:gap-4";
+
+/** Today's usage cell: spend vs cap, questions, and the limit the next question meets (estimated). */
+function TodayCell({ today }: { today: OperatorCapView["today"] }) {
+  if (!today) return <Cell label="Today">—</Cell>;
+  const badge = stateBadge(today.state);
+  return (
+    <Cell label="Today">
+      <span className="tabular-nums" style={today.state === "OK" ? undefined : { color: TONE_COLOR[badge.tone] }}>{operatorTodayLine(today)}</span>
+      {today.refusal && <span className="block text-[11px] text-[var(--text-muted)]">{refusalText(today.refusal)}</span>}
+    </Cell>
+  );
+}
 
 function Cell({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -216,6 +230,7 @@ function OperatorRow({ op, self, maxUsd, platformUsd, submit, onReload }: { op: 
         <Cell label="Estimated daily spend cap">{capValueText(op.effective)} <span className="text-[11px] text-[var(--text-muted)]">· {sourceText(op.effective)}</span></Cell>
         <Cell label="Override">{overrideText(op)}</Cell>
         <Cell label="Worst case">{op.fitsTurns === null ? "—" : `about ${op.fitsTurns} question${op.fitsTurns === 1 ? "" : "s"}`}</Cell>
+        <TodayCell today={op.today} />
         <div className="flex flex-wrap gap-2 md:justify-end">
           <button type="button" onClick={startEdit} disabled={u.mode !== "view"} className={BTN} style={BTN_QUIET} aria-label={`Set override for ${op.label}`}>
             <Pencil size={12} aria-hidden /> Set override
@@ -270,6 +285,8 @@ export function PlatformAiCapsSurface({ model, selfUserId, submit, onReload }: {
   const hasSelf = model.operators.some((op) => isSelf(op, selfUserId));
   return (
     <>
+      {model.usageToday !== undefined && <PlatformAiUsageTodayCard usage={model.usageToday} />}
+
       <section aria-labelledby="pa-caps-blanket" className="space-y-3">
         <h2 id="pa-caps-blanket" className="text-lg font-semibold text-[var(--text-primary)]">Platform-wide defaults</h2>
         <div className="grid items-stretch gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr))" }}>
@@ -290,7 +307,7 @@ export function PlatformAiCapsSurface({ model, selfUserId, submit, onReload }: {
         ) : (
           <div className="md:rounded-2xl md:border md:border-[var(--border-hairline-strong)] md:bg-[var(--surface-muted)]">
             <div className={`hidden border-b border-[var(--border-hairline)] px-4 py-3 text-xs font-medium text-[var(--text-muted)] ${ROW_GRID}`} aria-hidden>
-              <span>Operator</span><span>Estimated daily spend cap</span><span>Override</span><span>Worst case</span><span className="text-right">Actions</span>
+              <span>Operator</span><span>Estimated daily spend cap</span><span>Override</span><span>Worst case</span><span>Today (estimated)</span><span className="text-right">Actions</span>
             </div>
             <ul className="flex flex-col gap-3 md:gap-0" aria-label="Operators">
               {model.operators.map((op) => (

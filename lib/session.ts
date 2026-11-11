@@ -349,8 +349,12 @@ export async function requireSystemAdmin(): Promise<
  * the DISABLE_SYSTEM_ADMIN kill switch HERE (env.isSystemAdminDisabled) and
  * feeds it to the pure rule, so both guards enforce it identically and no route
  * reads the env flag itself. The rule owns the decision; this owns the read.
+ *
+ * Exported (read-only use) so a surface that only DISPLAYS an admin affordance —
+ * e.g. the Platform Space "Manage limits" link — decides it with exactly the
+ * check requireSystemAdmin() enforces, server-side. It never authorizes anything.
  */
-function adminApiAccess(user: SessionUser) {
+export function adminApiAccess(user: SessionUser) {
   return decideAdminApiAccess({
     role:                user.role,
     requireTotpSetup:    user.requireTotpSetup,
