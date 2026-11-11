@@ -94,6 +94,8 @@ export const SECURITY_ONLY_ACTIONS: readonly AuditActionType[] = [
   AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT, AuditAction.BETA_INVITATION_REVOKED,
   AuditAction.PRODUCT_STATUS_CHANGED, AuditAction.CUSTOMER_POLICY_ASSIGNED, AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  // Platform AI caps D5 PR4 — a System Admin's per-operator $ override: Security Operations only.
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_CHANGED, AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET,
   AuditAction.CUSTOMER_COHORT_ASSIGNED, AuditAction.LOGIN, AuditAction.SESSION_REVOKED, AuditAction.TWO_FACTOR_RESET,
 ];
 

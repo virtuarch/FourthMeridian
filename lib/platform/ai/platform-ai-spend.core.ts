@@ -114,9 +114,11 @@ export function resolveOneCap(raw: string | undefined, vercelEnv: string | undef
 // R2 (S2 ruling 09fp, D5 PR2): a PLATFORM_SETTING that is PRESENT (non-null) but not a
 // candidate REFUSES CAP_INVALID: a stored row is intended config, and skipping it could
 // silently raise the cap. null = absent = "not set" (the next source applies). Judged
-// regardless of the override, like the env rule E2. An invalid OVERRIDE is still
-// skipped (there is no override source yet).
-// TODO(D5 PR4): apply the same R2 rule to OPERATOR_OVERRIDE (a present invalid override ⇒ CAP_INVALID).
+// regardless of the override, like the env rule E2.
+// R2 for the OVERRIDE (D5 PR4, S2 09fq): a PRESENT override (a PlatformAiOperatorCap row)
+// that is not a candidate refuses CAP_INVALID too (the operator cap). The row reader
+// (parseOperatorCapRow, §1d) also treats a value outside 0..PLATFORM_AI_OPERATOR_CAP_CEILING_USD
+// as invalid (the table's CHECK bounds), so a corrupt row never reaches the clamp.
 //
 // E2 (S2 ruling, D5 PR2): ENV is resolved FIRST. An INVALID env value refuses
 // CAP_INVALID EVEN WHEN an override or setting would win: a malformed deployment
@@ -178,11 +180,10 @@ function resolveCap(
   // E2: env first — an INVALID env value refuses whatever a higher source says.
   const env = resolveOneCap(raw, vercelEnv, testDefault);
   if (!env.ok && env.cause === "CAP_INVALID") return env;
-  // R2: a present but invalid SETTING refuses (null = absent = not set).
-  for (const [source, value] of ordered) {
-    if (source === "PLATFORM_SETTING" && value !== null && value !== undefined && !isCapCandidate(value)) return { ok: false, cause: "CAP_INVALID" };
+  // R2: a present but invalid SETTING or OVERRIDE refuses (null = absent = not set).
+  for (const [, value] of ordered) {
+    if (value !== null && value !== undefined && !isCapCandidate(value)) return { ok: false, cause: "CAP_INVALID" };
   }
-  // An invalid OVERRIDE is skipped for now. TODO(D5 PR4): R2 applies to it too.
   for (const [source, value] of ordered) {
     if (isCapCandidate(value)) return clampTo(source, value, ceiling);
   }
@@ -227,7 +228,7 @@ export function envOnlyCapsInput(input: CapInputs): PlatformAiCapsInput {
 // fleet-ceiling precedent: the descriptor default is "" and the reader resolves the row
 // itself). Read INSIDE the reservation transaction, after both advisory locks, through
 // the transaction client — no settings cache. The ceilings are the resolver's (§1b).
-// No application write path in this PR (S2 09fb C1: a later SA-only /admin action).
+// The one application writer is the SA-only service lib/platform/ai/platform-ai-caps-admin.ts (D5 PR4, S2 09fb C1).
 
 export const PLATFORM_AI_CAP_SETTING_KEYS = Object.freeze({
   perOperator: "platform_ai_daily_usd_per_operator",
@@ -256,6 +257,27 @@ export function parseCapSettingRow(raw: string | null | undefined): CapSettingRo
 export function capSettingUsdOf(r: CapSettingRow): number | null {
   if (r.state === "SET") return r.usd;
   return r.state === "ABSENT" ? null : Number.NaN;
+}
+
+// ── 1d. The per-operator override row (D5 PR4) ────────────────────────────
+//
+// One PlatformAiOperatorCap row per operator (D5 PR3: userId PK, dailyUsd Int, DB CHECK
+// 0..20). Read INSIDE the reservation transaction, after both advisory locks, through the
+// transaction client, no cache. No row ⇒ ABSENT (the blanket setting / env apply). A row
+// whose dailyUsd is not a whole number 0..PLATFORM_AI_OPERATOR_CAP_CEILING_USD ⇒ INVALID ⇒
+// CAP_INVALID OPERATOR (R2, S2 09fq). 0 is valid: that operator is off.
+
+/** PURE — the override from its row (null = no row). */
+export function parseOperatorCapRow(row: { dailyUsd: unknown } | null | undefined): CapSettingRow {
+  if (row === null || row === undefined) return { state: "ABSENT" };
+  const v = row.dailyUsd;
+  return isCapCandidate(v) && v <= PLATFORM_AI_OPERATOR_CAP_CEILING_USD ? { state: "SET", usd: v } : { state: "INVALID" };
+}
+
+/** PURE — how many worst-case turns fit under `capUsd` (null when the cap or the reserve is unknown). */
+export function platformAiTurnsThatFit(capUsd: number | null, reserveUsd: number | null): number | null {
+  if (capUsd === null || reserveUsd === null || !Number.isFinite(capUsd) || !Number.isFinite(reserveUsd) || reserveUsd <= 0 || capUsd < 0) return null;
+  return Math.floor(capUsd / reserveUsd + 1e-9);
 }
 
 /** PURE — both caps from env only (no override, no settings). A thin wrapper over resolvePlatformAiCaps, kept for tests. */

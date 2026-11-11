@@ -12,7 +12,8 @@
  *      so the platform in-flight count read below includes every turn admitted
  *      before this one (Platform AI volume is small: ≤ PLATFORM_AI_DAILY_TURNS per
  *      operator per day). The model call is NEVER inside the transaction;
- *   1b. reads the two blanket cap PlatformSettings (D5 PR2) through THIS transaction
+ *   1b. reads the two blanket cap PlatformSettings (D5 PR2) and the operator's own
+ *      PlatformAiOperatorCap override row (D5 PR4) through THIS transaction
  *      client (no settings cache) and resolves both caps (platform-ai-spend.core.ts
  *      resolvePlatformAiCaps: setting > env > test default; ceilings clamp). An
  *      unreadable setting ⇒ the transaction throws ⇒ RESERVATION_UNAVAILABLE. A present
@@ -37,7 +38,8 @@
  *
  * Codes only in logs (cause / scope enums) — never an id, a figure or text.
  * fm_system: AiInvocation is revoked from fm_app; RateLimit carries no tenant data.
- * NO SCHEMA CHANGE: AiInvocation and RateLimit are used exactly as the customer
+ * D5 PR4 reads PlatformAiOperatorCap (D5 PR3's table; fm_system only, RLS FORCE).
+ * AiInvocation and RateLimit are used exactly as the customer
  * allowance and the Comms authoring allowance use them.
  */
 
@@ -51,7 +53,7 @@ import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailure
 import { PLATFORM_AI_ASK_SURFACE } from "@/lib/platform/intelligence/ai/core";
 import type { TodaySpendGroup } from "@/lib/ai/allowance-core";
 import {
-  PLATFORM_AI_CAP_SETTING_KEYS, capSettingUsdOf, envOnlyCapsInput, parseCapSettingRow, platformAiReserveUsd,
+  PLATFORM_AI_CAP_SETTING_KEYS, capSettingUsdOf, envOnlyCapsInput, parseCapSettingRow, parseOperatorCapRow, platformAiReserveUsd,
   platformAiSpendDecision, resolvePlatformAiCaps, toResolvedCaps,
   type CapInputs, type PlatformAiSpendVerdict, type ResolvedCaps,
 } from "@/lib/platform/ai/platform-ai-spend.core";
@@ -66,6 +68,8 @@ interface LedgerRow { userId: string | null; provider: string; model: string; pr
 export interface SpendReadClient {
   aiInvocation: { findMany(args: unknown): Promise<LedgerRow[]> };
   platformSetting: { findMany(args: unknown): Promise<Array<{ key: string; value: string }>> };
+  /** D5 PR4 — the per-operator override row (fm_system only). */
+  platformAiOperatorCap: { findUnique(args: unknown): Promise<{ dailyUsd: unknown } | null> };
   rateLimit: { findMany(args: unknown): Promise<Array<{ key?: string; count: number }>> };
 }
 export interface SpendTxClient extends SpendReadClient {
@@ -96,24 +100,29 @@ export interface ReserveOptions {
 const NO_RELEASE = async () => {};
 
 /**
- * D5 PR2 — both caps, with the two blanket settings read through the TRANSACTION
- * client `tx` (never a cache, never the root client). A read error propagates: the
- * caller's transaction fails and the turn is refused RESERVATION_UNAVAILABLE.
- * Override stays null (the per-operator table is PR3/PR4).
+ * D5 PR2 + PR4 — both caps, with the two blanket settings AND the caller's own
+ * PlatformAiOperatorCap override row read through the TRANSACTION client `tx` (never
+ * a cache, never the root client). A read error propagates: the caller's transaction
+ * fails and the turn is refused RESERVATION_UNAVAILABLE. A present invalid override
+ * (not a whole number 0..20) refuses CAP_INVALID OPERATOR (S2 09fq); 0 turns that
+ * operator off.
  */
-export async function resolveCapsInTx(tx: Pick<SpendTxClient, "platformSetting">, capInputs: CapInputs): Promise<ResolvedCaps> {
+export async function resolveCapsInTx(tx: Pick<SpendTxClient, "platformSetting" | "platformAiOperatorCap">, capInputs: CapInputs, operatorId: string): Promise<ResolvedCaps> {
   const rows = await tx.platformSetting.findMany({
     where: { key: { in: [PLATFORM_AI_CAP_SETTING_KEYS.perOperator, PLATFORM_AI_CAP_SETTING_KEYS.platform] } },
     select: { key: true, value: true },
   });
+  const overrideRow = await tx.platformAiOperatorCap.findUnique({ where: { userId: operatorId }, select: { dailyUsd: true } });
   const rowOf = (key: string) => parseCapSettingRow(rows.find((r) => r.key === key)?.value);
   const perOperator = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.perOperator);
   const platform = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.platform);
+  const override = parseOperatorCapRow(overrideRow);
   for (const [scope, r] of [["OPERATOR", perOperator], ["PLATFORM", platform]] as const) {
     if (r.state === "INVALID") console.error(`[platform-ai] cost cap setting invalid: scope=${scope}; refusing (CAP_INVALID)`);
   }
+  if (override.state === "INVALID") console.error("[platform-ai] operator cap override invalid: scope=OPERATOR; refusing (CAP_INVALID)");
   return toResolvedCaps(resolvePlatformAiCaps({
-    ...capInputs, operatorOverrideUsd: null,
+    ...capInputs, operatorOverrideUsd: capSettingUsdOf(override),
     settingPerOperatorUsd: capSettingUsdOf(perOperator), settingPlatformUsd: capSettingUsdOf(platform),
   }));
 }
@@ -161,8 +170,8 @@ export async function reservePlatformAiSpend(operatorId: string, now: Date, opts
     const verdict = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${platformAiSpendLockKey(operatorId)}))`;
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${PLATFORM_AI_SPEND_FLEET_LOCK_KEY}))`;
-      // D5 PR2: the blanket cap settings, read under both locks through tx (S2 C2).
-      const caps = await resolveCapsInTx(tx, capInputs);
+      // D5 PR2 + PR4: the blanket cap settings and this operator's override, read under both locks through tx (S2 C2).
+      const caps = await resolveCapsInTx(tx, capInputs, operatorId);
       if (caps.state === "REFUSE") return { allowed: false, detail: "UNAVAILABLE", cause: caps.cause } satisfies PlatformAiSpendVerdict;
       const [rows, buckets, ledgerFailures] = await Promise.all([
         tx.aiInvocation.findMany({

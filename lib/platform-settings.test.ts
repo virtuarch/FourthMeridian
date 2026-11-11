@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { IndeterminateWriteError } from "@/lib/db/conditional-write";
 import {
-  AI_DAILY_ALLOWANCE_CEILING_USD, PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
+  AI_DAILY_ALLOWANCE_CEILING_USD, PLATFORM_AI_CAP_SETTING_MAX_USD, PlatformSettingKey, PlatformSettingValidationError, SETTING_DESCRIPTORS,
   createSettingIfAbsent, deleteSettingIfVersion, isPlatformSettingKey, listSettingDescriptors, setSetting,
   settingKeysForSurface, updateSettingIfVersion, validateSetting,
 } from "@/lib/platform-settings";
@@ -21,6 +21,7 @@ import { AI_COST_CONTROL_DEFAULTS, AI_COST_CONTROL_KEYS, AI_COST_CONTROL_SETTING
 import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
 import { parseAllowanceSettingValue } from "@/lib/entitlements/ai-allowance";
 import { alertEnabledKey } from "@/lib/alerts/evaluate";
+import { PLATFORM_AI_OPERATOR_CAP_CEILING_USD, PLATFORM_AI_PLATFORM_CAP_CEILING_USD } from "@/lib/platform/ai/platform-ai-spend.core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -139,20 +140,24 @@ async function main(): Promise<void> {
       Array.from({ length: 26 }, (_, n) => n).every((n) => (parseAllowanceSettingValue(String(n), 20) !== null) === (accepted("ai_daily_allowance_usd", String(n)) !== null)));
   }
 
-  console.log("\n4c. PLATFORM AI CAPS D5 PR2 — the two blanket Platform AI cap keys: registered, NO write surface");
+  console.log("\n4c. PLATFORM AI CAPS D5 PR2 + PR4 — the two blanket Platform AI cap keys: registered, NO generic write surface, max = the code ceiling");
   {
     const blanket = [PlatformSettingKey.PLATFORM_AI_DAILY_USD_PER_OPERATOR, PlatformSettingKey.PLATFORM_AI_DAILY_USD_PLATFORM] as const;
     check("the keys are the ruled strings", blanket[0] === "platform_ai_daily_usd_per_operator" && blanket[1] === "platform_ai_daily_usd_platform");
     for (const key of blanket) {
       const d = SETTING_DESCRIPTORS[key];
-      check(`${key}: registered, whole-dollar integer ≥ 0 (no descriptor max: the ceiling is the resolver's)`, isPlatformSettingKey(key) && d.valueType === "integer" && d.min === 0 && d.max === undefined);
+      const max = key === "platform_ai_daily_usd_per_operator" ? PLATFORM_AI_OPERATOR_CAP_CEILING_USD : PLATFORM_AI_PLATFORM_CAP_CEILING_USD;
+      check(`${key}: registered, whole-dollar integer 0..${max} (D5 PR4, S2 R4: descriptor max = the resolver's code ceiling)`, isPlatformSettingKey(key) && d.valueType === "integer" && d.min === 0 && d.max === max);
+      check(`${key}: the ceiling is refused at write (${max + 1} refused, ${max} accepted)`, refused(key, String(max + 1)) !== null && accepted(key, String(max)) === String(max));
       check(`${key}: ABSENT means not set — default "" (fails the integer rule, so it can never be read as a cap), ABSENT_MEANS_OFF`, d.default === "" && d.missingRow === "ABSENT_MEANS_OFF" && refused(key, "") !== null);
-      check(`${key}: NO write surface (no Policies, no AI Cost Controls, no admin security console), not operator-configurable, not resettable`,
-        d.writeSurfaces.length === 0 && !d.operatorConfigurable && !d.resettable && d.class === "SECURITY_SENSITIVE"
+      check(`${key}: NO generic write surface (no Policies, no AI Cost Controls, no admin security console), not operator-configurable; resettable (D5 PR4: clearing deletes the row)`,
+        d.writeSurfaces.length === 0 && !d.operatorConfigurable && d.resettable && d.class === "SECURITY_SENSITIVE"
         && !settingKeysForSurface("PLATFORM_OPS").includes(key) && !settingKeysForSurface("ADMIN_SECURITY").includes(key) && !settingKeysForSurface("GROWTH_REVENUE").includes(key));
       check(`${key}: 0 and whole dollars accepted; negative, fractional, words refused`,
-        accepted(key, "0") === "0" && accepted(key, "25") === "25" && refused(key, "-1") !== null && refused(key, "2.5") !== null && refused(key, "five") !== null);
+        accepted(key, "0") === "0" && accepted(key, "15") === "15" && refused(key, "-1") !== null && refused(key, "2.5") !== null && refused(key, "five") !== null);
     }
+    check("the descriptor maxima equal the resolver's ceilings ($20 / $100)",
+      PLATFORM_AI_CAP_SETTING_MAX_USD.perOperator === PLATFORM_AI_OPERATOR_CAP_CEILING_USD && PLATFORM_AI_CAP_SETTING_MAX_USD.platform === PLATFORM_AI_PLATFORM_CAP_CEILING_USD);
     check("they are not AI Cost Controls keys", !(Object.values(AI_COST_CONTROL_SETTING_KEYS) as string[]).some((k) => (blanket as readonly string[]).includes(k)));
   }
 

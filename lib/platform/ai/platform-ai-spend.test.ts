@@ -54,11 +54,12 @@ const prodCapsMissing = caps(undefined, undefined, "production");
 
 // ── an in-memory fm_system stand-in: serialises $transaction bodies (the advisory locks' effect) ──
 interface Row { userId: string | null; provider: string; model: string; promptTokens: number; cachedPromptTokens: number; completionTokens: number }
-function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: number; settings?: Record<string, string>; settingsFail?: boolean } = {}) {
+function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: number; settings?: Record<string, string>; settingsFail?: boolean; overrides?: Record<string, unknown>; overrideFail?: boolean } = {}) {
   const buckets = new Map<string, number>(); // `${key}@${iso}` → count
   const locks: string[] = [];
   const reads: unknown[] = [];
   const settingsReads: unknown[] = [];
+  const overrideReads: unknown[] = [];
   const events: string[] = [];
   let rootSettingsReads = 0;
   let chain: Promise<unknown> = Promise.resolve();
@@ -71,6 +72,15 @@ function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: nu
         settingsReads.push(args); events.push("settings");
         if (opts.settingsFail) throw new Error("settings read failed");
         return Object.entries(opts.settings ?? {}).filter(([k]) => args.where.key.in.includes(k)).map(([key, value]) => ({ key, value }));
+      },
+    },
+    // D5 PR4: the operator's own override row, read in the transaction after the settings.
+    platformAiOperatorCap: {
+      findUnique: async (args: { where: { userId: string } }) => {
+        overrideReads.push(args); events.push("override");
+        if (opts.overrideFail) throw new Error("override read failed");
+        const o = opts.overrides ?? {};
+        return Object.prototype.hasOwnProperty.call(o, args.where.userId) ? { dailyUsd: o[args.where.userId] } : null;
       },
     },
     rateLimit: {
@@ -102,7 +112,7 @@ function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: nu
     },
   } as unknown as SpendClient;
   const inflight = () => [...buckets.values()].reduce((a, b) => a + b, 0);
-  return { client, buckets, locks, reads, inflight, settingsReads, events, rootSettingsReads: () => rootSettingsReads };
+  return { client, buckets, locks, reads, inflight, settingsReads, overrideReads, events, rootSettingsReads: () => rootSettingsReads };
 }
 /** A RETURNED platform_ai row costing exactly `usd` on gpt-4o-mini (output $0.60 / M ⇒ tokens = usd / 0.6e-6). */
 const rowCosting = (userId: string, usd: number): Row => ({ userId, provider: "OPENAI", model: "gpt-4o-mini", promptTokens: 0, cachedPromptTokens: 0, completionTokens: Math.round(usd / 0.6e-6) });
@@ -284,7 +294,7 @@ async function main() {
       const c = makeClient();
       const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL }));
       check(`${label} ⇒ REFUSED CAP_MISSING after the locks + settings read, before any ledger read, nothing reserved`,
-        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_MISSING" && c.events.join() === "lock,lock,settings" && c.reads.length === 0 && c.inflight() === 0, { v: r.verdict, e: c.events });
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_MISSING" && c.events.join() === "lock,lock,settings,override" && c.reads.length === 0 && c.inflight() === 0, { v: r.verdict, e: c.events });
     }
     {
       const c = makeClient();
@@ -317,7 +327,7 @@ async function main() {
       const c = makeClient({ settings: { [K.perOperator]: "1", [K.platform]: "2" } });
       const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL });
       check("Production with NO env: both settings set ⇒ admitted from the settings", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 1 - reserve) && close(r.verdict.platformRemainingUsd, 2 - reserve), r.verdict);
-      check("…order: operator lock, fleet lock, settings read, then the ledger reads", c.events.join() === "lock,lock,settings,ledger" && c.locks[0] === platformAiSpendLockKey("op_a") && c.locks[1] === PLATFORM_AI_SPEND_FLEET_LOCK_KEY, c.events);
+      check("…order: operator lock, fleet lock, settings read, override read, then the ledger reads", c.events.join() === "lock,lock,settings,override,ledger" && c.locks[0] === platformAiSpendLockKey("op_a") && c.locks[1] === PLATFORM_AI_SPEND_FLEET_LOCK_KEY, c.events);
       const where = (c.settingsReads[0] as { where: { key: { in: string[] } } }).where;
       check("…ONE settings read for exactly the two keys, through the TRANSACTION client (the root client's reader untouched)",
         c.settingsReads.length === 1 && [...where.key.in].sort().join() === [K.perOperator, K.platform].sort().join() && c.rootSettingsReads() === 0, where);
@@ -415,14 +425,79 @@ async function main() {
       const spendSrc = strip("lib/platform/ai/platform-ai-spend.ts");
       const fnStart = spendSrc.indexOf("export async function resolveCapsInTx");
       const fn = spendSrc.slice(fnStart, spendSrc.indexOf("\n}\n", fnStart));
-      check("static: resolveCapsInTx reads through its tx parameter (tx.platformSetting.findMany), never a cache, the root client or the settings helpers",
-        /resolveCapsInTx\(tx: Pick<SpendTxClient, "platformSetting">/.test(fn) && /await tx\.platformSetting\.findMany\(/.test(fn)
+      check("static: resolveCapsInTx reads through its tx parameter (tx.platformSetting.findMany + tx.platformAiOperatorCap.findUnique), never a cache, the root client or the settings helpers",
+        /resolveCapsInTx\(tx: Pick<SpendTxClient, "platformSetting" \| "platformAiOperatorCap">, capInputs: CapInputs, operatorId: string\)/.test(fn) && /await tx\.platformSetting\.findMany\(/.test(fn)
+        && /await tx\.platformAiOperatorCap\.findUnique\(\{ where: \{ userId: operatorId \}, select: \{ dailyUsd: true \} \}\)/.test(fn)
         && !/getSetting|getAllSettings|cache|systemDb|client\./i.test(fn) && !/@\/lib\/platform-settings/.test(spendSrc), fn.slice(0, 200));
       const tx = spendSrc.slice(spendSrc.indexOf("$transaction(async (tx) => {"));
       check("static: the settings are resolved right after BOTH advisory locks, with the transaction client, before the ledger reads",
-        /PLATFORM_AI_SPEND_FLEET_LOCK_KEY\}\)\)`;\s*const caps = await resolveCapsInTx\(tx, capInputs\);\s*if \(caps\.state === "REFUSE"\) return \{ allowed: false, detail: "UNAVAILABLE", cause: caps\.cause \}/.test(tx)
+        /PLATFORM_AI_SPEND_FLEET_LOCK_KEY\}\)\)`;\s*const caps = await resolveCapsInTx\(tx, capInputs, operatorId\);\s*if \(caps\.state === "REFUSE"\) return \{ allowed: false, detail: "UNAVAILABLE", cause: caps\.cause \}/.test(tx)
         && tx.indexOf("resolveCapsInTx(tx") < tx.indexOf("tx.aiInvocation.findMany("));
       check("static: one settings read site in the module", (spendSrc.match(/platformSetting\./g) ?? []).length === 1);
+      check("static: one override read site in the module (no write)", (spendSrc.match(/platformAiOperatorCap\./g) ?? []).length === 1 && !/platformAiOperatorCap\.(create|update|upsert|delete)/.test(spendSrc));
+    }
+  }
+
+  console.log("\n4c. D5 PR4: the per-operator override, read in the transaction after both locks");
+  {
+    const K = PLATFORM_AI_CAP_SETTING_KEYS;
+    const reserve = platformAiReserveUsd(MODEL, TODAY)!;
+    {
+      // Override $1 beats the $5 setting and env $10; op_b (no override) keeps the $5 setting.
+      const c = makeClient({ settings: { [K.perOperator]: "5", [K.platform]: "100" }, overrides: { op_a: 1 } });
+      const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("10", "100", "production"), model: MODEL });
+      check("an override wins over the setting and env (remaining reflects $1)", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 1 - reserve), r.verdict);
+      check("…read ONCE, for exactly the caller's row, through the transaction client, after both locks and the settings, before the ledger",
+        c.overrideReads.length === 1 && JSON.stringify(c.overrideReads[0]) === JSON.stringify({ where: { userId: "op_a" }, select: { dailyUsd: true } }) && c.events.join() === "lock,lock,settings,override,ledger", { reads: c.overrideReads, e: c.events });
+      const b = await reservePlatformAiSpend("op_b", NOW, { client: c.client, caps: caps("10", "100", "production"), model: MODEL });
+      check("…another operator's override never applies to op_b (the setting $5 does)", b.verdict.allowed && close(b.verdict.operatorRemainingUsd, 5 - reserve), b.verdict);
+    }
+    {
+      const c = makeClient({ settings: { [K.platform]: "100" }, overrides: { op_a: 0 } });
+      const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("10", "100", "production"), model: MODEL }));
+      check("override 0 ⇒ that operator is off: the very first turn REFUSED COST_CAP OPERATOR, nothing reserved", !r.verdict.allowed && r.verdict.detail === "COST_CAP" && r.verdict.scope === "OPERATOR" && c.inflight() === 0, r.verdict);
+    }
+    {
+      // The override may sit above the blanket (up to the ceiling); the reserve math is unchanged.
+      const c = makeClient({ settings: { [K.perOperator]: "1", [K.platform]: "100" }, overrides: { op_a: 20 } });
+      const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL });
+      check("override $20 above a $1 blanket ⇒ admitted at $20 (remaining = 20 − reserve)", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 20 - reserve), r.verdict);
+    }
+    for (const bad of [21, -1, 2.5, "5", null, Number.NaN]) {
+      for (const input of [caps("10", "100", "production"), caps(undefined, undefined, "preview")]) {
+        const c = makeClient({ settings: { [K.perOperator]: "5", [K.platform]: "100" }, overrides: { op_a: bad } });
+        const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL }));
+        check(`R2 (S2 09fq): override row ${JSON.stringify(bad) ?? String(bad)} (VERCEL_ENV=${input.vercelEnv}) ⇒ REFUSED CAP_INVALID, nothing reserved, no ledger read; codes-only log`,
+          !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_INVALID" && c.inflight() === 0 && c.reads.length === 0
+          && lines.some((l) => l === "[platform-ai] operator cap override invalid: scope=OPERATOR; refusing (CAP_INVALID)") && lines.every((l) => !/op_a|21|2\.5/.test(l)), { v: r.verdict, lines });
+      }
+    }
+    {
+      const c = makeClient({ settings: { [K.perOperator]: "5", [K.platform]: "100" }, overrideFail: true });
+      const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("10", "100", "preview"), model: MODEL }));
+      check("an override read error ⇒ REFUSED RESERVATION_UNAVAILABLE (fail closed; the setting / env do NOT rescue it), nothing reserved, no ledger read",
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "RESERVATION_UNAVAILABLE" && c.inflight() === 0 && c.reads.length === 0, r.verdict);
+      check("…codes-only log (no id, no message)", lines.length === 1 && /cost reservation unavailable \(Error\)/.test(lines[0]) && !/op_a|override read failed/.test(lines[0]), lines);
+    }
+    {
+      // The caps cannot activate Platform AI: with PLATFORM_AI_ENABLED off, a generous override is never even read.
+      const binding = { surfaceLabel: "Ops", listMetrics: () => [], describeMetric: () => null, readMetric: async () => null, listPages: () => [], resolvePage: () => null } as unknown as PlatformAiBinding;
+      const c = makeClient({ settings: { [K.perOperator]: "20", [K.platform]: "100" }, overrides: { op_a: 20 } });
+      let spendCalls = 0; let providerCalls = 0;
+      const res = await handlePlatformAiAsk({ question: "hi" }, {
+        enabled: false, operatorId: "op_a", binding, guard: async () => ({ pass: true as const }),
+        admission: async () => ({ paused: false, state: "OFF" }), freeze: async () => ({ frozen: false, state: "OFF" }),
+        turns: async () => ({ allowed: true, remaining: 5 }),
+        spend: (id: string, now: Date) => { spendCalls++; return reservePlatformAiSpend(id, now, { client: c.client, caps: caps("20", "100", "production"), model: MODEL }); },
+        generate: async () => { providerCalls++; return { content: "ok", toolCalls: [], raw: { role: "assistant", content: "ok" }, usage: null }; },
+        model: MODEL, now: () => NOW, classify: () => "PROVIDER",
+      } as unknown as PlatformAiAskDeps);
+      check("the caps cannot activate Platform AI: PLATFORM_AI_ENABLED off ⇒ 404 with a $20 override set; no reservation, no override read, no provider call",
+        res.status === 404 && spendCalls === 0 && c.overrideReads.length === 0 && c.locks.length === 0 && providerCalls === 0, res);
+      const core = strip("lib/platform/intelligence/ai/core.ts");
+      const h = core.slice(core.indexOf("export async function handlePlatformAiAsk"));
+      check("static: handlePlatformAiAsk judges `enabled` BEFORE the $ gate (the caps sit behind PLATFORM_AI_ENABLED)",
+        /if \(!deps\.enabled\)/.test(h) && h.search(/if \(!deps\.enabled\)/) < h.indexOf("admitPlatformAiSpend(deps.spend"));
     }
   }
 

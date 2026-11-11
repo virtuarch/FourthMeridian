@@ -84,6 +84,26 @@ function main() {
   check("every allowlist entry names a live handler", stale.length === 0, stale.join(", "));
   check("every allowlist entry carries a reason", Object.values(ALLOWLIST).every((r) => r.trim().length >= 20));
 
+  // PLATFORM AI CAPS D5 PR4 — the SA-only caps route lives under app/api/admin (outside the
+  // census tree above). It is pinned here by name, with the SAME per-operator rule: every
+  // mutating handler calls a per-operator limiter after the fresh SYSTEM_ADMIN guard. One
+  // named entry; the census scope is not widened.
+  const PINNED_ADMIN_ROUTES = ["app/api/admin/platform-ai-caps/route.ts"] as const;
+  console.log("\n1b. pinned SYSTEM_ADMIN mutation routes outside app/api/platform");
+  for (const rel of PINNED_ADMIN_ROUTES) {
+    const src = code(readFileSync(join(ROOT, rel), "utf8"));
+    const starts = [...src.matchAll(/export\s+(?:(?:async\s+)?function|const)\s+(GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE)\b/g)];
+    const mutating = starts.map((m, i) => ({ method: m[1], body: src.slice(m.index!, starts[i + 1]?.index ?? src.length) }))
+      .filter((h) => (MUTATING as readonly string[]).includes(h.method));
+    check(`${rel}: has a mutating handler`, mutating.length > 0);
+    for (const h of mutating) {
+      check(`${rel}#${h.method}: calls a per-operator limiter`, PER_OPERATOR.test(h.body));
+      check(`${rel}#${h.method}: …keyed by the admin's user id, after requireFreshSystemAdmin`,
+        /limitByUser\(admin\.id,/.test(h.body) && h.body.indexOf("requireFreshSystemAdmin(") >= 0 && h.body.indexOf("requireFreshSystemAdmin(") < h.body.indexOf("limitByUser("));
+      check(`${rel}#${h.method}: not limited by IP alone`, !/\b(limitByIp|limitGlobal|checkIpLimitStrict)\s*\(/.test(h.body));
+    }
+  }
+
   console.log("\n2. the default limiter keys by operator, conservatively");
   {
     const lib = code(readFileSync(join(ROOT, "lib/platform/mutation-rate-limit.ts"), "utf8"));

@@ -69,6 +69,8 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   CUSTOMER_POLICY_ASSIGNED:        "Assigned a policy group",
   CUSTOMER_POLICY_OVERLAY_CHANGED: "Changed a policy overlay",
   CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "Changed a customer's AI allowance override",
+  PLATFORM_AI_OPERATOR_CAP_CHANGED: "Changed an operator's Platform AI daily cap",
+  PLATFORM_AI_OPERATOR_CAP_RESET:   "Removed an operator's Platform AI daily cap",
   CUSTOMER_COHORT_ASSIGNED:        "Assigned a cohort",
   CUSTOMER_POLICY_RECONCILED:      "Assigned Beta to unassigned accounts",
   POLICY_GROUP_CREATED:            "Created a policy group",
