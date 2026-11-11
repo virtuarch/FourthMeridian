@@ -1,15 +1,16 @@
 /**
- * lib/platform/ai/platform-ai-caps-resolver.test.ts  (Platform AI caps D5 PR1: the pure resolver, no behaviour change)
+ * lib/platform/ai/platform-ai-caps-resolver.test.ts  (Platform AI caps D5 PR1 + PR2: the pure resolver)
  *
  * 1. precedence matrix: OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/dev) > REFUSE
  *    for the operator cap; PLATFORM_SETTING > ENV > TEST_DEFAULT > REFUSE for the platform cap;
  * 2. invalid override / setting values are skipped (the next source wins);
  * 3. 0 is a cap of 0 (every turn refused), never "unlimited";
- * 4. the code ceilings ($20 / $100) clamp override / setting with the clamped flag;
- *    ENV is NOT clamped in this PR (pins today's behaviour for S2's ruling);
+ * 4. the code ceilings ($20 / $100) clamp EVERY source with the clamped flag — ENV too
+ *    since D5 PR2 (S2 E1); an INVALID env refuses even when a higher source wins (S2 E2);
  * 5. the test default is preview/development only; Production with nothing set ⇒ CAP_MISSING;
- * 6. equivalence: the production call (override + settings null) equals the PRE-D5 resolver,
- *    a frozen copy below, across the env matrix; static pin on the call site.
+ * 6. equivalence: env-only resolution equals the PRE-D5 resolver, a frozen copy below,
+ *    across the env matrix, with the one ruled change (E1: an ENV value above its ceiling
+ *    is lowered to it, source CEILING) applied to the legacy result; static pins on the call site.
  * No database, no provider, no env file.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/ai/platform-ai-caps-resolver.test.ts
@@ -61,6 +62,17 @@ function legacyResolve(i: CapInputs): ResolvedCaps {
   return { state: "OK", operatorUsd: op.usd, platformUsd: pl.usd, source: { operator: op.source, platform: pl.source } };
 }
 
+/** The one ruled change (S2 E1, D5 PR2): an OK ENV value above its ceiling is lowered to it, source CEILING. */
+function withE1Clamp(r: ResolvedCaps): ResolvedCaps {
+  if (r.state !== "OK") return r;
+  const op = Math.min(r.operatorUsd, PLATFORM_AI_OPERATOR_CAP_CEILING_USD);
+  const pl = Math.min(r.platformUsd, PLATFORM_AI_PLATFORM_CAP_CEILING_USD);
+  return { state: "OK", operatorUsd: op, platformUsd: pl, source: {
+    operator: op !== r.operatorUsd ? "CEILING" : r.source.operator,
+    platform: pl !== r.platformUsd ? "CEILING" : r.source.platform,
+  } };
+}
+
 function main() {
   console.log("1. precedence matrix");
   {
@@ -89,7 +101,12 @@ function main() {
     const op2 = resolvePlatformAiCaps(input({ vercelEnv: "production", settingPerOperatorUsd: 6 }));
     check("production: per-operator setting alone ⇒ operator OK, platform still CAP_MISSING", is(op2.operator, 6, "PLATFORM_SETTING") && refused(op2.platform, "CAP_MISSING"), op2);
     check("the per-operator setting never feeds the platform cap", (() => { const r = resolvePlatformAiCaps(input({ vercelEnv: "preview", settingPerOperatorUsd: 6 })); return is(r.platform, 50, "TEST_DEFAULT"); })());
-    check("a higher source wins over an INVALID env value (env not consulted)", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "abc", platformRaw: "$5", settingPerOperatorUsd: 5, settingPlatformUsd: 9 })); return is(r.operator, 5, "PLATFORM_SETTING") && is(r.platform, 9, "PLATFORM_SETTING"); })());
+    // S2 E2 (D5 PR2): env is resolved FIRST; an INVALID env value refuses whatever a higher source says.
+    check("E2: an INVALID env value refuses CAP_INVALID even when a setting would win (both caps)", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "abc", platformRaw: "$5", settingPerOperatorUsd: 5, settingPlatformUsd: 9 })); return refused(r.operator, "CAP_INVALID") && refused(r.platform, "CAP_INVALID"); })());
+    check("E2: an INVALID env value refuses even when an OVERRIDE would win", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "5.", vercelEnv: "preview", operatorOverrideUsd: 3, settingPerOperatorUsd: 4 })); return refused(r.operator, "CAP_INVALID"); })());
+    check("E2: …and the ResolvedCaps is REFUSE CAP_INVALID (operator first)", (() => { const r = toResolvedCaps(resolvePlatformAiCaps(input({ operatorRaw: "x", platformRaw: "y", operatorOverrideUsd: 3, settingPlatformUsd: 9 }))); return r.state === "REFUSE" && r.cause === "CAP_INVALID" && r.cap === "OPERATOR"; })());
+    check("E2: an INVALID platform env refuses the platform cap only; a valid operator setting still resolves", (() => { const r = resolvePlatformAiCaps(input({ platformRaw: "1e3", settingPerOperatorUsd: 5, settingPlatformUsd: 9 })); return is(r.operator, 5, "PLATFORM_SETTING") && refused(r.platform, "CAP_INVALID"); })());
+    check("E2: a MISSING env stays non-blocking when a higher source exists (production)", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: undefined, platformRaw: "", vercelEnv: "production", settingPerOperatorUsd: 5, settingPlatformUsd: 9 })); return is(r.operator, 5, "PLATFORM_SETTING") && is(r.platform, 9, "PLATFORM_SETTING"); })());
     check("an INVALID env value with no higher source still refuses CAP_INVALID", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "5.", vercelEnv: "preview" })); return refused(r.operator, "CAP_INVALID"); })());
   }
 
@@ -133,15 +150,19 @@ function main() {
     check("exactly at the ceiling ⇒ not clamped, own source", is(at.operator, 20, "OPERATOR_OVERRIDE") && is(at.platform, 100, "PLATFORM_SETTING"), at);
     const td = resolvePlatformAiCaps(input({ vercelEnv: "preview" }));
     check("the test defaults sit under the ceilings (not clamped)", td.operator.ok && !td.operator.clamped && td.platform.ok && !td.platform.clamped, td);
-    // ENV is deliberately NOT clamped in D5 PR1: today a strict env value up to 999999.99 is the cap.
-    // Clamping would lower such a cap (a behaviour change); S2 rules on it in a later PR.
+    // S2 E1 (D5 PR2): ENV is clamped to the ceilings like every other source (no env var is set anywhere: a no-op in practice).
     const envHi = resolvePlatformAiCaps(input({ operatorRaw: "50", platformRaw: "250.75" }));
-    check("CURRENT BEHAVIOUR (S2 to rule): ENV above the ceiling is NOT clamped (50 / 250.75, source ENV)", is(envHi.operator, 50, "ENV") && is(envHi.platform, 250.75, "ENV"), envHi);
-    check("CURRENT BEHAVIOUR: ENV 999999.99 is honoured as-is", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "999999.99", platformRaw: "999999.99" })); return is(r.operator, 999999.99, "ENV") && is(r.platform, 999999.99, "ENV"); })());
+    check("E1: ENV above the ceiling is clamped (50 ⇒ 20, 250.75 ⇒ 100), source CEILING, askedSource ENV, clamped",
+      is(envHi.operator, 20, "CEILING", { askedUsd: 50, clamped: true }) && envHi.operator.ok && envHi.operator.askedSource === "ENV"
+      && is(envHi.platform, 100, "CEILING", { askedUsd: 250.75, clamped: true }) && envHi.platform.ok && envHi.platform.askedSource === "ENV", envHi);
+    check("E1: ENV 999999.99 ⇒ the ceilings (20 / 100), clamped", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "999999.99", platformRaw: "999999.99" })); return is(r.operator, 20, "CEILING", { askedUsd: 999999.99, clamped: true }) && is(r.platform, 100, "CEILING", { askedUsd: 999999.99, clamped: true }); })());
+    check("E1: ENV exactly at the ceiling (20 / 100) ⇒ not clamped, source ENV", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "20", platformRaw: "100" })); return is(r.operator, 20, "ENV") && is(r.platform, 100, "ENV"); })());
+    check("E1: ENV 20.01 ⇒ 20 clamped (cents above the ceiling count)", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "20.01" })); return is(r.operator, 20, "CEILING", { askedUsd: 20.01, clamped: true }); })());
+    check("E1: the ResolvedCaps of a clamped env reports source CEILING", (() => { const r = resolvePlatformAiSpendCaps({ operatorRaw: "50", platformRaw: "40", vercelEnv: "production" }); return r.state === "OK" && r.operatorUsd === 20 && r.source.operator === "CEILING" && r.platformUsd === 40 && r.source.platform === "ENV"; })());
     check("ENV keeps its cents (12.50 ⇒ 12.5)", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "12.50", platformRaw: "0.01" })); return is(r.operator, 12.5, "ENV") && is(r.platform, 0.01, "ENV"); })());
   }
 
-  console.log("5. equivalence: env-only (production call) ≡ the PRE-D5 resolver");
+  console.log("5. equivalence: env-only ≡ the PRE-D5 resolver, except the ruled E1 clamp");
   {
     const raws: (string | undefined)[] = [undefined, "", "0", "1", "10", "12.5", "12.50", "0.01", "20", "21", "100", "101", "999999.99", "1000000",
       " 5", "5.", "1e3", "-1", "$5", "five", "05", "5.123", "0x10", "Infinity", "NaN"];
@@ -149,18 +170,29 @@ function main() {
     let cases = 0; const mismatches: unknown[] = [];
     for (const operatorRaw of raws) for (const platformRaw of raws) for (const vercelEnv of envs) {
       const i: CapInputs = { operatorRaw, platformRaw, vercelEnv };
-      const want = JSON.stringify(legacyResolve(i));
+      const want = JSON.stringify(withE1Clamp(legacyResolve(i)));
       const viaNew = JSON.stringify(toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(i))));
       const viaWrapper = JSON.stringify(resolvePlatformAiSpendCaps(i));
       cases++;
       if (viaNew !== want || viaWrapper !== want) mismatches.push({ i, want, viaNew, viaWrapper });
     }
-    check(`${cases} env cases: new resolver (nulls) and the wrapper equal the PRE-D5 result exactly`, mismatches.length === 0, mismatches.slice(0, 3));
+    check(`${cases} env cases: new resolver (nulls) and the wrapper equal the PRE-D5 result with ONLY the E1 clamp applied`, mismatches.length === 0, mismatches.slice(0, 3));
+    let changed = 0;
+    for (const operatorRaw of raws) for (const platformRaw of raws) for (const vercelEnv of envs) {
+      const i: CapInputs = { operatorRaw, platformRaw, vercelEnv };
+      if (JSON.stringify(legacyResolve(i)) !== JSON.stringify(resolvePlatformAiSpendCaps(i))) {
+        changed++;
+        const l = legacyResolve(i);
+        if (!(l.state === "OK" && (l.operatorUsd > PLATFORM_AI_OPERATOR_CAP_CEILING_USD || l.platformUsd > PLATFORM_AI_PLATFORM_CAP_CEILING_USD))) mismatches.push({ unexpectedChange: i });
+      }
+    }
+    check(`every case that differs from PRE-D5 (${changed}) is an OK result with an ENV value above its ceiling`, changed > 0 && mismatches.length === 0, mismatches.slice(0, 3));
     check("envOnlyCapsInput passes null for override and both settings", (() => { const e = envOnlyCapsInput({ operatorRaw: "1", platformRaw: "2", vercelEnv: "production" }); return e.operatorOverrideUsd === null && e.settingPerOperatorUsd === null && e.settingPlatformUsd === null && e.operatorRaw === "1" && e.platformRaw === "2" && e.vercelEnv === "production"; })());
     const src = strip("lib/platform/ai/platform-ai-spend.ts");
-    check("the production call site resolves env-only through the new resolver (override + settings null)",
-      /const caps = toResolvedCaps\(resolvePlatformAiCaps\(envOnlyCapsInput\(opts\.caps \?\? env\.platformAiSpendCapInputs\)\)\);/.test(src));
-    check("the production call site passes no override / setting value", !/operatorOverrideUsd|settingPerOperatorUsd|settingPlatformUsd/.test(src));
+    check("D5 PR2: the pre-transaction probe is env only and refuses ONLY on CAP_INVALID (a MISSING env waits for the settings)",
+      /const envProbe = toResolvedCaps\(resolvePlatformAiCaps\(envOnlyCapsInput\(capInputs\)\)\);\s*if \(envProbe\.state === "REFUSE" && envProbe\.cause === "CAP_INVALID"\)/.test(src));
+    check("D5 PR2: the in-transaction resolution passes the two settings and a NULL override (per-operator table is PR3/PR4)",
+      /operatorOverrideUsd: null,\s*settingPerOperatorUsd: capSettingUsdOf\(perOperator\), settingPlatformUsd: capSettingUsdOf\(platform\),/.test(src));
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

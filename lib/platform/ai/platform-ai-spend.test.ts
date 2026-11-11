@@ -7,6 +7,9 @@
  * 3. the decision: operator then platform, this turn's own reserve included, unpriced ⇒ refuse;
  * 4. the reservation: locks (operator, then fleet) first, concurrency bounded, release idempotent,
  *    every failure a refusal (no transaction ⇒ RESERVATION_UNAVAILABLE, failing ledger ⇒ LEDGER_UNTRUSTED);
+ * 4b. D5 PR2: the two blanket cap settings, read in the transaction after both locks through the tx
+ *    client — setting > env > test default > CAP_MISSING; 0 refuses; invalid row skipped; read error
+ *    ⇒ RESERVATION_UNAVAILABLE with zero provider calls; PLATFORM_AI_ENABLED off ⇒ no read at all;
  * 5. the handlers: COST_CAP ⇒ 429 + Retry-After before any provider call / store write; unavailable ⇒ 503;
  *    an admitted reservation is released after the turn, whatever the turn did;
  * 6. static pins: every Platform AI route passes the reservation; gate order; codes-only logs; fm_system.
@@ -23,9 +26,11 @@ import {
 } from "./platform-ai-spend.core";
 import {
   PLATFORM_AI_SPEND_FLEET_LOCK_KEY, platformAiInflightKey, platformAiSpendLockKey, reservePlatformAiSpend,
-  type SpendClient, type SpendTxClient,
+  type SpendClient, type SpendReservation, type SpendTxClient,
 } from "./platform-ai-spend";
 import { LEDGER_FAILURE_KEY } from "./ledger-health";
+import { PLATFORM_AI_CAP_SETTING_KEYS } from "./platform-ai-spend.core";
+import { PlatformSettingKey } from "@/lib/platform-settings";
 import { sumTodaySpend } from "@/lib/ai/allowance-core";
 import { inflightBucket } from "./allowance-reservation";
 import {
@@ -45,18 +50,29 @@ const NOW = new Date("2026-11-10T10:59:30.000Z");
 const TODAY = "2026-11-10";
 const close = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 const caps = (operatorRaw: string | undefined, platformRaw: string | undefined, vercelEnv: string | undefined): CapInputs => ({ operatorRaw, platformRaw, vercelEnv });
+const prodCapsMissing = caps(undefined, undefined, "production");
 
 // ── an in-memory fm_system stand-in: serialises $transaction bodies (the advisory locks' effect) ──
 interface Row { userId: string | null; provider: string; model: string; promptTokens: number; cachedPromptTokens: number; completionTokens: number }
-function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: number } = {}) {
+function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: number; settings?: Record<string, string>; settingsFail?: boolean } = {}) {
   const buckets = new Map<string, number>(); // `${key}@${iso}` → count
   const locks: string[] = [];
   const reads: unknown[] = [];
+  const settingsReads: unknown[] = [];
+  const events: string[] = [];
+  let rootSettingsReads = 0;
   let chain: Promise<unknown> = Promise.resolve();
   const bk = (key: string, w: Date) => `${key}@${w.toISOString()}`;
   const tx = {
-    $executeRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); return 1; },
-    aiInvocation: { findMany: async (args: unknown) => { reads.push(args); return opts.rows ?? []; } },
+    $executeRaw: async (_q: TemplateStringsArray, ...v: unknown[]) => { locks.push(String(v[0])); events.push("lock"); return 1; },
+    aiInvocation: { findMany: async (args: unknown) => { reads.push(args); events.push("ledger"); return opts.rows ?? []; } },
+    platformSetting: {
+      findMany: async (args: { where: { key: { in: string[] } } }) => {
+        settingsReads.push(args); events.push("settings");
+        if (opts.settingsFail) throw new Error("settings read failed");
+        return Object.entries(opts.settings ?? {}).filter(([k]) => args.where.key.in.includes(k)).map(([key, value]) => ({ key, value }));
+      },
+    },
     rateLimit: {
       findMany: async ({ where }: { where: { key: string | { startsWith: string }; windowStart: { in: Date[] } } }) => {
         if (typeof where.key === "string") return where.key === LEDGER_FAILURE_KEY && opts.ledgerFailures ? [{ count: opts.ledgerFailures }] : [];
@@ -70,7 +86,9 @@ function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: nu
       },
     },
   } as unknown as SpendTxClient;
-  const client: SpendClient = {
+  const client = {
+    // The ROOT client's settings reader: the reservation must never use it (S2 C2 — tx client only).
+    platformSetting: { findMany: async () => { rootSettingsReads++; return []; }, findUnique: async () => { rootSettingsReads++; return null; } },
     $transaction: <T,>(fn: (t: SpendTxClient) => Promise<T>): Promise<T> => {
       if (opts.txFails) return Promise.reject(new Error("no transaction"));
       const run = chain.then(() => fn(tx));
@@ -84,7 +102,7 @@ function makeClient(opts: { rows?: Row[]; txFails?: boolean; ledgerFailures?: nu
     },
   } as unknown as SpendClient;
   const inflight = () => [...buckets.values()].reduce((a, b) => a + b, 0);
-  return { client, buckets, locks, reads, inflight };
+  return { client, buckets, locks, reads, inflight, settingsReads, events, rootSettingsReads: () => rootSettingsReads };
 }
 /** A RETURNED platform_ai row costing exactly `usd` on gpt-4o-mini (output $0.60 / M ⇒ tokens = usd / 0.6e-6). */
 const rowCosting = (userId: string, usd: number): Row => ({ userId, provider: "OPENAI", model: "gpt-4o-mini", promptTokens: 0, cachedPromptTokens: 0, completionTokens: Math.round(usd / 0.6e-6) });
@@ -248,19 +266,146 @@ async function main() {
       const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCaps, model: "gpt-unknown" }));
       check("an unpriced model ⇒ REFUSED UNPRICED, nothing reserved", !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "UNPRICED" && c.inflight() === 0, r.verdict);
     }
-    for (const [label, input, cause] of [
-      ["production + MISSING", caps(undefined, undefined, "production"), "CAP_MISSING"],
-      ["unknown env (absent) + MISSING", caps(undefined, undefined, undefined), "CAP_MISSING"],
-      ["preview + INVALID", caps("ten", "50", "preview"), "CAP_INVALID"],
+    for (const [label, input] of [
+      ["preview + INVALID", caps("ten", "50", "preview")],
+      ["production + INVALID platform", caps("5", "abc", "production")],
+    ] as const) {
+      const c = makeClient({ settings: { platform_ai_daily_usd_per_operator: "5", platform_ai_daily_usd_platform: "9" } });
+      const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL }));
+      check(`${label} ⇒ REFUSED CAP_INVALID before any transaction (no lock, no settings read, no ledger read, nothing reserved) — E2: even with both settings set`,
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_INVALID" && c.locks.length === 0 && c.settingsReads.length === 0 && c.reads.length === 0 && c.inflight() === 0, r.verdict);
+    }
+    // D5 PR2: a MISSING env can be supplied by a setting, so it is judged INSIDE the transaction,
+    // after the locks and the settings read, before the ledger reads (unchanged refusal, nothing reserved).
+    for (const [label, input] of [
+      ["production + MISSING, no setting", caps(undefined, undefined, "production")],
+      ["unknown env (absent) + MISSING, no setting", caps(undefined, undefined, undefined)],
     ] as const) {
       const c = makeClient();
       const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL }));
-      check(`${label} ⇒ REFUSED ${cause} before any transaction (no lock, no read, nothing reserved)`, !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === cause && c.locks.length === 0 && c.reads.length === 0 && c.inflight() === 0, r.verdict);
+      check(`${label} ⇒ REFUSED CAP_MISSING after the locks + settings read, before any ledger read, nothing reserved`,
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_MISSING" && c.events.join() === "lock,lock,settings" && c.reads.length === 0 && c.inflight() === 0, { v: r.verdict, e: c.events });
     }
     {
       const c = makeClient();
       const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps(undefined, undefined, "preview"), model: MODEL });
       check("preview + MISSING ⇒ the test default caps admit the turn", r.verdict.allowed && r.verdict.operatorRemainingUsd < PLATFORM_AI_SPEND_TEST_DEFAULTS.operatorUsd, r.verdict);
+    }
+  }
+
+  console.log("\n4b. D5 PR2: the blanket cap settings, read in the transaction");
+  {
+    const K = PLATFORM_AI_CAP_SETTING_KEYS;
+    check("the core keys equal the registry's (literal keys in lib/platform-settings.ts)",
+      K.perOperator === PlatformSettingKey.PLATFORM_AI_DAILY_USD_PER_OPERATOR && K.platform === PlatformSettingKey.PLATFORM_AI_DAILY_USD_PLATFORM
+      && K.perOperator === "platform_ai_daily_usd_per_operator" && K.platform === "platform_ai_daily_usd_platform");
+    const reserve = platformAiReserveUsd(MODEL, TODAY)!;
+    const binding = { surfaceLabel: "Ops", listMetrics: () => [], describeMetric: () => null, readMetric: async () => null, listPages: () => [], resolvePage: () => null } as unknown as PlatformAiBinding;
+    {
+      // Settings $1 / $2 beat env $10 / $50: exactly floor(1 / reserve) turns fit for one operator.
+      const c = makeClient({ settings: { [K.perOperator]: "1", [K.platform]: "2" } });
+      const fit = Math.floor(1 / reserve);
+      const outs: SpendReservation[] = [];
+      for (let i = 0; i < fit + 1; i++) outs.push((await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("10", "50", "production"), model: MODEL }))).value);
+      const last = outs[outs.length - 1].verdict;
+      check(`the setting wins over env: ${fit} turns admitted at the $1 setting, the next COST_CAP OPERATOR (env $10 would admit it)`,
+        outs.slice(0, fit).every((o) => o.verdict.allowed) && !last.allowed && last.detail === "COST_CAP" && last.scope === "OPERATOR", last);
+      const first = outs[0].verdict;
+      check("…remaining reflects the setting caps ($1 / $2), not env", first.allowed && close(first.operatorRemainingUsd, 1 - reserve) && close(first.platformRemainingUsd, 2 - reserve), first);
+    }
+    {
+      const c = makeClient({ settings: { [K.perOperator]: "1", [K.platform]: "2" } });
+      const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL });
+      check("Production with NO env: both settings set ⇒ admitted from the settings", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 1 - reserve) && close(r.verdict.platformRemainingUsd, 2 - reserve), r.verdict);
+      check("…order: operator lock, fleet lock, settings read, then the ledger reads", c.events.join() === "lock,lock,settings,ledger" && c.locks[0] === platformAiSpendLockKey("op_a") && c.locks[1] === PLATFORM_AI_SPEND_FLEET_LOCK_KEY, c.events);
+      const where = (c.settingsReads[0] as { where: { key: { in: string[] } } }).where;
+      check("…ONE settings read for exactly the two keys, through the TRANSACTION client (the root client's reader untouched)",
+        c.settingsReads.length === 1 && [...where.key.in].sort().join() === [K.perOperator, K.platform].sort().join() && c.rootSettingsReads() === 0, where);
+    }
+    {
+      const c = makeClient({ settings: { [K.perOperator]: "1" } });
+      const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL }));
+      check("Production, only the per-operator setting, no env ⇒ REFUSED CAP_MISSING (the platform cap), nothing reserved",
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "CAP_MISSING" && c.inflight() === 0 && c.reads.length === 0, r.verdict);
+    }
+    for (const [label, input, opUsd, plUsd] of [
+      ["absent setting ⇒ env", caps("1", "2", "production"), 1, 2],
+      ["absent setting + no env, preview ⇒ the test default", caps(undefined, undefined, "preview"), PLATFORM_AI_SPEND_TEST_DEFAULTS.operatorUsd, PLATFORM_AI_SPEND_TEST_DEFAULTS.platformUsd],
+      ["absent setting + no env, development ⇒ the test default", caps(undefined, undefined, "development"), PLATFORM_AI_SPEND_TEST_DEFAULTS.operatorUsd, PLATFORM_AI_SPEND_TEST_DEFAULTS.platformUsd],
+    ] as const) {
+      const c = makeClient();
+      const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: input, model: MODEL });
+      check(`${label} ($${opUsd} / $${plUsd})`, r.verdict.allowed && close(r.verdict.operatorRemainingUsd, opUsd - reserve) && close(r.verdict.platformRemainingUsd, plUsd - reserve), r.verdict);
+    }
+    for (const [label, settings, scope] of [
+      ["per-operator setting 0", { [K.perOperator]: "0" }, "OPERATOR"],
+      ["platform setting 0", { [K.platform]: "0" }, "PLATFORM"],
+    ] as const) {
+      const c = makeClient({ settings });
+      const { value: r } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("10", "50", "production"), model: MODEL }));
+      check(`${label} ⇒ cap 0 ⇒ the very first turn REFUSED COST_CAP ${scope} (never unlimited), nothing reserved`,
+        !r.verdict.allowed && r.verdict.detail === "COST_CAP" && r.verdict.scope === scope && c.inflight() === 0, r.verdict);
+    }
+    {
+      const c = makeClient({ settings: { [K.perOperator]: "500", [K.platform]: "1000" } });
+      const r = await reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: prodCapsMissing, model: MODEL });
+      check("settings above the ceilings are clamped ($500 / $1000 ⇒ $20 / $100)", r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 20 - reserve) && close(r.verdict.platformRemainingUsd, 100 - reserve), r.verdict);
+    }
+    {
+      const c = makeClient({ settings: { [K.perOperator]: "abc", [K.platform]: "1.5" } });
+      const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("1", "2", "production"), model: MODEL }));
+      check("an invalid setting row is skipped (the next source, env, applies) and logged as codes only",
+        r.verdict.allowed && close(r.verdict.operatorRemainingUsd, 1 - reserve) && close(r.verdict.platformRemainingUsd, 2 - reserve)
+        && lines.length === 2 && lines.every((l) => /cost cap setting invalid: scope=(OPERATOR|PLATFORM)/.test(l) && !/abc|1\.5|op_a/.test(l)), { v: r.verdict, lines });
+      const p = makeClient({ settings: { [K.perOperator]: "-1", [K.platform]: "" } });
+      const { value: rp } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: p.client, caps: prodCapsMissing, model: MODEL }));
+      check("…in Production with no env an invalid row does NOT supply a cap ⇒ REFUSED CAP_MISSING", !rp.verdict.allowed && rp.verdict.detail === "UNAVAILABLE" && rp.verdict.cause === "CAP_MISSING", rp.verdict);
+    }
+    {
+      const c = makeClient({ settingsFail: true, settings: { [K.perOperator]: "5", [K.platform]: "9" } });
+      const { value: r, lines } = await quiet(() => reservePlatformAiSpend("op_a", NOW, { client: c.client, caps: caps("1", "2", "preview"), model: MODEL }));
+      check("a settings read error ⇒ REFUSED RESERVATION_UNAVAILABLE (fail closed; env / test default do NOT rescue it), nothing reserved, no ledger read",
+        !r.verdict.allowed && r.verdict.detail === "UNAVAILABLE" && r.verdict.cause === "RESERVATION_UNAVAILABLE" && c.inflight() === 0 && c.reads.length === 0, r.verdict);
+      check("…codes-only log (no id, no figure, no message)", lines.length === 1 && /cost reservation unavailable \(Error\)/.test(lines[0]) && !/op_a|settings read failed/.test(lines[0]), lines);
+      // Through the handler: the refusal is a 503 and the provider is never reached.
+      let providerCalls = 0;
+      const res = await quiet(() => handlePlatformAiAsk({ question: "hi" }, {
+        enabled: true, operatorId: "op_a", binding, guard: async () => ({ pass: true as const }),
+        admission: async () => ({ paused: false, state: "OFF" }), freeze: async () => ({ frozen: false, state: "OFF" }),
+        turns: async () => ({ allowed: true, remaining: 5 }),
+        spend: (id: string, now: Date) => reservePlatformAiSpend(id, now, { client: makeClient({ settingsFail: true }).client, caps: caps("1", "2", "preview"), model: MODEL }),
+        generate: async () => { providerCalls++; return { content: "ok", toolCalls: [], raw: { role: "assistant", content: "ok" }, usage: null }; },
+        model: MODEL, now: () => NOW, classify: () => "PROVIDER",
+      } as unknown as PlatformAiAskDeps));
+      check("…through the ask handler: 503 ALLOWANCE_UNAVAILABLE and ZERO provider calls", res.value.status === 503 && res.value.body.reason === "ALLOWANCE_UNAVAILABLE" && providerCalls === 0, res.value);
+    }
+    {
+      // PLATFORM_AI_ENABLED off ⇒ the handler returns before the $ gate: no cap / setting read at all.
+      const c = makeClient({ settings: { [K.perOperator]: "5" } });
+      let spendCalls = 0;
+      const res = await handlePlatformAiAsk({ question: "hi" }, {
+        enabled: false, operatorId: "op_a", binding, guard: async () => ({ pass: true as const }),
+        admission: async () => ({ paused: false, state: "OFF" }), freeze: async () => ({ frozen: false, state: "OFF" }),
+        turns: async () => ({ allowed: true, remaining: 5 }),
+        spend: (id: string, now: Date) => { spendCalls++; return reservePlatformAiSpend(id, now, { client: c.client, caps: caps("1", "2", "preview"), model: MODEL }); },
+        generate: async () => ({ content: "ok", toolCalls: [], raw: { role: "assistant", content: "ok" }, usage: null }),
+        model: MODEL, now: () => NOW, classify: () => "PROVIDER",
+      } as unknown as PlatformAiAskDeps);
+      check("PLATFORM_AI_ENABLED off ⇒ 404 and NO cap / setting read (no reservation, no settings read, no lock)",
+        res.status === 404 && spendCalls === 0 && c.settingsReads.length === 0 && c.locks.length === 0 && c.rootSettingsReads() === 0, res);
+    }
+    {
+      const spendSrc = strip("lib/platform/ai/platform-ai-spend.ts");
+      const fnStart = spendSrc.indexOf("export async function resolveCapsInTx");
+      const fn = spendSrc.slice(fnStart, spendSrc.indexOf("\n}\n", fnStart));
+      check("static: resolveCapsInTx reads through its tx parameter (tx.platformSetting.findMany), never a cache, the root client or the settings helpers",
+        /resolveCapsInTx\(tx: Pick<SpendTxClient, "platformSetting">/.test(fn) && /await tx\.platformSetting\.findMany\(/.test(fn)
+        && !/getSetting|getAllSettings|cache|systemDb|client\./i.test(fn) && !/@\/lib\/platform-settings/.test(spendSrc), fn.slice(0, 200));
+      const tx = spendSrc.slice(spendSrc.indexOf("$transaction(async (tx) => {"));
+      check("static: the settings are resolved right after BOTH advisory locks, with the transaction client, before the ledger reads",
+        /PLATFORM_AI_SPEND_FLEET_LOCK_KEY\}\)\)`;\s*const caps = await resolveCapsInTx\(tx, capInputs\);\s*if \(caps\.state === "REFUSE"\) return \{ allowed: false, detail: "UNAVAILABLE", cause: caps\.cause \}/.test(tx)
+        && tx.indexOf("resolveCapsInTx(tx") < tx.indexOf("tx.aiInvocation.findMany("));
+      check("static: one settings read site in the module", (spendSrc.match(/platformSetting\./g) ?? []).length === 1);
     }
   }
 

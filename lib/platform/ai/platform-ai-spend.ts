@@ -12,6 +12,12 @@
  *      so the platform in-flight count read below includes every turn admitted
  *      before this one (Platform AI volume is small: ≤ PLATFORM_AI_DAILY_TURNS per
  *      operator per day). The model call is NEVER inside the transaction;
+ *   1b. reads the two blanket cap PlatformSettings (D5 PR2) through THIS transaction
+ *      client (no settings cache) and resolves both caps (platform-ai-spend.core.ts
+ *      resolvePlatformAiCaps: setting > env > test default; ceilings clamp). An
+ *      unreadable setting ⇒ the transaction throws ⇒ RESERVATION_UNAVAILABLE. Caps
+ *      that refuse (MISSING outside preview/development) refuse here, before the
+ *      ledger reads. An INVALID env value refuses BEFORE the transaction (S2 E2);
  *   2. reads today's RETURNED platform_ai ledger rows (ONE read; the operator's are
  *      a subset by userId), the in-flight buckets (RateLimit
  *      `user:platform-ai-inflight:<id>`, current + previous HOUR bucket —
@@ -44,8 +50,9 @@ import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailure
 import { PLATFORM_AI_ASK_SURFACE } from "@/lib/platform/intelligence/ai/core";
 import type { TodaySpendGroup } from "@/lib/ai/allowance-core";
 import {
-  envOnlyCapsInput, platformAiReserveUsd, platformAiSpendDecision, resolvePlatformAiCaps, toResolvedCaps,
-  type CapInputs, type PlatformAiSpendVerdict,
+  PLATFORM_AI_CAP_SETTING_KEYS, capSettingUsdOf, envOnlyCapsInput, parseCapSettingRow, platformAiReserveUsd,
+  platformAiSpendDecision, resolvePlatformAiCaps, toResolvedCaps,
+  type CapInputs, type PlatformAiSpendVerdict, type ResolvedCaps,
 } from "@/lib/platform/ai/platform-ai-spend.core";
 
 export const PLATFORM_AI_INFLIGHT_PREFIX = "user:platform-ai-inflight:";
@@ -57,6 +64,7 @@ interface LedgerRow { userId: string | null; provider: string; model: string; pr
 
 export interface SpendReadClient {
   aiInvocation: { findMany(args: unknown): Promise<LedgerRow[]> };
+  platformSetting: { findMany(args: unknown): Promise<Array<{ key: string; value: string }>> };
   rateLimit: { findMany(args: unknown): Promise<Array<{ key?: string; count: number }>> };
 }
 export interface SpendTxClient extends SpendReadClient {
@@ -86,6 +94,29 @@ export interface ReserveOptions {
 
 const NO_RELEASE = async () => {};
 
+/**
+ * D5 PR2 — both caps, with the two blanket settings read through the TRANSACTION
+ * client `tx` (never a cache, never the root client). A read error propagates: the
+ * caller's transaction fails and the turn is refused RESERVATION_UNAVAILABLE.
+ * Override stays null (the per-operator table is PR3/PR4).
+ */
+export async function resolveCapsInTx(tx: Pick<SpendTxClient, "platformSetting">, capInputs: CapInputs): Promise<ResolvedCaps> {
+  const rows = await tx.platformSetting.findMany({
+    where: { key: { in: [PLATFORM_AI_CAP_SETTING_KEYS.perOperator, PLATFORM_AI_CAP_SETTING_KEYS.platform] } },
+    select: { key: true, value: true },
+  });
+  const rowOf = (key: string) => parseCapSettingRow(rows.find((r) => r.key === key)?.value);
+  const perOperator = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.perOperator);
+  const platform = rowOf(PLATFORM_AI_CAP_SETTING_KEYS.platform);
+  for (const [scope, r] of [["OPERATOR", perOperator], ["PLATFORM", platform]] as const) {
+    if (r.state === "INVALID") console.error(`[platform-ai] cost cap setting invalid: scope=${scope}; ignored (next source applies)`);
+  }
+  return toResolvedCaps(resolvePlatformAiCaps({
+    ...capInputs, operatorOverrideUsd: null,
+    settingPerOperatorUsd: capSettingUsdOf(perOperator), settingPlatformUsd: capSettingUsdOf(platform),
+  }));
+}
+
 function groupsOf(rows: readonly LedgerRow[]): TodaySpendGroup[] {
   const by = new Map<string, TodaySpendGroup>();
   for (const r of rows) {
@@ -108,10 +139,12 @@ const logRefusal = (v: PlatformAiSpendVerdict) => {
  * locks and, when admitted, reserve it. Never throws: any failure is a refusal.
  */
 export async function reservePlatformAiSpend(operatorId: string, now: Date, opts: ReserveOptions): Promise<SpendReservation> {
-  // D5 PR1: the one caps resolver, env only (override + settings null), so the result is as before.
-  const caps = toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(opts.caps ?? env.platformAiSpendCapInputs)));
-  if (caps.state === "REFUSE") {
-    const verdict: PlatformAiSpendVerdict = { allowed: false, detail: "UNAVAILABLE", cause: caps.cause };
+  const capInputs = opts.caps ?? env.platformAiSpendCapInputs;
+  // S2 E2: an INVALID env value refuses whatever a setting says, so it is judged BEFORE the
+  // transaction (no lock, no read). A MISSING env is not judged here: a setting may supply the cap.
+  const envProbe = toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(capInputs)));
+  if (envProbe.state === "REFUSE" && envProbe.cause === "CAP_INVALID") {
+    const verdict: PlatformAiSpendVerdict = { allowed: false, detail: "UNAVAILABLE", cause: envProbe.cause };
     logRefusal(verdict);
     return { verdict, release: NO_RELEASE };
   }
@@ -127,6 +160,9 @@ export async function reservePlatformAiSpend(operatorId: string, now: Date, opts
     const verdict = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${platformAiSpendLockKey(operatorId)}))`;
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${PLATFORM_AI_SPEND_FLEET_LOCK_KEY}))`;
+      // D5 PR2: the blanket cap settings, read under both locks through tx (S2 C2).
+      const caps = await resolveCapsInTx(tx, capInputs);
+      if (caps.state === "REFUSE") return { allowed: false, detail: "UNAVAILABLE", cause: caps.cause } satisfies PlatformAiSpendVerdict;
       const [rows, buckets, ledgerFailures] = await Promise.all([
         tx.aiInvocation.findMany({
           where: { surface: PLATFORM_AI_ASK_SURFACE, outcome: "RETURNED", occurredAt: { gte: utcDayStart(now) } },

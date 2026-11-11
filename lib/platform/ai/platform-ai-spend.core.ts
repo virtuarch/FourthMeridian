@@ -12,8 +12,9 @@
  *
  * ── 1. Cap resolution — FAIL CLOSED IN CODE (S2 APPROVAL ruling 8) ─────────
  * (D5 PR1: resolvePlatformAiCaps, §1b below, adds override / setting sources and code
- * ceilings ahead of env; the production call passes them as null, so the env rules
- * here are unchanged.)
+ * ceilings ahead of env. D5 PR2: the two blanket PlatformSettings are read inside the
+ * reservation transaction and fed in; ENV is clamped to the ceilings too (S2 E1); an
+ * INVALID env refuses even when a higher source would win (S2 E2).)
  * Each cap is read from its env var (lib/env.ts platformAiSpendCapInputs):
  *   · set and strict-valid (whole dollars or cents, `^(0|[1-9]\d{0,5})(\.\d{1,2})?$`) ⇒ that value;
  *   · set and anything else (" 5", "5.", "1e3", "-1", "$5", "five")      ⇒ INVALID ⇒ REFUSE, every env;
@@ -101,21 +102,25 @@ export function resolveOneCap(raw: string | undefined, vercelEnv: string | undef
   return Number.isFinite(usd) && usd >= 0 ? { ok: true, usd, source: "ENV" } : { ok: false, cause: "CAP_INVALID" };
 }
 
-// ── 1b. The caps resolver (D5 PR1) — one precedence, mirroring lib/entitlements/ai-allowance.ts ──
+// ── 1b. The caps resolver (D5 PR1 + PR2) — one precedence, mirroring lib/entitlements/ai-allowance.ts ──
 //
 //   OPERATOR cap:  OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
 //   PLATFORM cap:                      PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/development) > REFUSE
 //
 // An override / setting is a candidate only when it is a whole, finite, non-negative
 // number; anything else is skipped and the next source wins. 0 is a candidate and
-// refuses every turn, never "unlimited". ENV keeps its strict parse (resolveOneCap):
-// an INVALID env value still refuses, exactly as before.
+// refuses every turn, never "unlimited". ENV keeps its strict parse (resolveOneCap).
 //
-// The code CEILING ($20 operator / $100 platform) clamps the OPERATOR_OVERRIDE,
-// PLATFORM_SETTING and TEST_DEFAULT sources (the test defaults sit below it: a no-op).
-// It does NOT clamp ENV in this PR: today's env parse accepts any strict value up to
-// 999999.99, so clamping would lower a cap set above the ceiling, which is a behaviour
-// change. ENV stays bit-for-bit until S2 rules on it (a test pins the current value).
+// E2 (S2 ruling, D5 PR2): ENV is resolved FIRST. An INVALID env value refuses
+// CAP_INVALID EVEN WHEN an override or setting would win: a malformed deployment
+// variable is a configuration defect we surface, never one a higher source hides.
+// A MISSING env stays non-blocking when a higher source exists.
+//
+// The code CEILING ($20 operator / $100 platform) clamps EVERY source: OPERATOR_OVERRIDE,
+// PLATFORM_SETTING, ENV (E1, S2 ruling, D5 PR2) and TEST_DEFAULT (the test defaults sit
+// below it: a no-op). A clamped result reports source CEILING with the asked source and
+// value kept (askedSource / askedUsd, clamped=true). No cap env var is set on any
+// environment today, so the ENV clamp changes nothing in practice.
 
 export const PLATFORM_AI_OPERATOR_CAP_CEILING_USD = 20;
 export const PLATFORM_AI_PLATFORM_CAP_CEILING_USD = 100;
@@ -163,13 +168,14 @@ function resolveCap(
   ordered: readonly (readonly ["OPERATOR_OVERRIDE" | "PLATFORM_SETTING", number | null])[],
   raw: string | undefined, vercelEnv: string | undefined, testDefault: number, ceiling: number,
 ): PlatformAiCapOutcome {
+  // E2: env first — an INVALID env value refuses whatever a higher source says.
+  const env = resolveOneCap(raw, vercelEnv, testDefault);
+  if (!env.ok && env.cause === "CAP_INVALID") return env;
   for (const [source, value] of ordered) {
     if (isCapCandidate(value)) return clampTo(source, value, ceiling);
   }
-  const env = resolveOneCap(raw, vercelEnv, testDefault);
   if (!env.ok) return env;
-  // ENV is NOT clamped in this PR (see §1b); TEST_DEFAULT is (a no-op at today's values).
-  if (env.source === "ENV") return { ok: true, usd: env.usd, source: "ENV", askedUsd: env.usd, askedSource: "ENV", clamped: false };
+  // E1: ENV and TEST_DEFAULT are clamped like every other source.
   return clampTo(env.source, env.usd, ceiling);
 }
 
@@ -197,12 +203,46 @@ export function toResolvedCaps(r: PlatformAiCapsResolution): ResolvedCaps {
   return { state: "OK", operatorUsd: op.usd, platformUsd: pl.usd, source: { operator: op.source, platform: pl.source } };
 }
 
-/** D5 PR1: the production call's input is env only (no override, no settings), so nothing changes. */
+/** The input with no override and no settings (env only): the pre-transaction CAP_INVALID probe and the legacy wrapper. */
 export function envOnlyCapsInput(input: CapInputs): PlatformAiCapsInput {
   return { ...input, operatorOverrideUsd: null, settingPerOperatorUsd: null, settingPlatformUsd: null };
 }
 
-/** PURE — both caps from env only. A thin wrapper over resolvePlatformAiCaps, kept for existing callers/tests. */
+// ── 1c. The two blanket cap settings (D5 PR2) ───────────────────────────────
+//
+// Two PlatformSetting rows, whole USD, integer ≥ 0, registered in lib/platform-settings.ts
+// (the literal keys there must equal these; a test pins it). ABSENT ⇒ "not set" (the
+// fleet-ceiling precedent: the descriptor default is "" and the reader resolves the row
+// itself). Read INSIDE the reservation transaction, after both advisory locks, through
+// the transaction client — no settings cache. The ceilings are the resolver's (§1b).
+// No application write path in this PR (S2 09fb C1: a later SA-only /admin action).
+
+export const PLATFORM_AI_CAP_SETTING_KEYS = Object.freeze({
+  perOperator: "platform_ai_daily_usd_per_operator",
+  platform: "platform_ai_daily_usd_platform",
+} as const);
+
+export type CapSettingRow =
+  | { state: "ABSENT" }
+  | { state: "SET"; usd: number }
+  /** A stored row that is not a whole, non-negative number of dollars. Skipped (the next source wins) and logged by the caller. */
+  | { state: "INVALID" };
+
+/** PURE — one blanket cap setting from its stored row (null/undefined = no row). */
+export function parseCapSettingRow(raw: string | null | undefined): CapSettingRow {
+  if (raw === null || raw === undefined) return { state: "ABSENT" };
+  const t = raw.trim();
+  if (!/^(0|[1-9]\d{0,8})$/.test(t)) return { state: "INVALID" };
+  const usd = Number(t);
+  return isCapCandidate(usd) ? { state: "SET", usd } : { state: "INVALID" };
+}
+
+/** The resolver's value for a parsed row: the dollars when SET, else null (not set). */
+export function capSettingUsdOf(r: CapSettingRow): number | null {
+  return r.state === "SET" ? r.usd : null;
+}
+
+/** PURE — both caps from env only (no override, no settings). A thin wrapper over resolvePlatformAiCaps, kept for tests. */
 export function resolvePlatformAiSpendCaps(input: CapInputs): ResolvedCaps {
   return toResolvedCaps(resolvePlatformAiCaps(envOnlyCapsInput(input)));
 }

@@ -139,6 +139,23 @@ async function main(): Promise<void> {
       Array.from({ length: 26 }, (_, n) => n).every((n) => (parseAllowanceSettingValue(String(n), 20) !== null) === (accepted("ai_daily_allowance_usd", String(n)) !== null)));
   }
 
+  console.log("\n4c. PLATFORM AI CAPS D5 PR2 — the two blanket Platform AI cap keys: registered, NO write surface");
+  {
+    const blanket = [PlatformSettingKey.PLATFORM_AI_DAILY_USD_PER_OPERATOR, PlatformSettingKey.PLATFORM_AI_DAILY_USD_PLATFORM] as const;
+    check("the keys are the ruled strings", blanket[0] === "platform_ai_daily_usd_per_operator" && blanket[1] === "platform_ai_daily_usd_platform");
+    for (const key of blanket) {
+      const d = SETTING_DESCRIPTORS[key];
+      check(`${key}: registered, whole-dollar integer ≥ 0 (no descriptor max: the ceiling is the resolver's)`, isPlatformSettingKey(key) && d.valueType === "integer" && d.min === 0 && d.max === undefined);
+      check(`${key}: ABSENT means not set — default "" (fails the integer rule, so it can never be read as a cap), ABSENT_MEANS_OFF`, d.default === "" && d.missingRow === "ABSENT_MEANS_OFF" && refused(key, "") !== null);
+      check(`${key}: NO write surface (no Policies, no AI Cost Controls, no admin security console), not operator-configurable, not resettable`,
+        d.writeSurfaces.length === 0 && !d.operatorConfigurable && !d.resettable && d.class === "SECURITY_SENSITIVE"
+        && !settingKeysForSurface("PLATFORM_OPS").includes(key) && !settingKeysForSurface("ADMIN_SECURITY").includes(key) && !settingKeysForSurface("GROWTH_REVENUE").includes(key));
+      check(`${key}: 0 and whole dollars accepted; negative, fractional, words refused`,
+        accepted(key, "0") === "0" && accepted(key, "25") === "25" && refused(key, "-1") !== null && refused(key, "2.5") !== null && refused(key, "five") !== null);
+    }
+    check("they are not AI Cost Controls keys", !(Object.values(AI_COST_CONTROL_SETTING_KEYS) as string[]).some((k) => (blanket as readonly string[]).includes(k)));
+  }
+
   console.log("\n5. the admin security console is no longer an unrestricted PlatformSetting writer");
   {
     const route = readFileSync("app/api/admin/security/settings/route.ts", "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");

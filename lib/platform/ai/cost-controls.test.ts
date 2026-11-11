@@ -236,6 +236,22 @@ async function main() {
     check("no reason ⇒ VALIDATION, nothing written", !noReason.ok && noReason.code === "VALIDATION" && !state.settings.has(K["allowance.usd"]));
   }
 
+  console.log("\n4c. PLATFORM AI CAPS D5 PR2: the two blanket Platform AI cap keys are NOT AI Cost Controls (S2 09fb C1)");
+  {
+    const blanket = ["platform_ai_daily_usd_per_operator", "platform_ai_daily_usd_platform"];
+    check("the seven controls are unchanged", AI_COST_CONTROL_KEYS.join() === "allowance.enforced,allowance.usd,userAlert.enabled,userAlert.thresholdUsd,fleetAlert.enabled,fleetAlert.thresholdUsd,killSwitch.paused");
+    check("no control maps to a blanket cap key", Object.values(K).every((k) => !blanket.includes(k)));
+    for (const key of blanket) {
+      const { client, state } = makeDb();
+      const r = await applyAiCostControlChanges({ changes: [{ control: key, value: 5, expectedUpdatedAt: null }], reason, actor }, client, NOW);
+      check(`a PLATFORM_OPS CONTROL PATCH naming ${key} ⇒ VALIDATION "Unknown control", nothing written, no audit`,
+        !r.ok && r.code === "VALIDATION" && /Unknown control/.test(r.reason) && state.settings.size === 0 && state.audits.length === 0, r.ok ? "applied" : r.reason);
+      const mixed = makeDb();
+      const r2 = await applyAiCostControlChanges({ changes: [{ control: "allowance.usd", value: 7, expectedUpdatedAt: null }, { control: key, value: 5, expectedUpdatedAt: null }], reason, actor }, mixed.client, NOW);
+      check(`…batched with a valid control, the whole batch is refused (nothing written)`, !r2.ok && r2.code === "VALIDATION" && mixed.state.settings.size === 0 && mixed.state.audits.length === 0);
+    }
+  }
+
   console.log("\n5. a concurrent writer between the read and the write ⇒ CONFLICT, nothing written");
   {
     const { client, state } = makeDb({}, { interleave: (s) => { s.settings.set(K["allowance.usd"], { key: K["allowance.usd"], value: "3", updatedAt: new Date("2026-10-15T11:59:00Z"), updatedById: "other" }); } });
