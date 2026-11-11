@@ -84,6 +84,7 @@ import {
 import { incidentDiagnosisView } from "./diagnosis-model";
 import { incidentLifecycleView, type EpisodeLink } from "./lifecycle-model";
 import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "../widgets/OperatorReasonField";
+import { IncidentCustomerUpdate } from "./CustomerUpdateSection";
 
 const PRIMARY_BTN = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--meridian-400)] bg-[var(--meridian-400)] px-3 text-xs font-medium text-white lg:min-h-8";
 const FIELD = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8";
@@ -313,8 +314,9 @@ export function IncidentRelatedNavigation({ links, viewId, onOpenInPlace }: {
 /**
  * EXTENSION POINTS (Incident detail v1). Later PRs fill these — AI assessment
  * (section 3), customer communication (section 5), lifecycle actions (section
- * 6). Each renders in its fixed place ONLY when passed; nothing passes them
- * yet, so nothing renders. The existing Acknowledge / Resolve controls stay
+ * 6). Each renders in its fixed place ONLY when passed. `customerMessage` is
+ * passed on the CS tier only (customerMessageSlot, PR-C2); the others are not
+ * passed yet, so nothing renders. The existing Acknowledge / Resolve controls stay
  * until `lifecycle` replaces them.
  */
 export interface IncidentDetailSlots {
@@ -769,6 +771,16 @@ export function LifecycleFormFields({ action, form, onChange, disabled }: { acti
   );
 }
 
+/**
+ * Incident customer update PR-C2 (owner yes; S2 09gg c / 09gm) — the drawer's
+ * "Customer update" section, on the CUSTOMER SUCCESS tier ONLY. Platform Ops
+ * (identity-free) never gets it: undefined ⇒ the slot renders nothing.
+ */
+export function customerMessageSlot(tier: IncidentTier, d: IncidentDetailDTO, canWrite: boolean): ReactNode | undefined {
+  if (tier !== "cs" || d.tier !== "cs") return undefined;
+  return <IncidentCustomerUpdate d={d} canWrite={canWrite} />;
+}
+
 function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpenInPlace, customerProfileHosted = false }: {
   tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void; onChanged?: () => void;
   viewId?: string | null; onOpenInPlace?: (id: string) => void;
@@ -863,7 +875,7 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
       <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={(a) => { setWhy(EMPTY_OPERATOR_REASON); setPending(a); }}
         onLifecycle={tier === "ops" ? openLifecycle : undefined}
         onOpenCustomer={tier === "cs" && customerProfileHosted ? requestOpenCustomer : undefined}
-        slots={{ remember: <RememberButton area={tier === "ops" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS"} kind="INCIDENT" id={data.incident.id} /> }} />
+        slots={{ remember: <RememberButton area={tier === "ops" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS"} kind="INCIDENT" id={data.incident.id} />, customerMessage: customerMessageSlot(tier, data, canWrite) }} />
       {lifecyclePending && (
         <ConfirmDialog icon={lifecyclePending === "resolve" ? CheckCircle2 : UserCheck} title={LIFECYCLE_CONFIRM[lifecyclePending].title}
           message={<>{LIFECYCLE_CONFIRM[lifecyclePending].message}<LifecycleFormFields action={lifecyclePending} form={form} onChange={setForm} disabled={busy} /></>}
