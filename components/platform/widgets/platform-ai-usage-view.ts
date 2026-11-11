@@ -14,7 +14,8 @@ export type UsageTone = "ok" | "warn" | "bad" | "muted";
 
 export const USAGE_TODAY_TITLE = "Platform AI usage today";
 export const ESTIMATED_BADGE = "Estimated";
-export const USAGE_UNAVAILABLE = "Platform AI usage is not available right now.";
+export const MANAGE_LIMITS_LABEL = "Manage limits";
+export const USAGE_UNAVAILABLE ="Platform AI usage is not available right now.";
 
 /** Estimated dollars: cents precision; a positive amount under a cent reads "<$0.01", never "$0.00". */
 export function estUsd(n: number): string {

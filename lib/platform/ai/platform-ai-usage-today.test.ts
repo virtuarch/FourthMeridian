@@ -30,12 +30,13 @@ import { PLATFORM_AI_CAP_SETTING_KEYS, platformAiReserveUsd, platformAiSpendDeci
 import { reservePlatformAiSpend, type SpendClient, type SpendTxClient } from "./platform-ai-spend";
 import { LEDGER_FAILURE_KEY } from "./ledger-health";
 import {
-  PLATFORM_AI_FEATURE_LABELS, UNLABELLED_FEATURE, byFeature, byModel, foldPlatformAiUsage, platformAiBudget, platformAiOperatorUsage,
+  PLATFORM_AI_CAPS_PAGE_HREF, PLATFORM_AI_FEATURE_LABELS, UNLABELLED_FEATURE, byFeature, platformAiManageLimitsHref, byModel, foldPlatformAiUsage, platformAiBudget, platformAiOperatorUsage,
   spendGroupsOf, type PlatformAiUsageFigure, type PlatformAiUsageRow,
 } from "./platform-ai-usage-today.core";
 import { loadPlatformAiFleetUsageToday, loadPlatformAiUsageToday, withPlatformAiUsageToday, type UsageTodayReadClient } from "./platform-ai-usage-today";
 import type { PlatformAiCapsReadModel } from "./platform-ai-caps-admin";
-import { estUsd, operatorTodayLine, remainingLine, spentLine } from "@/components/platform/widgets/platform-ai-usage-view";
+import { MANAGE_LIMITS_LABEL, estUsd, operatorTodayLine, remainingLine, spentLine } from "@/components/platform/widgets/platform-ai-usage-view";
+import { decideAdminApiAccess } from "@/lib/admin-totp-enrollment";
 import { PlatformAiUsageTodayCard } from "@/components/platform/widgets/PlatformAiUsageToday";
 
 let failures = 0;
@@ -332,9 +333,40 @@ async function main() {
     check("a refusing platform budget: 'Refusing questions', the cause, no '$ left', no meter", refusing.includes("Refusing questions") && /cap is not set/.test(refusing) && !/left of/.test(refusing) && !/role="meter"/.test(refusing));
     check("the operator line names the limit", /Limit reached \(the platform cap\)/.test(operatorTodayLine({ ...fleet.self!, state: "EXHAUSTED", limitedBy: "PLATFORM" })));
     const panel = strip("components/platform/widgets/AiCostControlsPanel.tsx");
-    check("Policies → AI Cost Controls renders the card from its own read model", /<PlatformAiUsageTodayCard usage=\{data\.platformAiUsageToday\} \/>/.test(panel));
+    check("Policies → AI Cost Controls renders the card (and the link decision) from its own server read model",
+      /<PlatformAiUsageTodayCard usage=\{data\.platformAiUsageToday\} manageLimitsHref=\{data\.platformAiManageLimitsHref\} \/>/.test(panel));
     const card = strip("components/platform/widgets/PlatformAiUsageToday.tsx");
     check("the card makes no network call and holds no handler", !/fetch\(|mutate\(|onClick|onChange/.test(card));
+  }
+
+  console.log("\n10. \"Manage limits\" — System Admins only, decided server-side");
+  {
+    const access = (role: "USER" | "SYSTEM_ADMIN", over: { requireTotpSetup?: boolean; systemAdminDisabled?: boolean } = {}) =>
+      decideAdminApiAccess({ role: role as never, requireTotpSetup: over.requireTotpSetup ?? false, systemAdminDisabled: over.systemAdminDisabled ?? false });
+    // A Platform Ops READ grant holder is a USER with a grant: it passes requirePlatformAccess("PLATFORM_OPS", "READ") but not the admin rule.
+    const readOnlyHref = platformAiManageLimitsHref(access("USER"));
+    check("a Platform Ops read-only viewer (USER + READ grant) ⇒ no href", readOnlyHref === null);
+    check("a System Admin passing the caps route's check ⇒ the caps PAGE (not its API)", platformAiManageLimitsHref(access("SYSTEM_ADMIN")) === PLATFORM_AI_CAPS_PAGE_HREF && PLATFORM_AI_CAPS_PAGE_HREF === "/admin/platform-ai-caps");
+    check("a System Admin the caps route would refuse (TOTP enrolment pending / admin disabled) ⇒ no href, same as the route",
+      platformAiManageLimitsHref(access("SYSTEM_ADMIN", { requireTotpSetup: true })) === null && platformAiManageLimitsHref(access("SYSTEM_ADMIN", { systemAdminDisabled: true })) === null);
+    const s = makeStore({ settings: SETTINGS(3, 10) });
+    const fleet = (await loadPlatformAiFleetUsageToday(MODEL, "op_ro", { client: s.read, capInputs: PROD(), now: NOW, consecutiveFailures: 0 }))!;
+    for (const [name, usage] of [["with usage", fleet], ["usage unavailable", null]] as const) {
+      const ro = renderToStaticMarkup(createElement(PlatformAiUsageTodayCard, { usage, manageLimitsHref: readOnlyHref }));
+      check(`read-only viewer (${name}): no link, no href, no "Manage limits" text`, !/<a\b|href=/.test(ro) && !ro.includes(MANAGE_LIMITS_LABEL));
+      const sa = renderToStaticMarkup(createElement(PlatformAiUsageTodayCard, { usage, manageLimitsHref: PLATFORM_AI_CAPS_PAGE_HREF }));
+      check(`System Admin (${name}): exactly one "Manage limits" link to the caps page; still no edit control`,
+        (sa.match(/<a\b/g) ?? []).length === 1 && sa.includes(`href="${PLATFORM_AI_CAPS_PAGE_HREF}"`) && sa.includes(MANAGE_LIMITS_LABEL) && !/<button|<input|<select|<form/.test(sa));
+    }
+    const opsRoute = strip("app/api/platform/platform-ops/ai-cost-controls/route.ts");
+    check("the route decides the link from the SESSION with the caps route's own rule (adminApiAccess), on GET and PATCH replies",
+      /platformAiManageLimitsHref: platformAiManageLimitsHref\(adminApiAccess\(viewer\)\)/.test(opsRoute)
+        && /withPlatformAiCaps\(await loadAiCostControlsReadModel\(\), auth\.user\)/.test(opsRoute) && /withPlatformAiCaps\(applied\.model, auth\.user\)/.test(opsRoute));
+    const session = strip("lib/session.ts");
+    const guard = session.slice(session.indexOf("export async function requireSystemAdmin()"), session.indexOf("export function adminApiAccess"));
+    check("…and requireSystemAdmin() enforces exactly that function", /if \(adminApiAccess\(user\) !== "ALLOW"\) return \[null, forbidden\(\)\];/.test(guard));
+    const card = strip("components/platform/widgets/PlatformAiUsageToday.tsx");
+    check("the card has no client-side role/flag of its own: the href comes only from its prop", !/\.role\b|SYSTEM_ADMIN|useSession|isAdmin|session/.test(card) && /<ManageLimitsLink href=\{manageLimitsHref\} \/>/.test(card));
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

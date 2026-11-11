@@ -9,10 +9,11 @@
  * SYSTEM_ADMIN caps page). Never another person's identity.
  */
 
+import Link from "next/link";
 import { TONE_COLOR, ToneBadge } from "../platform-surface";
 import type { PlatformAiFleetUsageToday, PlatformAiUsageSlice } from "@/lib/platform/ai/cost-controls.types";
 import {
-  ESTIMATED_BADGE, USAGE_TODAY_TITLE, USAGE_UNAVAILABLE, estUsd, operatorCountsLine, operatorTodayLine, remainingLine,
+  ESTIMATED_BADGE, MANAGE_LIMITS_LABEL, USAGE_TODAY_TITLE, USAGE_UNAVAILABLE, estUsd, operatorCountsLine, operatorTodayLine, remainingLine,
   spentLine, stateBadge, usedShare,
 } from "./platform-ai-usage-view";
 
@@ -40,12 +41,28 @@ function Slices({ title, slices }: { title: string; slices: PlatformAiUsageSlice
   );
 }
 
-export function PlatformAiUsageTodayCard({ usage }: { usage: Usage | null | undefined }) {
+/**
+ * "Manage limits" → Admin → Platform AI caps. Rendered ONLY when the server put an
+ * href in the read model (it does so for viewers passing the caps route's own
+ * SYSTEM_ADMIN check); otherwise nothing — no link, no href. A plain navigation:
+ * the edit controls stay on the admin page, behind its own guards.
+ */
+function ManageLimitsLink({ href }: { href: string | null | undefined }) {
+  if (!href) return null;
+  return (
+    <Link href={href} className="self-start text-xs font-medium underline-offset-2 hover:underline" style={{ color: "var(--brass-300)" }}>
+      {MANAGE_LIMITS_LABEL}
+    </Link>
+  );
+}
+
+export function PlatformAiUsageTodayCard({ usage, manageLimitsHref }: { usage: Usage | null | undefined; manageLimitsHref?: string | null }) {
   if (!usage) {
     return (
       <section className="flex min-w-0 flex-col gap-2 rounded-2xl border border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] p-5 sm:p-6" aria-label={USAGE_TODAY_TITLE}>
         <h3 className="text-sm font-semibold leading-6 text-[var(--text-primary)]">{USAGE_TODAY_TITLE}</h3>
         <p className="text-xs text-[var(--text-secondary)]">{USAGE_UNAVAILABLE}</p>
+        <ManageLimitsLink href={manageLimitsHref} />
       </section>
     );
   }
@@ -90,6 +107,7 @@ export function PlatformAiUsageTodayCard({ usage }: { usage: Usage | null | unde
       </div>
 
       <p className="text-xs leading-5 text-[var(--text-muted)]">{usage.estimateNote}</p>
+      <ManageLimitsLink href={manageLimitsHref} />
     </section>
   );
 }

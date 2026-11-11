@@ -412,7 +412,7 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />
             <PlatformAiOperatorsCard caps={data.platformAiCaps} />
           </div>
-          <PlatformAiUsageTodayCard usage={data.platformAiUsageToday} />
+          <PlatformAiUsageTodayCard usage={data.platformAiUsageToday} manageLimitsHref={data.platformAiManageLimitsHref} />
           <KillSwitchCard model={data} editable={editable} onModel={onModel} />
         </>
       )}

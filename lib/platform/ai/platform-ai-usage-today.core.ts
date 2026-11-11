@@ -31,6 +31,7 @@
 
 import { AI_RATES, type AiRate } from "@/lib/usage/pricing";
 import { sumTodaySpend, type TodaySpendGroup } from "@/lib/ai/allowance-core";
+import type { AdminApiAccess } from "@/lib/admin-totp-enrollment";
 import type {
   PlatformAiBudgetRefusal, PlatformAiBudgetState, PlatformAiBudgetView, PlatformAiOperatorUsageView,
   PlatformAiUsageFigure, PlatformAiUsageSlice,
@@ -157,6 +158,19 @@ export function platformAiBudget(input: BudgetInput): PlatformAiBudgetView {
   const exhausted = spentUsd + (inFlight + 1) * reserve > cap;
   const state: PlatformAiBudgetState = exhausted ? "EXHAUSTED" : turnsLeft <= PLATFORM_AI_LOW_TURNS ? "LOW" : "OK";
   return { ...base, remainingUsd, turnsLeft: exhausted ? 0 : turnsLeft, state, refusal: null };
+}
+
+/** The SYSTEM_ADMIN page where the caps are edited (the page, not its API). */
+export const PLATFORM_AI_CAPS_PAGE_HREF = "/admin/platform-ai-caps";
+
+/**
+ * PURE — the "Manage limits" link for the Platform Space usage card: the caps page
+ * when the viewer passes the SAME admin-access rule the caps route enforces
+ * (lib/session.ts adminApiAccess → requireSystemAdmin), else null — no link, no href.
+ * Decided by the server from the session; the card only renders what it is given.
+ */
+export function platformAiManageLimitsHref(access: AdminApiAccess): string | null {
+  return access === "ALLOW" ? PLATFORM_AI_CAPS_PAGE_HREF : null;
 }
 
 const RANK: Record<PlatformAiBudgetState, number> = { OK: 0, LOW: 1, EXHAUSTED: 2, REFUSING: 3 };

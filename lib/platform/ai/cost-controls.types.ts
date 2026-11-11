@@ -178,6 +178,12 @@ export interface AiCostControlsReadModel {
    * absent / null ⇒ the card reads "not available".
    */
   platformAiUsageToday?: PlatformAiFleetUsageToday | null;
+  /**
+   * PLATFORM AI COST MANAGEMENT — APPENDED. The "Manage limits" link to Admin →
+   * Platform AI caps, set by the SERVER only when the viewer passes the same
+   * admin-access check as the caps route (requireSystemAdmin); null / absent ⇒ no link.
+   */
+  platformAiManageLimitsHref?: string | null;
 }
 
 // ── Platform AI usage today (PLATFORM AI COST MANAGEMENT) ─────────────────────

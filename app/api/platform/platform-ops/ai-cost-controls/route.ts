@@ -39,6 +39,8 @@ import { recordControlRefusal } from "@/lib/platform/control-refusal";
 import { loadPlatformAiBlanketCapsSummary } from "@/lib/platform/ai/platform-ai-caps-admin";
 import { platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import { loadPlatformAiFleetUsageToday } from "@/lib/platform/ai/platform-ai-usage-today";
+import { platformAiManageLimitsHref } from "@/lib/platform/ai/platform-ai-usage-today.core";
+import { adminApiAccess, type SessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -57,20 +59,26 @@ export type AiCostControlsResponse = AiCostControlsReadModel;
  * platform totals, by model, by feature, COUNTS of people at their limit, and the
  * VIEWER's own figures (`self`). No other person's identity or figures; a read
  * failure yields null ("not available").
+ *
+ * The "Manage limits" link (platformAiManageLimitsHref) is decided HERE, from the
+ * session, with the same admin-access rule /api/admin/platform-ai-caps enforces
+ * (adminApiAccess → requireSystemAdmin). Everyone else gets null: no link, no href.
+ * The link grants nothing; the caps page and its API keep their own guards.
  */
-async function withPlatformAiCaps(model: AiCostControlsReadModel, viewerId: string): Promise<AiCostControlsReadModel> {
+async function withPlatformAiCaps(model: AiCostControlsReadModel, viewer: SessionUser): Promise<AiCostControlsReadModel> {
   const aiModel = platformAiModel().model;
+  const viewerId = viewer.id;
   const [platformAiCaps, platformAiUsageToday] = await Promise.all([
     loadPlatformAiBlanketCapsSummary(aiModel).catch(() => null),
     loadPlatformAiFleetUsageToday(aiModel, viewerId),
   ]);
-  return { ...model, platformAiCaps, platformAiUsageToday };
+  return { ...model, platformAiCaps, platformAiUsageToday, platformAiManageLimitsHref: platformAiManageLimitsHref(adminApiAccess(viewer)) };
 }
 
 export async function GET() {
   const [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
-  const model = await withPlatformAiCaps(await loadAiCostControlsReadModel(), auth.user.id);
+  const model = await withPlatformAiCaps(await loadAiCostControlsReadModel(), auth.user);
   return NextResponse.json(model satisfies AiCostControlsResponse, { headers: NO_STORE });
 }
 
@@ -117,6 +125,6 @@ export async function PATCH(req: NextRequest) {
     actor: { id: auth.user.id, ...meta },
   });
   // D5 PR5 — the reply (applied or refused) carries the same read-only caps card as GET.
-  const result = { ...applied, model: await withPlatformAiCaps(applied.model, auth.user.id) } as AiCostControlsMutationResult;
+  const result = { ...applied, model: await withPlatformAiCaps(applied.model, auth.user) } as AiCostControlsMutationResult;
   return result.ok ? respond(result) : refuse(respond(result), result.code, result.control);
 }
