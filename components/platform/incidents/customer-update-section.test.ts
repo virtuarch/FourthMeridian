@@ -207,5 +207,25 @@ console.log("\n5. preview + confirm");
   check("collapsed by default (open only via the test hook)", /open=\{p\.open \|\| undefined\}/.test(src));
 }
 
+// ── 6. lazy read model (S2 nit on #558) ──────────────────────────────────────
+console.log("\n6. the read model is fetched on FIRST EXPAND, never on drawer mount");
+{
+  const src = readFileSync("components/platform/incidents/CustomerUpdateSection.tsx", "utf8");
+  const container = src.slice(src.indexOf("function CustomerUpdateContainer"), src.indexOf("export function IncidentCustomerUpdate"));
+  const effect = container.slice(container.indexOf("useEffect(() => {"), container.indexOf("}, [id, generation, requested]);"));
+  check("nothing is requested on mount (requested starts false)", /const \[requested, setRequested\] = useState\(false\);/.test(container));
+  check("the read effect returns before ANY fetch until requested", /^useEffect\(\(\) => \{\s*if \(!requested\) return;/.test(effect)
+    && effect.indexOf("if (!requested) return;") < effect.indexOf("fetch(customerUpdatePath(id)") && effect.indexOf("if (!requested) return;") < effect.indexOf("fetch(incidentDeliveriesPath(id)"));
+  check("…and depends on requested (the first open starts it)", container.includes("}, [id, generation, requested]);"));
+  check("only an OPEN toggle sets requested (closing never re-reads)", /onToggle=\{\(open\) => \{ if \(open\) setRequested\(true\); \}\}/.test(container));
+  check("the surface reports the operator's toggle", /onToggle=\{\(e\) => p\.onToggle\?\.\(e\.currentTarget\.open\)\}/.test(src));
+  check("every fetch of the read model / deliveries is inside that one effect", (container.match(/fetch\(customerUpdatePath\(|fetch\(incidentDeliveriesPath\(/g) ?? []).length === 2
+    && (effect.match(/fetch\(customerUpdatePath\(|fetch\(incidentDeliveriesPath\(/g) ?? []).length === 2);
+  const dto = { tier: "cs", incident: { id: "inc_cu_1" }, affected: { institution: null } } as unknown as IncidentDetailDTO;
+  const html = renderToStaticMarkup(createElement(IncidentCustomerUpdate, { d: dto, canWrite: true }));
+  check("collapsed, unrequested summary says how to read it (not 'Reading…')", /data-customer-update-summary="[^"]*">Open to read the draft</.test(html) && !/<details[^>]*\sopen/.test(html));
+  check("a surface without `requested` (tests / requested) keeps the read-state summary", render().includes("Draft ready"));
+}
+
 if (failures > 0) { console.error(`\n${failures} check(s) FAILED`); process.exit(1); }
 console.log("\nAll customer-update section checks passed.");

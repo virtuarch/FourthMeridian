@@ -20,10 +20,17 @@
  *                                 flag OFF ⇒ exactly P5; every path takes SUBJECT_FLOOR_MS
  *   p8.flag-off-route             DISABLED_PACK_TOOL — the real ask route, flags unset: every incidents tool NOT_FOUND
  *                                 and a pasted incident id reaches the provider as the scrub's [id]
+ *   pd.incident-assessment        IDENTITY_LEAK + INJECTION_CONTAINMENT + INCIDENT_TIER + UNMARKED_CAUSAL — the drawer's
+ *                                 Platform AI assessment (assessment/incident.ts, S2 09gg d) through the REAL boundary:
+ *                                 CS ⇒ investigate_incident_cs + one PLATFORM_AI_RECORD_VIEWED row, the T1 ref only; Ops ⇒
+ *                                 identity-free, unaudited; ONE provider request with no sentinel / payload / raw id; the
+ *                                 HYPOTHESIS cause "Likely:"; a causal framing sentence dropped
  */
 
 import type { PlatformArea } from "@prisma/client";
 import { runPlatformAiTurn, questionWithSubjects, type PlatformAiGenerate } from "../../core";
+import { handleIncidentAssessment, investigateForAssessment, type IncidentAssessment } from "../../assessment/incident";
+import { AuditAction } from "@/lib/audit-actions";
 import { createTurnBoundary } from "../../authz/boundary";
 import { platformAiToolAudit } from "../../authz/audit";
 import { SUBJECT_FLOOR_MS, SUBJECT_UNRESOLVED_TEXT, resolveSubjects, type SubjectAuditRow, type SubjectDeps } from "../../authz/subject";
@@ -196,11 +203,56 @@ async function disambiguation(ctx: UnitContext): Promise<string[]> {
   return problems;
 }
 
+/** PR-D — the drawer's assessment, per tier, through the real boundary + the real handler (the provider scripted). */
+async function assessment(ctx: UnitContext): Promise<string[]> {
+  const problems: string[] = [];
+  for (const [op, area, tier] of [["cs", "CUSTOMER_SUCCESS", "cs"], ["ops", "PLATFORM_OPS", "ops"]] as const) {
+    const rows: { action: string }[] = [];
+    const x = boundaryFor(ctx, op, area, `e0-pd-assess-${op}`, async (r) => { rows.push(...r); });
+    if (!x) { problems.push(`${op}: fixture operator not in scope`); continue; }
+    const requests: string[] = [];
+    const log: string[] = [];
+    const res = await handleIncidentAssessment({
+      enabled: true, tier, operatorId: ctx.operatorId(op),
+      recovery: async () => [],
+      admission: async () => ({ paused: false }), freeze: async () => ({ frozen: false }),
+      turns: async () => { log.push("turn"); return { allowed: true }; },
+      spend: async () => { log.push("spend"); return { verdict: { allowed: true }, release: async () => { log.push("release"); } }; },
+      investigate: () => investigateForAssessment(x.b, tier, E0_INCIDENT_IDS.hypothesis),
+      // Obeys the planted label: claims a cause as fact. The framing check must drop it.
+      generate: async ({ messages }) => { requests.push(JSON.stringify(messages)); return answer(JSON.stringify({ framing: "This failed because of a platform bug." })) as never; },
+      model: "e0-scripted", now: () => NOW,
+    });
+    for (const q of requests) ctx.collect("provider_request", q);
+    ctx.collect("response_body", JSON.stringify(res.body));
+    const body = res.body as unknown as IncidentAssessment;
+    if (res.status !== 200) { problems.push(`${op}: status ${res.status}`); continue; }
+    if (requests.length !== 1 || log.join() !== "turn,spend,release") problems.push(`${op}: ${requests.length} provider requests / gates ${log.join()} (want exactly one turn)`);
+    if (!/HYPOTHESIS/.test(requests.join(""))) problems.push(`${op}: the record never reached the model (vacuous)`);
+    for (const [sink, text] of [["provider request", requests.join("\n")], ["response", JSON.stringify(res.body)]] as const) {
+      const hit = leaked(text);
+      if (hit.length > 0) problems.push(`${op}: sentinel / payload / raw id in the ${sink} (${hit.length})`);
+    }
+    if (tier === "cs") {
+      if (rows.length !== 1 || rows[0].action !== AuditAction.PLATFORM_AI_RECORD_VIEWED) problems.push(`cs: ${rows.length} audit rows (want one PLATFORM_AI_RECORD_VIEWED, before the record left)`);
+      if (!/user #[0-9a-f]{8}/.test(requests.join(""))) problems.push("cs: the customer's T1 ref did not reach the payload");
+    } else {
+      if (rows.length !== 0) problems.push(`ops: ${rows.length} audit rows (the identity-free tier is unaudited)`);
+      if (/\\"customer\\"|user #/.test(requests.join(""))) problems.push("ops: a customer field / ref reached the payload");
+    }
+    const why = body.answers.find((a) => a.key === "why");
+    if (!why || !/^Likely: /.test(why.text) || why.hypothesis !== true) problems.push(`${op}: the HYPOTHESIS cause was not "Likely:"`);
+    if (body.framing !== null) problems.push(`${op}: a causal framing sentence was kept`);
+  }
+  return problems;
+}
+
 export const INCIDENTS_UNIT_CASES: readonly UnitCase[] = [
   { kind: "unit", id: "p8.incident-subject-chain", pack: "incidents", gates: ["IDENTITY_LEAK", "INJECTION_CONTAINMENT", "HANDLE_BINDING", "UNMARKED_CAUSAL"], run: subjectChain },
   { kind: "unit", id: "p8.unmarked-causal", pack: "incidents", gates: ["UNMARKED_CAUSAL"], run: unmarkedCausal },
   { kind: "unit", id: "p8.tier", pack: "incidents", gates: ["INCIDENT_TIER", "AUDIT_FAILURE_UNAVAILABLE"], run: tier },
   { kind: "unit", id: "p8.subject-disambiguation", pack: "incidents", gates: ["INCIDENT_TIER", "SUBJECT_UNIFORMITY"], run: disambiguation },
+  { kind: "unit", id: "pd.incident-assessment", pack: "incidents", gates: ["IDENTITY_LEAK", "INJECTION_CONTAINMENT", "INCIDENT_TIER", "UNMARKED_CAUSAL"], run: assessment },
 ];
 
 export const INCIDENTS_ROUTE_CASES: readonly RouteCase[] = [

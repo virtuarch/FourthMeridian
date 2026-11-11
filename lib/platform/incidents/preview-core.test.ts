@@ -237,8 +237,14 @@ function main() {
       "app/api/platform/customer-success/incidents/[id]/customer-update/send/route.ts",
       "app/api/platform/customer-success/incidents/[id]/deliveries/route.ts",
     ];
-    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls + the four CS customer-update routes",
-      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS, ...CS_CUSTOMER_UPDATE].sort()), controlRoutes.join(", "));
+    // S2 ruling 09gg (d): the drawer's Platform AI assessment, one POST per tier — READ-guarded, never an
+    // incident-state change (guard / limiter / no-state-touch pinned in incident-boundary.test.ts).
+    const AI_ASSESSMENT = [
+      "app/api/platform/customer-success/incidents/[id]/assessment/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/assessment/route.ts",
+    ];
+    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls + the four CS customer-update routes + the two AI assessment POSTs",
+      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS, ...CS_CUSTOMER_UPDATE, ...AI_ASSESSMENT].sort()), controlRoutes.join(", "));
     for (const f of BROWSER) {
       const s = code(f);
       const area = f.includes("/platform-ops/") ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";
