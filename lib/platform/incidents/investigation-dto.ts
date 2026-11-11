@@ -235,6 +235,11 @@ export interface IncidentDetailDTO {
    * Null when no customer is attributed. Absent on the ops tier.
    */
   subjectRef?: string | null;
+  /**
+   * Incident drawer PR-D (S2 09gg d) — the ROUTE says whether the Platform AI assessment exists
+   * (the incidents pack flag, master included). Absent / false ⇒ the drawer renders nothing for it.
+   */
+  aiAssessmentAvailable?: boolean;
   checkedAt: string;
 }
 

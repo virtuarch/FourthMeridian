@@ -13,6 +13,8 @@
  * control behind a confirmation that requires a reason. With `sendEnabled`
  * false the Send control is NOT RENDERED (S2: strict; hidden in Production).
  * A "Delivery status" list reads the incident's ledger rows (codes → words).
+ * LAZY (S2 nit on #558): neither the read model nor the deliveries are fetched
+ * on drawer mount — only on the section's FIRST expand (then kept; a send re-reads).
  *
  * CS ONLY: `IncidentCustomerUpdate` renders nothing for any other tier, and the
  * drawer passes it only on the CS tier. No recipient identity is ever shown:
@@ -55,6 +57,10 @@ export interface CustomerUpdateSurfaceProps {
   outcome?: string | null;
   /** Test hook: render the disclosure open. */
   open?: boolean;
+  /** LAZY: false ⇒ nothing has been requested yet (the section was never expanded). Absent ⇒ requested. */
+  requested?: boolean;
+  /** The disclosure was opened / closed by the operator (the container starts its reads on the first open). */
+  onToggle?: (open: boolean) => void;
 }
 
 /** PROP-DRIVEN: every state renders in a test (customer-update-section.test.ts). */
@@ -67,11 +73,12 @@ export function CustomerUpdateSurface(p: CustomerUpdateSurfaceProps) {
   const problems = lint ? lintMessages(lint.codes) : [];
 
   return (
-    <details className="group min-w-0 border-t border-[var(--border-hairline)] pt-3" data-customer-update open={p.open || undefined}>
+    <details className="group min-w-0 border-t border-[var(--border-hairline)] pt-3" data-customer-update open={p.open || undefined}
+      onToggle={(e) => p.onToggle?.(e.currentTarget.open)}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-xs text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8 [&::-webkit-details-marker]:hidden">
         <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-faint)] transition-transform group-open:rotate-90" />
         <span className={H}>Customer update</span>
-        <span className="min-w-0 truncate text-[11px] text-[var(--text-muted)]" data-customer-update-summary>{p.modelError ? `Unavailable — ${p.modelError}` : summaryLine(m, p.now)}</span>
+        <span className="min-w-0 truncate text-[11px] text-[var(--text-muted)]" data-customer-update-summary>{p.requested === false ? "Open to read the draft" : p.modelError ? `Unavailable — ${p.modelError}` : summaryLine(m, p.now)}</span>
       </summary>
       <div className="flex min-w-0 flex-col gap-3 pb-1 pt-2">
         {p.modelError ? <p className="text-[11px] text-[var(--text-muted)]">{`Customer update unavailable — ${p.modelError}`}</p>
@@ -182,8 +189,11 @@ function CustomerUpdateContainer({ id, institution, canWrite }: { id: string; in
   const [outcome, setOutcome] = useState<string | null>(null);
   // Relative times ("3 h ago") are measured from the last read, not re-ticked.
   const [now, setNow] = useState(() => new Date());
+  // LAZY (S2 nit): nothing is read until the section is first expanded.
+  const [requested, setRequested] = useState(false);
 
   useEffect(() => {
+    if (!requested) return;
     let alive = true;
     fetch(customerUpdatePath(id), { credentials: "same-origin" })
       .then(async (r) => {
@@ -207,7 +217,7 @@ function CustomerUpdateContainer({ id, institution, canWrite }: { id: string; in
       .then((d) => { if (alive) { setDeliveries(d); setDeliveriesError(null); } })
       .catch((e: unknown) => { if (alive) setDeliveriesError(e instanceof Error ? e.message : "Failed to load"); });
     return () => { alive = false; };
-  }, [id, generation]);
+  }, [id, generation, requested]);
 
   function edit(p: string) {
     setParagraph(p);
@@ -261,7 +271,8 @@ function CustomerUpdateContainer({ id, institution, canWrite }: { id: string; in
       <CustomerUpdateSurface model={model} modelError={modelError} deliveries={deliveries} deliveriesError={deliveriesError}
         paragraph={paragraph} onParagraph={edit} institution={institution} canWrite={canWrite} now={now}
         preview={preview} previewNote={previewNote} busy={busy} onPreview={runPreview}
-        onSend={() => { setWhy(EMPTY_OPERATOR_REASON); setOutcome(null); setConfirming(true); }} outcome={outcome} />
+        onSend={() => { setWhy(EMPTY_OPERATOR_REASON); setOutcome(null); setConfirming(true); }} outcome={outcome}
+        requested={requested} onToggle={(open) => { if (open) setRequested(true); }} />
       {confirming && model?.sendEnabled === true && (
         <ConfirmDialog icon={Send} title="Send this update to the customer?"
           message={<><span>{SEND_CONFIRM_MESSAGE}</span><OperatorReasonField value={why} onChange={setWhy} disabled={busy} label="A reason is recorded with this send" /></>}
