@@ -240,7 +240,7 @@ async function main(): Promise<void> {
   }
   check("control: CS tier names the customer", JSON.stringify(incidentDetailDTO(csInv!, "cs", NOW)).includes(ITEM.userId));
   const keys = Object.keys(d).sort().join();
-  check("detail DTO keys are exactly the allowlist", keys === "affected,archive,checkedAt,diagnosis,evidence,incident,lifecycleActions,recovery,recurrences,recurrencesTruncated,related,resolutionReasonCode,summary,tier,timeline", keys);
+  check("detail DTO keys are exactly the allowlist", keys === "affected,archive,checkedAt,component,diagnosis,evidence,incident,lifecycleActions,recovery,recurrences,recurrencesTruncated,related,resolutionReasonCode,summary,tier,timeline", keys);
   check("summary / diagnosis keys are exactly the allowlist",
     Object.keys(d.summary).sort().join() === "customerActionRequired,displayStatus,firstDetectedAt,lastObservedAt,ongoing,remedy,resolvedAt"
     && Object.keys(d.diagnosis).sort().join() === "attempts,providerErrorCode,providerErrorSource,providerErrorUnrecognised,recurrence");

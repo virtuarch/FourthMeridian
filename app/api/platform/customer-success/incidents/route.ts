@@ -13,6 +13,8 @@
  * before reading. PRIVACY: rows are projected through investigation-dto.ts at
  * the "cs" tier — the attributed customer id (D4) is the ONLY identity, and only
  * because this route is CUSTOMER_SUCCESS READ; never detail or evidence JSON.
+ * PRIV-ref (P3, S2): each row also carries `subjectRef`, the opaque reference
+ * computed here (server-only key) — the list SHOWS it, never the raw id.
  */
 
 import { NextResponse } from "next/server";
@@ -21,6 +23,7 @@ import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audie
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { parseIncidentSearch } from "@/lib/platform/incidents/intelligence/search-core";
 import { incidentListDTO, type IncidentListDTO } from "@/lib/platform/incidents/investigation-dto";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 
 export const runtime = "nodejs";
 
@@ -39,5 +42,5 @@ export async function GET(req: Request) {
   let result: Awaited<ReturnType<typeof incidentAccessors.search>>;
   try { result = await incidentAccessors.search(token, query, { now }); }
   catch { return NextResponse.json({ error: "Incident read failed." }, { status: 500, headers: NO_STORE }); }
-  return NextResponse.json(incidentListDTO(result, "cs", now, fromClamped) satisfies CsIncidentListResponse, { headers: NO_STORE });
+  return NextResponse.json(incidentListDTO(result, "cs", now, fromClamped, { subjectRefOf: opaqueUserRef }) satisfies CsIncidentListResponse, { headers: NO_STORE });
 }

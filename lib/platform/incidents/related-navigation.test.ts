@@ -226,7 +226,7 @@ console.log("\n7. source scan");
     && /const navToken = metricAccessFor\(auth\)/.test(csGuarded[1]) && /resolveNavigationTarget\("CUSTOMER_SUCCESS", navToken,/.test(csGuarded[1])
     && !/resolveNavigationTarget\("(?!CUSTOMER_SUCCESS")/.test(csRoute));
   check("…and builds from the PROJECTED CS DTO (csIncidentNavigationLinks(dto, …)), never the raw investigation",
-    /const dto = incidentDetailDTO\(inv, "cs", now\)/.test(csRoute) && /csIncidentNavigationLinks\(dto,/.test(csRoute) && !/incidentNavigationLinks\(/.test(csRoute.replace(/csIncidentNavigationLinks/g, "")));
+    /const dto = incidentDetailDTO\(inv, "cs", now, \{ subjectRefOf: opaqueUserRef \}\)/.test(csRoute) && /csIncidentNavigationLinks\(dto,/.test(csRoute) && !/incidentNavigationLinks\(/.test(csRoute.replace(/csIncidentNavigationLinks/g, "")));
 }
 
 console.log("\n8. the Customer Success drawer");
