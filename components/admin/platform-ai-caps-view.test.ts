@@ -201,7 +201,10 @@ console.log("\n7. the read-only Cost Controls card");
   const route = strip("app/api/platform/platform-ops/ai-cost-controls/route.ts");
   check("the cost-controls route appends the READ-ONLY blanket summary (never the operator list, never a caps write)",
     /loadPlatformAiBlanketCapsSummary\(/.test(route) && !/applyPlatformAiCapsAction|loadPlatformAiCapsReadModel|operators/.test(route));
-  check("GET stays PLATFORM_OPS READ", /export async function GET\(\) \{\s*const \[, err\] = await requirePlatformAccess\("PLATFORM_OPS", "READ"\);/.test(route));
+  check("GET stays PLATFORM_OPS READ", /export async function GET\(\) \{\s*const \[auth, err\] = await requirePlatformAccess\("PLATFORM_OPS", "READ"\);\s*if \(err\) return err;/.test(route));
+  check("the usage-today block is the fleet projection for the VIEWER (never the SA per-operator loader)",
+    /loadPlatformAiFleetUsageToday\(aiModel, viewerId\)/.test(route) && /withPlatformAiCaps\(await loadAiCostControlsReadModel\(\), auth\.user\.id\)/.test(route)
+      && !/withPlatformAiUsageToday|loadPlatformAiUsageToday\(|byOperator/.test(route));
   const svc = strip("lib/platform/ai/platform-ai-caps-admin.ts");
   const summary = svc.slice(svc.indexOf("export async function loadPlatformAiBlanketCapsSummary"), svc.indexOf("export interface CapsAdminActor"));
   check("the summary reads settings only: no operator list, no user read, no writer label", summary.length > 0 && !/loadOperators|user\.findMany|platformAiOperatorCap|updatedBy|refOf/.test(summary));

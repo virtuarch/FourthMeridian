@@ -57,6 +57,7 @@ import {
 } from "./ai-cost-controls-view";
 import { BLANKET_TITLE, READ_ONLY_CARD_TITLE, READ_ONLY_EDITED_BY, capValueText, fitsText, sourceText } from "@/components/admin/platform-ai-caps-view";
 import type { PlatformAiCapsSummary } from "@/lib/platform/ai/cost-controls.types";
+import { PlatformAiUsageTodayCard } from "./PlatformAiUsageToday";
 
 // ── Reading one control ───────────────────────────────────────────────────────
 
@@ -411,6 +412,7 @@ export function AiCostControlsPanel({ state, editable = false, onModel = () => {
             <AlertCard card="fleetAlert" model={data} editable={editable} onModel={onModel} />
             <PlatformAiOperatorsCard caps={data.platformAiCaps} />
           </div>
+          <PlatformAiUsageTodayCard usage={data.platformAiUsageToday} />
           <KillSwitchCard model={data} editable={editable} onModel={onModel} />
         </>
       )}

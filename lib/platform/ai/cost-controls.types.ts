@@ -170,7 +170,91 @@ export interface AiCostControlsReadModel {
    * per-operator overrides. Optional: absent / null ⇒ the card reads "not available".
    */
   platformAiCaps?: PlatformAiCapsSummary | null;
+  /**
+   * PLATFORM AI COST MANAGEMENT — APPENDED, READ-ONLY. Today's Platform AI usage
+   * (estimated): platform totals, by model and by feature, the platform budget, the
+   * COUNT of operators at or near their limit, and the viewer's OWN figures. Never
+   * another operator's identity (that is the SYSTEM_ADMIN caps page). Optional:
+   * absent / null ⇒ the card reads "not available".
+   */
+  platformAiUsageToday?: PlatformAiFleetUsageToday | null;
 }
+
+// ── Platform AI usage today (PLATFORM AI COST MANAGEMENT) ─────────────────────
+// Every dollar is an ESTIMATE: provider-reported tokens priced by the code-owned
+// rate card. The fold is lib/platform/ai/platform-ai-usage-today.core.ts.
+
+/** What a budget is doing for the NEXT question. REFUSING = the reservation refuses every question (fail closed). */
+export type PlatformAiBudgetState = "OK" | "LOW" | "EXHAUSTED" | "REFUSING";
+export type PlatformAiBudgetRefusal = "CAP_MISSING" | "CAP_INVALID" | "UNPRICED" | "LEDGER_UNTRUSTED";
+
+export interface PlatformAiUsageFigure {
+  /** Estimated USD over today's priced RETURNED calls (0 when none). Never a provider charge. */
+  estimatedUsd: number;
+  /** RETURNED model calls (billed round-trips). */
+  calls: number;
+  /** Calls that failed / timed out / were rate-limited (zero tokens). */
+  failedCalls: number;
+  /** RETURNED calls the rate card cannot price — excluded from estimatedUsd, never $0. */
+  unpricedCalls: number;
+  /** Questions asked (distinct turns, any outcome) — what the daily turn cap counts. */
+  turns: number;
+  /** Provider-reported prompt + completion tokens of RETURNED calls. */
+  tokens: number;
+}
+
+export interface PlatformAiUsageSlice extends PlatformAiUsageFigure {
+  key: string;
+  label: string;
+}
+
+export interface PlatformAiBudgetView {
+  /** The cap in force (estimated USD per UTC day), or null when it does not resolve. */
+  capUsd: number | null;
+  spentUsd: number;
+  /** Questions admitted and still running. */
+  inFlight: number;
+  /** inFlight × the worst-case reserve, or null when unpriced. */
+  reservedUsd: number | null;
+  /** cap − spent − reserved (never below 0), or null when REFUSING. */
+  remainingUsd: number | null;
+  /** Worst-case questions that still fit, or null when REFUSING. */
+  turnsLeft: number | null;
+  state: PlatformAiBudgetState;
+  refusal: PlatformAiBudgetRefusal | null;
+}
+
+export interface PlatformAiOperatorUsageView {
+  usage: PlatformAiUsageFigure;
+  /** Against the operator's own cap (override > per-operator default). */
+  budget: PlatformAiBudgetView;
+  turnsUsed: number;
+  turnsCap: number;
+  /** What the next question meets first: the worst of own cap, platform cap and turn cap. */
+  state: PlatformAiBudgetState;
+  limitedBy: "OPERATOR" | "PLATFORM" | "DAILY_TURNS" | null;
+  refusal: PlatformAiBudgetRefusal | null;
+}
+
+export interface PlatformAiFleetUsageToday {
+  /** YYYY-MM-DD (UTC) — caps reset at 00:00 UTC. */
+  day: string;
+  checkedAt: string;
+  model: string;
+  /** One worst-case question on `model`, estimated USD (null ⇒ unpriced). */
+  reserveUsd: number | null;
+  platform: { usage: PlatformAiUsageFigure; budget: PlatformAiBudgetView };
+  byModel: PlatformAiUsageSlice[];
+  byFeature: PlatformAiUsageSlice[];
+  /** COUNTS only — operators who used Platform AI today, and how many are LOW / EXHAUSTED / REFUSING. */
+  operatorCounts: { activeToday: number; low: number; exhausted: number; refusing: number };
+  /** The signed-in viewer's own figures (null when unavailable). */
+  self: PlatformAiOperatorUsageView | null;
+  estimateNote: string;
+}
+
+export const PLATFORM_AI_ESTIMATE_NOTE =
+  "Estimated: provider-reported tokens priced by the code-owned rate card. Not a provider charge — no invoice or billing API is read. Caps reset at 00:00 UTC.";
 
 /** One blanket Platform AI cap, as the reservation resolves it with no override. */
 export interface PlatformAiBlanketCapSummary {
