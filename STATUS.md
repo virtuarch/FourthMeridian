@@ -193,7 +193,7 @@ File ownership during the UX P1 program is exclusive and listed in the coordinat
 
 **The live defect register is [`docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md`](docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md)** (73 numbered findings, FM-AUDIT-001…073). Since it was written, commit messages have cited 19 distinct FM-AUDIT ids as addressed (VERIFIED by `git log`); a citation is not a verified closure, and no closure census has been run since — treat the per-finding state as NOT VERIFIED until one is.
 
-**Known customer-facing issues in Production B11 (2026-11-10; fixes for (1) and (2) shipped in B12 2026-11-11 via #513 and #511 — stored Briefs self-correct on next regeneration; (3) not re-checked this pass):** (1) Brief AI prose can misstate part/whole figures; (2) on day one the 1M net-worth chart shows a steep drop when most accounts have no history yet (disclosed by the partial-history note); (3) reconnect / update mode was not re-tested in the B11 sandbox journey (code unchanged since B10.1).
+**Known customer-facing issues in Production B11 (2026-11-10; fixes for (1) and (2) shipped in B12 2026-11-11 via #513 and #511 — not verified in Production (no Production browsing); stored Briefs self-correct on next regeneration; (3) not re-checked this pass):** (1) Brief AI prose can misstate part/whole figures; (2) on day one the 1M net-worth chart shows a steep drop when most accounts have no history yet (disclosed by the partial-history note); (3) reconnect / update mode was not re-tested in the B11 sandbox journey (code unchanged since B10.1).
 
 Legacy KD tickets still carried:
 
