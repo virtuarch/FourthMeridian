@@ -9,11 +9,16 @@
 import { AuditAction } from "@/lib/audit-actions";
 import { isOperatorReasonCode, type OperatorActionInput } from "@/lib/audit";
 
-export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation" | "policy-groups";
+export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation" | "policy-groups"
+  // Platform AI caps D5 PR4 — the SA-only blanket / per-operator Platform AI $ caps.
+  | "platform-ai-caps";
 export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" | "archive" | "default"
   // BETA LIFECYCLE (L1) — the policy-group lifecycle actions.
   | "pause" | "resume" | "end" | "freeze" | "unfreeze";
-export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE";
+export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE"
+  // Platform AI caps D5 PR4 — the caller is not a System Admin; the target is not an
+  // operator; the platform cap is missing / invalid; the override is above the platform cap.
+  | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "PLATFORM_CAP_INVALID" | "ABOVE_PLATFORM_CAP";
 
 export interface ControlRefusal {
   control: ControlName;
@@ -37,6 +42,8 @@ const TARGET_PREFIX: Record<ControlName, string> = {
   "beta-reconciliation": "beta-reconciliation",
   // Policy editor — the target key is the policy group (only when it matched the key pattern).
   "policy-groups": "policy-group",
+  // Platform AI caps — the target key is the blanket cap (per_operator | platform) or "override" (never a user id).
+  "platform-ai-caps": "platform-ai-cap",
 };
 
 /** Closed-vocabulary target keys are short identifiers; anything else is "unknown". */

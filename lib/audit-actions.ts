@@ -505,6 +505,13 @@ export const AuditAction = {
   // removed (lib/platform/customer/assign.ts; reason-required; change carries
   // the before/after USD figure, a policy value, never a balance).
   CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED",
+  // PLATFORM AI CAPS D5 PR4 — a System Admin set (CHANGED) or removed (RESET) one
+  // operator's Platform AI daily $ override (PlatformAiOperatorCap; app/api/admin/
+  // platform-ai-caps). Reason-required. Target PLATFORM_AI_OPERATOR_CAP keyed by the
+  // PRIV-ref (opaqueUserRef), never the raw user id; detail = { targetRef, previous,
+  // next, selfEdit, reason } — policy figures, never a balance or a spend.
+  PLATFORM_AI_OPERATOR_CAP_CHANGED: "PLATFORM_AI_OPERATOR_CAP_CHANGED",
+  PLATFORM_AI_OPERATOR_CAP_RESET:   "PLATFORM_AI_OPERATOR_CAP_RESET",
   CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
   // BETA RECONCILIATION (owner ruling 2026-10-30) — a PLATFORM_OPS CONTROL
   // holder gave every ACTIVE customer with NO assignment the beta default
@@ -782,6 +789,9 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  // Platform AI caps D5 PR4 — a System Admin's per-operator Platform AI $ override.
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_CHANGED,
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   // Beta reconciliation — the fleet-wide default-assignment run (counts only).
   AuditAction.CUSTOMER_POLICY_RECONCILED,
