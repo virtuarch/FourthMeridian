@@ -214,6 +214,8 @@ export function CsCustomersWidget({ section, access, variant }: { section: Platf
   // PB-4 — the dashboard's "Who needs help, and why" rows only SET the filter (search cleared,
   // so the list's total is the count the operator clicked).
   useEffect(() => {
+    // The profile-only variant (CS incidents) has no list: no filter listener, so no ?attention= commit and no list read.
+    if (profileOnly) return;
     const onFilter = (e: Event) => {
       const f = attentionFilterOf(e);
       if (!f) return;
@@ -222,7 +224,7 @@ export function CsCustomersWidget({ section, access, variant }: { section: Platf
     };
     window.addEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
     return () => window.removeEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
-  }, [applyAttention]);
+  }, [applyAttention, profileOnly]);
   useEffect(() => {
     if (!selectedId) return;
     let alive = true; (async () => { if (alive) await loadDetail(selectedId); })(); return () => { alive = false; };

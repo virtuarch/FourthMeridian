@@ -93,6 +93,8 @@ export interface IncidentRowDTO {
   causeStatus: IncidentVerdict["causeStatus"];
   causeCode: string | null;
   subjectUserId?: string | null;
+  /** CS tier ONLY: the opaque PRIV-ref of `subjectUserId` (server-computed) — what the CS list and drawer SHOW. */
+  subjectRef?: string | null;
 }
 
 export type RecoveryActionDTO =
@@ -218,7 +220,7 @@ export function lifecycleActionsFor(v: Pick<IncidentVerdict, "availableActions">
 }
 
 /** THE allowlist projection. Copies named fields only; identity only for the cs tier. */
-export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: IncidentTier): IncidentRowDTO {
+export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: IncidentTier, subjectRefOf?: (userId: string) => string): IncidentRowDTO {
   const row: IncidentRowDTO = {
     id: v.id, state: v.state, freshness: v.freshness, closure: v.closure, closureDerived: v.closureDerived,
     kind: v.kind, provider: v.provider, domain: v.domain, severity: v.severity, effectiveSeverity: v.effectiveSeverity,
@@ -231,7 +233,11 @@ export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: Inc
     recovery: { ...v.recovery },
     causeStatus: v.causeStatus, causeCode: v.causeCode,
   };
-  if (tier === "cs") row.subjectUserId = "subjectUserId" in v ? v.subjectUserId : null;
+  if (tier === "cs") {
+    row.subjectUserId = "subjectUserId" in v ? v.subjectUserId : null;
+    // PRIV-ref (P3, S2): the reference shown in place of the raw id; fail-closed word without a ref function.
+    row.subjectRef = row.subjectUserId ? (subjectRefOf ? subjectRefOf(row.subjectUserId) : OPAQUE_USER_REF_FALLBACK) : null;
+  }
   return row;
 }
 
@@ -331,9 +337,11 @@ export function incidentDiagnosisOf(
   };
 }
 
-export function incidentListDTO(r: IncidentSearchResult<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, fromClamped: boolean): IncidentListDTO {
+export function incidentListDTO(
+  r: IncidentSearchResult<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, fromClamped: boolean, opts?: IncidentDetailOptions,
+): IncidentListDTO {
   return {
-    tier, items: r.items.map((v) => incidentRowDTO(v, tier)), total: r.total, page: r.page, pageSize: r.pageSize,
+    tier, items: r.items.map((v) => incidentRowDTO(v, tier, opts?.subjectRefOf)), total: r.total, page: r.page, pageSize: r.pageSize,
     truncated: r.truncated, scanned: r.scanned, facets: r.facets, checkedAt: now.toISOString(), fromClamped,
   };
 }
@@ -348,13 +356,13 @@ export function incidentDetailDTO(
 ): IncidentDetailDTO {
   const dto: IncidentDetailDTO = {
     tier,
-    incident: incidentRowDTO(inv.verdict, tier),
+    incident: incidentRowDTO(inv.verdict, tier, opts?.subjectRefOf),
     evidence: inv.evidence ? { ...inv.evidence } : null,
     resolutionReasonCode: inv.resolutionReasonCode,
     timeline: { source: inv.timeline.source, truncated: inv.timeline.truncated, events: inv.timeline.events.map((e) => ({ ...e })) },
     affected: { ...inv.affected },
-    related: inv.related.map((l) => ({ id: l.id, kind: l.kind, incident: l.incident ? incidentRowDTO(l.incident, tier) : null })),
-    recurrences: inv.recurrences.map((v) => incidentRowDTO(v, tier)),
+    related: inv.related.map((l) => ({ id: l.id, kind: l.kind, incident: l.incident ? incidentRowDTO(l.incident, tier, opts?.subjectRefOf) : null })),
+    recurrences: inv.recurrences.map((v) => incidentRowDTO(v, tier, opts?.subjectRefOf)),
     recurrencesTruncated: inv.recurrencesTruncated,
     archive: { ...inv.archive },
     recovery: recoveryActionsFor(inv, tier),

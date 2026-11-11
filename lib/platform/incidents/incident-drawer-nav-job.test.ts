@@ -22,7 +22,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole, type PlatformArea } from "@prisma/client";
 import { createIncidentAccessors, newestOccurrenceComponent, type IncidentFactsReader } from "./intelligence/index";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "./intelligence/audience";
-import { incidentComponentOf, incidentDetailDTO, UNKNOWN_JOB_LABEL, type IncidentDetailDTO } from "./investigation-dto";
+import { incidentComponentOf, incidentDetailDTO, incidentListDTO, UNKNOWN_JOB_LABEL, type IncidentDetailDTO } from "./investigation-dto";
 import {
   INCIDENT_NAVIGATION_TARGETS, JOBS_LINK_LABEL, JOBS_LINK_NOTE, csIncidentNavigationLinks, incidentNavigationLinks,
   type IncidentNavigationInput, type IncidentNavigationResolver,
@@ -122,6 +122,13 @@ async function main(): Promise<void> {
   check("CS: the same label, NO jobRunId (Ops only, S2)", cd.component?.jobLabel === JOB_LABELS["sync-banks"] && !("jobRunId" in (cd.component ?? {})) && !JSON.stringify(cd).includes("jr_abc123"));
   check("CS: subjectRef is the opaque PRIV-ref (user #<8 hex>), never the id", /^user #[0-9a-f]{8}$/.test(cd.subjectRef ?? "") && !(cd.subjectRef ?? "").includes(USER_ID), cd.subjectRef);
   check("CS without a ref function ⇒ the fail-closed word, never the id", incidentDetailDTO(csInv!, "cs", NOW).subjectRef === "customer");
+  const refOf = (u: string) => opaqueUserRefWith(u, "test-secret");
+  const searchResult = { items: [csInv!.verdict], total: 1, page: 1, pageSize: 25, truncated: false, scanned: 1, facets: { providers: [], operations: [], codes: [] } } as never;
+  const csList = incidentListDTO(searchResult, "cs", NOW, false, { subjectRefOf: refOf });
+  check("CS list rows carry the same PRIV-ref as the drawer", csList.items[0].subjectRef === cd.subjectRef && /^user #[0-9a-f]{8}$/.test(csList.items[0].subjectRef ?? ""));
+  check("CS list rows without a ref function ⇒ the fail-closed word", incidentListDTO(searchResult, "cs", NOW, false).items[0].subjectRef === "customer");
+  const opsList = incidentListDTO({ ...(searchResult as object), items: [inv.verdict] } as never, "ops", NOW, false, { subjectRefOf: refOf });
+  check("Ops list rows: no subjectRef, no subjectUserId, no id", !("subjectRef" in opsList.items[0]) && !("subjectUserId" in opsList.items[0]) && !JSON.stringify(opsList).includes(USER_ID));
   const withJob = (jobName: string | null, jobRunId: string | null = null) => ({ ...inv, component: jobName === null && jobRunId === null ? null : { jobName, jobRunId } }) as IncidentInvestigation;
   const unknown = incidentComponentOf(withJob("internal-secret-job-x"), "ops");
   check("an unknown job ⇒ the generic word, never the raw ledger name",
@@ -206,6 +213,27 @@ async function main(): Promise<void> {
     && /profileOnly \? undefined : spaceUrl\.subscribe/.test(widget) && /if \(!profileOnly\) await loadList\(search, attention\)/.test(widget));
   check("every open request re-reads the audited detail route (fresh read + CUSTOMER_PROFILE_VIEWED each time)",
     /setOpenSeq\(\(n\) => n \+ 1\)/.test(widget) && /\}, \[selectedId, openSeq, loadDetail\]\);/.test(widget) && /fetch\(`\/api\/platform\/customer-success\/customers\/\$\{id\}`/.test(widget));
+  // S2 09gi (required) — profileOnly registers NO attention-filter listener, never commits ?attention= and never reads the list.
+  const filterEnd = widget.indexOf("}, [applyAttention, profileOnly]);");
+  const filterBody = filterEnd > 0 ? widget.slice(widget.lastIndexOf("useEffect(() => {", filterEnd) + "useEffect(() => {".length, filterEnd) : "";
+  check("profileOnly: the attention-filter effect returns before registering its listener",
+    /^\s*if \(profileOnly\) return;\s*const onFilter/.test(filterBody) && filterBody.includes("addEventListener(CS_ATTENTION_FILTER_EVENT, onFilter)")
+      && (widget.match(/addEventListener\(CS_ATTENTION_FILTER_EVENT/g) ?? []).length === 1, filterBody.slice(0, 120));
+  const effects = [...widget.matchAll(/useEffect\(([\s\S]*?)\}?, \[([^\]]*)\]\);/g)].map((m) => ({ body: m[1], deps: m[2] }));
+  const urlOrList = effects.filter((e) => /applyAttention|openFromUrl|loadList|spaceUrl\.(commit|subscribe)|CS_ATTENTION_FILTER_EVENT/.test(e.body));
+  check("profileOnly: EVERY effect that can commit ?attention=, subscribe to the URL or read the list is gated on profileOnly",
+    urlOrList.length === 3 && urlOrList.every((e) => /profileOnly/.test(e.body) && /\bprofileOnly\b/.test(e.deps)), urlOrList.map((e) => e.deps));
+  check("profileOnly: an action re-reads the profile but never the list", /if \(!profileOnly\) await loadList\(search, attention\)/.test(widget));
+  check("profileOnly: the commit / list-read call sites live only in list handlers (applyAttention, openFromUrl, the search form) — none rendered in the panel",
+    (() => { const panel = widget.slice(widget.indexOf("const profilePanel = ("), widget.indexOf("if (profileOnly) return profilePanel;")); return !/spaceUrl\.commit|loadList\(|applyAttention\(|openFromUrl\(/.test(panel); })());
+
+  // P3 (S2 approved) — the CS incidents LIST shows the PRIV-ref too.
+  const listRoute = readFileSync("app/api/platform/customer-success/incidents/route.ts", "utf8");
+  check("the CS list route computes each row's PRIV-ref server-side", /incidentListDTO\(result, "cs", now, fromClamped, \{ subjectRefOf: opaqueUserRef \}\)/.test(listRoute)
+    && /import \{ opaqueUserRef \} from "@\/lib\/platform\/opaque-user-ref"/.test(listRoute));
+  check("the Ops list route passes no ref function", !/opaqueUserRef|subjectRefOf/.test(readFileSync("app/api/platform/platform-ops/incidents/route.ts", "utf8")));
+  check("the list renders the row's subjectRef, never r.subjectUserId as text", /\{`Customer \$\{r\.subjectRef \?\? OPAQUE_USER_REF_FALLBACK\}`\}/.test(lead) && !/customer \{r\.subjectUserId\}/.test(lead));
+
   const detailRoute = readFileSync("app/api/platform/customer-success/customers/[userId]/route.ts", "utf8");
   check("…which is CUSTOMER_SUCCESS READ and audits CUSTOMER_PROFILE_VIEWED", /requirePlatformAccess\("CUSTOMER_SUCCESS", "READ"\)/.test(detailRoute) && /AuditAction\.CUSTOMER_PROFILE_VIEWED/.test(detailRoute));
   const csRoute = readFileSync("app/api/platform/customer-success/incidents/[id]/route.ts", "utf8");

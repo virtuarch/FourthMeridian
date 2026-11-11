@@ -125,11 +125,14 @@ console.log("\n4. Ops renders no identity; CS does");
   check("Ops list: every row is a button opening the drawer, no customer line", /data-incident-row="inc_1"/.test(opsHtml) && /aria-haspopup="dialog"/.test(opsHtml) && !opsHtml.includes("customer "));
   const opsDetail = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: detail(row(), "ops"), canWrite: true, onSelect: () => {}, onRecover: () => {} }));
   check("Ops detail: no customer line", !/Customer |No attributed customer/.test(opsDetail));
-  const csRow = row({ subjectUserId: "u_cust_0000000001" });
+  const csRow = row({ subjectUserId: "u_cust_0000000001", subjectRef: "user #0a1b2c3d" });
   const csHtml = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(csRow), tier: "cs" }, onSelect: () => {}, onPage: () => {} }));
   const csDetail = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: detail(csRow, "cs"), canWrite: true, onSelect: () => {}, onRecover: () => {} }));
-  check("CS list names the attributed customer; the CS detail names them by PRIV-ref only, never the raw id (control)",
-    csHtml.includes("u_cust_0000000001") && csDetail.includes("data-incident-customer-ref") && !csDetail.includes("u_cust_0000000001") && csDetail.includes("Refresh all for this customer"));
+  check("CS list + detail name the attributed customer by PRIV-ref only, never the raw id (control)",
+    csHtml.includes("data-incident-row-customer-ref") && csHtml.includes("Customer user #0a1b2c3d") && !csHtml.includes("u_cust_0000000001")
+      && csDetail.includes("data-incident-customer-ref") && !csDetail.includes("u_cust_0000000001") && csDetail.includes("Refresh all for this customer"));
+  const csNoRef = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(row({ subjectUserId: "u_cust_0000000001" })), tier: "cs" }, onSelect: () => {}, onPage: () => {} }));
+  check("CS list row without a server ref ⇒ the fail-closed word, never the raw id", csNoRef.includes("Customer customer") && !csNoRef.includes("u_cust_0000000001"));
   const empty = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(row()), items: [], total: 30, page: 3 }, onSelect: () => {}, onPage: () => {} }));
   check("a page past the end says so and keeps the pager", empty.includes("No incidents on this page.") && empty.includes("data-pager"));
 }

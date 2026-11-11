@@ -177,7 +177,8 @@ export function IncidentListSurface({ data, onSelect, onPage }: { data: Incident
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[var(--text-primary)]">{incidentTitle(r)}</span>
                   <span className="block truncate text-[11px] text-[var(--text-muted)]">{incidentLine(r)}</span>
-                  {"subjectUserId" in r && r.subjectUserId ? <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">customer {r.subjectUserId}</span> : null}
+                  {/* PRIV-ref — the opaque reference, never the raw customer id. */}
+                  {"subjectUserId" in r && r.subjectUserId ? <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]" data-incident-row-customer-ref>{`Customer ${r.subjectRef ?? OPAQUE_USER_REF_FALLBACK}`}</span> : null}
                 </span>
                 <span className="flex shrink-0 flex-col items-end gap-0.5 text-[11px]">
                   <span style={{ color: TONE_COLOR[STATE_TONE[r.state]] }}>{STATE_WORD[r.state]}</span>
