@@ -186,6 +186,9 @@ const _e = {
   // The on-demand purge trigger (GET /api/jobs/dispatch?only=platform-ai-purge) —
   // a second, independent switch over the purge flag. Strict `=== "true"`; unset = OFF.
   PLATFORM_AI_PURGE_ON_DEMAND_ENABLED: process.env.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED,
+  // Incident customer update (S2 09gg c) — the operator-approved customer message's
+  // SEND. Strict `=== "true"`; unset / anything else = OFF (send route 404 NOT_AVAILABLE).
+  INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED: process.env.INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED,
   // Platform AI operational memory (design v2; Preview only) — the memory itself,
   // and the memory retention purge that must accompany it. Strict `=== "true"`; unset = OFF.
   PLATFORM_AI_MEMORY_ENABLED: process.env.PLATFORM_AI_MEMORY_ENABLED,
@@ -937,6 +940,16 @@ export const env = {
    * === "true". Either unset ⇒ OFF: the route answers 409 PURGE_ON_DEMAND_DISABLED
    * with no database contact (no JobRun either). Production enablement is owner-gated.
    */
+  /**
+   * Incident customer update (owner yes; S2 ruling 09gg (c)) — the SEND of an
+   * operator-approved customer update is ON only when
+   * INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED === "true". Unset ⇒ OFF in every
+   * environment: POST …/customer-update/send answers 404 NOT_AVAILABLE before the
+   * lint, the dedupe, the audit or any notification, and the read model says
+   * sendEnabled:false so the drawer hides the control. Production enablement is
+   * an owner decision. The draft, the lint and the preview work either way.
+   */
+  get isIncidentCustomerMessageSendEnabled() { return _e.INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED === "true"; },
   get isPlatformAiPurgeOnDemandEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED === "true"; },
   /**
    * PR D — the S2 DISABLE-ORDER hazard, as a fact (NEVER an enable): the

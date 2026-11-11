@@ -129,7 +129,11 @@ export interface LedgerTag {
   automationRunItemId?: string;
   mode?: "LIVE" | "TEST";
   attempt?: number;
+  /** Incident customer update (S2 09gg c) — the incident (SyncIssue.id) the message belongs to. Id-shaped only. */
+  incidentId?: string;
 }
+
+const LEDGER_TAG_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Apply a ledger tag to one built row. Pure. */
 export function tagLedgerRow(row: CommsDeliveryRow, tag: LedgerTag | undefined): CommsDeliveryRow {
@@ -138,6 +142,7 @@ export function tagLedgerRow(row: CommsDeliveryRow, tag: LedgerTag | undefined):
     ...row,
     ...(tag.messageKey ? { messageKey: tag.messageKey } : {}),
     ...(tag.automationRunItemId ? { automationRunItemId: tag.automationRunItemId } : {}),
+    ...(tag.incidentId && LEDGER_TAG_ID.test(tag.incidentId) ? { incidentId: tag.incidentId } : {}),
     ...(tag.mode ? { mode: tag.mode } : {}),
     ...(tag.attempt && tag.attempt > 0 ? { attempt: Math.floor(tag.attempt) } : {}),
   };

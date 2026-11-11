@@ -239,9 +239,13 @@ const WIRED = new Set<string>([
   "PLATFORM_ACCESS_REVOKED",  // lib/notifications/platform-access.ts (admin platform-grants PATCH)
   // PB-5 (owner-approved 2026-11-01) — the operator Remove connection.
   "CONNECTION_REMOVED_BY_SUPPORT", // lib/platform/connections/operator-removal.ts
+  // S2 ruling 09gg (c) (owner yes 2026-11-11) — the operator-approved incident update.
+  "INCIDENT_CUSTOMER_UPDATE", // lib/platform/incidents/customer-update/service.ts (send behind INCIDENT_CUSTOMER_MESSAGE_SEND_ENABLED)
 ]);
-check("only ACCOUNT_WELCOME never releases its dedupe key",
-  entries.filter(([, e]) => e.dedupeNeverReleases).map(([k]) => k).join() === "ACCOUNT_WELCOME");
+// INCIDENT_CUSTOMER_UPDATE: one update per incident episode for good — dismissing it never lets a second one through.
+check("only ACCOUNT_WELCOME and INCIDENT_CUSTOMER_UPDATE never release their dedupe key",
+  entries.filter(([, e]) => e.dedupeNeverReleases).map(([k]) => k).sort().join() === "ACCOUNT_WELCOME,INCIDENT_CUSTOMER_UPDATE",
+  entries.filter(([, e]) => e.dedupeNeverReleases).map(([k]) => k).join());
 for (const [key, e] of entries) {
   if (WIRED.has(key)) {
     check(`${key}: status is WIRED (producer landed)`, e.status === "WIRED");

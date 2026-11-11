@@ -11,14 +11,22 @@ import { isOperatorReasonCode, type OperatorActionInput } from "@/lib/audit";
 
 export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation" | "policy-groups"
   // Platform AI caps D5 PR4 — the SA-only blanket / per-operator Platform AI $ caps.
-  | "platform-ai-caps";
+  | "platform-ai-caps"
+  // Incident customer update (S2 09gg c) — the CS approve-and-send of one customer update.
+  | "incident-customer-update";
 export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" | "archive" | "default"
   // BETA LIFECYCLE (L1) — the policy-group lifecycle actions.
-  | "pause" | "resume" | "end" | "freeze" | "unfreeze";
+  | "pause" | "resume" | "end" | "freeze" | "unfreeze"
+  // Incident customer update — the preview and the approve-and-send.
+  | "preview" | "send";
 export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE"
   // Platform AI caps D5 PR4 — the caller is not a System Admin; the target is not an
   // operator; the platform cap is missing / invalid; the override is above the platform cap.
-  | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "PLATFORM_CAP_INVALID" | "ABOVE_PLATFORM_CAP";
+  | "FORBIDDEN" | "NOT_ELIGIBLE" | "PLATFORM_CAP_NOT_SET" | "PLATFORM_CAP_INVALID" | "ABOVE_PLATFORM_CAP"
+  // Incident customer update (S2 09gg c) — the send flag is off; the paragraph failed the lint; the episode
+  // already has a sent update; a reconnect-request notice went out < 24 h ago; the draft moved since it was read;
+  // no attributable / active recipient.
+  | "SEND_DISABLED" | "LINT_FAILED" | "ALREADY_SENT" | "REAUTH_NOTICE_RECENT" | "DRAFT_CHANGED" | "NO_RECIPIENT";
 
 export interface ControlRefusal {
   control: ControlName;
@@ -44,6 +52,8 @@ const TARGET_PREFIX: Record<ControlName, string> = {
   "policy-groups": "policy-group",
   // Platform AI caps — the target key is the blanket cap (per_operator | platform) or "override" (never a user id).
   "platform-ai-caps": "platform-ai-cap",
+  // Incident customer update — the target key is the incident id (an opaque SyncIssue id, never a customer id).
+  "incident-customer-update": "incident-customer-update",
 };
 
 /** Closed-vocabulary target keys are short identifiers; anything else is "unknown". */
