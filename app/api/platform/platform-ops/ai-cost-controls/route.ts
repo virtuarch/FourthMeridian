@@ -36,6 +36,8 @@ import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit"
 import { applyAiCostControlChanges, loadAiCostControlsReadModel, type AiCostControlsMutationResult } from "@/lib/platform/ai/cost-controls";
 import { AI_COST_CONTROL_KEYS, type AiCostControlsReadModel, type AiCostControlsRefusal } from "@/lib/platform/ai/cost-controls.types";
 import { recordControlRefusal } from "@/lib/platform/control-refusal";
+import { loadPlatformAiBlanketCapsSummary } from "@/lib/platform/ai/platform-ai-caps-admin";
+import { platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 
 export const runtime = "nodejs";
 
@@ -43,10 +45,22 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 export type AiCostControlsResponse = AiCostControlsReadModel;
 
+/**
+ * PLATFORM AI CAPS D5 PR5 — the READ-ONLY "Platform AI (operators)" card: the two
+ * blanket caps and their sources (never the per-operator list), appended to every
+ * model this route returns so a PATCH reply does not drop the card. A read failure
+ * yields null (the card says "not available"); it never fails the cost controls.
+ * Nothing here writes a cap: those are SYSTEM_ADMIN-only at /api/admin/platform-ai-caps.
+ */
+async function withPlatformAiCaps(model: AiCostControlsReadModel): Promise<AiCostControlsReadModel> {
+  const platformAiCaps = await loadPlatformAiBlanketCapsSummary(platformAiModel().model).catch(() => null);
+  return { ...model, platformAiCaps };
+}
+
 export async function GET() {
   const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
-  const model = await loadAiCostControlsReadModel();
+  const model = await withPlatformAiCaps(await loadAiCostControlsReadModel());
   return NextResponse.json(model satisfies AiCostControlsResponse, { headers: NO_STORE });
 }
 
@@ -87,10 +101,12 @@ export async function PATCH(req: NextRequest) {
   try { reason = parseOperatorReason(body.reason); }
   catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400, headers: NO_STORE }), "VALIDATION"); }
 
-  const result = await applyAiCostControlChanges({
+  const applied = await applyAiCostControlChanges({
     changes: body.changes,
     reason,
     actor: { id: auth.user.id, ...meta },
   });
+  // D5 PR5 — the reply (applied or refused) carries the same read-only caps card as GET.
+  const result = { ...applied, model: await withPlatformAiCaps(applied.model) } as AiCostControlsMutationResult;
   return result.ok ? respond(result) : refuse(respond(result), result.code, result.control);
 }

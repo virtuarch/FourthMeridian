@@ -99,7 +99,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
       {/* ── Bottom nav (mobile) ── */}
       <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-gray-800 bg-gray-950/95 backdrop-blur-sm">
-        <div className="flex items-center justify-around h-16">
+        <div className="flex items-center justify-around h-16 overflow-x-auto">
           <AdminNav mobile />
         </div>
       </nav>

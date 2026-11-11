@@ -68,6 +68,7 @@ import {
   capSettingUsdOf, parseCapSettingRow, parseOperatorCapRow, platformAiReserveUsd, platformAiTurnsThatFit,
   resolvePlatformAiCaps, type CapInputs, type CapRefusalCause, type CapSource, type PlatformAiCapOutcome,
 } from "@/lib/platform/ai/platform-ai-spend.core";
+import type { PlatformAiBlanketCapSummary, PlatformAiCapsSummary } from "@/lib/platform/ai/cost-controls.types";
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -287,6 +288,32 @@ export async function loadPlatformAiCapsReadModel(model: string, deps: CapsAdmin
     operators: rows,
     overridesAbovePlatformCap: platformUsd === null ? null : capRows.filter((c) => c.dailyUsd > platformUsd).length,
     note: CAPS_NOTE,
+  };
+}
+
+/**
+ * D5 PR5 — the READ-ONLY blanket summary for Platform Ops → Policies → AI Cost
+ * Controls (PLATFORM_OPS READ). The two blanket values with their sources and
+ * fits-N-turns ONLY: never the operator list, an override, a writer or an id.
+ */
+export async function loadPlatformAiBlanketCapsSummary(
+  model: string,
+  deps: Pick<CapsAdminDeps, "client" | "capInputs" | "now"> = {},
+): Promise<PlatformAiCapsSummary> {
+  const client = deps.client ?? DEFAULT_CLIENT();
+  const capInputs = deps.capInputs ?? env.platformAiSpendCapInputs;
+  const now = deps.now ?? new Date();
+  const settingRows = await client.platformSetting.findMany({ where: BLANKET_WHERE, select: { key: true, value: true } });
+  let reserveUsd: number | null = null;
+  try { reserveUsd = platformAiReserveUsd(model, todayUTCISO(now)); } catch { reserveUsd = null; }
+  const r = resolveForAdmin(capInputs, settingRows, null);
+  const one = (o: PlatformAiCapOutcome, ceilingUsd: number): PlatformAiBlanketCapSummary => {
+    const v = view(o);
+    return { ...v, ceilingUsd, fitsTurns: platformAiTurnsThatFit(v.usd, reserveUsd) };
+  };
+  return {
+    perOperator: one(r.operator, PLATFORM_AI_OPERATOR_CAP_CEILING_USD),
+    platform: one(r.platform, PLATFORM_AI_PLATFORM_CAP_CEILING_USD),
   };
 }
 

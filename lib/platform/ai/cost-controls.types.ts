@@ -162,6 +162,31 @@ export interface AiCostControlsReadModel {
   killSwitch: KillSwitchView;
   /** The caching posture, stated for the operator: whether any decision reads a cached copy and how a change propagates. */
   propagation: { cached: boolean; note: string };
+  /**
+   * PLATFORM AI CAPS D5 PR5 — APPENDED, READ-ONLY. The two blanket Platform AI
+   * (operator) daily $ caps with their sources, so PLATFORM_OPS READ holders see
+   * them on Policies. Edited ONLY by System Admins in Admin → Platform AI caps
+   * (/api/admin/platform-ai-caps); this route never writes them and never lists
+   * per-operator overrides. Optional: absent / null ⇒ the card reads "not available".
+   */
+  platformAiCaps?: PlatformAiCapsSummary | null;
+}
+
+/** One blanket Platform AI cap, as the reservation resolves it with no override. */
+export interface PlatformAiBlanketCapSummary {
+  /** The cap in force (after the ceiling), or null when it does not resolve. */
+  usd: number | null;
+  source: "OPERATOR_OVERRIDE" | "PLATFORM_SETTING" | "ENV" | "TEST_DEFAULT" | "CEILING" | null;
+  /** Why it does not resolve (every Platform AI turn is then refused). */
+  refusal: "CAP_INVALID" | "CAP_MISSING" | null;
+  ceilingUsd: number;
+  /** How many worst-case turns the cap fits (null when unpriced or unresolved). */
+  fitsTurns: number | null;
+}
+
+export interface PlatformAiCapsSummary {
+  perOperator: PlatformAiBlanketCapSummary;
+  platform: PlatformAiBlanketCapSummary;
 }
 
 // ── Mutation ──────────────────────────────────────────────────────────────────

@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Building2, Plug, ScrollText, ShieldAlert, KeyRound } from "lucide-react";
+import { LayoutDashboard, Users, Building2, Plug, ScrollText, ShieldAlert, KeyRound, Gauge } from "lucide-react";
 
-const NAV = [
+const NAV: Array<{ label: string; href: string; icon: typeof Gauge; short?: string }> = [
   { label: "Overview",   href: "/admin",           icon: LayoutDashboard },
   { label: "Users",      href: "/admin/users",      icon: Users           },
   { label: "Spaces",     href: "/admin/spaces", icon: Building2       },
@@ -12,6 +12,7 @@ const NAV = [
   { label: "Audit Log",  href: "/admin/audit",      icon: ScrollText      },
   { label: "Security",   href: "/admin/security",   icon: ShieldAlert     },
   { label: "Platform Access", href: "/admin/platform-access", icon: KeyRound },
+  { label: "Platform AI caps", href: "/admin/platform-ai-caps", icon: Gauge, short: "AI caps" },
 ];
 
 export function AdminNav({ mobile }: { mobile?: boolean }) {
@@ -20,7 +21,7 @@ export function AdminNav({ mobile }: { mobile?: boolean }) {
   if (mobile) {
     return (
       <>
-        {NAV.map(({ label, href, icon: Icon }) => {
+        {NAV.map(({ label, href, icon: Icon, short }) => {
           const active = href === "/admin" ? path === "/admin" : path.startsWith(href);
           const isSecurity = href === "/admin/security";
           return (
@@ -34,7 +35,7 @@ export function AdminNav({ mobile }: { mobile?: boolean }) {
               }`}
             >
               <Icon size={20} strokeWidth={active ? 2.5 : 1.5} />
-              <span className="text-xs font-medium">{label}</span>
+              <span className="text-xs font-medium">{short ?? label}</span>
             </Link>
           );
         })}
