@@ -6,7 +6,7 @@
  *   1. the job → command table is EXACTLY the registry's Run Now targets
  *      (registered, mutating, same target, same reason requirement);
  *   2. the remedy × connection status × provider matrix (Ops + CS), the
- *      primary action by remedy class, Capital One NO_ACCOUNTS (ERROR ⇒
+ *      primary action by remedy class, NO_ACCOUNTS acceptance case (ERROR ⇒
  *      request-reauth primary + "a server retry can't fix this"; ACTIVE ⇒ no
  *      request-reauth / run-job + the healed note);
  *   3. job incidents end to end (investigate → DTO → drawer): run-job with the
@@ -77,7 +77,7 @@ console.log("\n2. remedy × connection status × provider (and the primary actio
     id: "inc_m", rowClass: "incident", state: "active", provider: "PLAID", plaidItemId: "item_m", subjectState: "LIVE", subjectUserId: "u_cust_m", ...o,
   }) as unknown as IncidentVerdict;
   const inv = (status: string | null, code: string | null, v = verdict(), jobName: string | null = "sync-banks") => ({
-    verdict: v, affected: { provider: v.provider, institution: "Capital One", itemCount: 1, accountCount: 1, subjectState: "LIVE" as const, itemStatus: status },
+    verdict: v, affected: { provider: v.provider, institution: "Example Bank", itemCount: 1, accountCount: 1, subjectState: "LIVE" as const, itemStatus: status },
     providerError: { code, source: code ? "connection" as const : null, unrecognised: false },
     component: jobName ? { jobName, jobRunId: null } : null,
   }) as unknown as Pick<IncidentInvestigation, "verdict" | "affected" | "providerError" | "component">;
@@ -105,7 +105,7 @@ console.log("\n2. remedy × connection status × provider (and the primary actio
   check("request-reauth is WITHHELD on an ACTIVE connection with a reconnect-class code (S2: NO)",
     ["NO_ACCOUNTS", "ITEM_LOGIN_REQUIRED", "ACCESS_NOT_GRANTED"].every((c) => !ops("ACTIVE", c).includes("request-reauth")));
   check("a non-LIVE / non-PLAID connection subject ⇒ nothing",
-    ops("ERROR", "INSTITUTION_DOWN", verdict({ subjectState: "REMOVED" } as never)) === "" && ops("ERROR", null, verdict({ provider: "COINBASE" } as never)) === "");
+    ops("ERROR", "INSTITUTION_DOWN", verdict({ subjectState: "REMOVED" } as never)) === "" && ops("ERROR", null, verdict({ provider: "WALLET" } as never)) === "");
   check("closed ⇒ nothing (connection or job)",
     ops("ERROR", "INSTITUTION_DOWN", verdict({ state: "resolved" })) === "" && ops(null, null, verdict({ state: "resolved", plaidItemId: null, provider: "WALLET" } as never), "sync-crypto") === "");
   // Job-sourced (no connection subject).
@@ -147,8 +147,8 @@ const csTok = incidentAudienceFor({ user: { role: UserRole.USER }, grant: { area
 const render = (d: ReturnType<typeof incidentDetailDTO>, canWrite = true) =>
   renderToStaticMarkup(createElement(IncidentDetailSurface, { d, canWrite, onSelect: () => {}, onRecover: () => {} }));
 
-async function capitalOne(status: string) {
-  state.item = { id: "item_c1", status, errorCode: "NO_ACCOUNTS", userId: "u_cust_c1_0000000001", institutionName: "Capital One" };
+async function noAccountsCase(status: string) {
+  state.item = { id: "item_c1", status, errorCode: "NO_ACCOUNTS", userId: "u_cust_c1_0000000001", institutionName: "Example Bank" };
   state.incident = baseIncident({
     id: "inc_c1", plaidItemId: "item_c1", subjectUserId: state.item.userId, incidentKey: "v1::PLAID::item:item_c1::transactions::plaid-item-error",
     detail: { stage: "plaid-item-error", errorCode: "NO_ACCOUNTS" },
@@ -159,8 +159,8 @@ async function capitalOne(status: string) {
 }
 
 async function main(): Promise<void> {
-  console.log("\n3a. Capital One NO_ACCOUNTS (synthetic), end to end");
-  const err = await capitalOne("ERROR");
+  console.log("\n3a. NO_ACCOUNTS acceptance case (synthetic), end to end");
+  const err = await noAccountsCase("ERROR");
   check("ERROR: investigate → DTO", err !== null);
   if (err) {
     check("ERROR: request-reauth is the only action, and it is PRIMARY", kinds(err.recovery) === "request-reauth", kinds(err.recovery));
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     check("ERROR: the drawer states plainly that a server retry can't fix this", html.includes("A server retry can&#x27;t fix this") || html.includes("A server retry can't fix this"));
     check("ERROR: no resync, no run-job (even though the job is sync-banks)", !html.includes('data-recovery-action="resync"') && !html.includes('data-recovery-action="run-job"'));
   }
-  const healed = await capitalOne("ACTIVE");
+  const healed = await noAccountsCase("ACTIVE");
   if (healed) {
     const html = render(healed);
     check("ACTIVE: no request-reauth and no run-job offered", !html.includes('data-recovery-action="request-reauth"') && !html.includes('data-recovery-action="run-job"'), kinds(healed.recovery));
