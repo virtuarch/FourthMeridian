@@ -135,7 +135,9 @@ async function main() {
       storableAnswerVersion(v1([text("x")])) === 1 && storableAnswerVersion(v2([recSeg])) === 2 && storableAnswerVersion(v2([text("x")], "COST_CAP")) === 2);
     check("a V2-labelled answer that V1 can express is refused on store (no needless version bump)", throws(() => serializeStoredAnswer(v2([text("plain")]))));
     check("a V1 row written before P4 still parses unchanged", JSON.stringify(parseStoredAnswer(JSON.stringify(v1([text("ok "), { kind: "figure", text: "3", metric: "incident-broken-now@1", window: null }])))) === JSON.stringify(v1([text("ok "), { kind: "figure", text: "3", metric: "incident-broken-now@1", window: null }])));
-    check("parse accepts V1 | V2 only", parseStoredAnswer(JSON.stringify({ ...v2([recSeg]), v: 3 })) === null && parseStoredAnswer(JSON.stringify(v2([recSeg])))?.v === 2);
+    // S2 09io A4: V3 exists (a closed field's value on a record segment); V4+ is still refused.
+    check("parse accepts V1 | V2 | V3 only", parseStoredAnswer(JSON.stringify({ ...v2([recSeg]), v: 4 })) === null && parseStoredAnswer(JSON.stringify(v2([recSeg])))?.v === 2
+      && parseStoredAnswer(JSON.stringify({ ...v2([recSeg]), v: 3 }))?.v === 3);
 
     // The identity rule on store (every version).
     const leaks: [string, StoredAnswer][] = [
