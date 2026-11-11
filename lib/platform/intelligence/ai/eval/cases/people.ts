@@ -7,7 +7,7 @@
  * (authz/subject.ts, fake clock) and the REAL turn boundary — over the E0 sentinel customers.
  *
  *   people.guard-zero-provider     PEOPLE_PICKER_PRIVACY + IDENTITY_LEAK — a bare customer username (P5 caller)
- *                                  and an email (caller without P5 authority) are refused 422 USE_PEOPLE_PICKER
+ *                                  and an email (caller without P5 authority) are refused 422 (USE_PEOPLE_PICKER / EMAIL_REMINDER)
  *                                  with ZERO provider calls and no spend; a customer whose username is a product
  *                                  word ("connections") does not block an ordinary question; non-matching words
  *                                  pass through to the provider; no sentinel in any provider request
@@ -68,7 +68,7 @@ function guardDeps(over: Partial<PickerGuardDeps> & { p5: boolean; usernames?: r
   };
 }
 
-function askDeps(ctx: UnitContext, generate: PlatformAiGenerate, over: Partial<PlatformAiAskDeps>): PlatformAiAskDeps & { spends: { n: number } } {
+function askDeps(ctx: UnitContext, generate: PlatformAiGenerate, over: Partial<PlatformAiAskDeps> & Pick<PlatformAiAskDeps, "guard">): PlatformAiAskDeps & { spends: { n: number } } {
   const part = ctx.scoped("cs", "CUSTOMER_SUCCESS");
   const spends = { n: 0 };
   return {
@@ -106,7 +106,9 @@ async function guardZeroProvider(ctx: UnitContext): Promise<string[]> {
     for (const q of g.requests) ctx.collect("provider_request", q);
     ctx.collect("response_body", JSON.stringify(r.body));
     if (s.refused) {
-      if (r.status !== 422 || r.body.code !== "USE_PEOPLE_PICKER") problems.push(`${s.label}: not refused with USE_PEOPLE_PICKER (${r.status})`);
+      const want = s.p5 ? "USE_PEOPLE_PICKER" : "EMAIL_REMINDER";
+      if (r.status !== 422 || r.body.code !== want) problems.push(`${s.label}: not refused with ${want} (${r.status} ${String(r.body.code)})`);
+      if (!s.p5 && /@|pick/i.test(String(r.body.error))) problems.push(`${s.label}: the non-P5 copy mentions the picker`);
       if (g.requests.length !== 0) problems.push(`${s.label}: ${g.requests.length} provider call(s) (want 0)`);
       if (d.spends.n !== 0) problems.push(`${s.label}: spend reserved for a refused question`);
       if (rows.length !== 1 || leaked(JSON.stringify(rows)) > 0 || JSON.stringify(rows).includes(ZELDA.username)) problems.push(`${s.label}: the audit row is missing or carries a token`);

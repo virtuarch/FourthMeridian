@@ -60,7 +60,7 @@ export function displayQuestion(wire: string, chips: readonly DraftChip[]): stri
 /** The active `@query` before the caret, or null (the picker opens on `@`). */
 export function activeMention(draft: string, caret: number): { start: number; query: string } | null {
   const before = draft.slice(0, Math.max(0, Math.min(caret, draft.length)));
-  const m = /(?:^|[\s(])@([A-Za-z0-9._+-]{0,64})$/.exec(before);
+  const m = /(?:^|[\s(])@([A-Za-z0-9_.+-]{0,64})$/.exec(before);
   if (!m) return null;
   return { start: before.length - m[1].length - 1, query: m[1] };
 }
@@ -80,5 +80,7 @@ export const hasEmailShaped = (serialized: string): boolean => EMAIL_SHAPED.test
 export const USE_PEOPLE_PICKER = "USE_PEOPLE_PICKER";
 /** The reminder copy: the picker is offered (P5 callers). */
 export const PEOPLE_PICKER_REMINDER = "Looks like you typed a customer's username or email. Use @ to pick the customer so their details stay private.";
-/** The reminder copy without the picker (callers without Customer Success lookup): emails only. */
-export const EMAIL_REMINDER = "Looks like you typed an email address. Remove it so customer details stay private.";
+/** The reminder copy without the picker (callers without Customer Success lookup) — never mentions @. */
+export const EMAIL_REMINDER = "Don't type customer emails or usernames into questions.";
+/** The refusal code for a caller WITHOUT P5 authority (S2 09fl C3): distinct, and its copy never mentions the picker. */
+export const EMAIL_REMINDER_CODE = "EMAIL_REMINDER";

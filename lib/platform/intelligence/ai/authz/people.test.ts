@@ -21,13 +21,14 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { USE_PEOPLE_PICKER_BODY, handlePlatformAiAsk, type PlatformAiAskDeps, type PlatformAiGenerate } from "../core";
-import { handleAppendMessage, handleCreateConversation } from "../conversations/handlers";
+import { EMAIL_REMINDER_BODY, GUARD_UNAVAILABLE_BODY, USE_PEOPLE_PICKER_BODY, handlePlatformAiAsk, type PlatformAiAskDeps, type PlatformAiGenerate } from "../core";
+import { PEOPLE_STOP_WORDS, PEOPLE_STOP_WORDS_MAX } from "./people-stopwords";
+import { handleAppendMessage, handleCreateConversation, type TurnRunDeps } from "../conversations/handlers";
 import {
-  GUARD_MAX_TOKENS, PEOPLE_EMPTY, PEOPLE_RESULTS_MAX, guardCandidates, normalizePeopleQuery, parsePeopleBody, prefixMatches, runPickerGuard, searchPeople,
+  GUARD_MAX_TOKENS, PEOPLE_EMPTY, PEOPLE_LIMIT, PEOPLE_LIMITER_NAME, PEOPLE_RESULTS_MAX, likePrefixPattern, guardCandidates, normalizePeopleQuery, parsePeopleBody, prefixMatches, runPickerGuard, searchPeople,
   type PeopleRow, type PeopleSearchAuditRow, type PickerGuardAuditRow, type PickerGuardDeps,
 } from "./people";
-import { PEOPLE_PICKER_REMINDER, USE_PEOPLE_PICKER, activeMention, displayQuestion, hasEmailShaped, insertChip, liveChips, serializeDraft } from "./people-chip";
+import { EMAIL_REMINDER, EMAIL_REMINDER_CODE, PEOPLE_PICKER_REMINDER, USE_PEOPLE_PICKER, activeMention, displayQuestion, hasEmailShaped, insertChip, liveChips, serializeDraft } from "./people-chip";
 import { buildProductVocabulary, isProductVocabulary } from "./people-vocabulary";
 import {
   SUBJECT_FLOOR_MS, SUBJECT_STORED_TEXT, SUBJECT_UNRESOLVED_NOTE, SUBJECT_UNRESOLVED_TEXT, extractSubjects, fillSubjectSlots, resolveSubjects, storedSubjectText,
@@ -57,6 +58,9 @@ async function main() {
   console.log("1. picker query + strict prefix rule (P1)");
   check("3+ of [a-z0-9._+-], case-folded", normalizePeopleQuery("  E0Sen ") === "e0sen" && normalizePeopleQuery("ab") === null);
   check("no @, space, % or other characters", ["e0s@x", "e0 s", "e0%", "e0*", "zel'", "x".repeat(65)].every((q) => normalizePeopleQuery(q) === null));
+  check("C4: `_` is a username character the picker accepts", normalizePeopleQuery("e0_sen") === "e0_sen");
+  check("C4: the LIKE prefix escapes `_`, `%` and the escape char, then ONE trailing %",
+    likePrefixPattern("e0_sen") === "e0!_sen%" && likePrefixPattern("a%b!c_") === "a!%b!!c!_%" && likePrefixPattern("e0sen") === "e0sen%");
   check("the body is exactly { q }", parsePeopleBody({ q: "e0sen" }) === "e0sen" && parsePeopleBody({ q: "e0sen", x: 1 }) === null && parsePeopleBody(["e0sen"]) === null && parsePeopleBody(null) === null);
   const rows: PeopleRow[] = [
     { id: U1.id, username: U1.username, email: U1.email },
@@ -179,14 +183,14 @@ async function main() {
   }
   {
     const g = gd({ exhausted: true });
-    const v = await runPickerGuard("Why is someone stuck?", g.deps);
+    const v = await runPickerGuard("Why is e0probe stuck?", g.deps);
     check("G1: limiter exhausted ⇒ refused (uniform) WITHOUT a lookup — the guard is never skipped", !v.pass && v.kind === "LIMITED" && g.counts.lookups === 0);
     const t = gd({ exhausted: "throw" });
-    check("…an unreadable limiter fails closed", !(await runPickerGuard("Why is someone stuck?", t.deps)).pass);
+    check("…an unreadable limiter fails closed", !(await runPickerGuard("Why is e0probe stuck?", t.deps)).pass);
   }
   {
     const f = gd({ hit: "throw" }), s = gd({ hit: "slow" });
-    const vf = await runPickerGuard("Why is someone stuck?", f.deps), vs = await runPickerGuard("Why is someone stuck?", s.deps);
+    const vf = await runPickerGuard("Why is e0probe stuck?", f.deps), vs = await runPickerGuard("Why is e0probe stuck?", s.deps);
     check("a failed / aborted lookup ⇒ refused (fail closed)", !vf.pass && vf.kind === "UNAVAILABLE" && !vs.pass && vs.kind === "UNAVAILABLE");
   }
   {
@@ -209,6 +213,23 @@ async function main() {
     const words = Array.from({ length: 200 }, (_, i) => `w0rd${i}`).join(" ");
     check(`one bounded query: at most ${GUARD_MAX_TOKENS} distinct tokens`, guardCandidates(words, () => false).tokens.length === GUARD_MAX_TOKENS && guardCandidates("ab abc ABC abc", () => false).tokens.join() === "abc");
   }
+  {
+    check(`ruling 2: the stop-word list is CLOSED (≤ ${PEOPLE_STOP_WORDS_MAX})`, PEOPLE_STOP_WORDS.size <= PEOPLE_STOP_WORDS_MAX && PEOPLE_STOP_WORDS_MAX === 300, PEOPLE_STOP_WORDS.size);
+    check("…and holds the function words + question verbs (sample)", ["the", "show", "why", "how", "what", "which", "list", "give", "tell", "find", "count", "compare"].every((w) => PEOPLE_STOP_WORDS.has(w)));
+    check("…lower-case, username-shaped entries only", [...PEOPLE_STOP_WORDS].every((w) => /^[a-z]{3,30}$/.test(w)));
+    const g = gd({ usernames: ["show", "the"] });
+    const v = await runPickerGuard("Show me the connections broken today", g.deps);
+    check("customers named \"show\" / \"the\" do not block an ordinary question (never looked up)", v.pass && !g.seen.flat().some((t) => t === "show" || t === "the"));
+    const j = gd({ usernames: ["e0jsmith"] });
+    const vj = await runPickerGuard("Why is e0jsmith stuck?", j.deps);
+    check("a plain-letter username (\"e0jsmith\") is STILL caught", !vj.pass && vj.kind === "USERNAME");
+    const k = gd({ usernames: ["jsmith"] });
+    check("…including one with no digits (\"jsmith\")", !(await runPickerGuard("Why is jsmith stuck?", k.deps)).pass);
+    const c2 = gd({ usernames: ["E0Legacy"] });
+    const v2 = await runPickerGuard("Why is E0Legacy stuck?", c2.deps);
+    check("C2: the lookup gets the case-folded token AND the as-typed form (a legacy row stored as typed is caught)",
+      !v2.pass && c2.seen[0].includes("e0legacy") && c2.seen[0].includes("E0Legacy"));
+  }
 
   console.log("\n5. the ask handler — zero provider calls on a guard refusal; the leak sentinel");
   const requests: string[] = [];
@@ -219,22 +240,37 @@ async function main() {
   const binding = { describeMetric: () => null } as unknown as NonNullable<PlatformAiAskDeps["binding"]>;
   let spends = 0;
   const askDeps = (guard: PlatformAiAskDeps["guard"]): PlatformAiAskDeps => ({
-    enabled: true, operatorId: "op_cs", binding,
+    enabled: true, operatorId: "op_cs", binding, guard,
     admission: async () => ({ paused: false, state: "OFF" }), freeze: async () => ({ frozen: false, state: "OFF" }), turns: async () => ({ allowed: true, remaining: 5 }),
     spend: async () => { spends++; return { verdict: { allowed: true }, release: async () => {} }; },
-    generate, model: "m", now: () => new Date("2026-11-10T12:00:00Z"), classify: () => "PROVIDER", ...(guard ? { guard } : {}),
+    generate, model: "m", now: () => new Date("2026-11-10T12:00:00Z"), classify: () => "PROVIDER",
   });
-  for (const [label, q, p5] of [["bare username (P5)", `Why is ${U1.username} stuck?`, true], ["email (no P5 authority)", `Why is ${U1.email} stuck?`, false]] as const) {
+  for (const [label, q, p5, code] of [["bare username (P5)", `Why is ${U1.username} stuck?`, true, "USE_PEOPLE_PICKER"], ["email (no P5 authority)", `Why is ${U1.email} stuck?`, false, "EMAIL_REMINDER"]] as const) {
     requests.length = 0; spends = 0;
     const g = gd({ p5 });
     const r = await handlePlatformAiAsk({ question: q }, askDeps((raw) => runPickerGuard(raw, g.deps)));
-    check(`${label} ⇒ 422 USE_PEOPLE_PICKER with ZERO provider calls and no spend`, r.status === 422 && r.body.code === "USE_PEOPLE_PICKER" && requests.length === 0 && spends === 0, r);
+    check(`${label} ⇒ 422 ${code} with ZERO provider calls and no spend`, r.status === 422 && r.body.code === code && r.body.reason === code && requests.length === 0 && spends === 0, r);
     check(`${label}: the refusal never echoes the identifier`, leaked(JSON.stringify(r.body)).length === 0);
+  }
+  check("C3: the non-P5 refusal copy never mentions the @ picker; the P5 one does",
+    !/@|pick/i.test(EMAIL_REMINDER_BODY.error) && EMAIL_REMINDER_BODY.error === EMAIL_REMINDER && EMAIL_REMINDER_BODY.code === EMAIL_REMINDER_CODE && /@/.test(USE_PEOPLE_PICKER_BODY.error));
+  {
+    // C1 — runtime: a deps object WITHOUT its guard (a JS caller / a cast) is refused fail-closed, before any provider call.
+    requests.length = 0; spends = 0;
+    const { guard: _omit, ...noGuard } = askDeps(async () => ({ pass: true as const }));
+    void _omit;
+    const r = await handlePlatformAiAsk({ question: "How are providers?" }, noGuard as unknown as PlatformAiAskDeps);
+    check("C1: no guard ⇒ refused (503 GUARD_UNAVAILABLE) with ZERO provider calls and no spend",
+      r.status === 503 && r.body.reason === GUARD_UNAVAILABLE_BODY.reason && requests.length === 0 && spends === 0, r);
+    // C1 — type level: both deps types REQUIRE the guard (tsc fails if `guard` ever becomes optional again).
+    const guardRequiredAsk: undefined extends PlatformAiAskDeps["guard"] ? false : true = true;
+    const guardRequiredTurn: undefined extends TurnRunDeps["guard"] ? false : true = true;
+    check("C1: `guard` is required in PlatformAiAskDeps and TurnRunDeps (type-level pin)", guardRequiredAsk && guardRequiredTurn);
   }
   {
     requests.length = 0;
     const thrown = await handlePlatformAiAsk({ question: "Why is someone stuck?" }, askDeps(async () => { throw new Error("guard down"); }));
-    check("a guard that throws refuses (fail closed), still zero provider calls", thrown.status === 422 && requests.length === 0);
+    check("a guard that throws refuses (fail closed, USE_PEOPLE_PICKER), still zero provider calls", thrown.status === 422 && thrown.body.code === "USE_PEOPLE_PICKER" && requests.length === 0);
   }
   check("E0 leak sentinel: no sentinel in any provider payload across the refused paths", requests.every((q) => leaked(q).length === 0));
   check("core.ts's refusal copy / code equal people-chip.ts's (core imports nothing new)",
@@ -263,6 +299,13 @@ async function main() {
     calls.length = 0;
     const a = await handleAppendMessage(V, "c1aaaaaaaaaaaaaaaaaaaaaaa", body, live);
     check("follow-up: 422 USE_PEOPLE_PICKER; no append, no spend, no turn", a.status === 422 && !calls.some((x) => /appendTurn|spend|runTurn/.test(x)), [a.status, calls]);
+    // C1 — runtime: conversation deps WITHOUT a guard ⇒ refused fail-closed; nothing stored, no turn.
+    const { guard: _g, ...noGuardDeps } = deps as unknown as Record<string, unknown>;
+    void _g;
+    calls.length = 0;
+    const ng = await handleCreateConversation(V, { ...body, question: "How are providers?" }, noGuardDeps as unknown as Parameters<typeof handleCreateConversation>[2]);
+    check("C1: conversation create without a guard ⇒ 503 GUARD_UNAVAILABLE; nothing stored, no spend, no turn",
+      ng.status === 503 && (ng.body as { reason?: string }).reason === "GUARD_UNAVAILABLE" && !calls.some((x) => /createConversation|spend|runTurn/.test(x)), [ng.status, calls]);
   }
 
   console.log("\n7. keyed fingerprint + static pins");
@@ -282,13 +325,22 @@ async function main() {
   check("people.server.ts: the SHARED P5 limiter (name + config), the PRIV-ref key, I-7 (no break-glass), the CS tier from the fresh guard",
     /checkKeyLimitStrict\(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT\)/.test(srv) && /peekKey\(input\.operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT\.windowSec\)/.test(srv)
     && /opaqueUserRef\(/.test(srv) && /fresh\.grant !== null/.test(srv) && /UserRole\.SYSTEM_ADMIN/.test(srv) && !/console\./.test(srv));
+  check("ruling 3: the picker has its OWN bucket (30 / h); the guard stays on the P5 subject bucket",
+    PEOPLE_LIMITER_NAME === "platform-ai-people-search" && PEOPLE_LIMIT.limit === 30 && PEOPLE_LIMIT.windowSec === 3600
+    && /checkKeyLimitStrict\(operatorId, PEOPLE_LIMITER_NAME, PEOPLE_LIMIT\)/.test(srv) && /limit: \(\) => pickerLimit\(operatorId\)/.test(srv)
+    && /consume: \(\) => subjectLimit\(input\.operatorId\)/.test(srv));
   const readers = read("lib/platform/intelligence/ai/authz/people-readers.server.ts");
+  check("C4: the read declares the escape and uses the escaped pattern (no Prisma startsWith)",
+    /likePrefixPattern\(q\)/.test(readers) && (readers.match(/ESCAPE '!'/g) ?? []).length === 2 && !/startsWith:/.test(readers));
   check("the reads: CUSTOMER_WHERE, username / email only (never a name), a transaction-local timeout, an exact IN for the guard",
     (readers.match(/CUSTOMER_WHERE/g) ?? []).length >= 3 && !/\bname:|firstName|lastName/.test(readers) && /SET LOCAL statement_timeout/.test(readers) && /username: \{ in: list \}/.test(readers));
   for (const f of ["app/api/platform/ai/ask/route.ts", "app/api/platform/ai/conversations/route.ts", "app/api/platform/ai/conversations/[id]/messages/route.ts"]) {
     check(`${f}: wires the guard`, /platformAiPickerGuard\(/.test(read(f)));
   }
   const client = read("components/platform/platform-ai-people-picker.tsx");
+  check("ruling 3 (client): ≥ 3 characters, debounce ≥ 400 ms, identical in-flight queries share one request",
+    /export const SEARCH_DEBOUNCE_MS = (\d+);/.test(client) && Number(/export const SEARCH_DEBOUNCE_MS = (\d+);/.exec(client)![1]) >= 400
+    && /export const QUERY_MIN = 3;/.test(client) && /inflight\.current\.get\(query\)/.test(client));
   check("the client searches with a POST body (never a URL query) and stores nothing", /method: "POST"/.test(client) && !/localStorage|sessionStorage|console\./.test(client) && !/\?q=/.test(client));
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

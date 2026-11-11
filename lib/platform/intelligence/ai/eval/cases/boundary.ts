@@ -92,10 +92,10 @@ export const BOUNDARY_CASES: readonly RouteCase[] = [
   {
     kind: "route", id: "boundary.operator-typed-email-is-refused", pack: "boundary", gates: ["IDENTITY_LEAK", "PEOPLE_PICKER_PRIVACY"], operator: "cs",
     // S2 09fc G5 — the customers pack is OFF here, so no caller has P5 authority: an email-shaped string is refused
-    // 422 USE_PEOPLE_PICKER by the REAL route's guard, before the spend and the provider (zero requests).
+    // 422 EMAIL_REMINDER (S2 09fl C3 — the non-P5 code; its copy never mentions the picker) by the REAL route's guard, before the spend and the provider (zero requests).
     turns: [{ question: `Is ${E0_CUSTOMERS[0].email} (${E0_CUSTOMERS[0].id}) affected by an incident?`, steps: [{ content: "unreachable" }] }],
     check: ([o]) => [
-      ...(o.status === 422 && o.body.code === "USE_PEOPLE_PICKER" ? [] : [`status ${o.status} (want 422 USE_PEOPLE_PICKER)`]),
+      ...(o.status === 422 && o.body.code === "EMAIL_REMINDER" ? [] : [`status ${o.status} (want 422 EMAIL_REMINDER)`]),
       ...(o.requests.length === 0 ? [] : [`${o.requests.length} provider request(s) (want 0)`]),
     ],
   },

@@ -4,7 +4,7 @@
  * components/platform/platform-ai-people-picker.tsx  (Platform AI — the @ people picker in the composer, owner 2026-11-10)
  *
  * Typing `@` in the Platform AI composer opens a suggestion list; from 3 characters it asks
- * POST /api/platform/ai/people (P5 authority, the shared P5 limiter, the uniform empty response, the
+ * POST /api/platform/ai/people (P5 authority, the picker's own 30 / h limiter bucket, the uniform empty response, the
  * 300 ms floor — S2 09fc P1–P6). Picking a customer inserts `@label` into the draft and remembers the chip
  * { ref, label } IN THIS COMPONENT'S MEMORY ONLY. What is SENT is serializeDraft(draft, chips): every chip
  * mention ⇒ `[[cust:<ref>]]` (authz/people-chip.ts) — the label never leaves this tab (P3). The server
@@ -19,13 +19,14 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type AriaAttributes, type AriaRole, type KeyboardEvent, type ReactNode } from "react";
 import {
-  EMAIL_REMINDER, PEOPLE_PICKER_REMINDER, USE_PEOPLE_PICKER, activeMention, chipMention, hasEmailShaped, insertChip, liveChips, serializeDraft,
+  EMAIL_REMINDER, EMAIL_REMINDER_CODE, PEOPLE_PICKER_REMINDER, USE_PEOPLE_PICKER, activeMention, chipMention, hasEmailShaped, insertChip, liveChips, serializeDraft,
   type DraftChip,
 } from "@/lib/platform/intelligence/ai/authz/people-chip";
 
 export const PLATFORM_AI_PEOPLE_URL = "/api/platform/ai/people";
-const SEARCH_DEBOUNCE_MS = 300;
-const QUERY_MIN = 3;
+/** S2 09fl ruling 3: ≥ 400 ms between keystrokes before a search (the picker bucket is 30 / h). */
+export const SEARCH_DEBOUNCE_MS = 400;
+export const QUERY_MIN = 3;
 
 export interface PeopleMatchView { opaqueRef: string; label: string }
 
@@ -56,6 +57,12 @@ async function searchPeople(q: string): Promise<PeopleMatchView[]> {
   }
 }
 
+/** The server's guard refusal code ⇒ its reminder copy; anything else ⇒ null. */
+export function guardReminderFor(body: unknown): string | null {
+  const reason = (body as { reason?: unknown } | null)?.reason;
+  return reason === USE_PEOPLE_PICKER ? PEOPLE_PICKER_REMINDER : reason === EMAIL_REMINDER_CODE ? EMAIL_REMINDER : null;
+}
+
 /**
  * The picker's state for one composer. `enabled` = the page offers Customer Success lookup (the same
  * server-decided flag as the customer notice); disabled ⇒ no `@` list, the email hint only.
@@ -71,6 +78,8 @@ export function usePeoplePicker({ enabled, draft, setDraft }: { enabled: boolean
   const pendingCaret = useRef<number | null>(null);
   /** Queries already answered (memory only); a query that found nothing ⇒ its extensions find nothing either. */
   const cache = useRef(new Map<string, PeopleMatchView[]>());
+  /** Identical queries in flight share ONE request (in-memory dedupe). */
+  const inflight = useRef(new Map<string, Promise<PeopleMatchView[]>>());
 
   const mention = useMemo(() => (enabled ? activeMention(draft, caret) : null), [enabled, draft, caret]);
   const query = mention && mention.start !== dismissedAt ? mention.query.toLowerCase() : null;
@@ -86,7 +95,12 @@ export function usePeoplePicker({ enabled, draft, setDraft }: { enabled: boolean
     }
     let live = true;
     const t = setTimeout(() => {
-      void searchPeople(query).then((items) => {
+      let req = inflight.current.get(query);
+      if (!req) {
+        req = searchPeople(query).finally(() => { inflight.current.delete(query); });
+        inflight.current.set(query, req);
+      }
+      void req.then((items) => {
         cache.current.set(query, items);
         if (live) { setMatches({ query, items }); setActive(0); }
       });
@@ -166,9 +180,10 @@ export function usePeoplePicker({ enabled, draft, setDraft }: { enabled: boolean
     serialize: () => serializeDraft(draft, liveChips(draft, chips)),
     /** Any text (a trimmed draft, a starter prompt) ⇒ what to send: its live chip mentions ⇒ tokens. */
     serializeText: (text: string) => serializeDraft(text, liveChips(text, chips)),
-    /** The server's USE_PEOPLE_PICKER refusal: its code, and the reminder for this page. */
-    isGuardRefusal: (body: unknown) => (body as { reason?: unknown } | null)?.reason === USE_PEOPLE_PICKER,
-    guardReminder: enabled ? PEOPLE_PICKER_REMINDER : EMAIL_REMINDER,
+    /** The server's guard refusal (USE_PEOPLE_PICKER for P5 callers, EMAIL_REMINDER otherwise). */
+    isGuardRefusal: (body: unknown) => guardReminderFor(body) !== null,
+    /** The copy for that refusal, by the SERVER's code (EMAIL_REMINDER never mentions the picker). */
+    guardReminder: (body: unknown) => guardReminderFor(body) ?? PEOPLE_PICKER_REMINDER,
     /** The chips this operator picked (memory only) — to show their own sent question with labels. */
     chips: live,
     /** After a successful send: forget the chips (a refusal keeps them, with the draft). */

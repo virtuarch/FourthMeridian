@@ -7,8 +7,10 @@
  *                inScope: a real grant for exactly that area, this operator, never break-glass — I-7) AND the
  *                CS incident tier minted from THAT guard result (incidentAudienceFor — the guard-provenance
  *                pin). The SAME authority authz/subject.ts resolves customers with (boundary.subjectEligibility).
- *   limit        the SHARED P5 limiter: checkKeyLimitStrict(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT);
- *                `exhausted` reads the same bucket without counting (peekKey);
+ *   limit        S2 09fl ruling 3 — the PICKER's own bucket: checkKeyLimitStrict(operatorId, PEOPLE_LIMITER_NAME,
+ *                PEOPLE_LIMIT) (30 / h, keyed on the guard's user id);
+ *   consume /    the GUARD stays on the P5 subject bucket: checkKeyLimitStrict(operatorId, SUBJECT_LIMITER_NAME,
+ *   exhausted    SUBJECT_LIMIT) (20 / h, shared with subject lookups incl. chips); `exhausted` reads it without counting (peekKey);
  *   search       authz/people-readers.server.ts searchCustomersByPrefix (CUSTOMER_WHERE, statement timeout);
  *   usernameHit  authz/people-readers.server.ts customerUsernameHit (one exact indexed query);
  *   refOf        the PRIV-ref token (opaqueUserRef — no new key material);
@@ -30,7 +32,7 @@ import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import { platformAiPackEnabled } from "../engine/router";
 import { customerUsernameHit, searchCustomersByPrefix } from "./people-readers.server";
 import { platformAiPeopleGuardAudit, platformAiPeopleSearchAudit } from "./audit";
-import { PEOPLE_FINGERPRINT_LABEL, PEOPLE_RESULTS_MAX, runPickerGuard, type PeopleSearchDeps, type PickerGuardDeps, type PickerGuardVerdict } from "./people";
+import { PEOPLE_FINGERPRINT_LABEL, PEOPLE_LIMIT, PEOPLE_LIMITER_NAME, PEOPLE_RESULTS_MAX, runPickerGuard, type PeopleSearchDeps, type PickerGuardDeps, type PickerGuardVerdict } from "./people";
 import { isProductVocabulary } from "./people-vocabulary";
 import { REAL_SUBJECT_CLOCK, SUBJECT_LIMIT, SUBJECT_LIMITER_NAME, type SubjectLimiterVerdict } from "./subject";
 
@@ -59,16 +61,18 @@ export async function platformAiP5Authority(operatorId: string): Promise<boolean
   return incidentAudienceFor(fresh)?.audience === "CUSTOMER_SUCCESS";
 }
 
-const limitVerdict = async (operatorId: string): Promise<SubjectLimiterVerdict> => {
-  const v = await checkKeyLimitStrict(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT);
-  return v.status === "ok" ? "ok" : v.status === "limited" ? "limited" : "unavailable";
-};
+const verdictOf = (v: Awaited<ReturnType<typeof checkKeyLimitStrict>>): SubjectLimiterVerdict =>
+  (v.status === "ok" ? "ok" : v.status === "limited" ? "limited" : "unavailable");
+/** The P5 subject bucket (20 / h): guard hits; shared with subject lookups and chip resolution. */
+const subjectLimit = async (operatorId: string) => verdictOf(await checkKeyLimitStrict(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT));
+/** The picker's OWN bucket (30 / h, S2 09fl ruling 3). */
+const pickerLimit = async (operatorId: string) => verdictOf(await checkKeyLimitStrict(operatorId, PEOPLE_LIMITER_NAME, PEOPLE_LIMIT));
 
 /** The picker search's Production effects (the route has already checked P5 authority). */
 export function platformAiPeopleSearchDeps(operatorId: string): PeopleSearchDeps {
   return {
     operatorId,
-    limit: () => limitVerdict(operatorId),
+    limit: () => pickerLimit(operatorId),
     search: (q) => searchCustomersByPrefix(q, PEOPLE_RESULTS_MAX),
     refOf: (userId) => opaqueRefToken(opaqueUserRef(userId)),
     fingerprint: (q) => opaquePurposeFingerprint(PEOPLE_FINGERPRINT_LABEL, q),
@@ -84,7 +88,7 @@ export function platformAiPickerGuardDeps(input: { operatorId: string; primaryAr
     authority: () => platformAiP5Authority(input.operatorId),
     exempt: isProductVocabulary,
     exhausted: async () => (await peekKey(input.operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT.windowSec)) >= SUBJECT_LIMIT.limit,
-    consume: () => limitVerdict(input.operatorId),
+    consume: () => subjectLimit(input.operatorId),
     usernameHit: (tokens) => customerUsernameHit(tokens),
     audit: platformAiPeopleGuardAudit(input.primaryArea),
     clock: REAL_SUBJECT_CLOCK,

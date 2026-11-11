@@ -2,7 +2,7 @@
  * POST /api/platform/ai/people  (Platform AI — the @ people picker search; owner 2026-11-10, S2 09fc P1–P6)
  *
  * `{ q }` ⇒ `{ matches: [{ opaqueRef, label }] }` — at most 8 customers whose USERNAME or EMAIL LOCAL PART
- * starts with q (3–64 of [a-z0-9._+-], case-insensitive). The label goes ONLY to this operator's response:
+ * starts with q (3–64 of [a-z0-9_.+-], case-insensitive; LIKE wildcards escaped). The label goes ONLY to this operator's response:
  * the composer sends the chip token `[[cust:<opaqueRef>]]` (authz/people-chip.ts), never the label.
  * A POST, so the query never sits in a URL or an access log.
  *
@@ -13,7 +13,7 @@
  *      CUSTOMER_SUCCESS grant for this operator with the CS tier; never break-glass)  → 403
  *   3. the #352 per-operator mutation limiter                    → 429
  *   4. the body: exactly { q }, normalised (authz/people.ts)     → 400
- *   5. searchPeople: the SHARED P5 limiter, the bounded read, the audit row first, the timing floor —
+ *   5. searchPeople: the picker's OWN limiter bucket (30 / h), the bounded read, the audit row first, the timing floor —
  *      LIMITED / UNAVAILABLE / a failed audit / no match ⇒ the ONE uniform `{ matches: [] }` (200).
  * Never logs the query or a label.
  */
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   let body: unknown;
   try { body = await req.json(); } catch { body = null; }
   const q = parsePeopleBody(body);
-  if (q === null) return NextResponse.json({ error: "Send { q: 3–64 letters, digits or . _ + - }.", code: "VALIDATION" }, { status: 400, headers: NO_STORE });
+  if (q === null) return NextResponse.json({ error: "Send { q: 3–64 letters, digits or _ . + - }.", code: "VALIDATION" }, { status: 400, headers: NO_STORE });
   const res = await searchPeople(q, platformAiPeopleSearchDeps(auth.user.id));
   return NextResponse.json({ matches: res.matches }, { status: 200, headers: NO_STORE });
 }

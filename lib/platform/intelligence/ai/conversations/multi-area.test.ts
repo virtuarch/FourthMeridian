@@ -172,7 +172,7 @@ async function main() {
     let seen: AreaAccess | null = null;
     const runTurn: TurnRunDeps["runTurn"] = async ({ access }) => { order.push("turn"); seen = access; return { status: "COMPLETE", answer: ans("ok"), evidenceRefs: [] }; };
     const body = { clientRequestId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", question: "And customers?" };
-    const deps = { areaAccess: async () => accessOf(OPS), store, now: () => T0, ...adm, runTurn };
+    const deps = { areaAccess: async () => accessOf(OPS), store, now: () => T0, ...adm, runTurn, guard: async () => ({ pass: true as const }) }; // guard: S2 09fl C1
     const r = await handleAppendMessage({ operatorId: OP, area: OPS }, CID, body, {
       ...deps, heldAccess: (o) => { order.push("widen"); return widenConversationAccess(o, [OPS, CS], async (a) => (a === CS ? accessOf(CS) : null)); },
     });

@@ -512,6 +512,8 @@ async function main(): Promise<number> {
       store, now: () => new Date(),
       areaAccess: async () => ({ resolvePage: () => null, binding }),
       admission: async () => ({ paused: false }), freeze: async () => ({ frozen: false }), turns: async () => ({ allowed: true }),
+      // S2 09fl C1: the guard is required; this acceptance exercises storage on real PG (the guard is covered by authz/people.test.ts + E0).
+      guard: async () => ({ pass: true as const }),
       runTurn: async ({ question }: { question: string }) => { turns.push(question); return { status: "COMPLETE" as const, answer: answerV1, evidenceRefs: [{ k: "m" as const, id: "economics-ai-cost@1", w: 7 }] }; },
     };
     const V = { operatorId: B, area: "PLATFORM_OPS" as const };

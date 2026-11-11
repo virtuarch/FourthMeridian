@@ -86,7 +86,7 @@ async function askWith(ctx: UnitContext, caps: CapInputs, client: SpendClient, n
   const scoped = ctx.scoped("ops", "PLATFORM_OPS");
   const g = scriptedGenerate([{ content: "Nothing to report." }]);
   const deps: PlatformAiAskDeps = {
-    enabled: true, operatorId: ctx.operatorId("ops"), binding: scoped?.binding as PlatformAiBinding,
+    enabled: true, operatorId: ctx.operatorId("ops"), binding: scoped?.binding as PlatformAiBinding, guard: async () => ({ pass: true as const }), // S2 09fl C1
     admission: async () => ({ paused: false, state: "OFF" }), freeze: async () => ({ frozen: false, state: "OFF" }),
     turns: async () => ({ allowed: true, remaining: 5 }),
     spend: (id, at) => reservePlatformAiSpend(id, at, { client, caps, model: MODEL }),

@@ -1358,7 +1358,7 @@ async function runComposedBriefing(input: {
 
 // ── The request handler (the route calls it AFTER its own guards) ───────────
 
-export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER";
+export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER" | "GUARD_UNAVAILABLE";
 
 /**
  * P2b (design v2 §10, I-10) — the daily $ caps' reservation, as the handlers see it
@@ -1439,29 +1439,41 @@ export interface PlatformAiAskDeps {
   /**
    * The bare-username guard (authz/people.ts runPickerGuard; S2 09fc G1–G6) on the RAW question, after the
    * admission gates and BEFORE the spend reservation, the scrub, the subject slots and any provider call.
-   * A refusal ⇒ 422 USE_PEOPLE_PICKER: no turn, no provider call. Every route passes it.
+   * A refusal ⇒ 422 USE_PEOPLE_PICKER (P5 callers) / EMAIL_REMINDER (others): no turn, no provider call.
+   * S2 09fl C1: REQUIRED for every deps object (type level); a deps object that still lacks it at run time
+   * (a JS caller, an `as` cast) is refused fail-closed — 503 GUARD_UNAVAILABLE, no provider call.
    */
-  guard?(rawQuestion: string): Promise<PlatformAiGuardVerdict>;
+  guard: PlatformAiGuard;
 }
 
-/** The guard's one refusal (S2 09fc G2): code only — never says which token, never echoes the question. */
 /**
  * The guard's verdict, declared structurally (authz/people.ts PickerGuardVerdict is assignable to it): core.ts imports
- * nothing new (its import list is pinned). The body's copy equals authz/people-chip.ts PEOPLE_PICKER_REMINDER (pinned in people.test.ts).
+ * nothing new (its import list is pinned). The bodies' copy equals authz/people-chip.ts (pinned in people.test.ts).
+ * kind EMAIL is the verdict of a caller WITHOUT P5 authority (S2 09fl C3: a distinct code that never mentions the picker).
  */
 export type PlatformAiGuardVerdict = { readonly pass: true } | { readonly pass: false; readonly kind: string };
+export type PlatformAiGuard = (rawQuestion: string) => Promise<PlatformAiGuardVerdict>;
+/** P5 callers: the picker is offered. */
 export const USE_PEOPLE_PICKER_BODY = Object.freeze({
   error: "Looks like you typed a customer's username or email. Use @ to pick the customer so their details stay private.",
   code: "USE_PEOPLE_PICKER", reason: "USE_PEOPLE_PICKER",
 });
+/** Callers without P5 authority: no picker exists for them, so the copy never mentions it. */
+export const EMAIL_REMINDER_BODY = Object.freeze({
+  error: "Don't type customer emails or usernames into questions.",
+  code: "EMAIL_REMINDER", reason: "EMAIL_REMINDER",
+});
 export const USE_PEOPLE_PICKER_STATUS = 422;
+/** A deps object without its guard at run time (C1): fail closed, before anything else of the turn. */
+export const GUARD_UNAVAILABLE_BODY = Object.freeze({ error: "Platform AI is unavailable right now.", code: "AI_UNAVAILABLE", reason: "GUARD_UNAVAILABLE" });
 
-/** Run the injected guard; a throw refuses (fail closed). null ⇒ admitted. */
-export async function pickerGuardRefusal(guard: PlatformAiAskDeps["guard"], raw: string): Promise<PlatformAiHttp | null> {
-  if (!guard) return null;
+/** Run the injected guard; absent or throwing ⇒ refused (fail closed). null ⇒ admitted. */
+export async function pickerGuardRefusal(guard: PlatformAiGuard | undefined, raw: string): Promise<PlatformAiHttp | null> {
+  if (typeof guard !== "function") return { status: 503, body: { ...GUARD_UNAVAILABLE_BODY } };
   let v: PlatformAiGuardVerdict;
   try { v = await guard(raw); } catch { v = { pass: false, kind: "UNAVAILABLE" }; }
-  return v.pass ? null : { status: USE_PEOPLE_PICKER_STATUS, body: { ...USE_PEOPLE_PICKER_BODY } };
+  if (v.pass) return null;
+  return { status: USE_PEOPLE_PICKER_STATUS, body: v.kind === "EMAIL" ? { ...EMAIL_REMINDER_BODY } : { ...USE_PEOPLE_PICKER_BODY } };
 }
 
 /**

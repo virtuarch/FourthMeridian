@@ -647,7 +647,7 @@ export function PlatformAiConversations({ areaLabel, memory = false, subjectNoti
     if (people.isGuardRefusal(r.body)) {
       // S2 09fc — nothing was stored and no turn ran: give the draft back (with its chips) and say why inline.
       setDraft((d) => (d.length === 0 ? (s.display ?? s.question) : d));
-      setGuardNotice(people.guardReminder);
+      setGuardNotice(people.guardReminder(r.body));
       return;
     }
     const pair = r.status === 200 || r.status === 201 ? parsePair(r.body) : null;

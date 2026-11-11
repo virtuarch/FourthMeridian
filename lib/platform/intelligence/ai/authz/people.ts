@@ -8,11 +8,11 @@
  * POST /api/platform/ai/people { q } — only for a caller with P5 subject-lookup authority (the customers
  * pack flag ON + a FRESH Customer Success grant with the CS incident tier, I-7: never break-glass), the
  * SAME authority authz/subject.ts requires. Per request:
- *   P1  q is normalised (trim, lower-case) and must be 3–64 of [a-z0-9._+-] — no `@`, no space, no
+ *   P1  q is normalised (trim, lower-case) and must be 3–64 of [a-z0-9_.+-] — no `@`, no space, no
  *       wildcard: it is matched as a PREFIX of the username or of the email LOCAL PART only (never a
  *       name, a domain or a mid-string), within the customer population (CUSTOMER_WHERE — never an
  *       operator or a System Admin);
- *   P5  the SHARED P5 limiter (checkKeyLimitStrict(operatorId, "platform-ai-subject", 20 / h)) counts
+ *   P5  the picker's OWN bucket (S2 09fl ruling 3: checkKeyLimitStrict(operatorId, "platform-ai-people-search", 30 / h)) counts
  *       every search; LIMITED / UNAVAILABLE / an aborted or failed read / a failed audit ⇒ the ONE
  *       uniform empty response `{ matches: [] }`; every outcome is padded to SUBJECT_FLOOR_MS; at most
  *       PEOPLE_RESULTS_MAX rows; the read runs under a statement timeout (people.server.ts);
@@ -41,7 +41,10 @@
  *       an aborted / failed lookup ⇒ refused (fail closed), with the same response;
  *   G2  a refusal is NOT a turn: no provider call, nothing stored, no spend reserved; one code-only
  *       audit row (kind USERNAME / EMAIL / LIMITED / UNAVAILABLE — never a token, a username or an email).
- * Every refusal is the one response USE_PEOPLE_PICKER (HTTP 422); the lookup path is padded to the floor.
+ * S2 09fl: the CLOSED stop-word list (people-stopwords.ts, ≤ 300 function words + question verbs) is exempt
+ * like the product vocabulary (ruling 2); each token is looked up case-folded AND as typed (C2).
+ * Every P5 refusal is the one response USE_PEOPLE_PICKER (HTTP 422); a caller without P5 authority gets the
+ * distinct EMAIL_REMINDER (C3 — its copy never mentions the picker). The lookup path is padded to the floor.
  * No token text is ever logged or returned.
  *
  * PURE ORCHESTRATION: every effect is injected (people.server.ts wires Production).
@@ -49,10 +52,17 @@
 
 import { SUBJECT_ABORT_MS, SUBJECT_FLOOR_MS, extractSubjects, type SubjectClock, type SubjectLimiterVerdict } from "./subject";
 import { EMAIL_SHAPED } from "./people-chip";
+import { PEOPLE_STOP_WORDS } from "./people-stopwords";
 
 export const PEOPLE_QUERY_MIN = 3;
 export const PEOPLE_QUERY_MAX = 64;
 export const PEOPLE_RESULTS_MAX = 8;
+/**
+ * S2 09fl ruling 3 — the picker's OWN limiter bucket (30 / h per operator, keyed on the guard's user id). Guard hits
+ * and subject lookups (incl. chip resolution) stay on the P5 bucket (authz/subject.ts SUBJECT_LIMITER_NAME, 20 / h).
+ */
+export const PEOPLE_LIMITER_NAME = "platform-ai-people-search";
+export const PEOPLE_LIMIT = Object.freeze({ limit: 30, windowSec: 3600 });
 /** The keyed fingerprint's own purpose label (S2 09fc P4 — not the reference label). */
 export const PEOPLE_FINGERPRINT_LABEL = "fm/platform-ai-people-search/v1";
 
@@ -67,7 +77,19 @@ export const GUARD_MAX_TOKENS = 128;
 export function normalizePeopleQuery(q: unknown): string | null {
   if (typeof q !== "string") return null;
   const t = q.trim().toLowerCase();
-  return t.length >= PEOPLE_QUERY_MIN && t.length <= PEOPLE_QUERY_MAX && /^[a-z0-9._+-]+$/.test(t) ? t : null;
+  // `_` is a username character; it (and `%`, `\`) is ESCAPED in the read's LIKE pattern (likePrefixPattern) — `%` / `\` are refused here anyway.
+  return t.length >= PEOPLE_QUERY_MIN && t.length <= PEOPLE_QUERY_MAX && /^[a-z0-9_.+-]+$/.test(t) ? t : null;
+}
+
+/** The LIKE escape character the picker read declares (ESCAPE '!'). */
+export const LIKE_ESCAPE = "!";
+
+/**
+ * S2 09fl C4 — the normalised query as a LIKE PREFIX pattern: `%`, `_` and the escape character itself are escaped,
+ * so a wildcard can never widen the match and fill the bounded row window; one trailing `%`.
+ */
+export function likePrefixPattern(q: string): string {
+  return `${q.replace(/[!%_]/g, (c) => `${LIKE_ESCAPE}${c}`)}%`;
 }
 
 /** The picker route's body: exactly `{ q: string }`, normalised; anything else ⇒ null (400). */
@@ -105,7 +127,7 @@ export interface PeopleSearchAuditRow { readonly operatorId: string; readonly qu
 
 export interface PeopleSearchDeps {
   readonly operatorId: string;
-  /** The SHARED P5 limiter: checkKeyLimitStrict(operatorId, SUBJECT_LIMITER_NAME, SUBJECT_LIMIT). */
+  /** The picker bucket: checkKeyLimitStrict(operatorId, PEOPLE_LIMITER_NAME, PEOPLE_LIMIT) (30 / h; not the P5 subject bucket). */
   limit(): Promise<SubjectLimiterVerdict>;
   /** The bounded prefix read within the customer population (statement timeout; ≤ 2 × PEOPLE_RESULTS_MAX rows). */
   search(q: string): Promise<readonly PeopleRow[]>;
@@ -164,21 +186,27 @@ const WORD = /(?<![A-Za-z0-9_])[A-Za-z0-9_]+(?![A-Za-z0-9_])/g;
  * not product vocabulary. The identifiers the slot path owns (emails, `user #` refs, chips, cuids) are cut
  * out first (authz/subject.ts extractSubjects), so a chip's hex or a ref is never a candidate. Pure.
  */
-export function guardCandidates(raw: string, exempt: (token: string) => boolean): { emailShaped: boolean; tokens: string[] } {
+export function guardCandidates(raw: string, exempt: (token: string) => boolean): { emailShaped: boolean; tokens: string[]; variants: string[] } {
   const ex = extractSubjects(raw);
   const emailShaped = ex.ids.some((i) => i.kind === "EMAIL") || EMAIL_SHAPED.test(ex.text);
   const rest = ex.text.replace(SLOTS, " ");
   const tokens: string[] = [];
+  /** S2 09fl C2 — the token AS TYPED when it differs from its case-folded form (an exact match on both). */
+  const variants: string[] = [];
   for (const m of rest.matchAll(WORD)) {
     const t = m[0].toLowerCase();
-    if (!USERNAME_SHAPED.test(t) || tokens.includes(t)) continue;
+    if (!USERNAME_SHAPED.test(t)) continue;
+    if (tokens.includes(t)) { if (m[0] !== t && !variants.includes(m[0]) && variants.length < GUARD_MAX_TOKENS) variants.push(m[0]); continue; }
+    // S2 09fl ruling 2 — the CLOSED stop-word list (people-stopwords.ts), then the registry-built product vocabulary.
+    if (PEOPLE_STOP_WORDS.has(t)) continue;
     let skip = false;
     try { skip = exempt(t) === true; } catch { skip = false; }
     if (skip) continue;
     tokens.push(t);
+    if (m[0] !== t) variants.push(m[0]);
     if (tokens.length >= GUARD_MAX_TOKENS) break;
   }
-  return { emailShaped, tokens };
+  return { emailShaped, tokens, variants };
 }
 
 export interface PickerGuardAuditRow { readonly operatorId: string; readonly p5: boolean; readonly kind: PickerGuardKind }
@@ -193,7 +221,7 @@ export interface PickerGuardDeps {
   exhausted(): Promise<boolean>;
   /** Count one HIT against the SHARED P5 limiter. */
   consume(): Promise<SubjectLimiterVerdict>;
-  /** ONE bounded exact query: does any CUSTOMER hold one of these usernames (case-folded)? */
+  /** ONE bounded exact query: does any CUSTOMER hold one of these usernames (each case-folded token, plus its as-typed form)? */
   usernameHit(tokens: readonly string[]): Promise<boolean>;
   /** The code-only audit row (never a token). */
   audit(row: PickerGuardAuditRow): Promise<void>;
@@ -221,7 +249,7 @@ export async function runPickerGuard(raw: string, d: PickerGuardDeps): Promise<P
   try { exhausted = (await d.exhausted()) === true; } catch { exhausted = true; }
   if (exhausted) verdict = await refuse("LIMITED"); // G1 — never skip the guard
   else {
-    const hit = await Promise.race([d.usernameHit(c.tokens).then((h) => h === true).catch(() => ABORTED), d.clock.after(SUBJECT_ABORT_MS).then(() => ABORTED)]);
+    const hit = await Promise.race([d.usernameHit([...c.tokens, ...c.variants]).then((h) => h === true).catch(() => ABORTED), d.clock.after(SUBJECT_ABORT_MS).then(() => ABORTED)]);
     if (hit === ABORTED) verdict = await refuse("UNAVAILABLE");
     else if (hit === true) {
       try { await d.consume(); } catch { /* counted or not, the hit is refused */ }

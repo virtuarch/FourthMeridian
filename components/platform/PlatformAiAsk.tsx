@@ -209,7 +209,7 @@ export function PlatformAiAsk({ areaLabel, subjectNotice = false }: { areaLabel:
         // S2 09fc — not a turn: drop it, give the draft back (with its chips), and say why inline.
         setTurns((ts) => ts.filter((t) => t.id !== id));
         setDraft((d) => (d.length === 0 ? (display ?? q) : d));
-        setGuardNotice(people.guardReminder);
+        setGuardNotice(people.guardReminder(body));
         return true;
       }
       if (!r.ok || !body || !Array.isArray(body.answer)) {
