@@ -2,7 +2,8 @@
  * lib/platform/intelligence/ai/eval/cases/cost-cap.ts  (E0-CI — P2b: the daily $ caps, I-10 + S2 ruling 8)
  *
  * COST_CAP — through the REAL ask route (the route's own reservePlatformAiSpend, the fixture
- *   ledger, the test caps lib/test-support/route-env.ts sets: $100 operator / $500 platform):
+ *   ledger, the test caps lib/test-support/route-env.ts sets: $20 operator / $100 platform, the
+ *   code ceilings since D5 PR2 clamps ENV to them):
  *   · an operator whose spend today has reached the operator cap ⇒ 429 COST_CAP, 0 provider requests;
  *   · other operators' spend that has reached the platform cap ⇒ 429 COST_CAP, 0 provider requests;
  *   · just under the cap ⇒ the turn runs unchanged (and the runner asserts every reservation
@@ -30,19 +31,19 @@ const refusedCostCap = ([o]: Parameters<RouteCase["check"]>[0]) => [
 export const COST_CAP_ROUTE_CASES: readonly RouteCase[] = [
   {
     kind: "route", id: "cost-cap.operator-cap-reached", pack: "boundary", gates: ["COST_CAP"], operator: "ops",
-    ledger: [{ operator: "ops", usd: 100 }],
+    ledger: [{ operator: "ops", usd: 20 }],
     turns: [{ question: "How many incidents are broken right now?", steps: [{ calls: [{ name: "list_metrics", args: {} }] }, { content: "x" }] }],
     check: refusedCostCap,
   },
   {
     kind: "route", id: "cost-cap.platform-cap-reached-by-others", pack: "boundary", gates: ["COST_CAP"], operator: "ops",
-    ledger: [{ operator: "cs", usd: 499.99 }],
+    ledger: [{ operator: "cs", usd: 99.99 }],
     turns: [{ question: "How many incidents are broken right now?", steps: [{ calls: [{ name: "list_metrics", args: {} }] }, { content: "x" }] }],
     check: refusedCostCap,
   },
   {
     kind: "route", id: "cost-cap.under-cap-unchanged", pack: "boundary", gates: ["COST_CAP"], operator: "ops",
-    ledger: [{ operator: "ops", usd: 99 }, { operator: "cs", usd: 400 }],
+    ledger: [{ operator: "ops", usd: 19 }, { operator: "cs", usd: 80 }],
     turns: [{ question: "Which metrics can I read?", steps: [{ calls: [{ name: "list_metrics", args: {} }] }, { content: "Here is what I can read." }] }],
     check: ([o]) => [
       ...(o.status === 200 ? [] : [`status ${o.status}`]),
@@ -63,6 +64,8 @@ function memoryClient(): { client: SpendClient; held(): number } {
   const tx = {
     $executeRaw: async () => 1,
     aiInvocation: { findMany: async () => [] },
+    // D5 PR2: the blanket cap settings, read in the transaction — none set here (env / test default apply).
+    platformSetting: { findMany: async () => [] },
     rateLimit: {
       findMany: async ({ where }: { where: { key: string | { startsWith: string } } }) =>
         typeof where.key === "string" ? [] : [...buckets].filter(([k]) => k.startsWith((where.key as { startsWith: string }).startsWith)).map(([k, count]) => ({ key: k.split("@")[0], count })),
@@ -124,7 +127,7 @@ export const COST_CAP_UNIT_CASES: readonly UnitCase[] = [
       const cap = (reserve * room + reserve / 2).toFixed(2);
       const m = memoryClient();
       // Hold every admitted reservation open (the provider has not returned) by never releasing until all decided:
-      const outs = await Promise.all(Array.from({ length: room * 2 }, () => reservePlatformAiSpend(ctx.operatorId("ops"), now, { client: m.client, caps: { operatorRaw: cap, platformRaw: "500", vercelEnv: "production" }, model: MODEL })));
+      const outs = await Promise.all(Array.from({ length: room * 2 }, () => reservePlatformAiSpend(ctx.operatorId("ops"), now, { client: m.client, caps: { operatorRaw: cap, platformRaw: "100", vercelEnv: "production" }, model: MODEL })));
       const admitted = outs.filter((o) => o.verdict.allowed).length;
       const capped = outs.filter((o) => !o.verdict.allowed && o.verdict.detail === "COST_CAP").length;
       const heldBefore = m.held();
