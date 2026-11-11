@@ -71,12 +71,15 @@ export interface EmailResult {
   /**
    * Why a send was not handed to the provider:
    *   ENVIRONMENT_GUARD      — captured by the non-production guard (contract §O-4);
+   *   RESERVED_DOMAIN        — captured in EVERY environment: the recipient's domain
+   *                            ends in an RFC 2606/6761 reserved TLD (.test/.example/
+   *                            .invalid/.localhost; S2 ruling 09eq P2);
    *   RATE_LIMITED           — skipped: the recipient's email storm limit (Comms
    *                            Center A-2b, O-10) is reached;
    *   RATE_LIMIT_UNVERIFIED  — skipped: a storm-limited send whose count could
    *                            not be read (fail closed).
    */
-  reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
+  reason?: "ENVIRONMENT_GUARD" | "RESERVED_DOMAIN" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
   /**
    * Comms Center B2 PRE-FLIP R4 — on a "sent" result with no `id`: the provider refused this request
    * because its Idempotency-Key was already used for a DIFFERENT payload (Resend 409

@@ -28,6 +28,8 @@ import {
   answerBlocks, showComposerCounter, type ClientSegment, type InlineSegment,
 } from "./platform-ai-conversations-model";
 import { PLATFORM_AI_MEMORY_LINE } from "./platform-ai-memory-model";
+import { PLATFORM_AI_SUBJECT_NOTICE } from "@/lib/platform/intelligence/ai/authz/subject-notice";
+import type { PeoplePickerBinding } from "./platform-ai-people-picker";
 
 // ── The answer body ─────────────────────────────────────────────────────────
 
@@ -174,11 +176,24 @@ export function AnswerNotes({ notes }: { notes: readonly string[] }) {
 
 // ── Empty state ─────────────────────────────────────────────────────────────
 
+/**
+ * P5 (S2 09dp) — the customer-lookup notice: exact ID or email only, never a name. Shown ONLY where
+ * the customers pack is offered (the page decides: lib/platform/intelligence/ai/authz/subject-notice.ts).
+ */
+export function PlatformAiSubjectNotice({ where }: { where: "lead" | "composer" }) {
+  return (
+    <p data-platform-ai-subject-notice={where} className="min-w-0 break-words text-center text-xs text-[var(--text-secondary)]">
+      {PLATFORM_AI_SUBJECT_NOTICE}
+    </p>
+  );
+}
+
 /** The headline, at Personal's size (the shared StarterLine with a fixed headline: it never rotates). */
-export function PlatformAiLead() {
+export function PlatformAiLead({ subjectNotice = false }: { subjectNotice?: boolean } = {}) {
   return (
     <div data-platform-ai-empty="" className="min-w-0">
       <StarterLine initialIndex={0} frozen headline={PLATFORM_AI_STARTER_HEADLINE} />
+      {subjectNotice ? <div className="mt-3"><PlatformAiSubjectNotice where="lead" /></div> : null}
     </div>
   );
 }
@@ -264,6 +279,12 @@ export interface PlatformAiComposerProps {
   noticeIn?: "footer" | "lead";
   /** Platform AI memory is effective (the page decides, server-side): the corrected short line. */
   memory?: boolean;
+  /** P5 (S2 09dp) — the customers pack is offered (the page decides, server-side): the customer-lookup notice. */
+  subjectNotice?: boolean;
+  /** The @ people picker's seams (platform-ai-people-picker.tsx usePeoplePicker). Absent ⇒ a plain composer. */
+  picker?: PeoplePickerBinding;
+  /** The server's USE_PEOPLE_PICKER refusal, shown inline (the draft is kept so the operator can fix it). */
+  guardNotice?: string | null;
 }
 
 /**
@@ -273,7 +294,8 @@ export interface PlatformAiComposerProps {
  * beneath. The counter appears only near the limit. aria-describedby points at
  * the full-text elements (S2 C4).
  */
-export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer", memory = false }: PlatformAiComposerProps) {
+export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, saved = true, noticeOpen = false, onNotice, noticeIn = "footer", memory = false, subjectNotice = false, picker, guardNotice = null }: PlatformAiComposerProps) {
+  const reminder = guardNotice ?? picker?.hint ?? null;
   return (
     <ComposerFrame
       value={value}
@@ -285,6 +307,7 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, 
       placeholder="Ask about the platform…"
       describedBy={saved ? `${PLATFORM_AI_PRIVACY_HINT_ID} ${PLATFORM_AI_DISCLOSURE_ID}` : PLATFORM_AI_PRIVACY_HINT_ID}
       disabled={disabled}
+      {...(picker ? { onKeyIntercept: picker.onKeyIntercept, onCaret: picker.onCaret, inputAria: picker.inputAria, overlay: picker.overlay, textareaRef: picker.textareaRef } : {})}
       trailing={busy && !disabled ? (
         <button type="submit" disabled aria-label="Send message" aria-busy="true" className={BUSY_SEND_CLASS}>
           <ArrowUp size={17} strokeWidth={2.25} />
@@ -292,6 +315,11 @@ export function PlatformAiComposer({ value, onChange, onSubmit, disabled, busy, 
       ) : undefined}
       footer={
         <div data-platform-ai-composer-footer="" className="mt-2 flex min-w-0 flex-col items-center gap-1.5 px-1 text-[11px] text-[var(--text-secondary)]">
+          {reminder ? (
+            <p data-platform-ai-people-reminder={guardNotice ? "server" : "hint"} role={guardNotice ? "alert" : "status"}
+              className="min-w-0 break-words text-center text-xs font-medium text-[var(--accent-warn,var(--text-primary))]">{reminder}</p>
+          ) : null}
+          {subjectNotice ? <PlatformAiSubjectNotice where="composer" /> : null}
           <PlatformAiDisclosureLine saved={saved} open={noticeOpen} onToggle={(v) => onNotice?.(v)} memory={memory} />
           {noticeIn === "footer" ? <PlatformAiNotice open={noticeOpen} saved={saved} /> : null}
           {showComposerCounter(value.length) ? (

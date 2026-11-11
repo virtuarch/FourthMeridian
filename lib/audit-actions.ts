@@ -414,6 +414,30 @@ export const AuditAction = {
   PLATFORM_AI_MEMORY_EXPORTED:         "PLATFORM_AI_MEMORY_EXPORTED",
   PLATFORM_AI_MEMORY_PURGED:           "PLATFORM_AI_MEMORY_PURGED",
 
+  // Platform AI P4 (broad read-only intelligence design v2 §6.5 / §8.2; S2 ruling 4). One row
+  // per linked customer per area, written fail-closed BEFORE a customer-linkable record (or a
+  // T2 field at read-time render, authz/record-render.ts) reaches the operator. Target USER;
+  // detail = { surface: "platform-ai", tool, recordKind } only — never a value or a record id.
+  // No writer is wired until the first customer-linkable pack (P5, authz/audit.ts): until
+  // then every T2 field renders masked.
+  PLATFORM_AI_RECORD_VIEWED:           "PLATFORM_AI_RECORD_VIEWED",
+  // Platform AI P5 (design v2 §7, I-4 / D-4; S2 ruling 5). One row for EVERY exact-identifier
+  // subject lookup in an operator's question, whatever the outcome (MATCHED, NOT_FOUND,
+  // NO_ACCESS, LIMITED, UNAVAILABLE) — written by authz/audit.ts before the question reaches
+  // the model; a failed write ⇒ the subject is NOT resolved. Target USER only when matched
+  // (else PLATFORM_AI_SUBJECT = the keyed hash); detail = { surface, idKind, outcome, keyHash }
+  // only — never the identifier.
+  PLATFORM_AI_SUBJECT_LOOKUP:          "PLATFORM_AI_SUBJECT_LOOKUP",
+  // Platform AI @ people picker (owner 2026-11-10; S2 09fc P4). One row per picker search, written
+  // BEFORE any label leaves the server (a failed write ⇒ the uniform empty response). Target
+  // PLATFORM_AI_SUBJECT "people-search"; detail = { surface, queryLength, resultCount, fingerprint? }
+  // only — the fingerprint is a KEYED HMAC with its own purpose label; never the query.
+  PLATFORM_AI_PEOPLE_SEARCH:           "PLATFORM_AI_PEOPLE_SEARCH",
+  // Platform AI bare-username guard (S2 09fc G2). One CODE-ONLY row per refused question (no provider
+  // call, no turn): target PLATFORM_AI_SUBJECT "people-guard"; detail = { surface, code:
+  // USE_PEOPLE_PICKER, kind: USERNAME | EMAIL | LIMITED | UNAVAILABLE } — never a token, username or email.
+  PLATFORM_AI_PEOPLE_GUARD:            "PLATFORM_AI_PEOPLE_GUARD",
+
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
   // token, exchange a public_token into a new PlaidItem under the OWNER's

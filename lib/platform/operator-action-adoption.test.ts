@@ -26,6 +26,7 @@ const CLEANUP    = "app/api/platform/platform-ops/provider-cleanup/route.ts";
 const USERS      = "app/api/platform/customer-success/customers/[userId]/access/route.ts"; // SEC-PLAT-4: moved from Growth
 const WIDGET     = "components/platform/widgets/CsCustomersWidget.tsx"; // SEC-PLAT-4: the deactivate control lives in Customer Success
 const FEED_ROUTE = "app/api/platform/security-ops/operator-actions/route.ts";
+const FEED_READER= "lib/platform/security/operator-actions.ts"; // P12a: the feed route's read, moved verbatim
 const FEED_WIDGET= "components/platform/widgets/SecOperatorActionsWidget.tsx";
 
 console.log("adoption — every converted route records through the chokepoint, none through auditLog.create");
@@ -121,9 +122,9 @@ console.log("feed — projects the envelope, never the note, never email");
   check("legacy rows fall back to the non-PII token and 'operator'", legacy.target === "Example Bank" && legacy.operator === "operator" && legacy.reasonCode === null);
   const subj = projectOperatorActionEvent({ ...row, subjectUsername: "alice" }, "jules");
   check("a subject username wins over the opaque label", subj.target === "alice");
-  const fr = strip(FEED_ROUTE), fw = src(FEED_WIDGET);
-  check("feed route projects through the pure core", /projectOperatorActionEvent\(/.test(fr));
-  check("feed route selects no email/ip/ua", !/email:\s*true|ipAddress:\s*true|userAgent:\s*true/.test(fr));
+  const fr = strip(FEED_ROUTE), frd = strip(FEED_READER), fw = src(FEED_WIDGET);
+  check("feed route reads through the feed reader, which projects through the pure core", /readOperatorActionFeed\(db\)/.test(fr) && /projectOperatorActionEvent\(/.test(frd));
+  check("feed route + reader select no email/ip/ua", [fr, frd].every((s) => !/email:\s*true|ipAddress:\s*true|userAgent:\s*true/.test(s)));
   check("feed widget labels the P1 actions", ["CUSTOMER_POLICY_ASSIGNED", "CUSTOMER_COHORT_ASSIGNED", "JOB_CADENCE_CHANGED", "OPERATOR_REFRESH_ALL"].every((a) => fw.includes(a)));
   check("feed widget never renders a note", !/\.note\b/.test(fw));
 }

@@ -292,5 +292,327 @@
         }
       }
     }
+  ],
+  "packs": [
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_customer_attention",
+          "description": "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "reconnect",
+                  "incident",
+                  "import_failed",
+                  "import_stuck",
+                  "link_exited",
+                  "link_failed",
+                  "policy",
+                  "unassigned",
+                  "no_connection_24h",
+                  "stalled"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_recently_joined",
+          "description": "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "type": "integer",
+                "enum": [
+                  7,
+                  14,
+                  30
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "customers",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_customer_profile",
+          "description": "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "incident_overview",
+          "description": "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_incidents",
+          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "broken-now",
+                  "needs-verification",
+                  "history",
+                  "all"
+                ],
+                "description": "default broken-now"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "error",
+                  "warning",
+                  "info"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "investigate_incident",
+          "description": "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "incident": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "incident"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_incidents_cs",
+          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "broken-now",
+                  "needs-verification",
+                  "history",
+                  "all"
+                ],
+                "description": "default broken-now"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "error",
+                  "warning",
+                  "info"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "incidents",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "investigate_incident_cs",
+          "description": "Customer Success view of investigate_incident (+ customer).",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "incident": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "incident"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "onboarding_overview",
+          "description": "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "list_onboarding_attention",
+          "description": "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "import_failed",
+                  "import_stuck",
+                  "link_exited",
+                  "link_failed",
+                  "no_connection_24h",
+                  "stalled"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "onboarding",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_onboarding_timeline",
+          "description": "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "connections",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "connection_health_overview",
+          "description": "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "pack": "connections",
+      "schema": {
+        "type": "function",
+        "function": {
+          "name": "get_customer_connections",
+          "description": "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "customer": {
+                "type": "string",
+                "pattern": "^h_[A-Za-z0-9_-]{16}$"
+              }
+            },
+            "required": [
+              "customer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
   ]
 }

@@ -29,6 +29,13 @@
  *   A4  the composed answer is returned as TypedAnswerSegment[] (figure / text / link), so
  *       conversations store and replay it exactly like any other answer.
  *
+ * LENGTH (P13a; G1a 2026-11-09 rendered 12 lines vs the ≤ 7 target): the whole answer —
+ * framing + body + next steps — is at most BRIEFING_MAX_LINES non-empty lines
+ * (composedLineCount). A list body is the shown issues (overall posture first, then severe,
+ * then the rest; shown in protocol order), ONE "…and N more" line linking Operations, ONE
+ * caveat line (stale / unreadable notes — never dropped; issues yield to it) and ONE closing
+ * line (what looks fine, at most one cost sentence, coverage). Next steps render on one line.
+ *
  * STALE (owner rule: stale facts are never shown as current). Every envelope a composer
  * uses is checked (isStaleEnvelope: the registry's per-metric maxAgeMs stamped at retrieval,
  * or a missing / unreadable asOf). A stale envelope's facts are worded "at last evaluation"
@@ -440,38 +447,12 @@ export function composeBriefing(
   }
 
   const allIssues = facts.filter((f) => f.issue);
-  // S1 (S2-approved, 2026-11-08 live battery: 17 figures / 12 bullets was too long): at most
-  // BRIEFING_MAX_ISSUES issue items — the severe ones (customer impact, a failed state) first,
-  // each group in protocol order — shown in protocol order; the rest are ONE overflow sentence.
-  const chosen = new Set([...allIssues.filter((f) => f.severe), ...allIssues.filter((f) => !f.severe)].slice(0, BRIEFING_MAX_ISSUES));
-  const issues = allIssues.filter((f) => chosen.has(f));
-  const overflow = allIssues.length - issues.length;
-  // Informational sentences: kept only while they add to a short answer (costs when read; the rest only when nothing is wrong).
-  // A stale informational sentence is always kept: it is what stops a stale figure reading as current.
-  const infos = facts.filter((f) => !f.issue && (f.stale || f.domain === "costs" || allIssues.length === 0 || f.topic === "alert sources that could not be read" || f.topic === "customer impact read incompletely"));
-  const list = issues.length >= 2 || (opts.list && issues.length >= 1);
+  const list = allIssues.length >= 2 || (opts.list && allIssues.length >= 1);
+  const fine = domains.filter((d) => d.state === "OK").map((d) => DOMAIN_NAME[d.key].ok);
+  const fineSentence = fine.length > 0 ? [t(`${cap(joinWords(fine))} ${fine.length === 1 && !/s$/.test(fine[0]) ? "looks" : "look"} fine.`)] : null;
+  const anyStale = domains.some((d) => d.state === "STALE") || facts.some((f) => f.stale);
   const body: Seg[] = [];
   const sentence = (segs: readonly Seg[]) => { if (body.length) body.push(t(" ")); body.push(...capFirst(segs)); };
-
-  if (list) {
-    issues.forEach((f, i) => { body.push(t(`${i === 0 ? "" : "\n"}- `), ...capFirst(f.segs)); });
-  } else if (issues.length === 1) sentence(issues[0].segs);
-  const fine = domains.filter((d) => d.state === "OK").map((d) => DOMAIN_NAME[d.key].ok);
-  const rest: Seg[][] = [];
-  if (overflow > 0) {
-    const more: Seg = { kind: "figure", text: String(overflow), metric: BRIEFING_MORE_KEY, window: null };
-    rest.push([t("…and "), more, t(` more ${overflow === 1 ? "item needs" : "items need"} attention`),
-      ...(opts.moreLink ? [t(" — see "), { kind: "link" as const, text: opts.moreLink.text, href: opts.moreLink.href }, t(".")] : [t(".")])]);
-  }
-  const anyStale = domains.some((d) => d.state === "STALE") || facts.some((f) => f.stale);
-  if (issues.length === 0 && domains.some((d) => d.state === "OK" || d.state === "STALE")) {
-    rest.push([t(anyStale ? "Nothing needs attention in what could be checked, though some of it may be out of date." : unreadable.length ? "Nothing needs attention in what could be checked." : "Nothing needs attention right now.")]);
-  }
-  if (fine.length > 0) rest.push([t(`${cap(joinWords(fine))} ${fine.length === 1 && !/s$/.test(fine[0]) ? "looks" : "look"} fine.`)]);
-  for (const f of infos) rest.push(f.segs);
-  rest.push(...unreadable);
-  if (list && rest.length) body.push(t("\n\n"));
-  rest.forEach((segs, i) => { if (list && i === 0) body.push(...capFirst(segs)); else sentence(segs); });
 
   // Coverage (server list): not permitted, costs not read, not yet covered.
   const cover: string[] = [];
@@ -479,11 +460,60 @@ export function composeBriefing(
   if (denied.length) cover.push(`Your access doesn't include ${joinWords(denied)}, so ${denied.length === 1 ? "it isn't" : "they aren't"} covered here.`);
   if (domains.some((d) => d.key === "costs" && d.state === "NOT_READ")) cover.push("Costs weren't checked; ask about costs to include them.");
   cover.push(`Platform AI doesn't cover ${joinWords([...BRIEFING_NOT_YET_COVERED], "or")} yet.`);
-  body.push(t(`\n\n${cover.join(" ")}`));
+
+  if (!list) {
+    // PROSE (no issue, or one): one paragraph + the coverage paragraph — at most 2 body lines (wording and order unchanged).
+    // Informational sentences: kept only while they add to a short answer (costs when read; the rest only when nothing is wrong).
+    // A stale informational sentence is always kept: it is what stops a stale figure reading as current.
+    const infos = facts.filter((f) => !f.issue && (f.stale || f.domain === "costs" || allIssues.length === 0 || CAVEAT_TOPICS.has(f.topic)));
+    if (allIssues.length === 1) sentence(allIssues[0].segs);
+    if (allIssues.length === 0 && domains.some((d) => d.state === "OK" || d.state === "STALE")) {
+      sentence([t(anyStale ? "Nothing needs attention in what could be checked, though some of it may be out of date." : unreadable.length ? "Nothing needs attention in what could be checked." : "Nothing needs attention right now.")]);
+    }
+    if (fineSentence) sentence(fineSentence);
+    for (const f of infos) sentence(f.segs);
+    for (const u of unreadable) sentence(u);
+    body.push(t(`\n\n${cover.join(" ")}`));
+    const segments = tidy(body);
+    return { segments, facts, domains, list, figures: segments.filter((s) => s.kind === "figure").length, shown: allIssues.length, overflow: 0 };
+  }
+
+  // LIST — P13a (G1a, 2026-11-09: the answer rendered 12 lines vs the ≤ 7 target). The body is at
+  // most BRIEFING_BODY_MAX_LINES non-empty lines, so framing + body + next steps ≤ BRIEFING_MAX_LINES:
+  //   one "- " line per SHOWN issue (protocol order);
+  //   one "- …and N more items need attention — see Operations." line when any issue is not shown;
+  //   one CAVEAT line when needed — stale / unreadable / incompletely-read notes (never dropped: issues yield to it);
+  //   one CLOSING line — what looks fine, at most ONE cost sentence, and the coverage sentences.
+  const caveats: Seg[][] = [...facts.filter((f) => !f.issue && (f.stale || CAVEAT_TOPICS.has(f.topic))).map((f) => f.segs), ...unreadable];
+  const room = BRIEFING_BODY_MAX_LINES - 1 - (caveats.length ? 1 : 0);
+  let issues = allIssues;
+  if (allIssues.length > room) {
+    // Overall posture first, then severe (customer impact, a failed state), then the rest — each group in
+    // protocol order; the chosen items are SHOWN in protocol order; one line is kept for the overflow.
+    const posture = allIssues.filter((f) => f.metric === "ops-overall-posture@1");
+    const ranked = [...posture, ...allIssues.filter((f) => f.severe && !posture.includes(f)), ...allIssues.filter((f) => !f.severe && !posture.includes(f))];
+    const chosen = new Set(ranked.slice(0, room - 1));
+    issues = allIssues.filter((f) => chosen.has(f));
+  }
+  const overflow = allIssues.length - issues.length;
+  issues.forEach((f, i) => { body.push(t(`${i === 0 ? "" : "\n"}- `), ...capFirst(f.segs)); });
+  if (overflow > 0) {
+    const more: Seg = { kind: "figure", text: String(overflow), metric: BRIEFING_MORE_KEY, window: null };
+    body.push(t("\n- …and "), more, t(` more ${overflow === 1 ? "item needs" : "items need"} attention`),
+      ...(opts.moreLink ? [t(" — see "), { kind: "link" as const, text: opts.moreLink.text, href: opts.moreLink.href }, t(".")] : [t(".")]));
+  }
+  const paragraph = (parts: readonly (readonly Seg[])[]) => { body.push(t("\n\n")); parts.forEach((segs, i) => { if (i > 0) body.push(t(" ")); body.push(...capFirst(segs)); }); };
+  if (caveats.length) paragraph(caveats);
+  // Cost section ≤ 1 sentence: the first cost information in protocol order (a failed-AI-calls fact is an issue, above).
+  const costInfo = facts.filter((f) => !f.issue && f.domain === "costs" && !f.stale && !CAVEAT_TOPICS.has(f.topic)).slice(0, 1);
+  paragraph([...(fineSentence ? [fineSentence] : []), ...costInfo.map((f) => f.segs), [t(cover.join(" "))]]);
 
   const segments = tidy(body);
   return { segments, facts, domains, list, figures: segments.filter((s) => s.kind === "figure").length, shown: issues.length, overflow };
 }
+
+/** Informational topics that QUALIFY what was read (a caveat, kept alongside issues — like a stale note). */
+const CAVEAT_TOPICS: ReadonlySet<string> = new Set(["alert sources that could not be read", "customer impact read incompletely"]);
 
 /**
  * (ii) — the composed COST-RANKING answer, from the operating-cost envelope read THIS turn:
@@ -513,8 +543,14 @@ export function composeCostRanking(envelopes: readonly MetricEnvelope[], binding
   return done(segs, "OK", "largest measured operating cost");
 }
 
-/** S1 — at most this many issue items in a composed briefing. */
-export const BRIEFING_MAX_ISSUES = 5;
+/**
+ * P13a — the whole composed answer (framing + body + next steps) is at most this many non-empty
+ * lines (composedLineCount). The turn adds at most BRIEFING_TURN_RESERVE lines (the framing line
+ * above a list, and ONE "Next steps:" line), so the body is at most BRIEFING_BODY_MAX_LINES.
+ */
+export const BRIEFING_MAX_LINES = 7;
+export const BRIEFING_TURN_RESERVE = 2;
+export const BRIEFING_BODY_MAX_LINES = BRIEFING_MAX_LINES - BRIEFING_TURN_RESERVE;
 /** S1 — the overflow count's figure key: a SERVER count of composed issue items (not a registry metric; masked in history like any figure). */
 export const BRIEFING_MORE_KEY = "briefing-more-items@1";
 
@@ -534,8 +570,12 @@ function isSevere(e: MetricEnvelope, topic: string, domain: string): boolean {
   }
 }
 
-/** S1 — the composed body's non-empty lines (bullets + paragraphs; framing and next steps are added by the turn). */
-export const composedLineCount = (segs: readonly Seg[]) => segs.map((x) => x.text).join("").split("\n").filter((l) => l.trim()).length;
+/**
+ * P13a — the non-empty lines of a composed answer as rendered (text + figure + link + note text,
+ * joined): the composed body alone, or the whole turn answer (framing + body + next steps) —
+ * what the G1 acceptance runner counts. ≤ BRIEFING_MAX_LINES for every composed briefing.
+ */
+export const composedLineCount = (segs: readonly { text: string }[]) => segs.map((x) => x.text).join("").split("\n").filter((l) => l.trim()).length;
 
 /** Capitalise a sentence's first text character (a figure-first sentence stays as rendered — "at least …" is server wording). */
 function capFirst(segs: readonly Seg[]): Seg[] {
@@ -635,7 +675,8 @@ export function checkActions(
     if (!ev.hrefs.has(href)) { dropped++; continue; }
     if (kept.length >= 3 || kept.some((k) => k.href === href)) { dropped++; continue; }
     const s = sanitiseAnswer(String(a.label ?? ""), new Set());
-    const raw = s.segments.map((x) => x.text).join("").trim();
+    // P13a: a label is one line (whitespace folded) — next steps render on ONE line.
+    const raw = s.segments.map((x) => x.text).join("").replace(/\s+/g, " ").trim();
     const clean = s.removed === 0 && raw.length > 0 && raw.length <= LINK_LABEL_MAX && resolvePlaceholders([{ kind: "text", text: raw }], [], new Set(), scrubbedQuestion).summary.verdict === "NONE";
     kept.push({ text: clean ? raw : (pageLabel(href) ?? "Open the page"), href });
   }

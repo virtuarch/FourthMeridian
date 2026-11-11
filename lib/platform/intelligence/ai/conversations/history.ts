@@ -26,13 +26,22 @@
  *     only keeps old values out of the prompt.
  *   · Evidence refs are POINTERS, never values. A ref the operator can no
  *     longer see (describeMetric / pageVisible under the CURRENT token) is
- *     silently omitted.
+ *     silently omitted. (P4 area / record-kind refs are provenance, never listed.)
+ *   · P4 — a prior RECORD span reaches the model as a kind marker only: `[customer]`,
+ *     or `[customer h_…]` when THIS turn's boundary re-authorized it (area recheck +
+ *     revalidate) and minted a fresh handle (scope.recordHandle). Never an id, never a
+ *     value — history grants nothing.
+ *   · P4b — a prior ANSWER that read an area the operator no longer holds (scope.answerVisible
+ *     false, conversations/multi-area.ts) replays as "[no longer available]" only: none of its
+ *     prose, markers or evidence pointers reach the model. Its question (the operator's own,
+ *     scrubbed text) stays.
  *
  * Wired into runPlatformAiTurn (its `history` input) by ./turn.ts
  * runConversationTurn. Nothing here calls a model, a database or a clock.
  */
 
-import type { EvidenceRef, StoredAnswerV1 } from "./answer";
+import { RECORD_GONE_TEXT, recordReplayMarker } from "../compose/record";
+import type { EvidenceRef, StoredAnswer, StoredRecordSegment } from "./answer";
 import {
   PLATFORM_AI_HISTORY_CHARS_PER_TOKEN,
   PLATFORM_AI_HISTORY_MESSAGES,
@@ -55,7 +64,7 @@ export interface HistoryMessage {
   createdAt: Date;
   replyToId: string | null;
   /** USER: the stored scrubbed question. ASSISTANT: the parsed stored answer. Null when absent / unreadable. */
-  content: string | StoredAnswerV1 | null;
+  content: string | StoredAnswer | null;
   evidenceRefs: readonly EvidenceRef[];
 }
 
@@ -63,6 +72,10 @@ export interface HistoryMessage {
 export interface HistoryScope {
   describeMetric(id: string): unknown;
   pageVisible(id: string): boolean;
+  /** P4 — the handle THIS turn re-minted for a prior record span (after re-authz), or null / absent ⇒ the bare kind marker. */
+  recordHandle?(seg: StoredRecordSegment): string | null;
+  /** P4b — false ⇒ this prior answer read an area not held now: replayed as "[no longer available]", its refs never listed. Absent ⇒ every answer visible. */
+  answerVisible?(refs: readonly EvidenceRef[], answer: StoredAnswer): boolean;
 }
 
 export interface AssembledHistory {
@@ -98,10 +111,11 @@ const DIGITS = /[-+]?[$€£]?\d[\d,.]*%?/g;
 export const neutraliseBraces = (t: string): string => t.replace(/\{/g, "(").replace(/\}/g, ")");
 
 /** A prior ASSISTANT answer as replay prose: figures → markers, links → labels, braces neutralised, stray digits masked. */
-export function replayAnswer(answer: StoredAnswerV1, answeredAt: Date): string {
+export function replayAnswer(answer: StoredAnswer, answeredAt: Date, recordHandle?: (seg: StoredRecordSegment) => string | null): string {
   return answer.segments.map((s) => {
     if (s.kind === "figure") return figureMarker(s.metric, answeredAt);
     if (s.kind === "memory") return "(a remembered item)";
+    if (s.kind === "record") { let h: string | null = null; try { h = recordHandle?.(s) ?? null; } catch { h = null; } return recordReplayMarker(s.rk, h); }
     const t = neutraliseBraces(s.text).replace(DIGITS, "[figure]");
     return s.kind === "correction" || s.kind === "note" ? `${t} ` : t; // S2 F-C1 (ii): a separate block on screen ⇒ a separating space in replay
   }).join("");
@@ -139,7 +153,11 @@ export function assemblePlatformAiHistory(input: {
     if (q.role !== "USER" || q.status !== "COMPLETE" || typeof q.content !== "string") continue;
     const a = replies.get(q.id);
     if (!a || a.status !== "COMPLETE" || a.content === null || typeof a.content === "string") continue;
-    exchanges.push({ user: neutraliseBraces(q.content), assistant: replayAnswer(a.content, a.createdAt), refs: a.evidenceRefs, at: q.createdAt.getTime() });
+    let visible = true;
+    try { visible = scope.answerVisible ? scope.answerVisible(a.evidenceRefs, a.content) === true : true; } catch { visible = false; }
+    exchanges.push(visible
+      ? { user: neutraliseBraces(q.content), assistant: replayAnswer(a.content, a.createdAt, scope.recordHandle?.bind(scope)), refs: a.evidenceRefs, at: q.createdAt.getTime() }
+      : { user: neutraliseBraces(q.content), assistant: RECORD_GONE_TEXT, refs: [], at: q.createdAt.getTime() });
   }
   exchanges.sort((x, y) => x.at - y.at);
 
@@ -160,6 +178,7 @@ export function assemblePlatformAiHistory(input: {
   for (let i = exchanges.length - 1; i >= 0 && pointers.length < PLATFORM_AI_EARLIER_REFS_MAX; i--) {
     for (const r of exchanges[i].refs) {
       if (pointers.length >= PLATFORM_AI_EARLIER_REFS_MAX) break;
+      if (r.k !== "m" && r.k !== "p") continue; // P4 provenance (areas, record kinds) is never a pointer
       const key = r.k === "m" ? `m|${r.id}|${r.w ?? ""}` : `p|${r.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

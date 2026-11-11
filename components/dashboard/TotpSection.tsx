@@ -31,6 +31,9 @@ import {
 } from "lucide-react";
 import { FormModal } from "@/components/atlas/FormModal";
 import { Dialog } from "@/components/atlas/Dialog";
+import {
+  safeOperatorContinuePath, twoFactorRequiredCopy, type TwoFactorAudience,
+} from "@/lib/auth/operator-2fa-prompt";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +62,8 @@ function CopyButton({ text }: { text: string }) {
 
 // ── Setup Modal ───────────────────────────────────────────────────────────────
 
-function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => void; onEnabled: () => void; enforced?: boolean }) {
+function SetupModal({ onClose, onEnabled, enforced = false, audience = "user" }: { onClose: () => void; onEnabled: () => void; enforced?: boolean; audience?: TwoFactorAudience }) {
+  const required = twoFactorRequiredCopy(audience);
   type ModalStep = "qr" | "codes";
 
   const [modalStep,   setModalStep]   = useState<ModalStep>("qr");
@@ -127,10 +131,8 @@ function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => v
                 <div className="flex items-start gap-2 p-3 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)]">
                   <Lock size={13} className="text-[var(--text-secondary)] mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs font-semibold text-[var(--text-secondary)]">Two-factor authentication is required</p>
-                    <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-                      Your organization requires 2FA. Set it up now to continue using Fourth Meridian.
-                    </p>
+                    <p className="text-xs font-semibold text-[var(--text-secondary)]">{required.heading}</p>
+                    <p className="text-xs text-[var(--text-secondary)] mt-0.5">{required.body}</p>
                   </div>
                 </div>
               )}
@@ -541,14 +543,21 @@ export function TotpSection({
   enforced: enforcedProp = false,
   onEnrolled,
   onStatusChange,
+  audience = "user",
 }: {
   enforced?: boolean;
   onEnrolled?: () => void;
   onStatusChange?: (status: TotpStatus) => void;
+  /** Owner D4 — a SERVER fact (active PlatformGrant): wording + return path only. */
+  audience?: TwoFactorAudience;
 } = {}) {
   const { update: updateSession } = useSession();
   const searchParams = useSearchParams();
   const enforced     = enforcedProp || searchParams.get("setup2fa") === "true";
+  // Owner D4 — `setup2fa=start` opens the same setup flow on arrival but keeps
+  // it cancellable (the operator notice's action; enforcement decides nothing here).
+  const autoStart    = enforced || searchParams.get("setup2fa") === "start";
+  const required     = twoFactorRequiredCopy(audience);
 
   const [status,  setStatus]  = useState<TotpStatus | null>(null);
   const [modal,   setModal]   = useState<"setup" | "disable" | "regenerate" | null>(null);
@@ -576,26 +585,35 @@ export function TotpSection({
   }, [fetchStatus]);
 
   // Auto-open setup modal when redirected here due to platform enforcement
+  // (or, owner D4, when an operator asked to start setup from the notice).
   useEffect(() => {
-    if (!enforced || loading || status?.totpEnabled) return;
+    if (!autoStart || loading || status?.totpEnabled) return;
     const t = setTimeout(() => setModal("setup"), 0);
     return () => clearTimeout(t);
-  }, [enforced, loading, status?.totpEnabled]);
+  }, [autoStart, loading, status?.totpEnabled]);
 
   async function handleEnrolled() {
     fetchStatus();
     // Clear requireTotpSetup from the JWT so proxy.ts stops redirecting to the
     // enrolment surface (it reads token.requireTotpSetup on every page nav).
     await updateSession({ requireTotpSetup: false });
+    // Owner D4 — an operator sent here on the way into Platform continues there.
+    // Read before the URL is cleaned; validated to a same-origin Platform path.
+    // Routing only: the Platform pages re-check grant + TOTP on arrival.
+    const continueTo = audience === "operator" ? safeOperatorContinuePath(searchParams.get("next")) : null;
     // Remove the query param from the URL without a page reload
     const url = new URL(window.location.href);
     url.searchParams.delete("setup2fa");
+    url.searchParams.delete("next");
     window.history.replaceState({}, "", url.toString());
     // PO-1A — the flag is only now cleared, so a server-rendered host that
     // branched on it (app/admin/security/page.tsx) must re-resolve. Fired last:
     // the session update has to land before the server re-reads it, or the
     // refresh would resolve ENROLLING again and bounce the admin back.
     onEnrolled?.();
+    // A full navigation, so the shell re-reads its server facts (the toggle's
+    // enrolment href, the notice) with 2FA now on.
+    if (continueTo) window.location.assign(continueTo);
   }
 
   return (
@@ -607,7 +625,9 @@ export function TotpSection({
           <div>
             <p className="text-xs font-semibold text-[var(--text-secondary)]">Two-factor authentication required</p>
             <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-              Your account requires 2FA before you can access Fourth Meridian. Click &quot;Enable 2FA&quot; to set it up.
+              {audience === "operator"
+                ? <>{required.body} Click &quot;Enable 2FA&quot; to set it up.</>
+                : <>Your account requires 2FA before you can access Fourth Meridian. Click &quot;Enable 2FA&quot; to set it up.</>}
             </p>
           </div>
         </div>
@@ -707,6 +727,7 @@ export function TotpSection({
           onClose={() => { if (!enforced) setModal(null); }}
           onEnabled={() => { setModal(null); handleEnrolled(); }}
           enforced={enforced}
+          audience={audience}
         />
       )}
 

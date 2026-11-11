@@ -88,3 +88,20 @@ export function opaqueDedupeTokenWith(userId: string, secret: string | undefined
 export function opaqueDedupeToken(userId: string): string {
   return opaqueDedupeTokenWith(userId, process.env.NEXTAUTH_SECRET);
 }
+
+/**
+ * A KEYED fingerprint (8 hex) of `value` under the SAME mechanism as the reference — HMAC-SHA256 keyed by a
+ * key derived from NEXTAUTH_SECRET under a versioned label — but with ITS OWN purpose label (domain-separated
+ * from the reference key and from every other purpose). For audit correlation of operator input that must
+ * never be stored (Platform AI people-picker search, S2 09fc P4). No secret ⇒ null (never an unkeyed hash).
+ */
+export function opaquePurposeFingerprintWith(purpose: string, value: string, secret: string | undefined | null): string | null {
+  if (!secret || !purpose || purpose === OPAQUE_USER_REF_LABEL) return null;
+  const key = createHmac("sha256", secret).update(purpose).digest();
+  return createHmac("sha256", key).update(value, "utf8").digest("hex").slice(0, OPAQUE_USER_REF_HEX);
+}
+
+/** The keyed purpose fingerprint under the server secret (null without it). */
+export function opaquePurposeFingerprint(purpose: string, value: string): string | null {
+  return opaquePurposeFingerprintWith(purpose, value, process.env.NEXTAUTH_SECRET);
+}

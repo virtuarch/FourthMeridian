@@ -203,6 +203,9 @@ export type OperatorTargetKind =
   | "MERCHANT_PAIR"
   // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
   | "BETA_BATCH"
+  // Platform AI P5 — an exact-identifier subject lookup that did NOT resolve to a visible customer,
+  // identified by the keyed hash of the normalised identifier (never the identifier itself).
+  | "PLATFORM_AI_SUBJECT"
   // Owner P2-1 — one blocked-identifier row (its id), one sealed evidence row (its id).
   | "BETA_BLOCKED_IDENTIFIER"
   | "BETA_ABUSE_EVIDENCE"

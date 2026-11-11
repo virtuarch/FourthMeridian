@@ -63,7 +63,7 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 }
 
 const NOW = new Date("2026-10-31T12:00:00.000Z");
-const ADDRESS = "Person.Private@example.invalid";
+const ADDRESS = "Person.Private@example.com";
 
 // ── An in-memory Notification store (create + dedupe + retire) ────────────────
 
@@ -212,7 +212,7 @@ async function securityBellUnmutable(): Promise<void> {
 async function hashedIdentifiers(): Promise<void> {
   console.log("2. O-8 — no plaintext identifier / IP in the bell's dedupe key or metadata; dedupe still works");
   const SALTED = { SECURITY_IDENTIFIER_HASH_SALT: "unit-test-identifier-salt" };
-  const identifier = "Victim.Person@Example.invalid";
+  const identifier = "Victim.Person@Example.com";
   const ip = "203.0.113.77";
   const guesses = Array(6).fill("invalid_password");
   const [idAnomaly] = detectIdentifierAnomalies(guesses, identifier);
@@ -233,7 +233,7 @@ async function hashedIdentifiers(): Promise<void> {
     check(`${a.type}: same identifier ⇒ same key (dedupe identity)`, anomalyNotificationData(a, SALTED).anomalyKey === data.anomalyKey);
   }
   check("case / whitespace variants of one identifier hash alike", hashedAnomalyKey(`identifier:  ${identifier.toUpperCase()} `, SALTED) === hashedAnomalyKey(`identifier:${identifier}`, SALTED));
-  check("different identifiers ⇒ different keys", hashedAnomalyKey("identifier:a@example.invalid", SALTED) !== hashedAnomalyKey("identifier:b@example.invalid", SALTED));
+  check("different identifiers ⇒ different keys", hashedAnomalyKey("identifier:a@example.com", SALTED) !== hashedAnomalyKey("identifier:b@example.com", SALTED));
   check("the salt matters (a different salt ⇒ a different hash; never an unsalted digest)",
     hashSecurityIdentifier(ip, SALTED) !== hashSecurityIdentifier(ip, { SECURITY_IDENTIFIER_HASH_SALT: "other" }));
   check("the value-free admin-probe key is unchanged", anomalyNotificationData(adminAnomaly, SALTED).anomalyKey === "system_admin_disabled");
@@ -449,17 +449,17 @@ async function stormLimit(): Promise<void> {
     const last = w.ledger[w.ledger.length - 1];
     check("…recorded in the ledger as SUPPRESSED / RATE_LIMITED for that recipient", last.status === "SUPPRESSED" && last.reason === "RATE_LIMITED" && last.recipientUserId === "user_1" && last.definitionKey === "SYNC_FAILED", last);
     check("…with one redacted log line (no address)", w.logs.some((l) => /storm limit.*reason=RATE_LIMITED/.test(l)) && w.logs.every((l) => !l.includes(ADDRESS)));
-    const other = await w.send("notification", "other@example.invalid", ND, notif("user_2"));
+    const other = await w.send("notification", "other@example.com", ND, notif("user_2"));
     check("the limit is per recipient: another user still receives mail", other.status === "sent");
     const awareness = await w.send("notification", ADDRESS, ND, { key: "MEMBER_ROLE_CHANGED", recipientUserId: "user_1" });
     check("it spans every customer email type: an AWARENESS email to the same user is held too", awareness.status === "skipped" && awareness.reason === "RATE_LIMITED");
     const sec = await w.send("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "user_1" });
-    const reset = await w.send("password-reset", ADDRESS, { resetUrl: "https://app.example.invalid/reset?token=x" }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: "user_1" });
-    const verify = await w.send("email-verification", ADDRESS, { verifyUrl: "https://app.example.invalid/verify?token=x" }, { key: "EMAIL_VERIFICATION_SENT", recipientUserId: "user_1" });
-    const change = await w.send("email-change", ADDRESS, { confirmUrl: "https://app.example.invalid/confirm?token=x" }, { key: "EMAIL_CHANGE_CONFIRMATION_SENT", recipientUserId: "user_1" });
+    const reset = await w.send("password-reset", ADDRESS, { resetUrl: "https://app.example.com/reset?token=x" }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: "user_1" });
+    const verify = await w.send("email-verification", ADDRESS, { verifyUrl: "https://app.example.com/verify?token=x" }, { key: "EMAIL_VERIFICATION_SENT", recipientUserId: "user_1" });
+    const change = await w.send("email-change", ADDRESS, { confirmUrl: "https://app.example.com/confirm?token=x" }, { key: "EMAIL_CHANGE_CONFIRMATION_SENT", recipientUserId: "user_1" });
     check("over the limit, SECURITY_CRITICAL still sends", sec.status === "sent", sec);
     check("over the limit, CEREMONY still sends (password reset, verification, email change)", [reset, verify, change].every((r) => r.status === "sent"), [reset, verify, change]);
-    const op = await w.send("platform-alert", "ops@example.invalid", { evaluatedAtISO: NOW.toISOString(), alerts: [] }, { key: "PLATFORM_ALERT", recipientUserId: null });
+    const op = await w.send("platform-alert", "ops@example.com", { evaluatedAtISO: NOW.toISOString(), alerts: [] }, { key: "PLATFORM_ALERT", recipientUserId: null });
     check("operator inbox mail is not customer mail: never limited", op.status !== "skipped", op);
   }
   {
@@ -479,8 +479,8 @@ async function stormLimit(): Promise<void> {
   {
     const w = stormWorld();
     const rs: EmailResult[] = [];
-    for (let i = 0; i < 6; i++) rs.push(await w.send("notification", "Applicant@example.invalid", ND, { key: "SYNC_FAILED", recipientUserId: null }));
-    const otherAddr = await w.send("notification", "someone.else@example.invalid", ND, { key: "SYNC_FAILED", recipientUserId: null });
+    for (let i = 0; i < 6; i++) rs.push(await w.send("notification", "Applicant@example.com", ND, { key: "SYNC_FAILED", recipientUserId: null }));
+    const otherAddr = await w.send("notification", "someone.else@example.com", ND, { key: "SYNC_FAILED", recipientUserId: null });
     check("no userId: counted by the ledger's salted recipient hash — the 6th to that address is held",
       rs.slice(0, 5).every((r) => r.status === "sent") && rs[5].reason === "RATE_LIMITED" && w.ledger[0].recipientHash !== null && otherAddr.status === "sent", rs[5]);
   }
@@ -557,7 +557,7 @@ async function stormLimit(): Promise<void> {
     const w = stormWorld({ counter: async () => { throw new Error("db down"); } });
     const limited = await w.send("notification", ADDRESS, ND, notif("user_1"));
     const sec = await w.send("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "user_1" });
-    const ceremony = await w.send("password-reset", ADDRESS, { resetUrl: "https://app.example.invalid/reset?token=x" }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: "user_1" });
+    const ceremony = await w.send("password-reset", ADDRESS, { resetUrl: "https://app.example.com/reset?token=x" }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: "user_1" });
     check("counter throws ⇒ the limited send is SUPPRESSED RATE_LIMIT_UNVERIFIED, recorded, not sent",
       limited.status === "skipped" && limited.reason === "RATE_LIMIT_UNVERIFIED" && w.ledger[0].status === "SUPPRESSED" && w.ledger[0].reason === "RATE_LIMIT_UNVERIFIED", w.ledger[0]);
     check("…security and ceremony still send", sec.status === "sent" && ceremony.status === "sent" && w.sent.length === 2);
@@ -580,7 +580,7 @@ async function stormLimit(): Promise<void> {
       provider: { name: "resend", async send(m) { sent.push(m); return { status: "sent", provider: "resend", id: "x" }; } },
       storm: async () => 0, ledger: async (row) => { ledger.push(row); },
     });
-    const r = await send("notification", "x@example.invalid", ND, { key: "SYNC_FAILED", recipientUserId: null });
+    const r = await send("notification", "x@example.com", ND, { key: "SYNC_FAILED", recipientUserId: null });
     check("no userId and no recipient salt ⇒ the limited send fails closed (RATE_LIMIT_UNVERIFIED)", r.status === "skipped" && r.reason === "RATE_LIMIT_UNVERIFIED" && sent.length === 0);
   }
   {

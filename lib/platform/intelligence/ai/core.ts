@@ -81,6 +81,11 @@ import {
 import { labelPlaceholdersFor, placeholdersFor, resolvePlaceholders, windowMixNote } from "./compose/placeholders";
 import { LINK_TARGET_KINDS, SANITISE_KINDS, sanitiseAnswer, strippedLinkTargets, type LinkTargetKind, type SanitiseKind } from "./compose/sanitise";
 import { segmentsText, type AnswerSegment, type TypedAnswerSegment } from "./compose/segments";
+import {
+  RECORD_GONE_TEXT, RECORD_PENDING_TEXT, RECORD_PRIVATE_CHARS, RECORD_SENTINEL, extractRecordPlaceholders, hasHandleText, identityShapesIn, markInferred, renderInferred,
+  type RecordSpan, type TurnRecordLookup,
+} from "./compose/record";
+import { causalInPlay, markUnbackedCausal } from "./compose/causal";
 import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
 import {
   DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
@@ -88,6 +93,7 @@ import {
 } from "./compose/verdicts";
 import { envelopeHours, quotableWindowPhrase, requestedWindows } from "./compose/windows";
 import { parseAskedPeriods, windowDisclosureText } from "./compose/window-disclosure";
+import { extractSubjects, fillSubjectSlots, type SubjectIdentifier, type SubjectResult } from "./authz/subject";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
 
@@ -654,6 +660,17 @@ export type PlatformAiToolInvoker = (name: string, rawArgs: string, ctx: {
   ev: ToolEvidence; paramKeys: readonly string[]; asked: readonly { hours: number }[]; memory?: PlatformAiMemoryHooks;
 }) => Promise<unknown>;
 
+/**
+ * P3 — the turn's tool OFFER, from the turn boundary (authz/boundary.ts `tools`, built on
+ * engine/router.ts). `route` gets the SCRUBBED question once, before any tool call; `schemas`
+ * is what each model call is offered (it can grow when the model calls more_tools). Absent ⇒
+ * platformAiToolSchemas, as before P3. core.ts never imports the router (no cycle).
+ */
+export interface PlatformAiTurnTools {
+  route(question: string): void;
+  schemas(paramKeys: readonly string[]): unknown[];
+}
+
 /** The dispatcher a turn uses: the injected boundary, else the executor over the turn's binding. */
 const dispatcherFor = (invoke: PlatformAiToolInvoker | undefined, binding: PlatformAiBinding): PlatformAiToolInvoker =>
   invoke ?? ((name, rawArgs, c) => executePlatformAiTool(name, rawArgs, binding, c.ev, c.paramKeys, c.asked, c.memory));
@@ -759,7 +776,7 @@ export interface PlatformAiAnswer {
   /** A1–A4: present only on a SERVER-COMPOSED briefing — codes and counts, never text. */
   briefing?: {
     composed: true; kind: "BRIEFING" | "COST_RANKING"; pattern: string; list: boolean; cost: BriefingCostReason | null;
-    /** S1: issue items shown / counted in the overflow sentence; the composed body's line count. */
+    /** S1: issue items shown / counted in the overflow line; P13a: the whole answer's non-empty line count (≤ BRIEFING_MAX_LINES). */
     shown: number; overflow: number; lines: number; windowNote?: true;
     framing: FramingOutcome; framingVerdict: PlaceholderVerdict | "LINK" | "TOO_LONG" | null;
     actions: number; actionsDropped: number; absoluteStripped: number; issues: number; figures: number;
@@ -825,7 +842,21 @@ export interface PlatformAiTurnRecord {
   pages: ReadonlyMap<string, { id: string; params: Record<string, string> }>;
   /** Metric keys read this turn, with window.days (null = default / fixed window). */
   metricsRead: { metric: string; days: number | null }[];
+  /**
+   * P4 (design v2 §8.1, the areasRead provenance) — the Platform areas this turn READ: each
+   * envelope's surface and each placed record's area. Stored as evidenceRefs `{k:"a"}`.
+   */
+  areasRead?: PlatformArea[];
 }
+
+/** P4 — the areas a turn read (envelope surfaces + placed record areas), registry order, each once. */
+export function areasReadOf(envelopes: readonly MetricEnvelope[], typed: readonly TypedAnswerSegment[]): PlatformArea[] {
+  const seen = new Set<string>([...envelopes.map((e) => String(e.surface)), ...typed.filter((t): t is RecordSpan => t.kind === "record").map((t) => t.a)]);
+  return ALL_PLATFORM_AREAS.filter((a) => seen.has(a));
+}
+
+/** P4 (design v2 §9) — the answer an IDENTITY_LEAK verdict shows instead of the model's (server text). */
+export const IDENTITY_FALLBACK = "I can't include identifying details in an answer. Open the Platform page for the record instead.";
 
 /**
  * The envelopes a turn CITES: every one, except a window refusal (UNAVAILABLE[WINDOW_NOT_OFFERED])
@@ -928,6 +959,14 @@ export async function runPlatformAiTurn(input: {
   classifyBriefing?: boolean;
   /** P2 — the turn boundary's invokeTool (production callers always pass it); absent ⇒ the executor. */
   invoke?: PlatformAiToolInvoker;
+  /** P3 — the turn boundary's tool offer (router); absent ⇒ every core tool, as before. */
+  tools?: PlatformAiTurnTools;
+  /**
+   * P4 — THIS turn's handle → record lookup (authz/boundary.ts `recordRef`): the ONLY thing a
+   * {{r:h|field}} placeholder resolves against. Absent ⇒ no records this turn (every record
+   * placeholder is RECORD_UNRESOLVED).
+   */
+  records?: TurnRecordLookup;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
@@ -936,7 +975,10 @@ export async function runPlatformAiTurn(input: {
   if (cls?.briefing || cls?.costRanking) return runComposedBriefing({ ...input, question, cls });
   const paramKeys = modelParamKeys(binding);
   const memory = input.memory;
-  const tools = platformAiToolSchemas(paramKeys, { memory: !!memory });
+  // P3: the router sees the SCRUBBED question (once, before any tool call); each round is offered its current schemas.
+  input.tools?.route(question);
+  const staticTools = input.tools ? null : platformAiToolSchemas(paramKeys, { memory: !!memory });
+  const offer = () => staticTools ?? input.tools!.schemas(paramKeys);
   // The fixed rules + THIS operator's briefing coverage (server data: which briefing metrics the binding can read).
   const systemPrompt = `${PLATFORM_AI_SYSTEM_PROMPT}\n${briefingCoverageText(binding)}`;
   const messages: unknown[] = input.history
@@ -959,7 +1001,7 @@ export async function runPlatformAiTurn(input: {
   while (rounds < PLATFORM_AI_MAX_ROUNDS) {
     const last = rounds === PLATFORM_AI_MAX_ROUNDS - 1 || toolCalls >= PLATFORM_AI_MAX_TOOL_CALLS;
     rounds++;
-    const out = await input.generate({ model: input.model, messages, tools: last ? [] : tools, maxTokens, signal: input.signal });
+    const out = await input.generate({ model: input.model, messages, tools: last ? [] : offer(), maxTokens, signal: input.signal });
     tokens += out.usage?.totalTokens ?? 0;
     messages.push(out.raw ?? { role: "assistant", content: out.content });
     if (out.toolCalls.length === 0) { raw = out.content ?? ""; stop = "ANSWERED"; break; }
@@ -988,7 +1030,18 @@ export async function runPlatformAiTurn(input: {
   const evaluate = (text: string | null) => {
     const memText: string[] = [];
     const memIds: string[] = [];
-    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "");
+    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "").replace(RECORD_PRIVATE_CHARS, "");
+    // P4 (design v2 §9): {{inferred}}…{{/inferred}} (paired) and {{r:h|field}} — this turn's handles only.
+    modelRaw = markInferred(modelRaw).text;
+    const rec = extractRecordPlaceholders(modelRaw, input.records);
+    modelRaw = rec.text;
+    // P8 (design v2 §9, compose/causal.ts): with the incident contract in play, an unmarked causal sentence not
+    // backed by a CONFIRMED cause of an incident it places is marked inferred ("Likely: …") — UNMARKED_CAUSAL.
+    const causal = markUnbackedCausal(modelRaw, {
+      inPlay: causalInPlay({ traceTools: ev.trace.filter((t) => t.outcome === "OK").map((t) => String(t.tool)), spans: rec.spans, question }),
+      spans: rec.spans, facts: rec.facts,
+    });
+    modelRaw = causal.text;
     if (memory) {
       modelRaw = modelRaw.replace(MEM_PLACEHOLDER, (_m, id: string) => {
         const t = memory.renderPlaceholder(id.toLowerCase());
@@ -1000,7 +1053,17 @@ export async function runPlatformAiTurn(input: {
     }
     const s = sanitiseAnswer(modelRaw, ev.hrefs);
     const placed = resolvePlaceholders(s.segments, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
-    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed };
+    // P4: record claims join the counts; an identity shape in the MODEL'S OWN prose is a hard fail
+    // (IDENTITY_LEAK, before every other verdict); an unresolved record / a bare handle ⇒ RECORD_UNRESOLVED.
+    if (rec.claims > 0) {
+      placed.summary.claims += rec.claims;
+      placed.summary.resolved += rec.claims - rec.unresolved;
+      placed.summary.unresolved += rec.unresolved;
+    }
+    if (identityShapesIn(placed.modelProse).length > 0) placed.summary.verdict = "IDENTITY_LEAK";
+    else if (rec.unresolved > 0 || hasHandleText(placed.modelProse)) placed.summary.verdict = "RECORD_UNRESOLVED";
+    else if (causal.marked > 0 && (placed.summary.verdict === "RESOLVED" || placed.summary.verdict === "NONE")) placed.summary.verdict = "UNMARKED_CAUSAL";
+    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans };
   };
   let first = evaluate(raw);
   // B1 (S2-approved): ONE corrective retry, only for UNGROUNDED_DIGIT (incl. NUMBER_WORD) / WINDOW_MISMATCH,
@@ -1019,7 +1082,7 @@ export async function runPlatformAiTurn(input: {
       ...(pass ? {} : { digitBy: second.placed.digitBy, wordFamilyBy: second.placed.wordFamilyBy }) };
     if (pass) { first = second; raw = out.content ?? ""; }
   }
-  const { memText, memIds, removed, kinds, placed } = first;
+  const { memText, memIds, removed, kinds, placed, spans } = first;
   let answer = placed.segments;
   let typed: TypedAnswerSegment[] = placed.typed;
   let verdict = placed.summary.verdict;
@@ -1061,6 +1124,10 @@ export async function runPlatformAiTurn(input: {
       answer = [{ kind: "note", text: disclosure }, ...answer];
       typed = [{ kind: "note", text: disclosure }, ...typed];
     }
+  } else if (verdict === "IDENTITY_LEAK") {
+    // P4: a hard fail — nothing of the model's text survives (no link either).
+    answer = [{ kind: "text", text: IDENTITY_FALLBACK }];
+    typed = answer.map((x) => ({ ...x }));
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
     answer = href
@@ -1101,6 +1168,27 @@ export async function runPlatformAiTurn(input: {
       return out;
     });
   }
+  // P4: record spans — a typed `record` span in the stored answer (rendered at READ time by
+  // authz/record-render.ts), the fail-closed marker in the display answer until rendered;
+  // inferred spans render "Likely: …" in both. (A replaced answer carries no sentinel.)
+  if (!replaced) {
+    const display = (t: string) => renderInferred(t.replace(RECORD_SENTINEL, RECORD_PENDING_TEXT));
+    answer = answer.map((x) => ({ ...x, text: display(x.text) }));
+    typed = typed.flatMap((x): TypedAnswerSegment[] => {
+      if (x.kind === "record") return [x];
+      if (x.kind !== "text") return [{ ...x, text: display(x.text) }];
+      const out: TypedAnswerSegment[] = [];
+      let last = 0;
+      for (const m of x.text.matchAll(RECORD_SENTINEL)) {
+        if (m.index! > last) out.push({ kind: "text", text: renderInferred(x.text.slice(last, m.index)) });
+        const sp = spans[m[1].charCodeAt(0) - 97];
+        if (sp) out.push({ ...sp });
+        last = m.index! + m[0].length;
+      }
+      if (last < x.text.length) out.push({ kind: "text", text: renderInferred(x.text.slice(last)) });
+      return out;
+    });
+  }
   // D10: the answer cites memory — a {{mem}} placeholder, or an injected subject's label in its text —
   // with no live tool read of that subject this turn ⇒ the server appends the not-checked line.
   if (memory && !replaced) {
@@ -1137,7 +1225,7 @@ export async function runPlatformAiTurn(input: {
       coverage: coverage.map(({ key, label, status }) => ({ key, label, status })),
     },
     transcript: messages,
-    record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })) },
+    record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })), areasRead: areasReadOf(ev.envelopes, typed) },
   };
 }
 
@@ -1233,12 +1321,13 @@ async function runComposedBriefing(input: {
     ...lead,
     ...(framing.text ? [{ kind: "text" as const, text: `${framing.text}${composed.list ? "\n" : " "}` }] : []),
     ...composed.segments,
-    ...(actions.kept.length ? [{ kind: "text" as const, text: "\n\nNext steps:" }, ...actions.kept.flatMap((a) => [{ kind: "text" as const, text: "\n- " }, { kind: "link" as const, text: a.text, href: a.href }])] : []),
+    // P13a: next steps on ONE line (the whole answer stays ≤ BRIEFING_MAX_LINES).
+    ...(actions.kept.length ? [{ kind: "text" as const, text: "\n\nNext steps: " }, ...actions.kept.flatMap((a, i) => [...(i > 0 ? [{ kind: "text" as const, text: " · " }] : []), { kind: "link" as const, text: a.text, href: a.href }])] : []),
   ];
   // Merge adjacent text (stable stored shape); figures stay typed (A4).
   const merged: TypedAnswerSegment[] = [];
   for (const s of typed) { const p = merged[merged.length - 1]; if (s.kind === "text" && p?.kind === "text") p.text += s.text; else merged.push({ ...s }); }
-  const answer: AnswerSegment[] = merged.map((s) => (s.kind === "figure" || s.kind === "memory" ? { kind: "text" as const, text: s.text } : s))
+  const answer: AnswerSegment[] = merged.map((s) => (s.kind === "figure" || s.kind === "memory" || s.kind === "record" ? { kind: "text" as const, text: s.text } : s))
     .reduce<AnswerSegment[]>((acc, s) => { const p = acc[acc.length - 1]; if (s.kind === "text" && p?.kind === "text") p.text += s.text; else acc.push({ ...s }); return acc; }, []);
   for (const c of citations) c.figures = merged.filter((s): s is Extract<TypedAnswerSegment, { kind: "figure" }> => s.kind === "figure" && s.metric === c.metric).map((s) => s.text);
   const coverage = briefingCoverage(binding, ev.envelopes);
@@ -1256,20 +1345,55 @@ async function runComposedBriefing(input: {
       coverage: coverage.map(({ key, label, status }) => ({ key, label, status })),
       briefing: {
         composed: true, kind: cls.costRanking ? "COST_RANKING" : "BRIEFING", pattern: cls.pattern ?? "UNKNOWN", list: composed.list, cost,
-        shown: composed.shown, overflow: composed.overflow, lines: composedLineCount(composed.segments), ...(lead.length ? { windowNote: true as const } : {}),
+        shown: composed.shown, overflow: composed.overflow, lines: composedLineCount(answer), ...(lead.length ? { windowNote: true as const } : {}),
         framing: framing.outcome, framingVerdict: framing.verdict, actions: actions.kept.length, actionsDropped: actions.dropped, absoluteStripped: actions.absolute,
         issues: composed.facts.filter((f) => f.issue).length, figures: composed.figures,
         domains: Object.fromEntries(composed.domains.map((d) => [d.key, d.state])), ...(modelError ? { modelError: true as const } : {}),
       },
     },
     transcript: messages,
-    record: { typed: merged, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })) },
+    record: { typed: merged, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })), areasRead: areasReadOf(ev.envelopes, merged) },
   };
 }
 
 // ── The request handler (the route calls it AFTER its own guards) ───────────
 
-export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER";
+export type PlatformAiRefusal = "NOT_AVAILABLE" | "VALIDATION" | "NO_SURFACE" | "KILL_SWITCH" | "COST_FREEZE" | "DAILY_TURNS" | "COST_CAP" | "ALLOWANCE_UNAVAILABLE" | "TIMEOUT" | "PROVIDER" | "GUARD_UNAVAILABLE";
+
+/**
+ * P2b (design v2 §10, I-10) — the daily $ caps' reservation, as the handlers see it
+ * (lib/platform/ai/platform-ai-spend.ts reservePlatformAiSpend). `detail` COST_CAP ⇒ 429
+ * COST_CAP (Retry-After to UTC midnight); any other refusal ⇒ 503 ALLOWANCE_UNAVAILABLE
+ * (fail closed). An admitted reservation is RELEASED in `finally` after the turn.
+ */
+export interface PlatformAiSpendGate {
+  verdict: { allowed: boolean; detail?: string };
+  release(): Promise<void>;
+}
+
+/** What the $ gate decided: a refusal (nothing held), or admitted holding a reservation to release after the turn. */
+export interface PlatformAiSpendAdmission {
+  refusal: { status: 429 | 503; reason: "COST_CAP" | "ALLOWANCE_UNAVAILABLE"; retryAfter?: number } | null;
+  release(): Promise<void>;
+}
+
+/**
+ * The $ gate, run AFTER the daily turn cap and BEFORE any provider request (both handlers:
+ * handlePlatformAiAsk and conversations/handlers.ts). A throw is a refusal (fail closed).
+ * `spend` absent ⇒ admitted with nothing held (unit tests; every route passes it).
+ */
+export async function admitPlatformAiSpend(
+  spend: ((operatorId: string, now: Date) => Promise<PlatformAiSpendGate>) | undefined, operatorId: string, now: Date,
+): Promise<PlatformAiSpendAdmission> {
+  const none = async () => {};
+  if (!spend) return { refusal: null, release: none };
+  let gate: PlatformAiSpendGate;
+  try { gate = await spend(operatorId, now); } catch { return { refusal: { status: 503, reason: "ALLOWANCE_UNAVAILABLE" }, release: none }; }
+  if (gate.verdict.allowed) return { refusal: null, release: () => gate.release().catch(() => {}) };
+  return gate.verdict.detail === "COST_CAP"
+    ? { refusal: { status: 429, reason: "COST_CAP", retryAfter: secondsToUtcMidnight(now) }, release: none }
+    : { refusal: { status: 503, reason: "ALLOWANCE_UNAVAILABLE" }, release: none };
+}
 
 export interface PlatformAiAskDeps {
   /** PLATFORM_AI_ENABLED, read server-side. */
@@ -1279,6 +1403,11 @@ export interface PlatformAiAskDeps {
   admission(): Promise<{ paused: boolean; state: string; cause?: string | null }>;
   freeze(): Promise<{ frozen: boolean; state: string }>;
   turns(operatorId: string, now: Date): Promise<{ allowed: boolean; detail?: string; remaining: number }>;
+  /**
+   * P2b — the daily $ caps' reservation (lib/platform/ai/platform-ai-spend.ts). Every route
+   * passes it (pinned in lib/platform/ai/platform-ai-spend.test.ts); absent ⇒ no $ gate (unit tests).
+   */
+  spend?(operatorId: string, now: Date): Promise<PlatformAiSpendGate>;
   generate: PlatformAiGenerate;
   model: string;
   reasoningModel?: boolean;
@@ -1291,6 +1420,92 @@ export interface PlatformAiAskDeps {
   traceTurn?(line: string): void;
   /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
   invoke?: PlatformAiToolInvoker;
+  /** P3 — the turn boundary's tool offer (the route passes it with `invoke`). */
+  tools?: PlatformAiTurnTools;
+  /** P4 — the turn boundary's handle → record lookup (the route passes it with `invoke`). */
+  records?: TurnRecordLookup;
+  /**
+   * P4 — the read-time record renderer for THIS viewer (authz/record-render.ts, mode "live").
+   * Absent ⇒ a placed record shows the fail-closed marker. Called only when the answer placed one.
+   */
+  renderRecords?(spans: readonly RecordSpan[]): Promise<ReadonlyMap<RecordSpan, string>>;
+  /**
+   * P5 — subject resolution (authz/subject.ts; the route passes it ONLY while the customers pack
+   * flag is ON). Exact identifiers are cut out of the RAW question before the scrub and resolved
+   * (limiter → fresh CS eligibility → exact lookup → audit → handle); the model sees
+   * `[customer h_…]` or the one `[customer not resolved]` literal. Absent ⇒ exactly as before.
+   */
+  subjects?: { resolve(ids: readonly SubjectIdentifier[]): Promise<SubjectResult> };
+  /**
+   * The bare-username guard (authz/people.ts runPickerGuard; S2 09fc G1–G6) on the RAW question, after the
+   * admission gates and BEFORE the spend reservation, the scrub, the subject slots and any provider call.
+   * A refusal ⇒ 422 USE_PEOPLE_PICKER (P5 callers) / EMAIL_REMINDER (others): no turn, no provider call.
+   * S2 09fl C1: REQUIRED for every deps object (type level); a deps object that still lacks it at run time
+   * (a JS caller, an `as` cast) is refused fail-closed — 503 GUARD_UNAVAILABLE, no provider call.
+   */
+  guard: PlatformAiGuard;
+}
+
+/**
+ * The guard's verdict, declared structurally (authz/people.ts PickerGuardVerdict is assignable to it): core.ts imports
+ * nothing new (its import list is pinned). The bodies' copy equals authz/people-chip.ts (pinned in people.test.ts).
+ * kind EMAIL is the verdict of a caller WITHOUT P5 authority (S2 09fl C3: a distinct code that never mentions the picker).
+ */
+export type PlatformAiGuardVerdict = { readonly pass: true } | { readonly pass: false; readonly kind: string };
+export type PlatformAiGuard = (rawQuestion: string) => Promise<PlatformAiGuardVerdict>;
+/** P5 callers: the picker is offered. */
+export const USE_PEOPLE_PICKER_BODY = Object.freeze({
+  error: "Looks like you typed a customer's username or email. Use @ to pick the customer so their details stay private.",
+  code: "USE_PEOPLE_PICKER", reason: "USE_PEOPLE_PICKER",
+});
+/** Callers without P5 authority: no picker exists for them, so the copy never mentions it. */
+export const EMAIL_REMINDER_BODY = Object.freeze({
+  error: "Don't type customer emails or usernames into questions.",
+  code: "EMAIL_REMINDER", reason: "EMAIL_REMINDER",
+});
+export const USE_PEOPLE_PICKER_STATUS = 422;
+/** A deps object without its guard at run time (C1): fail closed, before anything else of the turn. */
+export const GUARD_UNAVAILABLE_BODY = Object.freeze({ error: "Platform AI is unavailable right now.", code: "AI_UNAVAILABLE", reason: "GUARD_UNAVAILABLE" });
+
+/** Run the injected guard; absent or throwing ⇒ refused (fail closed). null ⇒ admitted. */
+export async function pickerGuardRefusal(guard: PlatformAiGuard | undefined, raw: string): Promise<PlatformAiHttp | null> {
+  if (typeof guard !== "function") return { status: 503, body: { ...GUARD_UNAVAILABLE_BODY } };
+  let v: PlatformAiGuardVerdict;
+  try { v = await guard(raw); } catch { v = { pass: false, kind: "UNAVAILABLE" }; }
+  if (v.pass) return null;
+  return { status: USE_PEOPLE_PICKER_STATUS, body: v.kind === "EMAIL" ? { ...EMAIL_REMINDER_BODY } : { ...USE_PEOPLE_PICKER_BODY } };
+}
+
+/**
+ * P5 — the operator's question as the MODEL receives it: identifiers cut out BEFORE the scrub and
+ * resolved, the rest scrubbed once. No identifier (or no resolver) ⇒ null (the turn scrubs as before).
+ */
+export async function questionWithSubjects(raw: string, max: number, subjects: PlatformAiAskDeps["subjects"]): Promise<{ question: string; note: string | null } | null> {
+  if (!subjects) return null;
+  const ex = extractSubjects(raw);
+  if (ex.ids.length === 0) return null;
+  const slotted = scrubOperatorText(ex.text, max);
+  const r = await subjects.resolve(ex.ids);
+  return { question: fillSubjectSlots(slotted, r.fills), note: r.note };
+}
+
+/**
+ * P4 — the live display answer rebuilt from the typed answer with every record span rendered
+ * for this viewer (adjacent text merged). Only called when the typed answer holds a record span.
+ */
+export function displayWithRecords(typed: readonly TypedAnswerSegment[], rendered: ReadonlyMap<RecordSpan, string>): AnswerSegment[] {
+  const out: AnswerSegment[] = [];
+  const push = (seg: AnswerSegment) => {
+    const last = out[out.length - 1];
+    if (seg.kind === "text" && last?.kind === "text") last.text += seg.text; else out.push(seg);
+  };
+  for (const t of typed) {
+    if (t.kind === "record") push({ kind: "text", text: rendered.get(t) ?? RECORD_GONE_TEXT });
+    else if (t.kind === "link") push({ kind: "link", text: t.text, href: t.href });
+    else if (t.kind === "correction" || t.kind === "note") push({ kind: t.kind, text: t.text });
+    else push({ kind: "text", text: t.text });
+  }
+  return out;
 }
 
 export interface PlatformAiHttp { status: number; body: Record<string, unknown>; headers?: Record<string, string> }
@@ -1322,7 +1537,9 @@ export function parseAskBody(body: unknown): string | null {
 
 /**
  * ORDER: the flag (nothing else runs when it is off) → the body → the binding →
- * the kill switch → the global cost freeze → the daily turn cap → the turn.
+ * the kill switch → the global cost freeze → the daily turn cap → the bare-username guard
+ * (authz/people.ts, on the RAW question; 422 USE_PEOPLE_PICKER, not a turn) → the daily $ caps
+ * (operator, then platform; P2b — a reservation released after the turn) → the turn.
  * Every refusal happens BEFORE `generate` is called.
  */
 export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps): Promise<PlatformAiHttp> {
@@ -1346,18 +1563,40 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
       ? refuse(429, "DAILY_TURNS", { "Retry-After": String(secondsToUtcMidnight(now)) })
       : refuse(503, "ALLOWANCE_UNAVAILABLE");
   }
+  // S2 09fc G6 — the bare-username guard on the RAW question: before the spend, the scrub, the slots and the provider.
+  const guarded = await pickerGuardRefusal(deps.guard, question);
+  if (guarded) return guarded;
+  const held = await admitPlatformAiSpend(deps.spend, deps.operatorId, now);
+  if (held.refusal) {
+    return refuse(held.refusal.status, held.refusal.reason, held.refusal.retryAfter ? { "Retry-After": String(held.refusal.retryAfter) } : undefined);
+  }
   try {
-    const { result } = await runPlatformAiTurn({
-      question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
+    // P5: exact customer identifiers resolved before the scrub and before any model call (uniform literal + note).
+    const subj = await questionWithSubjects(question, PLATFORM_AI_QUESTION_MAX, deps.subjects);
+    const { result, record } = await runPlatformAiTurn({
+      question: subj ? subj.question : question, ...(subj ? { questionScrubbed: true } : {}),
+      binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
       ...(deps.invoke ? { invoke: deps.invoke } : {}),
+      ...(deps.tools ? { tools: deps.tools } : {}),
+      ...(deps.records ? { records: deps.records } : {}),
     });
+    // P4: a placed record is rendered for THIS viewer at read time (the only T2 path); none ⇒ the answer is unchanged.
+    const spans = record.typed.filter((t): t is RecordSpan => t.kind === "record");
+    if (spans.length > 0 && deps.renderRecords) {
+      let rendered: ReadonlyMap<RecordSpan, string>;
+      try { rendered = await deps.renderRecords(spans); } catch { rendered = new Map(); }
+      result.answer = displayWithRecords(record.typed, rendered);
+    }
+    if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
     return { status: 200, body: { ...result } };
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);
+  } finally {
+    await held.release();
   }
 }
 

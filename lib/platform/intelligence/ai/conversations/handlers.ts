@@ -23,13 +23,23 @@
  *                SAME 404 as not-found: same status, body and headers (no
  *                existence oracle, S2 B4). No break-glass.
  *   7. binding   link re-resolution uses step 6's guard result only.
+ *   P4 records   a stored RECORD segment is rendered at READ time for THIS viewer by
+ *                authz/record-render.ts (AreaAccess.renderRecords: a fresh area check per
+ *                render, revalidate, T2 only with a fresh CS tier + the audit row first);
+ *                absent ⇒ "[no longer available]" (fail closed). Never the stored id.
+ *   P4b areas    a TURN binds the areas the operator holds NOW (deps.heldAccess, ./multi-area.ts):
+ *                the own area (step 6, unchanged) + every other held area behind ITS OWN fresh
+ *                guard; the boundary rechecks per tool call. An answer that read an area the
+ *                operator no longer holds renders "[no longer available]" whole (view, replay,
+ *                history) and its records are never rendered. Absent dep ⇒ the pre-P4b single area.
  */
 
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import type { PlatformAiBinding } from "../core";
-import type { StoredAnswerV1 } from "./answer";
+import { admitPlatformAiSpend, pickerGuardRefusal, type PlatformAiBinding, type PlatformAiGuardVerdict, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
+import { RECORD_GONE_TEXT } from "../compose/record";
+import type { StoredAnswer, StoredRecordSegment } from "./answer";
 import {
   PLATFORM_AI_CONVERSATION_MESSAGES_MAX,
   PLATFORM_AI_CONVERSATIONS_MAX,
@@ -43,6 +53,8 @@ import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
 import type { ScopedArea } from "../authz/boundary";
+import { extractSubjects, storedSubjectText, type SubjectFlags, type SubjectIdentifier } from "../authz/subject";
+import { answerReadable, type TurnAreaPart } from "./multi-area";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -70,6 +82,21 @@ export interface AreaAccess {
   scope?: ScopedArea;
   /** Platform AI memory (design v2 §2): the authorized readers built from THE SAME fresh guard result. */
   memoryReaders?: MemoryReaders;
+  /**
+   * P4 — render stored record segments for THIS viewer (authz/record-render.ts; one fresh
+   * check per area per call). Absent ⇒ every record segment renders "[no longer available]".
+   */
+  renderRecords?(segments: readonly StoredRecordSegment[]): Promise<ReadonlyMap<StoredRecordSegment, string>>;
+  /**
+   * P4b — the TURN's areas: `scope` first, then every other area the operator holds now, each
+   * from its own fresh guard (./multi-area.ts widenConversationAccess). Absent ⇒ [scope] only.
+   */
+  turnAreas?: readonly TurnAreaPart[];
+  /**
+   * P4b — the areas this viewer holds NOW (own + widened). A stored answer that read any other
+   * area is shown / replayed as "[no longer available]". Absent ⇒ no such filter (pre-P4b).
+   */
+  heldAreas?: ReadonlySet<PlatformArea>;
 }
 
 export interface ConversationStoreSeam {
@@ -96,12 +123,59 @@ export interface ConversationTurnStoreSeam {
  * area, FRESH). Expected never to throw; a throw is treated as PROVIDER.
  */
 export interface TurnRunDeps {
-  runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess }): Promise<ConversationTurnOutcome>;
+  /**
+   * `subjects` (P5) — present only when the question carried exact customer identifiers and
+   * resolution is on: the SLOTTED scrubbed text and the identifiers (memory only; never stored).
+   * The runner resolves them through THIS turn's boundary; `question` (the stored text) has `[customer]`.
+   */
+  runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess; subjects?: TurnSubjects }): Promise<ConversationTurnOutcome>;
+  /** P5 — the customers pack flag (strict, default OFF). Absent / false ⇒ the question is scrubbed exactly as before. */
+  subjectsEnabled?(): boolean;
+  /**
+   * P8 — the customers / incidents flags (authz/subject.server.ts platformAiSubjectFlags): which slots are
+   * customer lookups decides the STORED text (an incident id or a passthrough identifier is never `[customer]`).
+   * Absent ⇒ every slot stores `[customer]` (P5 behaviour).
+   */
+  subjectFlags?(): SubjectFlags;
+  /**
+   * S2 09fc G6 — the bare-username guard (authz/people.ts runPickerGuard) on the RAW question of EVERY turn
+   * (create and follow-up), after the admission gates and BEFORE the spend, the scrub, anything stored and
+   * the provider. A refusal ⇒ 422 USE_PEOPLE_PICKER / EMAIL_REMINDER: nothing stored, no turn.
+   * S2 09fl C1: REQUIRED (type level); absent at run time ⇒ refused fail-closed (503 GUARD_UNAVAILABLE).
+   */
+  guard(v: Viewer, rawQuestion: string): Promise<PlatformAiGuardVerdict>;
 }
+
+/** P5 — the subject slots of one question (authz/subject.ts). Never stored, never logged. */
+export interface TurnSubjects { readonly slotted: string; readonly ids: readonly SubjectIdentifier[] }
+
+/**
+ * P5 — one scrub for both sinks, with subject resolution: exact identifiers are cut out of the RAW
+ * question BEFORE the scrub; the STORED text shows `[customer]` per identifier (no identifier, no
+ * handle is ever stored); the slots + identifiers go to the runner. Off / none ⇒ exactly as before.
+ * P8 — with `flags`: a full cuid while the incidents flag is ON stores `[id]` (it may be an incident id), and
+ * with the customers flag OFF every identifier stores its scrubbed form (authz/subject.ts storedSubjectText).
+ */
+export function scrubWithSubjects(question: string, enabled: boolean, flags?: SubjectFlags): { stored: string; subjects?: TurnSubjects } {
+  if (!enabled) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
+  const ex = extractSubjects(question);
+  if (ex.ids.length === 0) return { stored: scrubOperatorText(question, PLATFORM_AI_MESSAGE_MAX) };
+  const slotted = scrubOperatorText(ex.text, PLATFORM_AI_MESSAGE_MAX);
+  return { stored: storedSubjectText(slotted, ex.ids, flags), subjects: { slotted, ids: ex.ids } };
+}
+
+const subjectsOn = (deps: TurnRunDeps): boolean => { try { return deps.subjectsEnabled?.() === true; } catch { return false; } };
+const subjectFlagsOf = (deps: TurnRunDeps): SubjectFlags | undefined => { try { return deps.subjectFlags?.(); } catch { return { customers: false, incidents: false }; } };
 
 export interface ConversationDeps {
   /** Step 6: a FRESH guard on `area` for THIS operator; null on any refusal (⇒ 404). */
   areaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null>;
+  /**
+   * P4b — widen the conversation's OWN access (already fresh) to every other area the operator
+   * holds, each behind its own fresh guard (area-access.ts conversationHeldAccess). Absent ⇒ the
+   * pre-P4b single-area access; a throw ⇒ the own area only (fail closed).
+   */
+  heldAccess?(own: AreaAccess, operatorId: string): Promise<AreaAccess>;
   store: ConversationStoreSeam;
   now(): Date;
 }
@@ -111,6 +185,12 @@ export interface TurnAdmissionDeps {
   admission(): Promise<{ paused: boolean }>;
   freeze(): Promise<{ frozen: boolean }>;
   turns(operatorId: string, now: Date): Promise<{ allowed: boolean; detail?: string }>;
+  /**
+   * P2b — the daily $ caps' reservation (lib/platform/ai/platform-ai-spend.ts), AFTER the daily
+   * cap. Both conversation routes pass it (pinned in lib/platform/ai/platform-ai-spend.test.ts);
+   * absent ⇒ no $ gate (unit tests). An admitted reservation is released after the turn settles.
+   */
+  spend?(operatorId: string, now: Date): Promise<PlatformAiSpendGate>;
 }
 
 // ── Pure pieces ─────────────────────────────────────────────────────────────
@@ -160,9 +240,25 @@ export type RenderedSegment =
   | { kind: "note"; text: string }
   | { kind: "memory"; text: string };
 
-/** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text. */
-export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null): RenderedSegment[] {
+/** The rendered text of each record segment (P4), by segment object. */
+export type RenderedRecords = ReadonlyMap<StoredRecordSegment, string>;
+
+/**
+ * P4 — render the record segments of these messages for this viewer in ONE call (no record
+ * segment ⇒ no call, no read). A throw or no renderer ⇒ an empty map (each renders gone).
+ */
+export async function renderMessageRecords(messages: readonly MessageRecord[], access: AreaAccess | null): Promise<RenderedRecords> {
+  // P4b: an answer that read an area the viewer no longer holds is never rendered (no recheck, no audit, no T2).
+  const segs = messages.flatMap((m) => (m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" && answerReadable(m.evidenceRefs, m.content, access?.heldAreas)
+    ? m.content.segments.filter((x): x is StoredRecordSegment => x.kind === "record") : []));
+  if (segs.length === 0 || !access?.renderRecords) return new Map();
+  try { return await access.renderRecords(segs); } catch { return new Map(); }
+}
+
+/** A stored answer for the client: links re-resolved through the CURRENT token (§3.4); a dead link is plain text; P4 records rendered for this viewer. */
+export function renderStoredAnswer(a: StoredAnswer, access: AreaAccess | null, records: RenderedRecords = new Map()): RenderedSegment[] {
   return a.segments.map((s): RenderedSegment => {
+    if (s.kind === "record") return { kind: "text", text: records.get(s) ?? RECORD_GONE_TEXT };
     if (s.kind === "link") {
       const r = access?.resolvePage(s.page, s.params) ?? null;
       return r ? { kind: "link", text: s.text, href: r.href } : { kind: "text", text: s.text };
@@ -173,15 +269,24 @@ export function renderStoredAnswer(a: StoredAnswerV1, access: AreaAccess | null)
   });
 }
 
-export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: boolean): Record<string, unknown> {
-  const answer = m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" ? m.content : null;
+export function messageDto(m: MessageRecord, access: AreaAccess | null, stale: boolean, records: RenderedRecords = new Map()): Record<string, unknown> {
+  const stored = m.role === "ASSISTANT" && m.content !== null && typeof m.content !== "string" ? m.content : null;
+  // P4b: an answer that read an area the viewer no longer holds ⇒ the one marker, nothing of it (no figure, citation or note).
+  const lost = stored !== null && !answerReadable(m.evidenceRefs, stored, access?.heldAreas);
+  const answer = lost ? null : stored;
+  if (lost) {
+    return {
+      id: m.id, role: m.role, status: m.status, createdAt: m.createdAt.toISOString(), completedAt: m.completedAt ? m.completedAt.toISOString() : null,
+      content: [{ kind: "text", text: RECORD_GONE_TEXT }], citations: [], notes: [], failureCode: m.failureCode, unavailable: m.unreadable, stale: stale && m.role === "ASSISTANT",
+    };
+  }
   return {
     id: m.id,
     role: m.role,
     status: m.status,
     createdAt: m.createdAt.toISOString(),
     completedAt: m.completedAt ? m.completedAt.toISOString() : null,
-    content: m.role === "USER" ? (typeof m.content === "string" ? m.content : null) : answer ? renderStoredAnswer(answer, access) : null,
+    content: m.role === "USER" ? (typeof m.content === "string" ? m.content : null) : answer ? renderStoredAnswer(answer, access, records) : null,
     citations: answer ? answer.citations : [],
     notes: answer ? answer.notes : [],
     failureCode: m.failureCode,
@@ -196,20 +301,31 @@ const conversationDto = (c: ConversationRecord) => ({
 });
 
 /** A replay (§5.1): COMPLETE / FAILED ⇒ 200 with the stored pair; PENDING ⇒ 409 TURN_IN_FLIGHT. */
-function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): ConversationHttp {
+async function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): Promise<ConversationHttp> {
   if (pair.assistant.status === "PENDING" && status === 200) {
     return { status: 409, body: { error: "This question is still being answered.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
   }
+  const records = await renderMessageRecords([pair.assistant], access);
   return {
     status,
     body: {
       ...(conversation ? { conversation: conversationDto(conversation) } : {}),
       userMessage: messageDto(pair.user, access, false),
-      assistantMessage: messageDto(pair.assistant, access, false),
+      assistantMessage: messageDto(pair.assistant, access, false, records),
       // Memory (design v2 §3): the confirm card of THIS turn only — never stored, never on a replay.
       ...(memoryProposal && pair.assistant.status === "COMPLETE" ? { memoryProposal } : {}),
     },
   };
+}
+
+/**
+ * P4b — the access for a TURN and for showing its answers: the own access widened to every other
+ * held area (deps.heldAccess). Absent ⇒ `own` (pre-P4b). A throw ⇒ the own area only (fail closed:
+ * the turn binds one area and any answer that read another renders "[no longer available]").
+ */
+async function heldAccessFor(deps: Pick<ConversationDeps, "heldAccess">, own: AreaAccess, operatorId: string): Promise<AreaAccess> {
+  if (!deps.heldAccess) return own;
+  try { return await deps.heldAccess(own, operatorId); } catch { return { ...own, heldAreas: new Set(own.area ? [own.area] : []) }; }
 }
 
 /** Seconds to the next UTC midnight (the daily cap's Retry-After, as v0). */
@@ -271,10 +387,10 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
  */
 async function runAndSettle(
   v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
-  deps: { store: ConversationTurnStoreSeam } & TurnRunDeps,
+  deps: { store: ConversationTurnStoreSeam } & TurnRunDeps, subjects?: TurnSubjects,
 ): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null }> {
   let outcome: ConversationTurnOutcome;
-  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access }); }
+  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access, ...(subjects ? { subjects } : {}) }); }
   catch { outcome = { status: "FAILED", failureCode: "PROVIDER" }; }
   try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
   const settled = (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
@@ -298,6 +414,18 @@ async function admit(v: Viewer, deps: TurnAdmissionDeps & { now(): Date }): Prom
       : unavailable(503, "ALLOWANCE_UNAVAILABLE");
   }
   return null;
+}
+
+/**
+ * P2b — the daily $ caps (core.ts admitPlatformAiSpend), run right after `admit`: COST_CAP ⇒
+ * 429 + Retry-After to UTC midnight; unavailable ⇒ 503 ALLOWANCE_UNAVAILABLE (fail closed).
+ * Nothing is stored on a refusal; an admission is released in `finally` by the caller.
+ */
+async function holdSpend(v: Viewer, deps: TurnAdmissionDeps & { now(): Date }): Promise<{ refused: ConversationHttp | null; held: PlatformAiSpendAdmission }> {
+  const held = await admitPlatformAiSpend(deps.spend, v.operatorId, deps.now());
+  if (!held.refusal) return { refused: null, held };
+  const r = held.refusal;
+  return { refused: unavailable(r.status, r.reason, r.retryAfter ? { "Retry-After": String(r.retryAfter) } : undefined), held };
 }
 
 const VALIDATION = (): ConversationHttp =>
@@ -336,30 +464,42 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
     if (!access) return notFound();
     const pair = await deps.store.findTurnPair(v.operatorId, prior.conversation.id, parsed.clientRequestId);
     if (!pair) return notFound();
-    return pairResponse(200, prior.conversation, pair, access);
+    return pairResponse(200, prior.conversation, pair, await heldAccessFor(deps, access, v.operatorId));
   }
   const refused = await admit(v, deps);
   if (refused) return refused;
-  const access = await deps.areaAccess(v.area, v.operatorId);
-  if (!access) return notFound();
-  // One scrub for both sinks (S2 B3): this exact string is stored AND sent.
-  const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
-  const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
-  switch (out.kind) {
-    case "LIMIT":
-      return { status: 409, body: { error: "Delete a conversation to start another.", code: "CONVERSATION_LIMIT", limits: { conversations: { max: PLATFORM_AI_CONVERSATIONS_MAX } } } };
-    case "DELETED":
-      return notFound();
-    case "REPLAY": {
-      // A concurrent create with the same key won: answer as a replay (no turn here).
-      const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
-      if (!a) return notFound();
-      return pairResponse(200, out.conversation, out.pair, a);
+  // S2 09fc G6 — the bare-username guard on the RAW question, before the spend, the scrub and anything stored.
+  const guarded = await pickerGuardRefusal(typeof deps.guard === "function" ? (raw) => deps.guard(v, raw) : undefined, parsed.question);
+  if (guarded) return guarded;
+  const cost = await holdSpend(v, deps);
+  if (cost.refused) return cost.refused;
+  try {
+    const access = await deps.areaAccess(v.area, v.operatorId);
+    if (!access) return notFound();
+    // One scrub for both sinks (S2 B3): this exact string is stored AND sent (P5: with subjects, the
+    // stored text has `[customer]` and the model text the resolved slot — see scrubWithSubjects).
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps), subjectFlagsOf(deps));
+    const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
+    switch (out.kind) {
+      case "LIMIT":
+        return { status: 409, body: { error: "Delete a conversation to start another.", code: "CONVERSATION_LIMIT", limits: { conversations: { max: PLATFORM_AI_CONVERSATIONS_MAX } } } };
+      case "DELETED":
+        return notFound();
+      case "REPLAY": {
+        // A concurrent create with the same key won: answer as a replay (no turn here).
+        const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
+        if (!a) return notFound();
+        return pairResponse(200, out.conversation, out.pair, await heldAccessFor(deps, a, v.operatorId));
+      }
+      case "CREATED": {
+        // P4b: the turn binds the areas the operator holds NOW (own + each other area's own fresh guard).
+        const turnAccess = await heldAccessFor(deps, access, v.operatorId);
+        const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
+        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal);
+      }
     }
-    case "CREATED": {
-      const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(201, out.conversation, r.pair, access, r.memoryProposal);
-    }
+  } finally {
+    await cost.held.release();
   }
 }
 
@@ -392,24 +532,35 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
   const parsed = parseTurnBody(body);
   if (!parsed) return VALIDATION();
   const prior = await deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId);
-  if (prior) return pairResponse(200, null, prior, access);
+  if (prior) return pairResponse(200, null, prior, await heldAccessFor(deps, access, v.operatorId));
   const refused = await admit(v, deps);
   if (refused) return refused;
-  const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
-  const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
-  switch (out.kind) {
-    case "NOT_FOUND":
-      return notFound();
-    case "IN_FLIGHT":
-      return { status: 409, body: { error: "This conversation is still answering a question.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
-    case "FULL":
-      return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
-    case "REPLAY":
-      return pairResponse(200, null, out.pair, access);
-    case "APPENDED": {
-      const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
-      return pairResponse(200, null, r.pair, access, r.memoryProposal);
+  // S2 09fc G6 — the bare-username guard on the RAW question, before the spend, the scrub and anything stored.
+  const guarded = await pickerGuardRefusal(typeof deps.guard === "function" ? (raw) => deps.guard(v, raw) : undefined, parsed.question);
+  if (guarded) return guarded;
+  const cost = await holdSpend(v, deps);
+  if (cost.refused) return cost.refused;
+  try {
+    const { stored: scrubbedQuestion, subjects } = scrubWithSubjects(parsed.question, subjectsOn(deps), subjectFlagsOf(deps));
+    const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
+    switch (out.kind) {
+      case "NOT_FOUND":
+        return notFound();
+      case "IN_FLIGHT":
+        return { status: 409, body: { error: "This conversation is still answering a question.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
+      case "FULL":
+        return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
+      case "REPLAY":
+        return pairResponse(200, null, out.pair, await heldAccessFor(deps, access, v.operatorId));
+      case "APPENDED": {
+        // P4b: the turn binds the areas the operator holds NOW — fresh guards at turn time; a lost area is simply absent.
+        const turnAccess = await heldAccessFor(deps, access, v.operatorId);
+        const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
+        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal);
+      }
     }
+  } finally {
+    await cost.held.release();
   }
 }
 
@@ -422,11 +573,14 @@ export async function handleGetConversation(v: Viewer, id: string, deps: Convers
   if (!access) return notFound();
   const read = await deps.store.readConversation(v.operatorId, id, deps.now());
   if (!read) return notFound();
+  // P4b: shown for the areas held NOW (an answer that read a lost area ⇒ "[no longer available]").
+  const view = await heldAccessFor(deps, access, v.operatorId);
+  const records = await renderMessageRecords(read.messages, view);
   return {
     status: 200,
     body: {
       conversation: { ...conversationDto(read.conversation), messageCount: read.messages.length, full: isFull(read.messages.length) },
-      messages: read.messages.map((m) => messageDto(m, access, true)),
+      messages: read.messages.map((m) => messageDto(m, view, true, records)),
     },
   };
 }

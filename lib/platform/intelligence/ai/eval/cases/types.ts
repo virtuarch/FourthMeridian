@@ -7,7 +7,7 @@
  * feeds and returns its own problems (empty = held) from what the runner observed.
  */
 
-import type { GateId } from "../gates";
+import type { Collected, GateId } from "../gates";
 import type { E0_OPERATORS } from "../fixtures";
 import type { ScriptStep } from "../scripted-model";
 import type { PlatformArea } from "@prisma/client";
@@ -15,7 +15,7 @@ import type { PlatformAiBinding } from "../../core";
 import type { ScopedArea } from "../../authz/boundary";
 import type { PlatformAiRecheck } from "../../authz/recheck";
 
-export type E0Pack = "metrics" | "navigation" | "memory" | "boundary";
+export type E0Pack = "metrics" | "navigation" | "memory" | "boundary" | "router" | "customers" | "incidents" | "onboarding" | "connections" | "conversations";
 
 /** What the runner observed for one route turn. */
 export interface RouteTurnObservation {
@@ -35,6 +35,12 @@ export interface RouteCase {
   pack: E0Pack;
   gates: readonly GateId[];
   operator: keyof typeof E0_OPERATORS;
+  /**
+   * P2b — Platform AI spend already on today's ledger before the case runs: one RETURNED
+   * `platform_ai` row per entry, costing `usd` at the E0 model's rate (the runner seeds it and
+   * drains it after the case). Absent ⇒ an empty ledger, as before.
+   */
+  ledger?: readonly { operator: keyof typeof E0_OPERATORS; usd: number }[];
   /** One entry per turn (a case may need several turns to stay within the tool budget). */
   turns: readonly { question: string; steps: readonly ScriptStep[] }[];
   /** Problems (empty = the case held). Called once with every turn's observation. */
@@ -68,8 +74,18 @@ export interface CoreMemoryCase {
 export interface UnitContext {
   operatorId(op: keyof typeof E0_OPERATORS): string;
   scoped(op: keyof typeof E0_OPERATORS, area: PlatformArea): { scope: ScopedArea; binding: PlatformAiBinding } | null;
-  /** A per-call recheck over the fixture world's PlatformGrant rows (status ACTIVE ⇒ fresh guard). */
+  /**
+   * A per-call recheck over the fixture world's PlatformGrant rows (status ACTIVE ⇒ fresh guard), carrying the
+   * incident token the runner mints from that fixture guard result (as authz/recheck.server.ts does in Production).
+   */
   recheck(op: keyof typeof E0_OPERATORS): PlatformAiRecheck;
+  /**
+   * P4b — set (or with null remove) the fixture world's PlatformGrant row for this operator and area: a grant
+   * given / revoked BETWEEN conversation turns. A case that adds a grant removes it before it returns.
+   */
+  setGrant(op: keyof typeof E0_OPERATORS, area: PlatformArea, status: "ACTIVE" | "REVOKED" | null): void;
+  /** P4b — add a string this case produced to the corpus-wide scans (IDENTITY_LEAK / INJECTION). */
+  collect(sink: Collected["sink"], text: string): void;
 }
 
 /** A case that drives authz/boundary.ts directly (handle binding, flag-OFF packs): no provider. */

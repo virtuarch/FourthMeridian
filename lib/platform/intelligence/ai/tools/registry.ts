@@ -29,7 +29,13 @@ import {
   PLATFORM_AI_MEMORY_TOOLS, PLATFORM_AI_TOOLS, executePlatformAiTool, platformAiToolSchemas,
   type PlatformAiBinding, type PlatformAiMemoryHooks, type ToolEvidence,
 } from "../core";
+import type { PlatformArea } from "@prisma/client";
+import type { FreshGuard } from "../authz/recheck";
 import type { PlatformAiToolContract, ToolAreas } from "./contract";
+import { CUSTOMERS_PACK_TOOLS } from "./packs/customers.server";
+import { INCIDENTS_PACK_TOOLS } from "./packs/incidents.server";
+import { ONBOARDING_PACK_TOOLS } from "./packs/onboarding.server";
+import { CONNECTIONS_PACK_TOOLS } from "./packs/connections.server";
 
 /** What the existing executor needs for one call — the per-turn context P1b passes through unchanged. */
 export interface LegacyToolContext {
@@ -38,6 +44,11 @@ export interface LegacyToolContext {
   paramKeys: readonly string[];
   asked?: readonly { hours: number }[];
   memory?: PlatformAiMemoryHooks;
+  /**
+   * P5 — THIS call's fresh guards per area (authz/boundary.ts step 4, the per-call recheck): a
+   * RECORD pack reads only through the token minted from them (never stored, never serialised).
+   */
+  fresh?: ReadonlyMap<PlatformArea, FreshGuard>;
 }
 
 export type PlatformAiTool = PlatformAiToolContract<LegacyToolContext>;
@@ -106,6 +117,21 @@ const TOOLS: PlatformAiTool[] = [
     } },
     run: viaExecutor("propose_memory"),
   },
+  // P5 — the customers pack (tools/packs/customers.ts): CS-tier, customer-linkable RECORD tools,
+  // behind PLATFORM_AI_PACK_CUSTOMERS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(CUSTOMERS_PACK_TOOLS as PlatformAiTool[]),
+  // P8 — the incidents pack (tools/packs/incidents.ts): an identity-free aggregate, OPS-tier RECORD tools on
+  // PLATFORM_OPS and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS, behind
+  // PLATFORM_AI_PACK_INCIDENTS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(INCIDENTS_PACK_TOOLS as PlatformAiTool[]),
+  // P6 — the onboarding pack (tools/packs/onboarding.ts): an identity-free OPS aggregate (CS counts only with a fresh
+  // CS guard) and CS-tier customer-linkable RECORD tools on CUSTOMER_SUCCESS (CUSTOMER kind, audited), behind
+  // PLATFORM_AI_PACK_ONBOARDING_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(ONBOARDING_PACK_TOOLS as PlatformAiTool[]),
+  // P7 — the connections pack (tools/packs/connections.ts, incl. wallets): an identity-free OPS aggregate over
+  // lib/connections/health.ts and a CS-tier customer-linkable RECORD tool (CONNECTION kind, audited), behind
+  // PLATFORM_AI_PACK_CONNECTIONS_ENABLED (engine/router.ts PACK_FLAG; default OFF).
+  ...(CONNECTIONS_PACK_TOOLS as PlatformAiTool[]),
 ];
 
 export const PLATFORM_AI_TOOL_REGISTRY: readonly PlatformAiTool[] = Object.freeze(TOOLS);

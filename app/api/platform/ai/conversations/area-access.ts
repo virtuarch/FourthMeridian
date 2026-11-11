@@ -18,6 +18,15 @@
  * listNavigationTargets / resolveNavigationTarget call passes a STRING-LITERAL
  * surface (the metric and navigation registries' pins) — the surface is never
  * taken from the request or the row without the guard.
+ *
+ * P4b (design v2 §8.3) — multi-area conversation TURNS: `conversationHeldAccess(rows)` widens the
+ * conversation's own access (the gate above, unchanged) to every OTHER area in the operator's
+ * directory rows, each through `heldAreaAccess` — ITS OWN fresh guard
+ * (requireFreshPlatformAccess(area, "READ", { probe: true }), as the ask route guards its other
+ * areas: a refusal is left out of the binding, not recorded as an OBS-009 denial), the same scope
+ * rule and the same binder, tokens minted from that guard. Composition and the lost-area rule are
+ * PURE in lib/platform/intelligence/ai/conversations/multi-area.ts. The directory rows never grant.
+ * S2 09ed: the data EXPORT computes its held areas with the same probe (conversationFreshHeldAreas).
  */
 
 import "server-only";
@@ -29,6 +38,11 @@ import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { bindArea, scopeFromGuard } from "@/lib/platform/intelligence/ai/authz/scope";
 import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/handlers";
+import { freshlyHeldAreas, widenConversationAccess } from "@/lib/platform/intelligence/ai/conversations/multi-area";
+import { platformAiAreasFor } from "@/lib/platform/intelligence/ai/core";
+import { platformAiRenderRecheck } from "@/lib/platform/intelligence/ai/authz/record-render.server";
+import { recordTextRenderer } from "@/lib/platform/intelligence/ai/authz/record-render";
+import { platformAiRenderAudit } from "@/lib/platform/intelligence/ai/authz/audit";
 
 /**
  * B11 turn integration: the access for ONE area from THIS function's own guard
@@ -36,10 +50,10 @@ import type { AreaAccess } from "@/lib/platform/intelligence/ai/conversations/ha
  * every accessor call takes a STRING-LITERAL surface per case; tokens minted here
  * from `auth`, never taken from the request or the row).
  */
-// TODO(B1(a) provenance areasRead before multi-area conversations): conversations stay SINGLE-AREA
-// (S2 #483 B1 option (b), interim). Only the stateless v0 ask route composes every held area
-// (composePlatformAiBindings). A stored turn must first record which areas it read (areasRead
-// provenance) before a conversation may bind more than its own area.
+// P4b: the B1(a) prerequisite holds — every stored turn records the areas it read (areasRead
+// provenance, P4 `{k:"a"}` evidence refs; pack-tool areas added by the turn runner), so a TURN may
+// bind more than this area (conversationHeldAccess below). This function stays the conversation's
+// OWN-area gate (step 6): one fresh guard, refused ⇒ the ONE 404.
 export async function conversationAreaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null> {
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err) return null;
@@ -54,5 +68,45 @@ export async function conversationAreaAccess(area: PlatformArea, operatorId: str
   if (!binding) return null;
   // Platform AI memory (design v2 §2): the authorized readers come from THIS fresh guard result.
   // P2: the route-issued scope travels with the binding — the turn boundary rechecks exactly it, per tool call.
-  return { resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding) };
+  // P4: stored record segments render at READ time for this operator (authz/record-render.ts: a fresh
+  // probe check per record area per render, revalidate, T2 only with a fresh CS tier + the audit row).
+  return {
+    resolvePage: binding.resolvePage, binding, area, scope, memoryReaders: buildMemoryReaders(incidentToken, area, binding),
+    // P5: T2 only after the PLATFORM_AI_RECORD_VIEWED row (authz/audit.ts, fail closed ⇒ masked).
+    renderRecords: recordTextRenderer({ operatorId, mode: "history", recheck: platformAiRenderRecheck, audit: platformAiRenderAudit() }),
+  };
+}
+
+/**
+ * P4b — ONE other held area for a conversation TURN, from ITS OWN fresh guard (probe: a refused area is
+ * simply not bound; the turn boundary's per-call recheck stays non-probe). No memory readers, no
+ * renderer: those stay with the conversation's own area. null on any refusal.
+ */
+async function heldAreaAccess(area: PlatformArea, operatorId: string): Promise<AreaAccess | null> {
+  const [held, heldErr] = await requireFreshPlatformAccess(area, "READ", { probe: true });
+  if (heldErr) return null;
+  const scope = scopeFromGuard(held, area, operatorId);
+  if (!scope) return null;
+  const binding = bindArea(scope, { metricToken: metricAccessFor(held), incidentToken: incidentAudienceFor(held) });
+  if (!binding) return null;
+  return { resolvePage: binding.resolvePage, binding, area, scope };
+}
+
+/**
+ * P4b — the handlers' `heldAccess`: the conversation's own access widened to every other area in
+ * THESE directory rows (loadPlatformDirectory, read by the route), each behind its own fresh guard.
+ */
+export function conversationHeldAccess(rows: readonly { area: string }[]): (own: AreaAccess, operatorId: string) => Promise<AreaAccess> {
+  const areas = platformAiAreasFor(rows);
+  return (own, operatorId) => widenConversationAccess(own, areas, (a) => heldAreaAccess(a, operatorId));
+}
+
+/**
+ * S2 09ed — the subject-access EXPORT's held areas for the lost-area rule: every area in THESE
+ * directory rows that passes `heldAreaAccess` NOW (the SAME fresh probe the view's widening uses; a
+ * refusal is not recorded as an OBS-009 denial). Wired by POST /api/user/export (the subject's own
+ * fresh session) into lib/export/assemble.ts.
+ */
+export function conversationFreshHeldAreas(rows: readonly { area: string }[], operatorId: string): Promise<ReadonlySet<PlatformArea>> {
+  return freshlyHeldAreas(platformAiAreasFor(rows), operatorId, (a) => heldAreaAccess(a, operatorId));
 }

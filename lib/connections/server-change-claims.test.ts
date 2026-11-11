@@ -182,10 +182,38 @@ const carriesNone = (json: string, abs: number) => crossFloorFigures(abs).every(
   assert.deepEqual(card.changeWithheld, { reason: "PARTIAL_BALANCE_HISTORY", coveredFrom: FLOOR, message: MESSAGE });
   assert.ok(carriesNone(JSON.stringify(card), before.change.abs) && !JSON.stringify(card).includes(String(before.change.pct)), "no cross-floor $ or %");
   assert.equal(card.netWorth, before.netWorth, "the figure itself is untouched");
-  assert.deepEqual(card.trend, before.trend, "the sparkline (a shape, not a claim) is untouched");
+  // B13 — PIN REVERSED (S2-approved follow-up to B12 O-3 / #511 / #521). This
+  // used to pin the sparkline as "deliberately unchanged" (a shape, not a claim),
+  // but the pre-floor points drew the day-one "cliff" My Space no longer draws.
+  // The card's sparkline now starts at the coverage floor by the SAME rule as the
+  // inside-Space chart (clipToBalanceCoverage): the points from the floor on, values
+  // untouched — never a fabricated or zero-filled point.
+  const fromFloor = points.filter((p) => p.date.toISOString().slice(0, 10) >= FLOOR).map((p) => p.value);
+  assert.deepEqual(card.trend, fromFloor, "the sparkline starts at the coverage floor (no cliff)");
+  assert.equal(card.trend.length, 2, "Nov 2 (floor) + Nov 3 (live) only");
+  assert.deepEqual(card.trend, before.trend.slice(-2), "the kept points are the same values, unchanged");
 
-  assert.deepEqual(summarizeNetWorthSeries(points, COV_COMPLETE), before, "complete window unchanged");
-  assert.deepEqual(summarizeNetWorthSeries(points, null), before, "no coverage unchanged");
+  assert.deepEqual(summarizeNetWorthSeries(points, COV_COMPLETE), before, "complete window unchanged (sparkline included)");
+  assert.deepEqual(summarizeNetWorthSeries(points, null), before, "no coverage unchanged (sparkline included)");
+  assert.deepEqual(summarizeNetWorthSeries(points, BALANCE_COVERAGE_UNAVAILABLE).trend, before.trend, "failed coverage read ⇒ sparkline unclipped, as before");
+
+  // Day one: every debt's floor is TODAY ⇒ one point (the live row) — no line, no cliff; the figure stays.
+  const COV_DAY_ONE: BalanceCoverage = { liabilityFloors: Array<string>(12).fill(TODAY), assetFloors: [TODAY], estimatedLiabilityFloors: [] };
+  const dayOne = summarizeNetWorthSeries(points, COV_DAY_ONE);
+  assert.deepEqual(dayOne.trend, [before.netWorth], "day one ⇒ a single point (today), no cliff");
+  assert.equal(dayOne.netWorth, before.netWorth, "the figure itself is untouched");
+  // The window lies wholly before the floor (the latest admissible point is partial):
+  // the latest point only, so the card keeps its figure (hasFigure = trend.length > 0) and draws no line.
+  const COV_FUTURE: BalanceCoverage = { liabilityFloors: ["2026-11-04"], assetFloors: [], estimatedLiabilityFloors: [] };
+  const wholly = summarizeNetWorthSeries(points, COV_FUTURE);
+  assert.deepEqual(wholly.trend, [before.netWorth], "window wholly before the floor ⇒ the latest point only, never empty, never zero");
+  // A window longer than the sparkline (≥ 14 points) whose start is already past the floor ⇒ unchanged.
+  const long = Array.from({ length: 20 }, (_, i) => ({ date: new Date(Date.UTC(2026, 9, 10 + i)), value: 1_000 + i, estimated: false }));
+  assert.deepEqual(summarizeNetWorthSeries(long, { liabilityFloors: ["2026-10-12"], assetFloors: [], estimatedLiabilityFloors: [] }).trend,
+    long.slice(-14).map((p) => p.value), "complete sparkline window (starts after the floor) unchanged");
+  const sparkSrc = readFileSync(new URL("../data/snapshot-summary.core.ts", import.meta.url), "utf8");
+  assert.ok(/clipToBalanceCoverage\(tail, balanceCoverage, balanceCoverageSidesFor\("netWorth"\), false\)/.test(sparkSrc)
+    && /trend:\s+launcherSparkline\(points, balanceCoverage\)/.test(sparkSrc), "one clip rule, from balance-coverage.core");
   const est = summarizeNetWorthSeries(points, COV_EST);
   assert.equal(est.change?.estimated, true, "estimated labelled");
   assert.equal(est.change?.pct, before.change.pct);
@@ -195,7 +223,7 @@ const carriesNone = (json: string, abs: number) => crossFloorFigures(abs).every(
   assert.ok(/delta === null && space\.changeWithheld &&/.test(client) && /title=\{space\.changeWithheld\.message\}/.test(client)
     && /sr-only">\{space\.changeWithheld\.message\}/.test(client), "card says why, never a %");
   assert.ok(/space\.change\?\.estimated \? "≈" : ""/.test(client), "estimated change marked ≈");
-  ok("§2 launcher 1M change: withheld with reason, card renders it, complete unchanged, estimated ≈");
+  ok("§2 launcher 1M change: withheld with reason, card renders it, complete unchanged, estimated ≈; sparkline starts at the coverage floor (B13), unclipped when coverage is absent/failed/complete");
 }
 
 // ── §3 Daily Brief recentChanges ─────────────────────────────────────────────

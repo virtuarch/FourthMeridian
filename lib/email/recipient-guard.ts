@@ -125,3 +125,32 @@ export function describeGuardedRecipient(to: string): string {
   const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
   return `domain=${domain || "(no-domain)"} hash=${hash}`;
 }
+
+/**
+ * RESERVED-DOMAIN REFUSAL (S2 ruling 09eq P2) — EVERY environment, Production
+ * included. RFC 2606 / RFC 6761 reserve the TLDs `.test`, `.example`,
+ * `.invalid` and `.localhost`: no real mailbox can exist under them, so a
+ * send to one is always a fixture/seed address leaking into a real path. The
+ * chokepoint refuses it before the provider (status "captured", provider
+ * "none", reason RESERVED_DOMAIN — the guard's existing outcome shape).
+ *
+ * Matches ONLY the FINAL label of the recipient's domain (the part after the
+ * last "@"), case-insensitively, tolerating one trailing dot. A bare domain
+ * that IS one of the labels (`x@test`, `x@localhost`) matches too. Real
+ * domains that merely contain the words are unaffected: `example.com`,
+ * `test.com`, `invalid.org`, `localhost.co`, `mytest.com`, `testing.io`,
+ * `sub.test.com`.
+ */
+export const RESERVED_TLDS: ReadonlySet<string> = new Set(["test", "example", "invalid", "localhost"]);
+
+/** Pure: true when the recipient's domain ends in an RFC 2606/6761 reserved TLD. */
+export function isReservedDomainRecipient(to: string): boolean {
+  const normalized = normalizeAddress(to);
+  const at = normalized.lastIndexOf("@");
+  if (at < 0) return false;
+  let domain = normalized.slice(at + 1);
+  if (domain.endsWith(".")) domain = domain.slice(0, -1);
+  if (domain.length === 0) return false;
+  const finalLabel = domain.slice(domain.lastIndexOf(".") + 1);
+  return RESERVED_TLDS.has(finalLabel);
+}

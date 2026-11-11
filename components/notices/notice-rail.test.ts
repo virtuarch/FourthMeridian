@@ -142,7 +142,11 @@ async function main() {
     check("…never cached", /"Cache-Control": "no-store"/.test(route));
     const status = readFileSync(path.join(process.cwd(), "lib/platform/notices/app-notice-status.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     // Connections pass PR 2 — a third fact, the add-account invitation, present only when true.
-    check("…and returns exactly three facts", /return \{ maintenance, twoFactorReminder: me \? !me\.totpEnabled : false, \.\.\.\(invite \? \{ connectInvitation: true \} : \{\}\) \};/.test(status));
+    // Owner D4 — a fourth DISPLAY fact, the operator wording flag, present only when true.
+    check("…and returns exactly four facts", /return \{ maintenance, twoFactorReminder: me \? !me\.totpEnabled : false, \.\.\.\(invite \? \{ connectInvitation: true \} : \{\}\), \.\.\.\(operator \? \{ twoFactorOperator: true \} : \{\}\) \};/.test(status));
+    check("…the operator flag is the server grant count, read only when ENFORCED and the reminder applies (S2 C1)",
+      /const enforced = env\.isOperatorTotpEnforced;/.test(status)
+        && /const operator = enforced && me && !me\.totpEnabled\s*\? operatorWordingApplies\(\{ hasActiveGrant: await hasActivePlatformGrants\(userId\), totpEnabled: me\.totpEnabled, enforced \}\)\s*: false;/.test(status));
     const panel = readFileSync(path.join(process.cwd(), "components/platform/widgets/MaintenanceModePanel.tsx"), "utf8");
     check("an operator's applied change revalidates the rail at once", /if \(r\.close\) requestNoticeRevalidation\(\);/.test(panel));
     const facts = readFileSync(path.join(process.cwd(), "lib/platform/admission/facts.ts"), "utf8");

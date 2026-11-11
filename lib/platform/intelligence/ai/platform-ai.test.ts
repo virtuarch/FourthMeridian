@@ -213,7 +213,7 @@ function askDeps(over: Partial<PlatformAiAskDeps> = {}): PlatformAiAskDeps & { c
   const calls: string[] = [];
   return {
     calls,
-    enabled: true, operatorId: "op_1", binding: opsBinding(OPS),
+    enabled: true, operatorId: "op_1", binding: opsBinding(OPS), guard: async () => ({ pass: true as const }), // S2 09fl C1: required
     admission: async () => { calls.push("admission"); return { paused: false, state: "OFF" }; },
     freeze: async () => { calls.push("freeze"); return { frozen: false, state: "OFF" }; },
     turns: async () => { calls.push("turns"); return { allowed: true, remaining: 5 }; },
@@ -1834,7 +1834,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
   // P1a: the answer-composition code moved to compose/*; the same purity scans cover it, and compose/* never imports core.ts (no cycle).
   const composeFiles = readdirSync(path.join(ROOT, dir, "compose")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/compose/${f}`);
-  check("compose/* (P1a) is the split-out answer composition", composeFiles.sort().join() === ["keys", "placeholders", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
+  check("compose/* (P1a; P4 + record.ts; P8 + causal.ts) is the split-out answer composition", composeFiles.sort().join() === ["causal", "keys", "placeholders", "record", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
   for (const f of composeFiles) check(`${f}: never imports core.ts`, !/from "\.\.\/core"|intelligence\/ai\/core"/.test(src(f)));
   for (const f of [...files, ...composeFiles]) {
     const s = code(src(f));
@@ -1845,8 +1845,9 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   const coreImports = [...src(`${dir}/core.ts`).matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
   // B11 turn integration: core also imports the conversations' PURE history transcript builder
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
+  // P5: and the PURE subject extraction / fill (authz/subject.ts — pinned pure in authz/subject.test.ts).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./briefing", "./compose/placeholders", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./authz/subject", "./briefing", "./compose/causal", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);
@@ -1943,9 +1944,12 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
     && /metricAccessFor\(otherAuth\)/.test(route) && /incidentAudienceFor\(otherAuth\)/.test(route)
     && /const otherScope = scopeFromGuard\(otherAuth, other, auth\.user\.id\);\s*if \(!otherScope\) continue;/.test(route) && /bindArea\(otherScope,/.test(route) && /composePlatformAiBindings\(/.test(route));
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
-  check("conversations stay single-area (S2 #483 B1(b)): the access helper binds only the conversation's own area — no composition",
-    /if \(err\) return null;\s*[^]*?const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(access)
-    && !/composePlatformAiBindings|platformAiAreasFor/.test(access));
+  // P4b (design v2 §8.3): a conversation TURN binds every held area; the own-area gate is unchanged and composition is pure (conversations/multi-area.ts).
+  const ownGate = access.slice(access.indexOf("export async function conversationAreaAccess"), access.indexOf("async function heldAreaAccess"));
+  check("P4b: the conversation's own-area gate binds only its own area (no composition); other held areas are each fresh-guarded on their own and composed by multi-area.ts",
+    /if \(err\) return null;\s*[^]*?const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(ownGate)
+    && !/composePlatformAiBindings|platformAiAreasFor/.test(ownGate) && !/composePlatformAiBindings/.test(access)
+    && /composePlatformAiBindings\(/.test(code(src("lib/platform/intelligence/ai/conversations/multi-area.ts"))));
 
   // Prompt: the briefing protocol, in the owner's order.
   const order = ["(1) overall health", "(2) customer-impacting failures", "(3) incidents", "(4) sync and connection problems", "(5) job and provider reliability", "(6) costs or unusual activity, ONLY if", "(7) at most three recommended next actions"];
@@ -2164,7 +2168,7 @@ console.log("\n4r. briefing list fallback (C) · window note is its own segment 
     kinds[0] === "note" && /^Note: You asked about the past 30 days; .* covers .* instead\.$/.test(c.result.answer[0].text) && c.result.answer.slice(1).every((x) => x.kind !== "note" && !/You asked about|^Note:/.test(x.text)), c.result.answer);
   const stored = storedAnswerOf(c.result, c.record);
   check("F-1: stored typed as { kind: \"note\" } (valid StoredAnswerV1), replayed and exported as its own block",
-    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => /You asked about/.test(x.text))
+    stored.segments[0]?.kind === "note" && isStoredAnswer(stored) && !stored.segments.slice(1).some((x) => "text" in x && /You asked about/.test(x.text))
     && /^Note: You asked about .* instead\. The largest/.test(replayAnswer(stored, NOW)) && /^Note: You asked about .* instead\. The largest/.test(renderAnswerText(stored)), stored.segments);
   check("F-1: a note segment with an extra key is not a valid stored answer", !isStoredAnswer({ ...stored, segments: [{ kind: "note", text: "x", href: "/y" }] }));
 
@@ -2308,9 +2312,9 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
 
   // ── A3: the model's framing + next actions ──
   const kept = await brief("How are we looking today?", degraded, framer((u) => JSON.stringify({ framing: "Mostly calm; connections are worth a look first.", next_actions: [{ label: "Review connections", href: firstPage(u) }] })));
-  check("A3: a clean framing sentence is KEPT first; a next action to a PAGES href renders as a link (≤ 3), under 'Next steps:'",
+  check("A3: a clean framing sentence is KEPT first; a next action to a PAGES href renders as a link (≤ 3), on ONE 'Next steps:' line (P13a)",
     kept.result.briefing?.framing === "KEPT" && txt(kept).startsWith("Mostly calm; connections are worth a look first. Platform health")
-    && kept.result.answer.filter((x) => x.kind === "link").length === 1 && /\n\nNext steps:\n- Review connections$/.test(txt(kept)), txt(kept));
+    && kept.result.answer.filter((x) => x.kind === "link").length === 1 && /\n\nNext steps: Review connections$/.test(txt(kept)), txt(kept));
   const offered = framer(() => "{}");
   await brief("How are we looking today?", degraded, offered);
   check("A3: the framing call is offered find_page / open_page ONLY (no get_metric), and its prompt + message carry no figure",
@@ -2350,7 +2354,7 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
     && replayAnswer(stored, NOW).includes("Platform health needs attention"));
   check("A4: never retried — a composed briefing has no retry field", !("retry" in ok.result.grounding) && !("retry" in firing.result.grounding));
   check("trace: the composed briefing is marked in the metadata line (pattern, issues, figures, framing, actions)",
-    /briefing=composed:HOW_LOOKING list=false shown=1 overflow=0 lines=2 cost=none issues=1 figures=1 framing=KEPT actions=1 actionsDropped=0 absolute=0/.test(traceLine(kept.result)), traceLine(kept.result));
+    /briefing=composed:HOW_LOOKING list=false shown=1 overflow=0 lines=3 cost=none issues=1 figures=1 framing=KEPT actions=1 actionsDropped=0 absolute=0/.test(traceLine(kept.result)), traceLine(kept.result));
   check("route-shaped composition (no model at all): composeBriefing is pure over envelopes", composeBriefing([], { describeMetric: () => null }, { list: false, cost: null }).domains.every((d) => d.state === "NOT_PERMITTED"));
 
   // ── B1–B2: ONE corrective retry for NON-briefing questions ──
@@ -2397,7 +2401,7 @@ console.log("\n4s. server-composed briefing (A1–A4) · one corrective retry (B
 // ── 4t. S1 briefing size cap · (i) word-family trace · (ii) composed cost ranking, S2-approved 2026-11-08 ──
 console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · cost-ranking composed answers (ii)");
 {
-  const { classifyBriefingQuestion, COST_RANKING_PATTERNS, composeCostRanking, composedLineCount, BRIEFING_MAX_ISSUES, BRIEFING_MORE_KEY } = await import("./briefing");
+  const { classifyBriefingQuestion, COST_RANKING_PATTERNS, composeCostRanking, composedLineCount, BRIEFING_MAX_LINES, BRIEFING_BODY_MAX_LINES, BRIEFING_MORE_KEY } = await import("./briefing");
   const { numberWordFamilies, digitByText } = await import("./core");
   const txt = (r: { result: { answer: { text: string }[] } }) => r.result.answer.map((x) => x.text).join("");
   const frame = (content: string) => script([{ content }]);
@@ -2405,17 +2409,20 @@ console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · co
 
   // S1 — many issues (the default fixture: 11 issue items + costs pulled in by the firing alert).
   const many = await runComposed("How are we looking today?", opsBinding(OPS), frame("{}"));
-  const bullets = txt(many).split("\n").filter((l) => l.startsWith("- "));
-  check(`S1: at most ${BRIEFING_MAX_ISSUES} issue bullets; the rest counted in ONE overflow sentence with a typed count figure + an Operations link`,
-    bullets.length === BRIEFING_MAX_ISSUES && (many.result.briefing?.overflow ?? 0) > 0
+  // P13a (pinned output changed deliberately): 3 issue bullets + ONE "…and N more" bullet + ONE closing line (no caveat here).
+  const bullets = txt(many).split("\n").filter((l) => l.startsWith("- ") && !l.startsWith("- …and "));
+  check(`S1/P13a: ${BRIEFING_BODY_MAX_LINES - 2} issue bullets (body ≤ ${BRIEFING_BODY_MAX_LINES} lines); the rest counted in ONE "…and N more" line with a typed count figure + an Operations link`,
+    bullets.length === BRIEFING_BODY_MAX_LINES - 2 && many.result.briefing?.shown === bullets.length && (many.result.briefing?.overflow ?? 0) === (many.result.briefing?.issues ?? 0) - bullets.length
     && many.record.typed.some((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY && x.text === String(many.result.briefing?.overflow))
-    && /…and \d+ more items need attention — see Operations\./.test(txt(many)) && many.record.typed.some((x) => x.kind === "link" && /PLATFORM_OPS/.test(x.href)), { b: many.result.briefing, t: txt(many) });
-  check("S1: severe first — customer impact, broken incidents, reconnect, failing providers are shown; a degraded / overdue item is the one cut",
-    /customers saw/.test(bullets.join()) && /broken now/.test(bullets.join()) && !/overdue job/.test(bullets.join()), bullets);
-  check("S1: the shown items keep protocol order (health → impact → incidents → sync → reliability)",
-    (() => { const order = ["customers saw", "broken now", "reconnect", "provider"].map((k) => bullets.findIndex((b) => b.includes(k))); return order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])); })(), bullets);
-  check("S1: the composed body is ≤ 7 lines (5 bullets + one summary paragraph + the coverage line); figures well under the battery's 17",
-    (many.result.briefing?.lines ?? 99) <= 7 && composedLineCount(many.record.typed) <= 9 && (many.result.briefing?.figures ?? 99) <= 14, { lines: many.result.briefing?.lines, figures: many.result.briefing?.figures, t: txt(many) });
+    && /\n- …and \d+ more items need attention — see Operations\.\n/.test(txt(many)) && many.record.typed.some((x) => x.kind === "link" && /PLATFORM_OPS/.test(x.href)), { b: many.result.briefing, t: txt(many) });
+  check("S1/P13a: overall posture first, then severe — customer impact and broken incidents are shown; degraded / overdue items are the ones cut",
+    /^- Platform health needs attention/.test(bullets[0] ?? "") && /customers saw/.test(bullets.join()) && /broken now/.test(bullets.join()) && !/overdue job/.test(bullets.join()), bullets);
+  check("S1: the shown items keep protocol order (health → impact → incidents)",
+    (() => { const order = ["Platform health", "customers saw", "broken now"].map((k) => bullets.findIndex((b) => b.includes(k))); return order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])); })(), bullets);
+  check(`P13a: the whole answer is ≤ ${BRIEFING_MAX_LINES} lines (trace lines = composedLineCount(answer)); cost section ONE sentence; figures well under the battery's 17`,
+    many.result.briefing?.lines === composedLineCount(many.result.answer) && composedLineCount(many.result.answer) <= BRIEFING_MAX_LINES
+    && (txt(many).match(/operating cost is|AI spend is|AI calls failed/g) ?? []).length === 1 && (many.result.briefing?.figures ?? 99) <= 14,
+    { lines: many.result.briefing?.lines, figures: many.result.briefing?.figures, t: txt(many) });
   // S2 condition (#499): the overflow count is SERVER text — model prose may never cite its key (any part / window).
   const cites = ["{{m:briefing-more-items@1}}", "{{m:briefing-more-items@1|part=count}}", "{{m:briefing-more-items@1|window=7}}", "{{l:briefing-more-items@1}}"];
   const modelCites = await Promise.all(cites.map((ph) => runModel("How many incidents are broken now?", opsBinding(OPS),
@@ -2427,7 +2434,7 @@ console.log("\n4t. briefing size cap (S1) · NUMBER_WORD word families (i) · co
     && framed.record.typed.filter((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY).length === 1,
     modelCites.map((r) => r.result.grounding));
   check("S1: the coverage line stays; healthy domains in one sentence", /Platform AI doesn't cover /.test(txt(many)) && (txt(many).match(/look(s)? fine\./g) ?? []).length <= 1);
-  check("S1: trace carries shown / overflow / lines", new RegExp(`shown=5 overflow=${many.result.briefing?.overflow} lines=${many.result.briefing?.lines}`).test(traceLine(many.result)), traceLine(many.result));
+  check("S1: trace carries shown / overflow / lines", new RegExp(`shown=${many.result.briefing?.shown} overflow=${many.result.briefing?.overflow} lines=${many.result.briefing?.lines}`).test(traceLine(many.result)), traceLine(many.result));
 
   // (i) word families — counts only.
   check("(i) word families: one / two-twenty / tens / single / dozen / scale / twice-thrice",
@@ -2510,7 +2517,7 @@ console.log("\n4u. STALE figures: fresh / stale / missing timestamp — composer
   // Cost gate: only FRESH firing alerts are the server's "anomalous".
   check("alertsFiring: fresh firing ⇒ true; stale firing ⇒ false; missing timestamp ⇒ false", alertsFiring([eFresh]) && !alertsFiring([eStale]) && !alertsFiring([noTs]) && !alertsFiring([garbled]));
 
-  // Composer over envelopes (the composed briefing's wording; the full turn below caps issues at BRIEFING_MAX_ISSUES).
+  // Composer over envelopes (the composed briefing's wording; the full turn caps the answer at BRIEFING_MAX_LINES — §4v).
   const desc = { describeMetric: (k: string) => opsBinding(OPS).describeMetric(k) };
   const body = (envs: MetricEnvelope[]) => composeBriefing(envs, desc, { list: false, cost: null });
   const textOf = (c: { segments: { text: string }[] }) => c.segments.map((x) => x.text).join("");
@@ -2566,6 +2573,95 @@ console.log("\n4u. STALE figures: fresh / stale / missing timestamp — composer
   check("model path: quoting the server's as_of stamp is not an ungrounded digit", !quoted.result.grounding.replaced, quoted.result.grounding);
   const st = storedAnswerOf(mStale.result, mStale.record);
   check("model path stale: the stored answer is valid (note + the figure with its stale wording)", isStoredAnswer(st) && st.segments[0].kind === "note" && st.segments.some((x) => x.kind === "figure" && /may be out of date/.test(x.text)));
+}
+
+// ── 4v. P13a — briefing length: the whole composed answer ≤ BRIEFING_MAX_LINES (G1a 2026-11-09: 12 lines) ──
+console.log("\n4v. P13a briefing length: worst case ≤ 7 lines · typical ordering · staleness kept · '+N more' count");
+{
+  const { composedLineCount, composeBriefing, BRIEFING_MAX_LINES, BRIEFING_BODY_MAX_LINES, BRIEFING_MORE_KEY } = await import("./briefing");
+  const txt = (r: { result: { answer: { text: string }[] } }) => r.result.answer.map((x) => x.text).join("");
+  const H = 3_600_000;
+  const at = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * H).toISOString();
+  const alertsAt = (evaluatedAtISO: string, firing: boolean, severity: "warning" | "critical") => async () => [{ evaluatedAtISO, deliveryStatus: "DELIVERED", destination: null, counts: {},
+    rules: [{ id: "job-failing", kind: "job", enabled: true, live: true, firing, breaches: firing ? 1 : 0, severity: firing ? severity : null },
+      { id: "provider-unhealthy", kind: "provider", enabled: true, live: true, firing, breaches: firing ? 2 : 0, severity: firing ? "critical" : null }] }] as never;
+  const ALERTS = {
+    freshWarning: {},
+    freshCritical: { alertRuns: alertsAt(at(1), true, "critical") },
+    staleFiring: { alertRuns: alertsAt(at(30), true, "warning") },
+    staleQuiet: { alertRuns: alertsAt(at(30), false, "warning") },
+  } as const;
+  const boom = (async () => { throw new Error("down"); }) as never;
+  /** A model that frames the briefing AND returns three next steps (every PAGES href it was offered, up to 3) — the turn's maximum. */
+  const chatty: Script = { seen: [], generate: async ({ messages }) => {
+    const user = (messages[1] as { content: string }).content;
+    const hrefs = [...user.split("PAGES you may link:")[1].matchAll(/: (\/\S+)/g)].map((m) => m[1]).slice(0, 3);
+    const content = JSON.stringify({ framing: "Several areas need attention; start with customer impact.", next_actions: hrefs.map((href, i) => ({ label: ["Review health", "Review impact", "Review incidents"][i], href })) });
+    return { content, toolCalls: [], raw: { role: "assistant", content }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+  } };
+  const quietModel = () => script([{ content: "{}" }]);
+
+  // WORST CASE: many incidents, firing (and critical) alerts, every cost item, stale figures, an unreadable domain,
+  // the list + cost asked, a kept framing line and three next steps — every combination ≤ BRIEFING_MAX_LINES.
+  const rows: { key: string; lines: number; ok: boolean; t: string }[] = [];
+  for (const [ak, over] of Object.entries(ALERTS)) for (const unread of [false, true]) for (const q of ["How are we looking today?", "How are we looking on costs today? Give me a bulleted list."]) for (const model of ["quiet", "chatty"]) {
+    const R = readers({ ...over, incidentSearch: async () => ({ items: [], total: 40, page: 1, pageSize: 25, truncated: false, scanned: 500, facets: { providers: [], operations: [], codes: [] } }) as never,
+      ...(unread ? { resourceFreshness: boom } : {}) });
+    const r = await runComposed(q, opsBinding(OPS, R), model === "chatty" ? chatty : quietModel());
+    const b = r.result.briefing!;
+    const t = txt(r);
+    const more = r.record.typed.filter((x) => x.kind === "figure" && x.metric === BRIEFING_MORE_KEY);
+    const ok = composedLineCount(r.result.answer) <= BRIEFING_MAX_LINES && b.lines === composedLineCount(r.result.answer)
+      // "+N more": exactly the issues not shown, as ONE typed count figure (none when everything fits).
+      && b.overflow === b.issues - b.shown && (b.overflow > 0 ? more.length === 1 && more[0].text === String(b.overflow) && /\n- …and \d+ more items? needs? attention — see Operations\./.test(t) : more.length === 0)
+      // staleness / unavailability notes are never dropped for length; a stale evaluation never reads as "now".
+      && (ak === "staleQuiet" ? /No alert rule was firing at last evaluation \(last evaluated 2026-11-03 06:00 UTC, may be out of date\)\./.test(t) : true)
+      && (ak.startsWith("stale") ? !/firing now/.test(t) : true)
+      && (unread ? /Data freshness[^.]* is unavailable right now\.|couldn't be checked right now/i.test(t) : true)
+      // cost section ≤ 1 sentence; coverage always said.
+      && (t.match(/operating cost is|AI spend is|none of the [^.]* AI calls failed/g) ?? []).length <= 1 && /Platform AI doesn't cover /.test(t)
+      && (model === "chatty" ? b.framing === "KEPT" && b.actions === 3 && /\n\nNext steps: [^\n]+$/.test(t) : true);
+    rows.push({ key: `${ak}/${unread ? "unreadable" : "read"}/${q.length > 30 ? "list+cost" : "plain"}/${model}`, lines: composedLineCount(r.result.answer), ok, t });
+  }
+  check(`P13a worst case: all ${rows.length} combinations ≤ ${BRIEFING_MAX_LINES} lines; '+N more' = issues − shown; stale / unavailable notes kept; cost ≤ 1 sentence; next steps on one line`,
+    rows.length === 32 && rows.every((x) => x.ok), rows.filter((x) => !x.ok).map((x) => ({ k: x.key, lines: x.lines, t: x.t })));
+  check("P13a worst case reaches the cap (the budget is used, not undershot): some combination renders exactly 7 lines",
+    rows.some((x) => x.lines === BRIEFING_MAX_LINES), rows.map((x) => `${x.key}=${x.lines}`));
+  const worst = rows.find((x) => x.key === "staleQuiet/unreadable/list+cost/chatty")!;
+  check("P13a worst case: the caveat line (stale + unreadable notes) costs an issue line — 2 issues + '…and N more' + caveat + closing",
+    worst.t.split("\n").filter((l) => l.startsWith("- ") && !l.startsWith("- …and ")).length === BRIEFING_BODY_MAX_LINES - 3 && worst.lines === BRIEFING_MAX_LINES, worst.t);
+
+  // TYPICAL (two issues): nothing cut — the same bullets in the same (protocol) order as before; the closing line adds coverage.
+  const typicalR = readers({
+    providerHealth: async () => ({ checkedAt: NOW, providers: [{ key: "A", label: "A", execution: { verdict: "HEALTHY" }, connections: { verdict: null, tally: { active: 3, error: 0, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [], callsToday: 4, calls30d: 90, syncFailures: 0 }] }) as never,
+    operationsOverview: async () => ({ checkedAt: NOW.toISOString(), worst: "FAILED", domains: ["pipeline", "sources", "jobs", "ai", "brief", "plaid"].map((key) => ({ key,
+      state: key === "pipeline" ? "FAILED" : "HEALTHY", title: key, headline: "", facts: key === "pipeline" ? [{ label: "Executions", value: "12" }, { label: "Failed", value: "3" }, { label: "Running now", value: "0" }] : [] })), latestFailures: [] }) as never,
+    attention: async () => ({ checkedAt: NOW.toISOString(), items: [], userImpact: { windowHours: 24, rows: [], counts: { "refresh-failed": 0, "refresh-partial": 0, "ai-failure": 0, "brief-failed": 0, "needs-reauth": 0 },
+      usersAffected: { count: 0, reason: null }, sourcesAffected: 0, authorities: { checked: ["refresh-executions", "ai-failures", "brief-ops", "connection-health"], failed: [] }, floors: [] } }) as never,
+    alertRuns: alertsAt(at(1), false, "warning"),
+    connectionHealth: async () => ({ total: 6, counts: { HEALTHY: 6, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], checkedAt: NOW.toISOString(), cap: 20, listedScope: "unhealthy",
+      retired: { revoked: 0, ownerInactive: 0 }, bySource: { PLAID: { active: 6, revoked: 0, faults: [] } } }) as never,
+    jobHealth: async () => ({ checkedAt: NOW, jobs: [{ job: "sync-banks", status: "healthy" }] }) as never,
+    resourceFreshness: async () => ({ checkedAt: NOW, resources: [{ resource: "fx-rates", label: "FX", healthState: "fresh" }] }) as never,
+    incidentSearch: async () => ({ items: [], total: 0, page: 1, pageSize: 25, truncated: false, scanned: 0, facets: { providers: [], operations: [], codes: [] } }) as never,
+  });
+  const typical = await runComposed("Is anything wrong?", opsBinding(OPS, typicalR), quietModel());
+  check("P13a typical: two issues ⇒ both shown in protocol order, no '…and N more', no caveat line; closing = fine + coverage on ONE line",
+    txt(typical) === "- Platform health needs attention, with 1 failed domain — Refresh pipeline (failed).\n- Since yesterday (UTC), 3 of 12 refresh executions failed.\n\n"
+      + "Customer impact, incidents and job/provider reliability look fine. Costs weren't checked; ask about costs to include them. Platform AI doesn't cover security (sign-in anomalies, sessions), email delivery or operator and customer MFA yet."
+    && typical.result.briefing?.shown === 2 && typical.result.briefing?.overflow === 0 && typical.result.briefing?.lines === 3, txt(typical));
+
+  // Pure composer: the body alone never exceeds BRIEFING_BODY_MAX_LINES, and an overflow is never silent.
+  const desc = { describeMetric: (k: string) => opsBinding(OPS).describeMetric(k) };
+  const noisy = opsBinding(OPS, readers({ ...ALERTS.staleQuiet, resourceFreshness: boom }));
+  const read: MetricEnvelope[] = [];
+  for (const k of ["ops-overall-posture@1", "alerts-firing-now@1", "customer-impact-24h@1", "incident-broken-now@1", "incident-needs-verification@1", "incident-resolved-window@1",
+    "connection-health-summary@1", "refresh-pipeline@1", "provider-connection@2", "data-freshness@1", "scheduled-job-health@1", "provider-outcome@1", "provider-call-volume@1",
+    "economics-operating-cost@1", "ai-fleet-spend-status@1", "ai-call-outcomes@1"]) { const e = await noisy.readMetric(k, {}); if (e) read.push(e); }
+  const c = composeBriefing(read, desc, { list: true, cost: "ASKED", moreLink: { text: "Operations", href: "/dashboard/platform/PLATFORM_OPS" } });
+  check(`P13a composer: body ≤ ${BRIEFING_BODY_MAX_LINES} lines with a stale + unreadable caveat line; overflow = issues − shown`,
+    composedLineCount(c.segments) <= BRIEFING_BODY_MAX_LINES && c.overflow === c.facts.filter((f) => f.issue).length - c.shown && c.overflow > 0
+    && /may be out of date/.test(c.segments.map((x) => x.text).join("")), c.segments.map((x) => x.text).join(""));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

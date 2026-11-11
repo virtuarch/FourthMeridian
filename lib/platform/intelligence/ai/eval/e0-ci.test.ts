@@ -111,6 +111,10 @@ async function main() {
   async function runRoute(c: RouteCase): Promise<string[]> {
     const cookie = await cookieFor(c.operator);
     currentOperator = E0_OPERATORS[c.operator];
+    // P2b: spend already on today's ledger (RETURNED platform_ai rows at the E0 model's rate: gpt-4o-mini output $0.60 / M).
+    for (const [i, l] of (c.ledger ?? []).entries()) {
+      fake.seed("AiInvocation", { provider: "OPENAI", model: "gpt-4o-mini", occurredAt: new Date(), promptTokens: 0, cachedPromptTokens: 0, completionTokens: Math.round(l.usd / 0.6e-6), latencyMs: 1, environment: "development", surface: "platform_ai", userId: E0_OPERATORS[l.operator].id, correlationId: `e0-ledger-${c.id}-${i}`, outcome: "RETURNED" });
+    }
     const obs: RouteTurnObservation[] = [];
     for (const turn of c.turns) {
       provider.load(turn.steps);
@@ -143,8 +147,20 @@ async function main() {
     recheck: (op) => async (area) => {
       const row = fake.one("PlatformGrant", { userId: E0_OPERATORS[op].id, area });
       if (!row || row.status !== "ACTIVE") return null;
-      return { auth: fixtureAuth(op, area), csTier: area === "CUSTOMER_SUCCESS" };
+      // P5: the incident token minted HERE from the same fixture guard result (the Production recheck's own path).
+      const auth = fixtureAuth(op, area);
+      const incidentToken = incidentAudienceFor(auth);
+      return { auth, csTier: incidentToken?.audience === "CUSTOMER_SUCCESS", incidentToken };
     },
+    setGrant(op, area, status) {
+      const userId = E0_OPERATORS[op].id;
+      const t = fake.table("PlatformGrant");
+      const i = t.findIndex((g) => g.userId === userId && g.area === area);
+      if (status === null) { if (i >= 0) t.splice(i, 1); return; }
+      if (i >= 0) t[i].status = status;
+      else fake.seed("PlatformGrant", { userId, area, level: "READ", status });
+    },
+    collect: (sink, text) => { corpus.push({ sink, text }); },
   };
   const runUnit = (c: UnitCase): Promise<string[]> => c.run(unitCtx);
 
@@ -167,7 +183,7 @@ async function main() {
     return c.check(obs);
   }
 
-  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags)\n");
+  out("E0-CI — Platform AI deterministic eval (P1b baseline: metrics, navigation, memory + boundary; P2: per-call recheck, handles, pack flags; P4: answer identity, record render; P4b: multi-area conversations)\n");
   let caseCount = 0;
   console.log = console.info = console.warn = console.error = capture;
   try {
@@ -180,13 +196,7 @@ async function main() {
       if (problems.length) failures.push(`${c.id}: ${problems.join("; ")}`);
       out(`  ${problems.length ? "✗" : "✓"} ${c.id} [${c.gates.join(", ")}]${problems.length ? ` — ${problems.join("; ")}` : ""}`);
     }
-
-    // ANSWER_IDENTITY_TEXT (PENDING until P4): measured, not enforced — does an identity the MODEL writes survive into the answer?
-    provider.load([{ content: "The affected customer is probe@e0-model.invalid." }]);
-    const measured = await invoke(POST, request("/api/platform/ai/ask", { method: "POST", cookie: await cookieFor("ops"), body: { question: "Who is affected?" } }));
-    drainLedger();
-    const survived = JSON.stringify(measured.body).includes("probe@e0-model.invalid");
-    out(`  ○ measure ANSWER_IDENTITY_TEXT: a model-written email ${survived ? "SURVIVES" : "does not survive"} into the answer (enforced with P4's IDENTITY_LEAK verdict)`);
+    // ANSWER_IDENTITY_TEXT is ACTIVE since P4 (cases/answers.ts): the route cases assert IDENTITY_LEAK, the unit cases the store + render path.
   } finally {
     Object.assign(console, original);
     provider.restore();
@@ -194,7 +204,7 @@ async function main() {
 
   // ── corpus-wide gates ─────────────────────────────────────────────────────
   out("\ncorpus-wide scans");
-  const scannerWorks = sentinelsIn(`x ${E0_CUSTOMERS[0].email.toUpperCase()} y`, E0_T2_SENTINELS).includes(E0_CUSTOMERS[0].email) && sentinelsIn("nothing here", E0_T2_SENTINELS).length === 0 && E0_INJECTION_SENTINELS.every((p) => sentinelsIn(p, [E0_INJECTION_MARKER]).length === 1);
+  const scannerWorks = sentinelsIn(`x ${E0_CUSTOMERS[0].email.toUpperCase()} y`, E0_T2_SENTINELS).includes(E0_CUSTOMERS[0].email) && E0_CUSTOMERS.every((c) => sentinelsIn(`hi ${c.firstName.toLowerCase()}, thanks`, E0_T2_SENTINELS).includes(c.firstName)) && sentinelsIn("nothing here", E0_T2_SENTINELS).length === 0 && E0_INJECTION_SENTINELS.every((p) => sentinelsIn(p, [E0_INJECTION_MARKER]).length === 1);
   const requests = corpus.filter((c) => c.sink === "provider_request");
   const identity = leakCounts(corpus, E0_T2_SENTINELS);
   const injection = leakCounts(corpus.filter((c) => c.sink === "provider_request" || c.sink === "response_body" || c.sink === "response_evidence"), [E0_INJECTION_MARKER]);
@@ -222,6 +232,15 @@ async function main() {
   out(`  ${revocationsHeld ? "✓" : "✗"} REVOCATION_MID_TURN non-vacuous: ${revocationsApplied} mid-turn revocation(s) applied between tool calls (expected 4)`);
   record("REVOCATION_MID_TURN", revocationsHeld);
   if (!revocationsHeld) failures.push("the mid-turn revocations were not applied");
+
+  // P2b: every route case went through the route's $ reservation, and every reservation was released.
+  const inflightRows = fake.table("RateLimit").filter((r) => String(r.key).startsWith("user:platform-ai-inflight:"));
+  const reserved = fake.callsTo("RateLimit", "upsert").filter((x) => String((x.args as { where?: { key_windowStart?: { key?: string } } }).where?.key_windowStart?.key ?? "").startsWith("user:platform-ai-inflight:")).length;
+  const held = inflightRows.reduce((n, r) => n + Number(r.count ?? 0), 0);
+  const costCapHeld = reserved >= 10 && held === 0;
+  out(`  ${costCapHeld ? "✓" : "✗"} COST_CAP non-vacuous: ${reserved} route reservation(s) taken, ${held} still held after every turn (expected 0)`);
+  record("COST_CAP", costCapHeld);
+  if (!costCapHeld) failures.push("route $ reservations were not taken or not released");
 
   // ── the gate report (counts only) ─────────────────────────────────────────
   out(`\nE0 gates (${caseCount} cases)`);

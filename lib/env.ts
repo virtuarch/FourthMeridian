@@ -204,6 +204,13 @@ const _e = {
   PLATFORM_AI_PACK_POLICIES_ENABLED: process.env.PLATFORM_AI_PACK_POLICIES_ENABLED,
   PLATFORM_AI_PACK_GROWTH_ENABLED: process.env.PLATFORM_AI_PACK_GROWTH_ENABLED,
   PLATFORM_AI_PACK_MERCHANTS_ENABLED: process.env.PLATFORM_AI_PACK_MERCHANTS_ENABLED,
+  // Platform AI daily $ caps (design v2 §10, I-10; P2b) — estimated USD per UTC day, per
+  // operator and platform-wide, on top of the daily turn cap. Strict decimal (≤ 2 places).
+  // INVALID ⇒ every turn refused. MISSING ⇒ refused unless VERCEL_ENV is "preview" or
+  // "development" (test defaults; S2 ruling 8). The numbers are an OWNER decision (OI-2):
+  // both must be set before any Production activation (lib/platform/ai/platform-ai-spend.core.ts).
+  PLATFORM_AI_DAILY_USD_CAP_PER_OPERATOR: process.env.PLATFORM_AI_DAILY_USD_CAP_PER_OPERATOR,
+  PLATFORM_AI_DAILY_USD_CAP_PLATFORM: process.env.PLATFORM_AI_DAILY_USD_CAP_PLATFORM,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -980,6 +987,16 @@ export const env = {
   get isPlatformAiPackPoliciesEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_POLICIES_ENABLED); },
   get isPlatformAiPackGrowthEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_GROWTH_ENABLED); },
   get isPlatformAiPackMerchantsEnabled() { return strictPlatformAiPackFlag(_e.PLATFORM_AI_ENABLED, _e.PLATFORM_AI_PACK_MERCHANTS_ENABLED); },
+  /**
+   * Platform AI daily $ caps (P2b, I-10): the RAW inputs only — the strict parse and the
+   * fail-closed fallback (S2 ruling 8) live in lib/platform/ai/platform-ai-spend.core.ts
+   * resolvePlatformAiSpendCaps. `vercelEnv` is the RAW VERCEL_ENV (absent ⇒ undefined ⇒ a
+   * MISSING cap refuses), deliberately NOT deploymentEnvironment(), which maps absent to
+   * "development".
+   */
+  get platformAiSpendCapInputs() {
+    return { operatorRaw: _e.PLATFORM_AI_DAILY_USD_CAP_PER_OPERATOR, platformRaw: _e.PLATFORM_AI_DAILY_USD_CAP_PLATFORM, vercelEnv: _e.VERCEL_ENV };
+  },
   get isPlatformAiMemoryFlagSetWithoutPurge() { return _e.PLATFORM_AI_MEMORY_ENABLED === "true" && _e.PLATFORM_AI_MEMORY_PURGE_ENABLED !== "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group

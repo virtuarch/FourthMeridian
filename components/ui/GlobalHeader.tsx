@@ -35,7 +35,7 @@ import { AppLogo } from "@/components/ui/AppLogo";
 import { GlobalActions } from "@/components/ui/GlobalActions";
 import { PlatformContextSwitch } from "@/components/ui/PlatformContextSwitch";
 
-export function GlobalHeader({ hasPlatformGrants = false }: { hasPlatformGrants?: boolean }) {
+export function GlobalHeader({ hasPlatformGrants = false, operatorTotpPending = false }: { hasPlatformGrants?: boolean; operatorTotpPending?: boolean }) {
   return (
     <header
       className="sticky top-0 z-40 shrink-0 border-b border-[var(--border-hairline)]"
@@ -57,7 +57,7 @@ export function GlobalHeader({ hasPlatformGrants = false }: { hasPlatformGrants?
 
         {/* Centre — the context switch (UX-P2), or nothing at all. */}
         <div className="flex min-w-0 flex-1 items-center justify-center">
-          <PlatformContextSwitch hasPlatformGrants={hasPlatformGrants} />
+          <PlatformContextSwitch hasPlatformGrants={hasPlatformGrants} operatorTotpPending={operatorTotpPending} />
         </div>
 
         <GlobalActions />

@@ -7,14 +7,16 @@
  *      gridlines and a left gutter that fits the longest label;
  *   3. no evidence-basis seam rule and no "Evidence changes" legend item; adjacent
  *      observed↔reconstructed runs are JOINED (no stroke gap), each keeping its style;
- *   4. NO provenance legend (v2.7 final UX pass); gaps stay hatched + "no data", runs stay dashed.
+ *   4. NO provenance legend (v2.7 final UX pass); gaps stay hatched + "no data", runs stay dashed;
+ *   5. B12 P3 — identical x-axis labels collapse (a one-date chart shows its date
+ *      once, centred); multi-date axes unchanged; `pending` holds a placeholder.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/space/widgets/charts/TrendChart.test.ts
  */
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TrendChart, niceTicks, type TrendPoint } from "./TrendChart";
+import { TrendChart, niceTicks, xAxisLabels, type TrendPoint } from "./TrendChart";
 import { formatCompactCurrency } from "@/lib/currency";
 
 let failures = 0;
@@ -113,6 +115,32 @@ console.log("\n4. no provenance legend (v2.7 final UX pass) — the gap stays dr
   check("a true gap is still hatched and labelled 'no data' (honest, never fabricated)",
     hh.includes('fill="url(#tc-hatch)"') && hh.includes(">no data<"));
   check("reconstructed runs are still drawn dashed (the series itself is unchanged)", /stroke-dasharray="4 3"/.test(hh));
+}
+
+console.log("\n5. x-axis labels (B12 P3) + pending hold");
+{
+  const xLabels = (h: string) => {
+    const m = /<div class="mt-1 flex (justify-[a-z]+)[^"]*" style="padding-left:\d+px">([\s\S]*?)<\/div>/.exec(h);
+    return { justify: m?.[1] ?? "", labels: [...(m?.[2] ?? "").matchAll(/<span>([^<]*)<\/span>/g)].map((x) => x[1]) };
+  };
+  const one = xLabels(render({ points: series(1) }));
+  check("single-date chart: the date appears once, centred", one.labels.length === 1 && one.labels[0] === "Jul 1, 2026" && one.justify === "justify-center", JSON.stringify(one));
+  const many = xLabels(render({ points: series(10) }));
+  check("multi-date chart: first · middle · last, unchanged", JSON.stringify(many.labels) === JSON.stringify(["Jul 1, 2026", "Jul 6, 2026", "Jul 10, 2026"]) && many.justify === "justify-between", JSON.stringify(many));
+  const two = xLabels(render({ points: series(2) }));
+  check("two dates: each once, at the ends (the repeated middle collapses)", JSON.stringify(two.labels) === JSON.stringify(["Jul 1, 2026", "Jul 2, 2026"]) && two.justify === "justify-between", JSON.stringify(two));
+  const month = (iso: string) => iso.slice(0, 7);
+  check("dedupe is by rendered label (coarse formatter: [a, a, b] ⇒ [a, b])",
+    JSON.stringify(xAxisLabels(["2026-07-01", "2026-07-15", "2026-08-01"], month)) === JSON.stringify(["2026-07", "2026-08"]));
+  check("all-identical labels ⇒ one", xAxisLabels(["2026-07-01", "2026-07-02", "2026-07-03"], month).length === 1);
+  check("no dates ⇒ no labels", xAxisLabels([], month).length === 0);
+
+  const held = render({ points: [], pending: true, ariaLabel: "Net worth over time", emptyMessage: "nothing yet" });
+  check("pending: a busy placeholder, no plot, no points, no empty message",
+    held.includes("data-trend-pending") && held.includes('aria-busy="true"') && !/<svg/.test(held) && !/<circle/.test(held) && !held.includes("nothing yet"));
+  check("pending: the placeholder keeps the plot height (no layout jump)", held.includes("height:264px"));
+  check("pending: headerRight still renders", render({ points: [], pending: true, headerRight: createElement("span", { "data-chips": "" }, "chips") }).includes("data-chips"));
+  check("pending omitted ⇒ chart unchanged (plots)", /<svg/.test(render({ points: series(3) })) && !render({ points: series(3) }).includes("data-trend-pending"));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

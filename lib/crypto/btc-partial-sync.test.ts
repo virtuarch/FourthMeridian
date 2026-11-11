@@ -46,11 +46,16 @@ const read = (...seg: string[]) => readFileSync(join(process.cwd(), ...seg), "ut
 
 // ── The in-memory store ───────────────────────────────────────────────────────
 
-const ADDRESS = "bc1qunitstubaddress";
+// BIP173 spec test vector (P2WPKH) — public test material, not a wallet. It must
+// be checksum-valid: S2 09eq P1 refuses a malformed address before any explorer call.
+const ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
 const ACCOUNT = "acc-btc-unit";
 // BIP32 test vector 1 master xpub — public test material, not a wallet.
 const XPUB = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
-const XPUB_ADDRS = ["bc1qxpubchildzero", "bc1qxpubchildone"];
+// BIP84 spec-vector receive addresses (m/84'/0'/0'/0/0 and /0/1) — public test
+// material. Checksum-valid because test 8c also adds one as a single address,
+// which S2 09eq P1 validates before any explorer call.
+const XPUB_ADDRS = ["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g"];
 
 /** The wallet shape the fake store serves. */
 const shape = { walletAddress: ADDRESS, identities: [ADDRESS] };
@@ -753,10 +758,89 @@ async function main() {
       e instanceof Error ? e.message : String(e));
   }
 
+  // ── S2 09eq P1 — a malformed address never reaches the explorer ───────────
+  //
+  // The e0-live fixture window seeded format-invalid BTC wallets
+  // (`e0lADDR<nonce><n>`); before this guard, a sync of one sent that string to
+  // the public explorer. SOL and EVM refuse theirs at stage "address" before any
+  // network work; BTC now does the same, and the dispatcher maps that stage to
+  // the SAME incident code, INVALID_WALLET_ADDRESS — no new code.
+  {
+    const { walletSyncErrorCode } = await import("@/lib/crypto/wallet-sync-dispatch");
+    const savedShape = { walletAddress: shape.walletAddress, identities: [...shape.identities] };
+    const MALFORMED = [
+      "e0lADDR3fa9c2d11",                              // the e0-live fixture sentinel shape
+      "bc1qunitstubaddress",                           // bech32-looking, not bech32
+      "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5",    // one character off a valid address (checksum)
+      "1Cn7RXTTd5aN1ys32GfXVdXUzTyDxdpS1E",            // one character off a valid legacy address (checksum)
+      "0x52908400098527886E0F7030069857D2E4169EE7",    // an EVM address on a BTC wallet
+    ];
+    for (const bad of MALFORMED) {
+      shape.walletAddress = bad; shape.identities = [bad];
+      const store = freshStore(PRIOR);
+      install(db as unknown as Record<string, unknown>, store);
+      const calls: string[] = [];
+      const spy = (async (input: string) => { calls.push(String(input)); throw new TypeError("network must not be reached"); }) as unknown as typeof fetch;
+      let fetcherCalls = 0;
+      const r = await syncBtcWallet(ACCOUNT, {
+        fetchImpl: spy,
+        balanceFetcher: async () => { fetcherCalls++; return 0; },
+        batchStatsFetcher: async () => { fetcherCalls++; return new Map(); },
+        txFetcher: async () => { fetcherCalls++; return []; },
+        priceFetcher: async () => { fetcherCalls++; return PRICE; },
+      });
+      const label = bad.slice(0, 10);
+      check(`09eq ${label}…: ZERO explorer calls (fetch spy and every injected provider untouched)`,
+        calls.length === 0 && fetcherCalls === 0, `fetch=${JSON.stringify(calls)} providers=${fetcherCalls}`);
+      check(`09eq ${label}…: refused at stage "address" — the SOL/EVM invalid-address stage`,
+        r.ok === false && r.stage === "address", JSON.stringify(r));
+      check(`09eq ${label}…: the dispatcher records INVALID_WALLET_ADDRESS (the existing code, as SOL/EVM)`,
+        walletSyncErrorCode(r.stage) === "INVALID_WALLET_ADDRESS"
+          && walletSyncErrorCode(r.stage) === walletSyncErrorCode("address"));
+      const issues = store.syncIssues.map((i) => i.detail as { stage?: string; chain?: string; message?: string });
+      check(`09eq ${label}…: exactly one SyncIssue, stage "address", chain BTC`,
+        issues.length === 1 && issues[0].stage === "address" && issues[0].chain === "BTC", JSON.stringify(issues));
+      check(`09eq ${label}…: neither the reason nor the SyncIssue echoes the address`,
+        !String(r.reason).includes(bad) && !JSON.stringify(store.syncIssues).includes(bad));
+      check(`09eq ${label}…: nothing written — no observation, no account update`,
+        store.observations.length === 0 && store.accountUpdates.length === 0);
+    }
+
+    // Every format a customer can legitimately hold still proceeds to the explorer.
+    const VALID = [
+      "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",                                  // legacy P2PKH
+      "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",                                  // P2SH
+      "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",                          // bech32 P2WPKH (BIP173 vector)
+      "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3",      // bech32 P2WSH  (BIP173 vector)
+      "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",      // bech32m taproot (BIP350 vector)
+    ];
+    for (const good of VALID) {
+      shape.walletAddress = good; shape.identities = [good];
+      const store = freshStore(PRIOR);
+      install(db as unknown as Record<string, unknown>, store);
+      let balanceCalls = 0;
+      const r = await syncBtcWallet(ACCOUNT, {
+        balanceFetcher: async () => { balanceCalls++; return 0.1 * SATS; },
+        txFetcher: async () => [],
+        priceFetcher: async () => PRICE,
+      });
+      check(`09eq valid ${good.slice(0, 6)}…: proceeds — the balance authority is read, no address refusal`,
+        balanceCalls === 1 && r.stage !== "address" && !store.syncIssues.some((i) => (i.detail as { stage?: string }).stage === "address"),
+        JSON.stringify(r));
+    }
+    shape.walletAddress = savedShape.walletAddress; shape.identities = savedShape.identities;
+  }
+
   // ── Source pins: the wiring that makes the outcome visible ────────────────
   const sync = code(read("lib", "crypto", "btc-sync.ts"));
   const body = sync.slice(sync.indexOf("export async function syncBtcWallet"), sync.indexOf("export interface SyncAllBtcWalletsResult"));
   const importAt = body.indexOf("await importBtcTransactions(");
+  const guardAt = body.indexOf("addresses.every(isBtcAddress)");
+  check("pin 09eq: the BTC address guard precedes every explorer read in syncBtcWallet",
+    guardAt > 0
+      && guardAt < body.indexOf("fetchConfirmedSatsForAddresses(")
+      && guardAt < body.indexOf("fetchAddressStatsBatch(")
+      && guardAt < body.indexOf("deps.balanceFetcher"));
   check("pin: the import outcome is kept, not discarded", /const transactionImport = await importBtcTransactions\(/.test(body));
   check("pin: no early return keyed on the import outcome (it never gates the position)",
     !/transactionImport[^;\n]*\)\s*return\b/.test(body) && !/if\s*\(\s*transactionImport/.test(body));

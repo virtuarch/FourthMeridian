@@ -41,6 +41,7 @@ import type { AnswerSegment, PlatformAiAnswer } from "@/lib/platform/intelligenc
 import { PLATFORM_AI_TITLE } from "./PlatformAiPlaceholder";
 import { AnswerNotes, AnswerSources, PlatformAiComposer, PlatformAiLead, PlatformAiStarters, TypedAnswerSegments } from "./platform-ai-presentation";
 import { PLATFORM_AI_THINKING_LABEL } from "./platform-ai-conversations-model";
+import { usePeoplePicker, type PeoplePickerBinding } from "./platform-ai-people-picker";
 
 export const PLATFORM_AI_ASK_URL = "/api/platform/ai/ask";
 
@@ -55,6 +56,7 @@ const REFUSAL_COPY: Record<string, string> = {
   KILL_SWITCH: "AI requests are paused on this platform.",
   COST_FREEZE: "Platform costs are frozen, so AI is not running.",
   DAILY_TURNS: "You have used today's Platform AI questions. It resets at midnight UTC.",
+  COST_CAP: "Platform AI has reached today's spending limit. It resets at midnight UTC.",
   ALLOWANCE_UNAVAILABLE: "Platform AI could not check its limits, so it did not run.",
   TIMEOUT: "That took too long, so it was stopped.",
   PROVIDER: "The AI provider did not answer.",
@@ -106,8 +108,12 @@ export function SessionAnswer({ answer }: { answer: PlatformAiAnswer }) {
   );
 }
 
-/** A turn of the in-memory session: the question, then its answer or its refusal sentence. */
-export interface SessionTurn { id: number; question: string; answer: PlatformAiAnswer | null; error: string | null }
+/**
+ * A turn of the in-memory session: the question, then its answer or its refusal sentence. `question` is what
+ * was SENT (chips as `[[cust:…]]` tokens — the retry resends it); `display` is this operator's own view of it
+ * (a chip as `@label`, memory only — never sent, never stored).
+ */
+export interface SessionTurn { id: number; question: string; display?: string; answer: PlatformAiAnswer | null; error: string | null }
 
 export interface PlatformAiSessionViewProps {
   areaLabel: string;
@@ -121,10 +127,16 @@ export interface PlatformAiSessionViewProps {
   /** The "Privacy" control (collapsed by default: nothing is stored here). */
   noticeOpen?: boolean;
   onNotice?: (open: boolean) => void;
+  /** P5 (S2 09dp) — the customers pack is offered: the customer-lookup notice (composer + empty state). */
+  subjectNotice?: boolean;
+  /** The @ people picker (offered with the customer notice). */
+  picker?: PeoplePickerBinding;
+  /** The server's USE_PEOPLE_PICKER refusal, inline under the kept draft. */
+  guardNotice?: string | null;
 }
 
 /** Pure (no hooks except the log's anchor): the v0 page in the shared shell. */
-export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice }: PlatformAiSessionViewProps) {
+export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraft, onSend, onAsk, onNew, noticeOpen = false, onNotice, subjectNotice = false, picker, guardNotice = null }: PlatformAiSessionViewProps) {
   const anchorRef = useRef<HTMLDivElement>(null);
   const mode = turns.length > 0 ? "conversation" : "empty";
   const last = turns[turns.length - 1];
@@ -144,15 +156,15 @@ export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraf
         contextLabel={areaLabel}
         contextPrefix="Answering from: "
         controls={controls}
-        lead={<PlatformAiLead />}
+        lead={<PlatformAiLead subjectNotice={subjectNotice} />}
         aside={<PlatformAiStarters onStarter={onAsk} />}
-        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} />}
+        composer={<PlatformAiComposer value={draft} onChange={onDraft} onSubmit={onSend} busy={pending} disabled={false} saved={false} noticeOpen={noticeOpen} onNotice={onNotice} subjectNotice={subjectNotice} {...(picker ? { picker } : {})} guardNotice={guardNotice} />}
       >
         <ConversationLog scrollKey={turns} turnCount={turns.length} answered={answered} anchorRef={anchorRef}
           busy={pending} busyNode={<div data-platform-ai-in-flight=""><ThinkingIndicator srLabel={PLATFORM_AI_THINKING_LABEL} /></div>}>
           {turns.map((t, i) => (
             <div key={t.id} className="flex min-w-0 flex-col gap-7">
-              <div ref={i === turns.length - 1 ? anchorRef : undefined} className="ai-turn-enter min-w-0"><MessageCard content={t.question} /></div>
+              <div ref={i === turns.length - 1 ? anchorRef : undefined} className="ai-turn-enter min-w-0"><MessageCard content={t.display ?? t.question} /></div>
               {t.answer ? <div className="ai-turn-enter min-w-0"><SessionAnswer answer={t.answer} /></div> : null}
               {t.error ? (
                 <div className="ai-turn-enter min-w-0">
@@ -168,19 +180,23 @@ export function PlatformAiSessionView({ areaLabel, turns, draft, pending, onDraf
   );
 }
 
-export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
+export function PlatformAiAsk({ areaLabel, subjectNotice = false }: { areaLabel: string; subjectNotice?: boolean }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const [guardNotice, setGuardNotice] = useState<string | null>(null);
   const nextId = useRef(0);
+  // The @ people picker: offered exactly where the customer notice is (the page decides, server-side).
+  const people = usePeoplePicker({ enabled: subjectNotice, draft, setDraft });
 
-  async function ask(question: string): Promise<boolean> {
+  async function ask(question: string, display?: string): Promise<boolean> {
     const q = question.trim();
     if (!q || pending) return false;
     const id = nextId.current++;
     setPending(true);
-    setTurns((ts) => [...ts, { id, question: q, answer: null, error: null }]);
+    setGuardNotice(null);
+    setTurns((ts) => [...ts, { id, question: q, ...(display ? { display: display.trim() } : {}), answer: null, error: null }]);
     const settle = (answer: PlatformAiAnswer | null, error: string | null) =>
       setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, answer, error } : t)));
     try {
@@ -189,9 +205,16 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q }),
       });
       const body = await r.json().catch(() => null) as (PlatformAiAnswer & { reason?: string; error?: string }) | null;
+      if (people.isGuardRefusal(body)) {
+        // S2 09fc — not a turn: drop it, give the draft back (with its chips), and say why inline.
+        setTurns((ts) => ts.filter((t) => t.id !== id));
+        setDraft((d) => (d.length === 0 ? (display ?? q) : d));
+        setGuardNotice(people.guardReminder(body));
+        return true;
+      }
       if (!r.ok || !body || !Array.isArray(body.answer)) {
         settle(null, (body?.reason && REFUSAL_COPY[body.reason]) ?? (r.status === 429 ? "Too many questions — try again shortly." : UNAVAILABLE));
-      } else settle(body, null);
+      } else { settle(body, null); if (display !== undefined) people.reset(); }
     } catch {
       settle(null, UNAVAILABLE);
     } finally {
@@ -203,11 +226,12 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
   return (
     <PlatformAiSessionView
       areaLabel={areaLabel} turns={turns} draft={draft} pending={pending}
-      onDraft={setDraft}
-      onSend={() => { if (draft.trim() && !pending) { void ask(draft); setDraft(""); } }}
+      onDraft={(v) => { setDraft(v); if (guardNotice) setGuardNotice(null); }}
+      onSend={() => { if (draft.trim() && !pending) { void ask(people.serialize(), draft); setDraft(""); } }}
       onAsk={(q) => { void ask(q); }}
-      onNew={() => { if (!pending) { setTurns([]); setDraft(""); } }}
-      noticeOpen={noticeOpen} onNotice={setNoticeOpen}
+      onNew={() => { if (!pending) { setTurns([]); setDraft(""); setGuardNotice(null); people.reset(); } }}
+      noticeOpen={noticeOpen} onNotice={setNoticeOpen} subjectNotice={subjectNotice}
+      picker={people.binding} guardNotice={guardNotice}
     />
   );
 }
