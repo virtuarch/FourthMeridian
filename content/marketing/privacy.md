@@ -32,6 +32,20 @@ You can disconnect a connection at any time. Disconnecting stops syncing, remove
 
 The Daily Brief and Conversations send relevant portions of your financial context to OpenAI's API for processing. See our [AI Disclosures](/legal/ai) for exactly what is sent, what is never sent, what Fourth Meridian remembers, and the limits of AI-generated output.
 
+### Operator tools and AI
+
+<!-- DRAFT (owner decision D3) — wording pending owner approval. The "Last updated" date (LEGAL.privacy.updated in copy.ts) and the "Effective" line above are left unchanged; the owner updates them on publish. -->
+
+When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. These tools are available only to authorized staff, who must sign in with two-factor authentication, and daily spending limits restrict how much they can be used.
+
+What is sent to the AI provider is limited to technical facts: status and error codes, counts, times, and anonymous references that do not identify you. We never send your name, email address or username, your account balances or other amounts, or any message or other text written by you or your financial institution.
+
+Your name, email address and username can be shown only to authorized support staff, on their own screen, and every such view is recorded. The AI never sees them.
+
+Staff conversations with these tools expire after 7 days, and the tools keep no memory between conversations.
+
+[OWNER TO CONFIRM: provider data-retention terms]
+
 ## 5. Sharing
 
 We share information only with service providers who help us operate the Service — Plaid for financial-data connectivity, OpenAI for AI processing, and our hosting, database, email-delivery and error-monitoring providers — and only as needed to provide it. We may disclose information if required by law.
