@@ -30,6 +30,13 @@
  * customer must fix (explanations.ts remedyFor = customer-reconnect /
  * customer-re-add, or a NEEDS_REAUTH connection) NEVER offers Resync — a
  * server retry cannot fix it. Resync is offered only where a retry can help.
+ *
+ * INCIDENT DRAWER PR-A (owner 11-08, S2 09gg a) — `component`: the job the
+ * newest occurrence was observed under, WORDED here (JOB_LABELS; an
+ * unregistered ledger name becomes UNKNOWN_JOB_LABEL — never the raw string),
+ * plus the verdict's operation label and domain. `jobRunId` rides the OPS tier
+ * only (S2). `subjectRef` (CS tier only) is the opaque PRIV-ref the CS drawer
+ * shows in place of the raw customer id; the route computes it server-side.
  */
 
 import type {
@@ -47,6 +54,8 @@ import type {
 import type { IncidentNavigationLinkDTO } from "./related-navigation";
 import { deriveDisplayStatus, isOpenState, type DisplayStatus } from "./display-status";
 import { remedyFor, type RemedyClass } from "./explanations";
+import { JOB_LABELS } from "@/components/platform/ops-visual/job-catalog";
+import { OPAQUE_USER_REF_FALLBACK } from "@/lib/platform/opaque-user-ref-format";
 
 export type IncidentTier = "ops" | "cs";
 
@@ -84,6 +93,8 @@ export interface IncidentRowDTO {
   causeStatus: IncidentVerdict["causeStatus"];
   causeCode: string | null;
   subjectUserId?: string | null;
+  /** CS tier ONLY: the opaque PRIV-ref of `subjectUserId` (server-computed) — what the CS list and drawer SHOW. */
+  subjectRef?: string | null;
 }
 
 export type RecoveryActionDTO =
@@ -135,6 +146,39 @@ export interface IncidentDiagnosisDTO {
   recurrence: IncidentRecurrenceDTO;
 }
 
+/**
+ * Incident drawer PR-A — the job / component the incident was observed under.
+ * Null when the newest occurrence names no job. Words only, except `jobRunId`
+ * (an opaque run id; OPS tier only — absent on CS).
+ */
+export interface IncidentComponentDTO {
+  /** JOB_LABELS word; UNKNOWN_JOB_LABEL for an unregistered job — never the raw ledger name. */
+  jobLabel: string;
+  jobRunId?: string;
+  operationLabel?: string;
+  domain?: string;
+}
+
+/** The word for a job the catalogue does not know (the raw internal name is never shown). */
+export const UNKNOWN_JOB_LABEL = "Unrecognised scheduled job";
+const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The component block (pure): a job ⇒ its client word; no job ⇒ null. */
+export function incidentComponentOf(
+  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "component">,
+  tier: IncidentTier,
+): IncidentComponentDTO | null {
+  const c = inv.component;
+  if (!c || typeof c.jobName !== "string" || c.jobName === "") return null;
+  const label = Object.prototype.hasOwnProperty.call(JOB_LABELS, c.jobName) ? (JOB_LABELS as Record<string, string>)[c.jobName] : UNKNOWN_JOB_LABEL;
+  const out: IncidentComponentDTO = { jobLabel: label };
+  if (tier === "ops" && typeof c.jobRunId === "string" && RUN_ID.test(c.jobRunId)) out.jobRunId = c.jobRunId;
+  const v = inv.verdict;
+  if (typeof v.operationLabel === "string" && v.operationLabel !== "") out.operationLabel = v.operationLabel;
+  if (typeof v.domain === "string" && v.domain !== "") out.domain = v.domain;
+  return out;
+}
+
 export interface IncidentDetailDTO {
   tier: IncidentTier;
   incident: IncidentRowDTO;
@@ -158,6 +202,14 @@ export interface IncidentDetailDTO {
   /** Incident detail v1. */
   summary: IncidentSummaryDTO;
   diagnosis: IncidentDiagnosisDTO;
+  /** Incident drawer PR-A — the job / component (null ⇒ not a job incident). */
+  component: IncidentComponentDTO | null;
+  /**
+   * CS tier ONLY: the attributed customer's opaque PRIV-ref ("user #…", or
+   * "customer" without a key) — what the drawer shows instead of the raw id.
+   * Null when no customer is attributed. Absent on the ops tier.
+   */
+  subjectRef?: string | null;
   checkedAt: string;
 }
 
@@ -168,7 +220,7 @@ export function lifecycleActionsFor(v: Pick<IncidentVerdict, "availableActions">
 }
 
 /** THE allowlist projection. Copies named fields only; identity only for the cs tier. */
-export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: IncidentTier): IncidentRowDTO {
+export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: IncidentTier, subjectRefOf?: (userId: string) => string): IncidentRowDTO {
   const row: IncidentRowDTO = {
     id: v.id, state: v.state, freshness: v.freshness, closure: v.closure, closureDerived: v.closureDerived,
     kind: v.kind, provider: v.provider, domain: v.domain, severity: v.severity, effectiveSeverity: v.effectiveSeverity,
@@ -181,7 +233,11 @@ export function incidentRowDTO(v: IncidentVerdict | CsIncidentVerdict, tier: Inc
     recovery: { ...v.recovery },
     causeStatus: v.causeStatus, causeCode: v.causeCode,
   };
-  if (tier === "cs") row.subjectUserId = "subjectUserId" in v ? v.subjectUserId : null;
+  if (tier === "cs") {
+    row.subjectUserId = "subjectUserId" in v ? v.subjectUserId : null;
+    // PRIV-ref (P3, S2): the reference shown in place of the raw id; fail-closed word without a ref function.
+    row.subjectRef = row.subjectUserId ? (subjectRefOf ? subjectRefOf(row.subjectUserId) : OPAQUE_USER_REF_FALLBACK) : null;
+  }
   return row;
 }
 
@@ -281,29 +337,44 @@ export function incidentDiagnosisOf(
   };
 }
 
-export function incidentListDTO(r: IncidentSearchResult<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, fromClamped: boolean): IncidentListDTO {
+export function incidentListDTO(
+  r: IncidentSearchResult<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, fromClamped: boolean, opts?: IncidentDetailOptions,
+): IncidentListDTO {
   return {
-    tier, items: r.items.map((v) => incidentRowDTO(v, tier)), total: r.total, page: r.page, pageSize: r.pageSize,
+    tier, items: r.items.map((v) => incidentRowDTO(v, tier, opts?.subjectRefOf)), total: r.total, page: r.page, pageSize: r.pageSize,
     truncated: r.truncated, scanned: r.scanned, facets: r.facets, checkedAt: now.toISOString(), fromClamped,
   };
 }
 
-export function incidentDetailDTO(inv: IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date): IncidentDetailDTO {
-  return {
+export interface IncidentDetailOptions {
+  /** CS tier: the server-side PRIV-ref of a customer id (lib/platform/opaque-user-ref.ts). Absent ⇒ the fail-closed word. */
+  subjectRefOf?: (userId: string) => string;
+}
+
+export function incidentDetailDTO(
+  inv: IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, tier: IncidentTier, now: Date, opts?: IncidentDetailOptions,
+): IncidentDetailDTO {
+  const dto: IncidentDetailDTO = {
     tier,
-    incident: incidentRowDTO(inv.verdict, tier),
+    incident: incidentRowDTO(inv.verdict, tier, opts?.subjectRefOf),
     evidence: inv.evidence ? { ...inv.evidence } : null,
     resolutionReasonCode: inv.resolutionReasonCode,
     timeline: { source: inv.timeline.source, truncated: inv.timeline.truncated, events: inv.timeline.events.map((e) => ({ ...e })) },
     affected: { ...inv.affected },
-    related: inv.related.map((l) => ({ id: l.id, kind: l.kind, incident: l.incident ? incidentRowDTO(l.incident, tier) : null })),
-    recurrences: inv.recurrences.map((v) => incidentRowDTO(v, tier)),
+    related: inv.related.map((l) => ({ id: l.id, kind: l.kind, incident: l.incident ? incidentRowDTO(l.incident, tier, opts?.subjectRefOf) : null })),
+    recurrences: inv.recurrences.map((v) => incidentRowDTO(v, tier, opts?.subjectRefOf)),
     recurrencesTruncated: inv.recurrencesTruncated,
     archive: { ...inv.archive },
     recovery: recoveryActionsFor(inv, tier),
     lifecycleActions: lifecycleActionsFor(inv.verdict, tier),
     summary: incidentSummaryOf(inv),
     diagnosis: incidentDiagnosisOf(inv),
+    component: incidentComponentOf(inv, tier),
     checkedAt: now.toISOString(),
   };
+  if (tier === "cs") {
+    const userId = "subjectUserId" in inv.verdict ? inv.verdict.subjectUserId : null;
+    dto.subjectRef = userId ? (opts?.subjectRefOf ? opts.subjectRefOf(userId) : OPAQUE_USER_REF_FALLBACK) : null;
+  }
+  return dto;
 }
