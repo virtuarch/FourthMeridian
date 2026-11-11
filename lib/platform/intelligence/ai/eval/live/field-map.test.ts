@@ -26,6 +26,8 @@ import { stageKeyOf } from "../../tools/packs/customers";
 import { CONNECTION_ERROR_CODES as PACK_CONNECTION_ERROR_CODES, CUSTOMER_CONNECTION_SCHEMA, overviewOfHealth } from "../../tools/packs/connections";
 import { INCIDENT_LIST_SCHEMA } from "../../tools/packs/incidents";
 import { ONBOARDING_TIMELINE_SCHEMA, importsOf } from "../../tools/packs/onboarding";
+import { recordFieldCodes } from "../../tools/figure-sources";
+import { T2_FIELD_NAMES } from "../../evidence/record-envelope";
 
 let failures = 0;
 let passed = 0;
@@ -45,6 +47,13 @@ const EXPECTED_COUNTS: Record<string, { mapped: number; unmapped: number }> = {
   incidents: { mapped: 34, unmapped: 15 },
   onboarding: { mapped: 38, unmapped: 5 },
   connections: { mapped: 28, unmapped: 10 },
+};
+/** B1: per pack, MAPPED facts split by source, how many the figureSources annotation can carry, how many the model can place today. */
+const EXPECTED_B1: Record<string, { mapped: number; record: number; aggregate: number; annotatable: number; placeableToday: number }> = {
+  customers: { mapped: 12, record: 12, aggregate: 0, annotatable: 12, placeableToday: 0 },
+  incidents: { mapped: 34, record: 34, aggregate: 0, annotatable: 34, placeableToday: 0 },
+  onboarding: { mapped: 38, record: 29, aggregate: 9, annotatable: 29, placeableToday: 0 },
+  connections: { mapped: 28, record: 17, aggregate: 11, annotatable: 17, placeableToday: 0 },
 };
 
 console.log("\nG2 — completeness and shape\n");
@@ -141,6 +150,40 @@ console.log("\nG2 — per-pack mapped / unmapped report\n");
   for (const u of unmappedList) console.log(`    UNMAPPED ${u}`);
   check("one fact per guarded (case, oracle field)", facts.length === guarded.reduce((a, c) => a + (c.oracle.kind === "guarded-route" ? c.oracle.fields.length : 0), 0));
   check("pinned per-pack counts (a change to the mapping or the cases is deliberate)", JSON.stringify(byPack) === JSON.stringify(EXPECTED_COUNTS), byPack);
+}
+
+console.log("\nB1 — which MAPPED facts the response's figureSources can carry end-to-end (per pack)\n");
+{
+  // The served annotation (tools/figure-sources.ts) carries a record span as (recordKind, fieldCode) from the closed
+  // registry sets, and a metric figure as (metricKey, resultPath) under get_metric. A MAPPED fact is:
+  //   · ANNOTATABLE — its source is a record field the annotation can name (score.ts observeServedAnswer → oracleKeyFor);
+  //   · PLACEABLE TODAY — the model can actually put that field in an answer: {{r:h|<field>}} resolves only for
+  //     "ref" + the schema's t2Fields (authz/boundary.ts recordRef fields — pinned below); an AGGREGATE pack figure
+  //     has NO placeholder at all (only get_metric envelopes have {{m:…}}; any other digit replaces the answer).
+  const FIELDS = recordFieldCodes();
+  const boundary = read("lib/platform/intelligence/ai/authz/boundary.ts");
+  check("pinned: a record placeholder resolves only for ref + the schema's t2Fields (authz/boundary.ts)",
+    boundary.includes("fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])])"));
+  check("no MAPPED entry is sourced from get_metric (a metric figure's resultPath maps to no oracle field today)",
+    !LIVE_FIELD_MAP.some((e) => e.status === "MAPPED" && (e.tool as string) === "get_metric"));
+  const PLACEABLE = new Set<string>(["ref", ...T2_FIELD_NAMES]);
+  const facts = guarded.flatMap((c) => guardedFacts(c)).filter((f) => f.status === "MAPPED");
+  const report: Record<string, { mapped: number; record: number; aggregate: number; annotatable: number; placeableToday: number }> = {};
+  for (const p of PA1_PACKS) report[p] = { mapped: 0, record: 0, aggregate: 0, annotatable: 0, placeableToday: 0 };
+  for (const f of facts) {
+    if (f.status !== "MAPPED") continue;
+    const r = (report[f.pack] ??= { mapped: 0, record: 0, aggregate: 0, annotatable: 0, placeableToday: 0 });
+    r.mapped++;
+    const s = f.entry.source;
+    if (s.kind === "aggregate") { r.aggregate++; continue; }
+    r.record++;
+    if (FIELDS.get(s.recordKind)?.has(s.field)) r.annotatable++;
+    if (PLACEABLE.has(s.field)) r.placeableToday++;
+  }
+  console.log(`    B1 matchability by pack: ${JSON.stringify(report)}`);
+  check("every MAPPED record fact is annotatable (its kind + field is a closed registry code the annotation can carry)",
+    Object.values(report).every((r) => r.annotatable === r.record));
+  check("pinned B1 report (a change to the mapping, the cases or the placeable set is deliberate)", JSON.stringify(report) === JSON.stringify(EXPECTED_B1), report);
 }
 
 console.log("\nG2 — purity and isolation\n");

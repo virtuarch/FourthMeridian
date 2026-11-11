@@ -44,7 +44,14 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 export type TypedAnswerSegment =
   | { kind: "text"; text: string }
   /** `figureClass: "STALE"` ⇔ the envelope's figure is not current (its text carries the stale wording; absent = current). */
-  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass }
+  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass;
+      /**
+       * B1 — the envelope PART the placeholder resolved to (a part key the metric's retrieval contract declares;
+       * absent for a scalar). Set by the fill (compose/placeholders.ts, briefing.ts fig); read only by
+       * tools/figure-sources.ts for the response's metadata-only `figureSources`. Never stored (storedAnswerOf
+       * copies named fields only).
+       */
+      part?: string }
   | { kind: "link"; text: string; href: string }
   | ServerNoteSegment
   /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */

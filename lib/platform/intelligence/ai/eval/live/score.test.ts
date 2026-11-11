@@ -14,12 +14,16 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import type { LiveCase } from "./cases";
+import { LIVE_CASES, type LiveCase } from "./cases";
+import { guardedFacts } from "./field-map";
 import {
-  causalFindings, evaluatePackGates, numericClaims, scoreCase, scorePackRun,
-  EXPORT_LEAK_CHECK, IDENTITY_FALLBACK_LITERAL, RECORD_GONE_LITERAL, SUBJECT_UNRESOLVED_LITERAL,
+  causalFindings, evaluatePackGates, numericClaims, observeServedAnswer, oracleKeyOfSource, scoreCase, scorePackRun,
+  EXPORT_LEAK_CHECK, IDENTITY_FALLBACK_LITERAL, RECORD_GONE_LITERAL, RECORD_PENDING_LITERAL, SERVED_FIGURE_SOURCE_KEYS, SUBJECT_UNRESOLVED_LITERAL,
   type CaseObservation, type ObservedSegment, type ObservedTurn, type PackRunScore, type ScoreContext,
 } from "./score";
+import { FIGURE_SOURCE_KEYS, alignedFigureSources, placedSpansOf, storedFigureSources } from "../../tools/figure-sources";
+import { RECORD_PENDING_TEXT, type RecordSpan } from "../../compose/record";
+import type { TypedAnswerSegment } from "../../compose/segments";
 
 let failures = 0;
 let passed = 0;
@@ -252,6 +256,51 @@ console.log("\ne0-live score — pack-run aggregation and §6.7 gates\n");
   check("mean < 0.98 ⇒ FAIL", evaluatePackGates("customers", [{ ...good, parity: 0.96 }, { ...good, parity: 0.97 }, good]).parity === "FAIL");
   check("one leak in any run ⇒ FAIL", evaluatePackGates("customers", [good, good, { ...good, identityLeak: 1 }]).verdict === "FAIL");
   check("implicit misses do not fail the gate (report-only)", evaluatePackGates("customers", [good, good, { ...good, causal: { tempting: 1, serverMarked: 0, implicitMiss: 3 } }]).verdict === "PASS");
+}
+
+console.log("\ne0-live score — B1: a served response's figureSources key its segments end-to-end (oracleKeyFor)\n");
+{
+  check("SERVED_FIGURE_SOURCE_KEYS = the served FIGURE_SOURCE_KEYS", JSON.stringify(SERVED_FIGURE_SOURCE_KEYS) === JSON.stringify(FIGURE_SOURCE_KEYS));
+  check("[restricted] = RECORD_PENDING_TEXT", RECORD_PENDING_LITERAL === RECORD_PENDING_TEXT);
+  const c = LIVE_CASES.find((x) => x.id.startsWith("L.conn.customer.C26."))!;
+  check("the case: one MAPPED fact, connections[].healthState via get_customer_connections (CONNECTION.healthState)",
+    !!c && guardedFacts(c).length === 1 && guardedFacts(c)[0].status === "MAPPED", c && guardedFacts(c));
+  // A synthetic served CONVERSATION turn, built by the SERVED code: the typed answer's record span → the stored
+  // segments (1:1 with assistantMessage.content) → storedFigureSources. The record renders "NEEDS_REAUTH" here.
+  const span: RecordSpan = { kind: "record", text: RECORD_PENDING_TEXT, rk: "CONNECTION", rid: "p:test-item-0001", a: "CUSTOMER_SUCCESS", f: "healthState" };
+  const typed: TypedAnswerSegment[] = [{ kind: "text", text: "Their wallet connection is " }, span, { kind: "text", text: "." }];
+  const content = [{ kind: "text", text: "Their wallet connection is " }, { kind: "text", text: "NEEDS_REAUTH" }, { kind: "text", text: "." }];
+  const stored = [{ kind: "text" }, { kind: "record", rk: "CONNECTION", rid: "p:test-item-0001", a: "CUSTOMER_SUCCESS", f: "healthState" }, { kind: "text" }];
+  const figureSources = storedFigureSources(placedSpansOf(typed), stored, content);
+  const segs = observeServedAnswer(c, content, figureSources, ["get_customer_connections"]);
+  check("observeServedAnswer: the span becomes a record segment keyed connections[].healthState, valued by its rendered text",
+    JSON.stringify(segs) === JSON.stringify([
+      { kind: "text", text: "Their wallet connection is " },
+      { kind: "record", text: "NEEDS_REAUTH", value: "NEEDS_REAUTH", resolved: true, key: "connections[].healthState" },
+      { kind: "text", text: "." },
+    ]), segs);
+  const oracle = { "connections[].healthState": ["HEALTHY", "NEEDS_REAUTH"] };
+  const pass = scoreCase(c, obs(c, [turn(segs, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX);
+  check("end-to-end: the mapped fact MATCHES the oracle ⇒ parity PASS, no fail", pass.parity === "PASS" && pass.fails.length === 0 && pass.facts.mapped === 1, pass);
+  const wrong = observeServedAnswer(c, content.map((x, i) => (i === 1 ? { ...x, text: "ERROR" } : x)), figureSources.map((e) => ({ ...e, end: 5 })), ["get_customer_connections"]);
+  check("…a different rendered value ⇒ PARITY_MISMATCH", scoreCase(c, obs(c, [turn(wrong, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).fails.includes("PARITY_MISMATCH"));
+  const none = observeServedAnswer(c, content, undefined, ["get_customer_connections"]);
+  check("…without figureSources nothing is keyed ⇒ PARITY_MISSING (the gap B1 closes)", scoreCase(c, obs(c, [turn(none, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).fails.includes("PARITY_MISSING"));
+  // The same through the /ask display answer (offsets inside one merged text segment).
+  const display = [{ kind: "text", text: "Their wallet connection is NEEDS_REAUTH." }];
+  const askSources = alignedFigureSources(typed, display, () => "NEEDS_REAUTH");
+  const askSegs = observeServedAnswer(c, display, askSources, ["get_customer_connections"]);
+  check("/ask: the offsets split the merged text and key the span the same way",
+    askSegs.length === 3 && askSegs[1].kind === "record" && askSegs[1].key === "connections[].healthState" && askSegs[1].value === "NEEDS_REAUTH"
+    && scoreCase(c, obs(c, [turn(askSegs, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).parity === "PASS", askSegs);
+  const restricted = observeServedAnswer(c, [{ kind: "text", text: `x ${RECORD_PENDING_TEXT}` }], [{ segment: 0, start: 2, end: 2 + RECORD_PENDING_TEXT.length, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]);
+  check("a span rendered as the fail-closed marker is keyed but unresolved (never a pass)", restricted[1].resolved === false && restricted[1].key === "connections[].healthState");
+  check("a metric source keys only through get_metric (no field-map entry today ⇒ unkeyed)",
+    oracleKeyOfSource(c, { segment: 0, start: 0, end: 1, source: "metric", metricKey: "incident-broken-now@1", resultPath: "value" }, ["get_customer_connections"]) === null);
+  check("an out-of-bounds / overlapping source is ignored (never guessed)",
+    observeServedAnswer(c, content, [{ segment: 1, start: 0, end: 99, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]).every((s) => s.key === undefined)
+    && observeServedAnswer(c, display, [...askSources, { ...askSources[0], start: askSources[0].start + 1 }]).filter((s) => s.key !== undefined).length === 1);
+  check("the scorer output still carries no value", !JSON.stringify(pass).includes("NEEDS_REAUTH"));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed, ${passed} passed`); process.exit(1); }

@@ -44,7 +44,9 @@
  * tool names, outcome codes, server-returned registry ids, placeholder counts —
  * never text, never a value). S2 09hu G1: the 200 body also carries `toolTrace`
  * (tools/tool-trace.ts — tool / pack / tier / outcome / calls per tool, never an
- * argument, result, ref or id; the same for every operator; nothing stored).
+ * argument, result, ref or id; the same for every operator; nothing stored). B1: and `figureSources`
+ * (tools/figure-sources.ts — where each placed figure / record span sits in `answer` and its closed source:
+ * record kind + field code, or metric key + result path; never an id, handle or value; nothing stored).
  */
 
 import { randomUUID } from "node:crypto";
@@ -66,6 +68,7 @@ import { isSubjectResolutionEnabled, platformAiSubjectDeps } from "@/lib/platfor
 import { platformAiPickerGuard } from "@/lib/platform/intelligence/ai/authz/people.server";
 import { platformAiPackEnabled, platformAiTurnRouter, routePlatformAiPacks } from "@/lib/platform/intelligence/ai/engine/router";
 import { platformAiToolTrace } from "@/lib/platform/intelligence/ai/tools/tool-trace";
+import { alignedFigureSources } from "@/lib/platform/intelligence/ai/tools/figure-sources";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
@@ -179,6 +182,8 @@ export async function POST(req: NextRequest) {
     traceTurn: (line) => console.info(`[platform-ai] turn ${line} (${PLATFORM_AI_ROUTE_KEY})`),
     // S2 09hu G1 — the response's metadata-only tool trace (tool / pack / tier / outcome / calls), the same for every operator.
     toolTrace: platformAiToolTrace,
+    // B1 — the response's metadata-only figure sources (segment / offsets + record kind & field code, or metric key & result path).
+    figureSources: alignedFigureSources,
   });
   return NextResponse.json(res.body, { status: res.status, headers: { ...NO_STORE, ...(res.headers ?? {}) } });
 }

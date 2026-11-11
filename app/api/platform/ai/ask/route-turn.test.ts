@@ -63,6 +63,7 @@ type Answer = {
   claims: { claims: number; resolved: number; unresolved: number; admitted: number };
   trace: { tool: string; outcome: string; refs: string[]; drillLink?: boolean }[];
   toolTrace?: { tool: string; pack: string; tier: string; outcome: string; calls: number }[];
+  figureSources?: { segment: number; start: number; end: number; source: string; metricKey?: string; resultPath?: string }[];
 };
 
 async function main() {
@@ -138,6 +139,10 @@ async function main() {
         { tool: "get_metric", pack: "metrics", tier: "OPS", outcome: "ok", calls: 1 },
         { tool: "find_page", pack: "navigation", tier: "OPS", outcome: "ok", calls: 1 },
       ]) && !JSON.stringify(r.body.toolTrace).includes("incident-broken-now"), r.body.toolTrace);
+    t.check("B1: the response carries figureSources — the placed figure's segment / offsets + metric key + result path, never its value",
+      JSON.stringify(r.body.figureSources) === JSON.stringify([
+        { segment: 0, start: 0, end: incidentTotalText(tileBody).length, source: "metric", metricKey: "incident-broken-now@1", resultPath: "value" },
+      ]) && r.body.answer[0]?.text.slice(0, incidentTotalText(tileBody).length) === incidentTotalText(tileBody), { fs: r.body.figureSources, answer: r.body.answer });
     const line = logs.find((l) => l.startsWith("[platform-ai] turn "));
     t.check("the route logs ONE metadata line per answered turn — no question or answer text",
       logs.filter((l) => l.startsWith("[platform-ai] turn ")).length === 2 && !!line && line.includes("get_metric:MEASURED(incident-broken-now@1)+drill") && line.includes("claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED") && !/broken right now|See \[|incidents are broken/.test(logs.join("\n")), logs);

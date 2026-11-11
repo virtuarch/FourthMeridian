@@ -1431,6 +1431,14 @@ export interface PlatformAiAskDeps {
    * (the same for every operator; nothing is stored). The route always passes it.
    */
   toolTrace?(trace: readonly PlatformAiTraceStep[]): unknown;
+  /**
+   * B1 — the response's metadata-only figure sources (tools/figure-sources.ts alignedFigureSources), injected so
+   * this file imports no registry: each placed figure / record span of the TYPED answer, positioned on the
+   * display answer the 200 body carries, with its closed source (record kind + field code / metric key + result
+   * path) — never an id, handle or value. Added to the body as `figureSources` (the same for every operator;
+   * nothing is stored). The route always passes it.
+   */
+  figureSources?(typed: readonly TypedAnswerSegment[], answer: readonly AnswerSegment[], recordText: (span: RecordSpan) => string): unknown;
   /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
   invoke?: PlatformAiToolInvoker;
   /** P3 — the turn boundary's tool offer (the route passes it with `invoke`). */
@@ -1596,15 +1604,19 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     });
     // P4: a placed record is rendered for THIS viewer at read time (the only T2 path); none ⇒ the answer is unchanged.
     const spans = record.typed.filter((t): t is RecordSpan => t.kind === "record");
+    // B1: the text the display shows for each record span (rendered for this viewer, else its fail-closed marker).
+    let recordText = (t: RecordSpan): string => t.text;
     if (spans.length > 0 && deps.renderRecords) {
       let rendered: ReadonlyMap<RecordSpan, string>;
       try { rendered = await deps.renderRecords(spans); } catch { rendered = new Map(); }
       result.answer = displayWithRecords(record.typed, rendered);
+      recordText = (t) => rendered.get(t) ?? RECORD_GONE_TEXT;
     }
     if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
-    return { status: 200, body: { ...result, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(result.trace) } : {}) } };
+    return { status: 200, body: { ...result, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(result.trace) } : {}),
+      ...(deps.figureSources ? { figureSources: deps.figureSources(record.typed, result.answer, recordText) } : {}) } };
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);
