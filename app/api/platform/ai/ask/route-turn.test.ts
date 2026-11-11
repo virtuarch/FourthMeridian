@@ -62,6 +62,7 @@ type Answer = {
   grounding: { replaced: boolean; verdict: string };
   claims: { claims: number; resolved: number; unresolved: number; admitted: number };
   trace: { tool: string; outcome: string; refs: string[]; drillLink?: boolean }[];
+  toolTrace?: { tool: string; pack: string; tier: string; outcome: string; calls: number }[];
 };
 
 async function main() {
@@ -132,6 +133,11 @@ async function main() {
     t.section("3. the metadata-only trace");
     t.check("the response carries the trace: get_metric MEASURED (+drill), find_page OK",
       r.body.trace.map((x) => `${x.tool}:${x.outcome}`).join() === "get_metric:MEASURED,find_page:OK" && r.body.trace[0].drillLink === true, r.body.trace);
+    t.check("S2 09hu G1: the response carries toolTrace — tool / pack / tier / outcome / calls only, no ref",
+      JSON.stringify(r.body.toolTrace) === JSON.stringify([
+        { tool: "get_metric", pack: "metrics", tier: "OPS", outcome: "ok", calls: 1 },
+        { tool: "find_page", pack: "navigation", tier: "OPS", outcome: "ok", calls: 1 },
+      ]) && !JSON.stringify(r.body.toolTrace).includes("incident-broken-now"), r.body.toolTrace);
     const line = logs.find((l) => l.startsWith("[platform-ai] turn "));
     t.check("the route logs ONE metadata line per answered turn — no question or answer text",
       logs.filter((l) => l.startsWith("[platform-ai] turn ")).length === 2 && !!line && line.includes("get_metric:MEASURED(incident-broken-now@1)+drill") && line.includes("claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED") && !/broken right now|See \[|incidents are broken/.test(logs.join("\n")), logs);

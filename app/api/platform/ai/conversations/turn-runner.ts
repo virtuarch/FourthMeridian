@@ -41,6 +41,7 @@ import { platformAiSubjectDeps } from "@/lib/platform/intelligence/ai/authz/subj
 import { STORED_NOTES_MAX } from "@/lib/platform/intelligence/ai/conversations/answer";
 import { answerReadable, packAreasRead, withAreasRead } from "@/lib/platform/intelligence/ai/conversations/multi-area";
 import { CORE_PACKS } from "@/lib/platform/intelligence/ai/engine/router";
+import { platformAiToolTrace } from "@/lib/platform/intelligence/ai/tools/tool-trace";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -124,10 +125,13 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
   const outcome = access.turnAreas && run.outcome.status === "COMPLETE"
     ? { ...run.outcome, evidenceRefs: withAreasRead(run.outcome.evidenceRefs, packAreasRead(boundary.toolAreas(), CORE_PACKS)) }
     : run.outcome;
+  // S2 09hu G1 — the response's metadata-only tool trace (tool / pack / tier / outcome / calls; the same for every
+  // operator). The handler splits it off BEFORE the settle: it is never stored.
+  const toolTrace = platformAiToolTrace(run.result?.trace ?? []);
   // P5: the one uniform server note for any unresolved subject (code-written; never says why).
   if (subjectNote && outcome.status === "COMPLETE" && !outcome.answer.notes.includes(subjectNote) && outcome.answer.notes.length < STORED_NOTES_MAX) {
-    return { ...outcome, answer: { ...outcome.answer, notes: [...outcome.answer.notes, subjectNote] } };
+    return { ...outcome, answer: { ...outcome.answer, notes: [...outcome.answer.notes, subjectNote] }, toolTrace };
   }
-  return outcome;
+  return { ...outcome, toolTrace };
 };
 

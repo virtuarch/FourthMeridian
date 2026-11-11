@@ -428,6 +428,13 @@ export interface PlatformAiTraceStep {
    * `get_metric:UNAVAILABLE[<code>](<key>)` by traceLine.
    */
   unavailable?: UnavailableCode;
+  /**
+   * S2 09hu G1 — set ONLY by the turn boundary (authz/boundary.ts) when it refused the call for
+   * scope / pack / tier / handle / revalidation (any denial reason except UNKNOWN_TOOL and
+   * ARGS_INVALID). The model saw the same NOT_FOUND either way; this flag exists so the response's
+   * metadata trace (tools/tool-trace.ts) can say "refused" rather than "not_found". A flag, never a reason.
+   */
+  refused?: true;
 }
 
 /** The envelope's UNAVAILABLE code for the trace (set by retrieval from its closed enum — never text). */
@@ -1418,6 +1425,12 @@ export interface PlatformAiAskDeps {
   countUngrounded?(verdict: PlaceholderVerdict, unresolved: number): void;
   /** One metadata line per answered turn (traceLine: tool codes and registry ids, never text). */
   traceTurn?(line: string): void;
+  /**
+   * S2 09hu G1 — the response's metadata-only tool trace (tools/tool-trace.ts platformAiToolTrace),
+   * injected so this file imports no registry. Its result is added to the 200 body as `toolTrace`
+   * (the same for every operator; nothing is stored). The route always passes it.
+   */
+  toolTrace?(trace: readonly PlatformAiTraceStep[]): unknown;
   /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
   invoke?: PlatformAiToolInvoker;
   /** P3 — the turn boundary's tool offer (the route passes it with `invoke`). */
@@ -1591,7 +1604,7 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
-    return { status: 200, body: { ...result } };
+    return { status: 200, body: { ...result, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(result.trace) } : {}) } };
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);

@@ -40,14 +40,15 @@ import {
 } from "./answer";
 import type { TurnRecordLookup } from "../compose/record";
 import type { MemoryProposalCard, MemoryTurn } from "../memory/turn";
+import type { PlatformAiToolTraceEntry } from "../tools/tool-trace";
 import { assemblePlatformAiHistory, type AssembledHistory, type HistoryMessage, type HistoryScope } from "./history";
 import { answerReadable } from "./multi-area";
 import type { PlatformArea } from "@prisma/client";
 
 /** The settle outcome (store.ts SettleOutcome, restated here so this module stays free of the data module). */
 export type ConversationTurnOutcome =
-  | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null }
-  | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH" };
+  | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[] }
+  | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH"; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[] };
 
 /** What the CURRENT token can see, for history's earlier-evidence filter: the binding's own accessors. */
 export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric" | "resolvePage">, reminted?: ReadonlyMap<StoredRecordSegment, string>, heldAreas?: ReadonlySet<PlatformArea>): HistoryScope {
@@ -196,7 +197,7 @@ export interface ConversationTurnRun {
   history: AssembledHistory | null;
   /** The provider transcript (tests only; the route never logs or stores it). */
   transcript: unknown[] | null;
-  /** The v0 result (tests only). */
+  /** The v0 result (tests; the turn runner reads ONLY its metadata `trace` for the response's toolTrace — S2 09hu G1). */
   result: PlatformAiAnswer | null;
 }
 
