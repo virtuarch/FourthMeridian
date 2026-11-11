@@ -282,6 +282,162 @@ IMPLEMENTED, PR #284.
 - **Rate limits.** The CS customer list is limited to 60 requests per minute per operator;
   a reference search additionally spends a 20 per minute per-operator bucket.
 
+## Platform AI (operator) privacy disclosure (DRAFT — OWNER APPROVAL REQUIRED before publishing)
+
+**Status:** DRAFT, internal operator notice. Not published anywhere. Session 2 reviews the facts;
+the owner approves before it is shown to operators. Rules applied: S2 D1 (every statement about
+our side cites code), D2 (provider facts only from the provider's current published API terms,
+with URL and retrieval date; anything about our account is OWNER-VERIFY), D3 (internal operators
+only; no public-policy edit), D4 (no "no customer data is sent" claim), R5 (provider retention
+kept separate from ours). Code verified on `develop` at `7ab96db` (2026-11-04), covering Platform
+AI v0 (PRs #395 and #408); section 2 verified on `develop` at `8acb690` (#424, B11 storage). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/env.ts:875`). Enabled on Preview (develop) only since 2026-11-04 for operator acceptance; Production prohibited.
+
+### 1. Current behaviour (v0, verified in code)
+
+**Operator notice (proposed text):**
+
+> **Platform AI: what happens to your question**
+>
+> - **Your question goes to our AI model provider.** When you ask Platform AI a question, the
+>   question and the Platform figures it looks up are sent to our AI model provider to produce
+>   the answer.
+>   Cost figures you ask about (our AI spend, provider cost and operating-cost parts — aggregates
+>   of our own costs, not customer data) are sent to the AI provider too.
+> - **It reads aggregated platform metrics.** Platform AI reads aggregated platform metrics;
+>   operators are instructed not to enter personal data, and inputs are scrubbed. Before your
+>   question leaves our servers, email addresses, record ids and long digit runs (such as
+>   account or card numbers) are replaced with placeholders. The scrub reduces what is sent; it
+>   does not guarantee it. Names, street addresses and other free text are not scrubbed, so do
+>   not type customer details.
+> - **Nothing about your question or the answer is stored.** We do not keep your question or
+>   the answer on our servers, and the page does not keep a history. Once you leave or ask
+>   again, the previous answer is gone.
+> - **What we do record is metadata only.** For each model call we record who asked, when,
+>   which model, token counts, timing and whether it succeeded, never the question or answer
+>   text. For each answered question, a trace of which lookups ran (tool names, outcome codes
+>   and the metric or page ids the server returned) is written to the server log and shown to
+>   you with the answer. The trace contains no question or answer text.
+> - **No memory between questions.** Each question starts fresh. Platform AI does not see your
+>   earlier questions or anyone else's.
+> - **Read-only.** Platform AI can look up metrics and Platform pages that you can already see.
+>   It cannot change anything.
+> - **The provider's own handling** of what we send is described separately below and is
+>   governed by the provider's terms.
+
+**Evidence (claim → code → status):**
+
+| Claim | Code (develop `7ab96db`) | Status |
+|---|---|---|
+| (a) The question is sent to the AI provider | `lib/platform/intelligence/ai/core.ts:490-493` (system prompt + scrubbed question are the transcript), `:503` (`generate`); `lib/platform/intelligence/ai/ledger.ts:31-35` → `generateWithTools`; `lib/ai/provider.ts:509-525` (`client.chat.completions.create`) | VERIFIED |
+| (a) Tool results (metric envelopes, registry text, page hrefs) are also sent | `core.ts:513-514` (each tool result is appended to the transcript sent on the next round) | VERIFIED |
+| Metric values are aggregates only | `lib/platform/intelligence/metrics/retrieve-core.ts:439`, `:491` (`isAggregate`; a non-aggregate is refused as UNAVAILABLE) | VERIFIED |
+| (e) Question scrubbed before sending | `core.ts:487` (`scrubOperatorText` before the transcript is built); `lib/ai/privacy/scrub.ts:41-70` (email → `[email]`, cuid/uuid/long ids → `[id]`, ≥ 8-digit groups and any run of 4+ digits → `[number]`, then clipped to 500 characters) | VERIFIED. Not a guarantee: names, addresses and short numbers pass through |
+| (e) Operators instructed not to enter personal data | The system prompt tells the MODEL not to ask for or repeat personal details (`core.ts:127`); since #417 the page tells the OPERATOR not to enter customer names, emails, account numbers or other personal details (`components/platform/PlatformAiAsk.tsx:138`) | VERIFIED (#417) |
+| (b, current) Nothing about the question or answer is stored | `core.ts:40-41`; `app/api/platform/ai/ask/route.ts:27-30`; no Platform AI conversation, thread or message model in `prisma/schema.prisma`; the UI keeps the answer only in React state (`PlatformAiAsk.tsx:8`, `:86-89`); the request body is exactly `{ question }` (`core.ts:610-618`) | VERIFIED |
+| (d) AiInvocation rows are text-free | `prisma/schema.prisma:3544-3629` (no prompt or answer column; `errorCode` is a code, never a message, `:3626-3627`); written with surface `platform_ai`, the operator's id and a random turn id (`ledger.ts:28-35`) | VERIFIED |
+| (d) The per-turn trace is metadata only | `core.ts:185-202` (tool, outcome, server-returned ids), `:468-472` (`traceLine`); logged by `route.ts:144` (`console.info`); returned to the asking operator in the answer body (`core.ts:563`, `route.ts:146`) | VERIFIED |
+| (d) Ungrounded-answer counter is text-free | `route.ts:142` (a count only) | VERIFIED |
+| (d) "Who, when, which lookups" in the audit record | AiInvocation holds who and when (`userId`, `occurredAt`); the lookups are only in the server log trace line, which carries no operator id (`route.ts:144`). No `AuditLog` row is written for a Platform AI turn | PARTIAL: the two records are separate; there is no single audit row |
+| (d) Error monitoring | Request bodies, cookies and query strings are dropped from every event (`lib/monitoring/sentry-options.ts:67-71`); provider failures are captured with tags only (`lib/monitoring/capture.ts:445-473`), plus the SDK's error object | VERIFIED (the provider's error message is not under our control) |
+| (f) No cross-conversation memory | Every turn starts from system prompt + this question only (`core.ts:490-493`); the body accepts only `question` (`core.ts:610-618`); nothing is read back from storage | VERIFIED |
+| (g) Read-only | Four tools, all reads: `list_metrics`, `get_metric`, `find_page`, `open_page` (`core.ts:135-160`, `:183`, `:254-324`); deep-link params for record ids and free text denied (`core.ts:83`) | VERIFIED |
+| Daily cap reads ids only | `lib/platform/ai/platform-ai-turns.ts:25`, `:56` | VERIFIED |
+
+**Provider, model and endpoint in use (code):**
+
+- **Provider:** OpenAI, the only provider the code calls (`lib/ai/provider.ts:6`). The base URL is
+  pinned to the OpenAI API (`provider.ts:51`, `:81-90`), with an optional per-environment project
+  pin (`docs/operations/openai-environment-separation.md`). OpenAI is already named publicly in
+  the AI Disclosures and the Privacy Policy, so the notice may name it.
+- **Endpoint:** Chat Completions (`client.chat.completions.create`, `provider.ts:525`). The request
+  sets no `store` parameter and no other retention-related parameter (`provider.ts:509-516`); the
+  provider documents `store` as default `false` (below).
+- **Model:** `AI_CHAT_MODEL` per environment, the same tier as Conversations (`ledger.ts:38-41`,
+  `provider.ts:124-129`); the code fallback when unset is `gpt-4o-mini`. The deployed value is
+  **OWNER-VERIFY** (the 2026-10-21 audit recorded `gpt-5.1`).
+
+#### 1a. Our retention (Fourth Meridian side)
+
+- Question and answer text: **not stored** by v0 (above); B11 storage, while off, changes nothing (section 2).
+- AiInvocation metadata rows: 90 days, the AI ledger's existing policy
+  (`docs/operations/data-retention.md`, `AiInvocation` row). AiInvocation `userId` is set to null on account purge (same row). Platform AI v0 adds no new table (B11 adds two, off everywhere; section 2).
+- Server log lines (the per-turn trace and the counter): kept for the hosting provider's log
+  retention window. **OWNER-VERIFY** (the plan's log retention is not recorded in code).
+
+#### 1b. The provider's retention and use (OpenAI side)
+
+Source: OpenAI, "Data controls in the OpenAI platform",
+<https://developers.openai.com/api/docs/guides/your-data> (the old `platform.openai.com/docs/guides/your-data`
+URL now redirects there), and the Chat Completions API reference,
+<https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create>.
+Both retrieved **2026-11-04**. The guide shows no last-updated date.
+
+| Fact | What the provider publishes | Status |
+|---|---|---|
+| Training, default | Data sent to the API "is not used to train or improve OpenAI models" unless you "explicitly opt in to share data". The Chat Completions row reads "Data used for training: No". | VERIFIED (published) |
+| Training, our account | Whether any data-sharing opt-in is enabled on our organization or projects | **OWNER-VERIFY** (the public AI Disclosures already state we do not opt in) |
+| Abuse monitoring | "Abuse monitoring logs are generated for all API feature usage and retained for up to 30 days"; they "may contain certain customer content, such as prompts and responses". Chat Completions row: 30 days. | VERIFIED (published) |
+| Application state, Chat Completions | "None", with exceptions: audio outputs (1 hour) and prompt caching (expires after 24 hours). Platform AI sends no audio. | VERIFIED (published) |
+| `store` on Chat Completions | `store` is optional, "default: false" ("Whether or not to store the output of this chat completion request for use in our model distillation or evals products"). Our code does not set it. | VERIFIED (published + code) |
+| Zero Data Retention | Available for `/v1/chat/completions` (and others) "subject to prior approval by OpenAI and acceptance of additional requirements", via sales. Under ZDR, `store` is always treated as `false`. Modified Abuse Monitoring is the alternative that also excludes customer content from abuse logs. | VERIFIED (published) |
+| ZDR or Modified Abuse Monitoring for our account | Whether either is approved and enabled | **OWNER-VERIFY** (not determinable from here; do not assert) |
+| Data residency | A per-project setting available through sales; regions include the US, Europe, the UK, Canada, Japan, Australia and others; regions other than the US need approved abuse-monitoring controls and a Modified Retention amendment. | VERIFIED (published) |
+| Data residency for our projects | Which region our projects use | **OWNER-VERIFY** |
+| Legal-hold or other exceptions to the 30-day window | Not stated on the pages above | UNVERIFIED |
+
+`openai.com/enterprise-privacy` and `openai.com/policies/business-terms` returned HTTP 403 to the
+fetcher on 2026-11-04 and were not used.
+
+### 2. Persistent history (implemented on `develop` for B11 by #424; OFF everywhere)
+
+Conversation storage merged to `develop` in #424 (`8acb690`) and is **off in every environment**.
+It runs only when `PLATFORM_AI_ENABLED`, `PLATFORM_AI_CONVERSATIONS_ENABLED` and
+`PLATFORM_AI_PURGE_ENABLED` are all `"true"`, so storage cannot be on without the retention purge
+(`lib/env.ts:890`); otherwise every conversations route answers 404 before any read. The text below
+is verified against that code. It becomes true for operators only once storage is enabled, and it
+is not published until the owner approves it.
+
+> - Your Platform AI conversations (your questions and the answers) are stored encrypted at rest
+>   in our application database, under a subkey derived for this purpose from the platform
+>   encryption key (`lib/plaid/encryption.ts:101`, `:202`;
+>   `lib/platform/intelligence/ai/conversations/store.ts:206`, `:341`).
+> - Only you, the operator who asked, can see your stored conversations: database row-level
+>   security limits every conversation and message to its owner (migration
+>   `20261104120000_platform_ai_conversations`, lines 121–160).
+> - Your question is scrubbed once, and that same scrubbed text is both stored and sent to the
+>   provider (`lib/platform/intelligence/ai/conversations/handlers.ts:251-253`). The scrub reduces
+>   what is kept and sent; it does not guarantee that nothing sensitive remains.
+> - Each message is removed from our application database at the next run of the retention purge
+>   after it turns 90 days old, counted from when it was created (OD-7;
+>   `lib/platform/intelligence/ai/conversations/constants.ts:20`, migration line 94). An answer is
+>   removed together with its question. The purge's run cadence is **OWNER-VERIFY**.
+> - When you delete a conversation, it is hidden from your view immediately and removed from our
+>   application database at the next run of the retention purge.
+> - Database backups may retain a removed message or conversation for up to the backup window,
+>   which is **OWNER-VERIFY** (OD-9; no backup or PITR window is recorded:
+>   `docs/operations/backup-restore-verification.md` §5 records PITR as UNVERIFIED).
+> - Copies held by the AI provider are governed by the provider's terms, not by us (under standard
+>   API terms, abuse-monitoring logs are kept for up to 30 days; see 1b). We make no deletion claim
+>   for systems we do not control.
+> - Creating or deleting a conversation is recorded with who did it, when, the conversation's
+>   internal id and its area (and, on delete, a message count), never a question, answer, label or
+>   message id (`lib/platform/intelligence/ai/conversations/store.ts:264-270`, `:367-373`). The
+>   purge records counts only (`lib/audit-actions.ts`, B11 block). Successful reads are not
+>   audited. Refused access is recorded as a security event: at most one record per operator and
+>   area in a time window, with a count, and never any content or conversation id
+>   (`lib/platform/ops/access-denied.ts`).
+
+### 3. Owner decision: the public policy does not cover this flow
+
+The public Privacy Policy (`site/content/legal/privacy.md`, "4. AI processing" and "5. Sharing")
+and the AI Disclosures (`site/content/legal/legal-ai.md`, first paragraph: "artificial
+intelligence in two places: the Daily Brief and Conversations") describe customer-facing AI only.
+They do not mention that operators can send operational data, aggregated platform metrics and any
+customer detail an operator types (reduced by the scrub), to OpenAI through Platform AI. The
+"Sharing" section names OpenAI "for AI processing" generally, which arguably covers it, but the AI
+section's "two places" wording does not. **OWNER DECISION:** whether to amend the public policy
+before Platform AI is enabled in Production. This work does not edit any public page or site file.
+
 ## Incident lifecycle (PB-1 Phase 1)
 
 IMPLEMENTED in PR #255 (merged 2026-11-03) unless marked otherwise. Design and open
@@ -408,8 +564,9 @@ Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLA
   (observe, then navigate). Acting needs separate authorization, confirmation and audit.
   It also proposes a navigation registry derived from the workspace registry and
   `lib/space/space-url.ts`.
-- **Conversation layer: PLANNED.** `/dashboard/platform/ai` is a placeholder today
-  (`components/platform/PlatformAiPlaceholder.tsx`).
+- **Conversation layer: IMPLEMENTED, v0, OFF by default** (PRs #395, #408):
+  read-only operator Q&A at `/dashboard/platform/ai` (`app/api/platform/ai/ask/route.ts`,
+  `lib/platform/intelligence/ai/*`). Privacy: see "Platform AI (operator) privacy disclosure" above.
 
 ## Shipped operator surfaces
 
