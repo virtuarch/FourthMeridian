@@ -776,10 +776,14 @@ export function liveGlobalFactReport(cases: readonly LiveCase[] = LIVE_CASES): L
   return { liveCases: live.length, distinctLiveFacts: byKey.size, overused, ratios };
 }
 
-/** The GLOBAL line as printed in the case-catalogue output and the run results (S2 09hc; information only). */
+/**
+ * The GLOBAL line as printed in the case-catalogue output and the run results (S2 09hc; information only).
+ * S2 09hu G8: NO fact key in this line — each over-used fact is listed by its case ids (and packs); the
+ * fact keys themselves go only into the private RUN-LOG (LiveGlobalFactReport.overused[].factKey).
+ */
 export function formatGlobalFactLine(r: LiveGlobalFactReport): string {
   const low = [...r.ratios].filter((x) => x.live > 0).sort((a, b) => a.distinct / a.live - b.distinct / b.live)[0];
-  const over = r.overused.length === 0 ? "none" : r.overused.map((o) => `${o.factKey} ×${o.uses} (${o.packs.join(",")})`).join("; ");
+  const over = r.overused.length === 0 ? "none" : r.overused.map((o, i) => `#${i + 1} ×${o.uses} (${o.packs.join(",")}: ${o.caseIds.join(" ")})`).join("; ");
   return `GLOBAL (information, not a gate): live cases ${r.liveCases}, distinct live facts ${r.distinctLiveFacts}`
     + `; lowest per-pack distinct ratio ${low ? `${low.pack} ${low.distinct}/${low.live}` : "n/a"}`
     + `; facts used >${MAX_LIVE_CASES_PER_FACT}× globally: ${r.overused.length}${r.overused.length ? ` — ${over}` : ""}`;

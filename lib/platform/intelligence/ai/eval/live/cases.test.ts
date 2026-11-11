@@ -102,6 +102,11 @@ check("global: the line carries no fixture identity (codes and placeholders only
   const line = formatGlobalFactLine(globalReport);
   return !/@|\bc[a-z0-9]{24}\b|[0-9a-f]{8}-[0-9a-f]{4}-/.test(line);
 })());
+check("global: the line carries NO fact key (S2 09hu G8: keys only in the private RUN-LOG), but every over-used case id", (() => {
+  const line = formatGlobalFactLine(globalReport);
+  return globalReport.overused.every((o) => !line.includes(o.factKey) && o.caseIds.every((id) => line.includes(id)))
+    && !/\b(fact|probe):|app\/api\//.test(line);
+})());
 check("distinctFactKey: rephrasing the same oracle read is the same fact", (() => {
   const a = LIVE_CASES.find((c) => c.oracle.kind === "guarded-route");
   return !!a && distinctFactKey({ ...a, id: "L.x.y", turns: ["a different phrasing"] }) === distinctFactKey(a);
