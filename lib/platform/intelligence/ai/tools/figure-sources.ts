@@ -22,8 +22,10 @@
  *               kind declare — the field CODE the placeholder named, never its value.
  *   metricKey   a registered metric key (metrics/registry.ts).
  *   resultPath  the JSON path of the figure inside get_metric's result for that key: "value" (a scalar) or
- *               "value.<part>" with <part> one of the parts that metric's retrieval contract declares
- *               (metrics/retrieve-core.ts RETRIEVAL[key].valueUnits).
+ *               "value.<part>". The fill keeps a part only when THAT envelope declares it (compose/placeholders.ts);
+ *               this projection also requires it to be a retrieval-contract part (memory/constants.ts
+ *               MEMORY_METRIC_PARTS — every valueUnits key of metrics/retrieve-core.ts RETRIEVAL, pinned there;
+ *               the contract itself is imported type-only by Platform AI, retrieve.test.ts).
  *
  * S2 conditions (B1): (i) DERIVED FROM CODE ONLY — the source is the placeholder FILL (compose/record.ts
  * extractRecordPlaceholders' typed span; compose/placeholders.ts / briefing.ts typed figure), never inferred
@@ -37,35 +39,23 @@
  * typed answer and the rendered answer disagree anywhere (a stored figure turned into text, a memory
  * redaction, a lost area, a cap), the whole annotation is [] — never a guessed position.
  *
- * Imports the registry (server code): call it from the routes / turn runner / handlers only, never from core.ts.
+ * Imports the registry (server code): call it from the routes / turn runner only, never from core.ts. The pure
+ * shapes and the conversations positioning live in conversations/figure-positions.ts (re-exported here) so the
+ * conversations handler never imports the registry.
  */
 
 import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
-import { RETRIEVAL } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { TypedAnswerSegment } from "../compose/segments";
 import { RECORD_REF_FIELD } from "../compose/record";
 import { T2_FIELD_NAMES } from "../evidence/record-envelope";
+import { MEMORY_METRIC_PARTS } from "../memory/constants";
+import { figureSourceEntry, type FigureSourceEntry, type PlacedFigureSource, type PlacedSpan } from "../conversations/figure-positions";
 import { PLATFORM_AI_TOOL_REGISTRY } from "./registry";
 
-/** THE closed key set (a record entry carries the first six minus the metric pair; a metric entry the reverse). */
-export const FIGURE_SOURCE_KEYS = ["segment", "start", "end", "source", "recordKind", "fieldCode", "metricKey", "resultPath"] as const;
-export const FIGURE_SOURCE_RECORD_KEYS = ["segment", "start", "end", "source", "recordKind", "fieldCode"] as const;
-export const FIGURE_SOURCE_METRIC_KEYS = ["segment", "start", "end", "source", "metricKey", "resultPath"] as const;
-export const FIGURE_SOURCE_KINDS = ["record", "metric"] as const;
-
-/** A placed span's closed source (no position yet). */
-export type PlacedFigureSource =
-  | { readonly source: "record"; readonly recordKind: string; readonly fieldCode: string }
-  | { readonly source: "metric"; readonly metricKey: string; readonly resultPath: string };
-
-/** One response entry. */
-export type FigureSourceEntry = { readonly segment: number; readonly start: number; readonly end: number } & PlacedFigureSource;
-
-/**
- * One placed span of the typed answer, in answer order: its span kind and its closed source (null when the
- * span is outside the closed sets — kept so positions stay aligned, never annotated). Metadata only.
- */
-export interface PlacedSpan { readonly span: "figure" | "record"; readonly entry: PlacedFigureSource | null }
+export {
+  FIGURE_SOURCE_KEYS, FIGURE_SOURCE_KINDS, FIGURE_SOURCE_METRIC_KEYS, FIGURE_SOURCE_RECORD_KEYS, storedFigureSources,
+  type FigureSourceEntry, type PlacedFigureSource, type PlacedSpan,
+} from "../conversations/figure-positions";
 
 type RegistryView = readonly { readonly recordSchema?: { readonly kind: string; readonly fields: Readonly<Record<string, unknown>>; readonly t2Fields?: readonly string[] } }[];
 
@@ -88,11 +78,9 @@ type FieldCodes = ReadonlyMap<string, ReadonlySet<string>>;
 const RECORD_FIELDS = recordFieldCodes();
 const METRIC_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
 
-/** The declared parts of a metric's value (empty for a scalar / not retrievable / unknown key). */
+/** The parts a figure of a registered metric may name (the retrieval contracts' part keys; [] for an unknown key). */
 export function metricParts(key: string): readonly string[] {
-  const r = Object.prototype.hasOwnProperty.call(RETRIEVAL, key) ? RETRIEVAL[key] : null;
-  if (!r || r.kind !== "RETRIEVABLE" || r.valueUnits === null || typeof r.valueUnits !== "object") return [];
-  return Object.keys(r.valueUnits);
+  return METRIC_KEYS.has(key) ? MEMORY_METRIC_PARTS : [];
 }
 
 /** One typed span → its closed source, or null (outside the closed sets). Reads ONLY rk / f / metric / part. */
@@ -120,11 +108,6 @@ export function placedSpansOf(typed: readonly TypedAnswerSegment[], fields: Fiel
   }
   return out;
 }
-
-const entryOf = (segment: number, start: number, end: number, e: PlacedFigureSource): FigureSourceEntry =>
-  Object.freeze(e.source === "record"
-    ? { segment, start, end, source: "record" as const, recordKind: e.recordKind, fieldCode: e.fieldCode }
-    : { segment, start, end, source: "metric" as const, metricKey: e.metricKey, resultPath: e.resultPath });
 
 type Rendered = { readonly kind: string; readonly text: string };
 
@@ -154,7 +137,7 @@ export function alignedFigureSources(typed: readonly TypedAnswerSegment[], answe
       const seg = answer[i];
       if (!seg || seg.kind !== "text" || !seg.text.startsWith(text, off)) return [];
       const e = placedSourceOf(t, fields);
-      if (e) out.push(entryOf(i, off, off + text.length, e));
+      if (e) out.push(figureSourceEntry(i, off, off + text.length, e));
       off += text.length;
       continue;
     }
@@ -172,33 +155,4 @@ export function alignedFigureSources(typed: readonly TypedAnswerSegment[], answe
   settle();
   // Everything the response shows must have been walked (no unexplained trailing text).
   return i === answer.length ? out : [];
-}
-
-type StoredView = { readonly kind: string; readonly metric?: unknown; readonly rk?: unknown; readonly f?: unknown };
-
-/**
- * Conversations — the turn's placed spans aligned with the STORED answer's segments (1:1 with the response's
- * `assistantMessage.content`, conversations/handlers.ts renderStoredAnswer): the n-th placed span must be the
- * n-th stored figure / record segment, of the same span kind and (for an annotated span) the same metric key /
- * record kind + field code. Counts or codes differ, or the content is not 1:1 ⇒ [].
- */
-export function storedFigureSources(placed: readonly PlacedSpan[], stored: readonly StoredView[], content: readonly Rendered[]): FigureSourceEntry[] {
-  if (!Array.isArray(placed) || !Array.isArray(stored) || !Array.isArray(content) || stored.length !== content.length) return [];
-  const out: FigureSourceEntry[] = [];
-  let n = 0;
-  for (let i = 0; i < stored.length; i++) {
-    const s = stored[i];
-    if (s.kind !== "figure" && s.kind !== "record") continue;
-    const p = placed[n++];
-    if (!p || p.span !== s.kind) return [];
-    const e = p.entry;
-    if (e) {
-      const same = e.source === "metric" ? s.kind === "figure" && s.metric === e.metricKey : s.kind === "record" && s.rk === e.recordKind && s.f === e.fieldCode;
-      if (!same) return [];
-      const c = content[i];
-      if (!c || typeof c.text !== "string") return [];
-      out.push(entryOf(i, 0, c.text.length, e));
-    }
-  }
-  return n === placed.length ? out : [];
 }

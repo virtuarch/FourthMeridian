@@ -41,7 +41,7 @@ import {
 import type { TurnRecordLookup } from "../compose/record";
 import type { MemoryProposalCard, MemoryTurn } from "../memory/turn";
 import type { PlatformAiToolTraceEntry } from "../tools/tool-trace";
-import type { PlacedSpan } from "../tools/figure-sources";
+import type { PlacedSpan } from "./figure-positions";
 import type { TypedAnswerSegment } from "../compose/segments";
 import { assemblePlatformAiHistory, type AssembledHistory, type HistoryMessage, type HistoryScope } from "./history";
 import { answerReadable } from "./multi-area";

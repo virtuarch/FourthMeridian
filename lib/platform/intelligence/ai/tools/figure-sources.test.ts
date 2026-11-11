@@ -266,6 +266,12 @@ function wiring(): void {
     rs.indexOf("const { toolTrace, figureSources, ...outcome } = run;") > 0 && rs.indexOf("const { toolTrace, figureSources, ...outcome } = run;") < rs.indexOf("settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome)"), rs);
   check("create AND append responses carry the sources of the turn they ran (a replay carries none)",
     (h.match(/pairResponse\(\d+, [^;]*r\.toolTrace, r\.figureSources\)/g) ?? []).length === 2 && (h.match(/pairResponse\(/g) ?? []).length >= 4);
+  check("the conversations handler positions through the PURE conversations/figure-positions.ts and imports no tool registry (no DB-touching import on the memory / purge routes)",
+    /from "\.\/figure-positions"/.test(h) && !/tools\/registry|tools\/figure-sources/.test(h));
+  const positions = read("lib/platform/intelligence/ai/conversations/figure-positions.ts");
+  check("conversations/figure-positions.ts imports nothing", !/^import\s/m.test(positions));
+  const fsrc = code(read("lib/platform/intelligence/ai/tools/figure-sources.ts"));
+  check("figure-sources.ts never imports the retrieval contract at runtime (retrieve.test.ts: Platform AI takes its types only)", !/metrics\/retrieve(-core)?"/.test(fsrc));
   const store = code(read("lib/platform/intelligence/ai/conversations/store.ts"));
   const answer = code(read("lib/platform/intelligence/ai/conversations/answer.ts"));
   check("the store and the stored-answer validator never mention figure sources or a figure part (persist nothing new)", !/figureSources|\bpart\b/.test(store) && !/figureSources/.test(answer));

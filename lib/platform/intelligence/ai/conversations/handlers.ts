@@ -53,7 +53,7 @@ import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
 import type { PlatformAiToolTraceEntry } from "../tools/tool-trace";
-import { storedFigureSources, type PlacedSpan } from "../tools/figure-sources";
+import { storedFigureSources, type PlacedSpan } from "./figure-positions";
 import type { ScopedArea } from "../authz/boundary";
 import { extractSubjects, storedSubjectText, type SubjectFlags, type SubjectIdentifier } from "../authz/subject";
 import { answerReadable, type TurnAreaPart } from "./multi-area";
