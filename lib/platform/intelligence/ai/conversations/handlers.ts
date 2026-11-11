@@ -42,6 +42,7 @@ import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutc
 import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
+import type { ScopedArea } from "../authz/boundary";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -65,6 +66,8 @@ export interface AreaAccess {
   binding: PlatformAiBinding;
   /** The area this access was granted for (the guard's own area). */
   area?: PlatformArea;
+  /** P2 — the route-issued scope for `area` (authz/scope.ts); the turn boundary rechecks it per tool call. Absent ⇒ every tool call is refused. */
+  scope?: ScopedArea;
   /** Platform AI memory (design v2 §2): the authorized readers built from THE SAME fresh guard result. */
   memoryReaders?: MemoryReaders;
 }

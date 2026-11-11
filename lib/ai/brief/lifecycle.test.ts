@@ -326,7 +326,7 @@ async function main() {
   {
     const r = harness();
     r.state.pkg.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'BTC', topWeightPct: 85,
-      populationValue: 28440.27, populationIsComplete: false };
+      topValue: 24174.23, populationValue: 28440.27, populationIsComplete: false };
     const day1 = new Date('2026-09-13T08:00:00.000Z');
     await r.ensure(day1);
     check('day 1 (first Brief): the model sees the concentration, marked NEW; reason daily',
@@ -406,8 +406,9 @@ async function main() {
     // v2.7 owner ruling (PR #63): → 5bb1d55b1cf8 (debt-semantics-2: TRANSFER_DESTINATION_UNCONFIRMED; generation NOT bumped).
     // PB-8c: → 64cc74805870 (partial-history-1: recentChanges.<w>.unavailable; generation NOT bumped).
     // FIN-005 part 1: → ccf4199202c0 (restricted-cash-1: unavailable.liquid for restricted cash; generation NOT bumped).
+    // S2 O-2: → 60ff5d7892a3 (part-whole-1: concentration.topValue is the part; generation NOT bumped).
     check('the prompt/schema hash is pinned (review BRIEF_GENERATION_VERSION when it moves)',
-      BRIEF_PROMPT_HASH === 'ccf4199202c0', BRIEF_PROMPT_HASH);
+      BRIEF_PROMPT_HASH === '60ff5d7892a3', BRIEF_PROMPT_HASH);
     check('what a row stores is the intentional version plus the hash plus the revision',
       BRIEF_PROMPT_VERSION === `${BRIEF_GENERATION_VERSION}+prompt-${BRIEF_PROMPT_HASH}+rev-${BRIEF_PROMPT_REVISION}`);
 
@@ -493,7 +494,7 @@ async function main() {
     check('the generation version was NOT bumped by the debt-semantics prompt fix', BRIEF_GENERATION_VERSION === 'brief-generation-5');
     check('the stored version parses to the generation alone', generationVersionOf(BRIEF_PROMPT_VERSION) === BRIEF_GENERATION_VERSION);
     check('the revision is readable back', promptRevisionOf(BRIEF_PROMPT_VERSION) === BRIEF_PROMPT_REVISION
-      && BRIEF_PROMPT_REVISION === 'restricted-cash-1'); // FIN-005 part 1 (was partial-history-1)
+      && BRIEF_PROMPT_REVISION === 'part-whole-1'); // S2 O-2 (was restricted-cash-1)
     check('a pre-revision row records no revision', promptRevisionOf('brief-generation-5+prompt-08fbac9b9cb7') === null
       && promptRevisionOf(null) === null);
 
@@ -502,7 +503,7 @@ async function main() {
     const today = key('2026-09-13');
     await r.ensure(t(0));
     check('a NEW generation records the new revision and the new prompt hash',
-      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-restricted-cash-1`,
+      r.store.get(today)!.promptVersion === `brief-generation-5+prompt-${BRIEF_PROMPT_HASH}+rev-part-whole-1`,
       String(r.store.get(today)!.promptVersion));
     // The row exactly as the previous deploy wrote it: same generation, old prompt hash, no revision.
     r.store.get(today)!.promptVersion = 'brief-generation-5+prompt-08fbac9b9cb7';

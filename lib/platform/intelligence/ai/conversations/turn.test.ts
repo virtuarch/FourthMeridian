@@ -432,10 +432,12 @@ async function main(): Promise<void> {
   const access = code(src("app/api/platform/ai/conversations/area-access.ts"));
   check("the turn binding is built in the area guard from ITS OWN guard result, a literal surface per case",
     /const \[auth, err\] = await requireFreshPlatformAccess\(area, "READ"\);/.test(access) && /incidentAudienceFor\(auth\)/.test(access) && /metricAccessFor\(auth\)/.test(access)
-      && (access.match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(access));
+      // P1b: the five literal-surface cases live in the ONE shared binder (authz/scope.ts bindArea); the guard calls it with its own scope.
+      && /bindArea\(scope, \{ metricToken: metricAccessFor\(auth\), incidentToken \}\)/.test(access) && !/retrieveMetric\(/.test(access)
+      && (code(src("lib/platform/intelligence/ai/authz/scope.ts")).match(/retrieveMetric\("([A-Z_]+)", ctx, id, p\)/g) ?? []).length === 5 && !/retrieveMetric\((?!")/.test(code(src("lib/platform/intelligence/ai/authz/scope.ts"))));
   const runner = code(src("app/api/platform/ai/conversations/turn-runner.ts"));
   check("the runner binds ONLY access.binding, the ledgered seam with the conversation id, and logs metadata only",
-    /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId \}\)/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
+    /binding: access\.binding/.test(runner) && /makePlatformAiGenerate\(\{ operatorId, conversationId, turnId: correlationId \}\)/.test(runner) && /invoke: boundary\.invoke/.test(runner) && !/question\}|answer\}|JSON\.stringify/.test(runner));
   const turnSrc = code(src("lib/platform/intelligence/ai/conversations/turn.ts"));
   check("turn.ts is pure: no db, env, clock (beyond the timeout signal) or provider import", !/@\/lib\/db|@\/lib\/env|new Date\(|Date\.now|generateWithTools|from "openai"|withTenantDb|systemDb/.test(turnSrc));
   const handlers = code(src("lib/platform/intelligence/ai/conversations/handlers.ts"));
@@ -517,7 +519,7 @@ async function main(): Promise<void> {
       check(`Question C (${name}): COMPLETE, composed (COST_RANKING), never the fallback; leader + total as TYPED figures of economics-operating-cost@1; the window note first`,
         !!ans && r.result?.briefing?.kind === "COST_RANKING" && !r.result.grounding.replaced && !text.includes(UNVERIFIED_FALLBACK)
           && ans.segments.filter((x) => x.kind === "figure" && x.metric === "economics-operating-cost@1").length === 2 && ans.segments[0].kind === "note"
-          && /not the 30 days you asked about/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
+          && /^Note: You asked about the past 30 days; .* covers .* \(month to date, UTC\) instead\.$/.test(ans.segments[0].text) && r.result.briefing?.framing === "DROPPED", { b: r.result?.briefing, text });
     }
     check("Question C with history: the composed answer ignores prior turns (the framing call sees no history; facts from THIS turn's read)",
       !sent(withHist.seen).includes("[figure from") && withHist.result?.trace.filter((t) => t.tool === "get_metric").map((t) => t.refs[0]).join() === "economics-operating-cost@1");

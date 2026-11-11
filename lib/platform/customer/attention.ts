@@ -37,7 +37,7 @@ import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import { incidentAccessors, type CsToken } from "@/lib/platform/incidents/intelligence";
 import type { CsIncidentVerdict, VerdictList } from "@/lib/platform/incidents/intelligence/types";
 import {
-  IMPORT_ATTENTION_DAYS, LINK_EXIT_WINDOW_DAYS, foldAttention, incidentOwnersOf, linkExitFactOf, type AttentionFacts, type AttentionFold,
+  IMPORT_ATTENTION_DAYS, LINK_EXIT_WINDOW_DAYS, foldAttention, incidentOwnersOf, linkExitFactOf, linkFailureFactOf, type AttentionFacts, type AttentionFold,
 } from "./attention-core";
 
 const DAY_MS = 86_400_000;
@@ -77,7 +77,7 @@ export async function loadAttention(
   // fail-closed switch is enforced (below).
   const live = assignableGroups(await loadPolicyGroupCatalogue()).map((g) => g.key);
   const exitFrom = new Date(now.getTime() - LINK_EXIT_WINDOW_DAYS * DAY_MS);
-  const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned, exits, testAccounts] = await Promise.all([
+  const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned, exits, failures, testAccounts] = await Promise.all([
     client.user.findMany({ where: OPEN_CUSTOMER_WHERE, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true }, take: cap }),
@@ -94,6 +94,9 @@ export async function loadAttention(
     // link_exited — the CONNECTION_LINK_EXITED product events of the window (AuditLog @@index([action, createdAt])).
     // userId, time and the metadata's closed-vocabulary codes only (linkExitFactOf); no institution is recorded at all.
     client.auditLog.findMany({ where: { action: AuditAction.CONNECTION_LINK_EXITED, createdAt: { gte: exitFrom } }, select: { userId: true, createdAt: true, metadata: true }, orderBy: { createdAt: "desc" }, take: cap }),
+    // link_failed — the server-side CONNECTION_ADD_FAILED rows of the same window (B12 PR-B): userId, time
+    // and the metadata's closed-vocabulary stage / errorCode only (linkFailureFactOf).
+    client.auditLog.findMany({ where: { action: AuditAction.CONNECTION_ADD_FAILED, createdAt: { gte: exitFrom } }, select: { userId: true, createdAt: true, metadata: true }, orderBy: { createdAt: "desc" }, take: cap }),
     // The "test" LABEL (OD-4 undecided — labelled, never excluded): open customers on a reserved e-mail domain, ids only.
     client.user.findMany({ where: { AND: [OPEN_CUSTOMER_WHERE, RESERVED_TEST_EMAIL_WHERE] }, select: { id: true }, take: cap }),
   ]);
@@ -106,7 +109,7 @@ export async function loadAttention(
     .map((p) => p.id);
   const imports = await loadImportsForItemIds(recentItemIds, now, client);
 
-  const floor = [customers, plaidBroken, connBroken, invalid, unassigned, exits, testAccounts].some((rows) => rows.length >= cap)
+  const floor = [customers, plaidBroken, connBroken, invalid, unassigned, exits, failures, testAccounts].some((rows) => rows.length >= cap)
     || incidentPage.truncated || imports.floor;
 
   const facts: AttentionFacts = {
@@ -120,6 +123,7 @@ export async function loadAttention(
     policyFailClosed: failClosed,
     recentImports: imports.items.flatMap((i) => (i.userId ? [{ userId: i.userId, verdict: i.verdict }] : [])),
     linkExits: exits.flatMap((r) => { const f = linkExitFactOf(r); return f ? [f] : []; }),
+    linkFailures: failures.flatMap((r) => { const f = linkFailureFactOf(r); return f ? [f] : []; }),
     testAccountIds: testAccounts.map((u) => u.id),
     floor,
   };

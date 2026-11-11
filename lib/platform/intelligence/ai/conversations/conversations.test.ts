@@ -404,7 +404,11 @@ console.log("6. source pins");
         && !/conversationAreaAccess|areaAccess/.test(get) && /handleListConversations\([^;]*grantedAreasFrom\(directory\)/.test(get), get);
   }
   const access = code(read("app/api/platform/ai/conversations/area-access.ts"));
-  check("step 6 refuses a null grant (no break-glass) and a session that is not the operator", /if \(err \|\| !auth\.grant \|\| auth\.grant\.area !== area \|\| auth\.user\.id !== operatorId\) return null;/.test(access));
+  // P1b: the rule is the ONE shared scope (authz/scope.ts inScope: grant !== null, grant.area === area, user.id === operatorId, never SYSTEM_ADMIN).
+  const scopeRule = code(read("lib/platform/intelligence/ai/authz/scope.ts"));
+  check("step 6 refuses a null grant (no break-glass) and a session that is not the operator",
+    /if \(err\) return null;/.test(access) && /const scope = scopeFromGuard\(auth, area, operatorId\);\s*if \(!scope\) return null;/.test(access)
+      && /auth\.grant !== null/.test(scopeRule) && /auth\.grant\.area === area/.test(scopeRule) && /auth\.user\?\.id === operatorId/.test(scopeRule));
   const hist = code(read("lib/platform/intelligence/ai/conversations/history.ts"));
   check("the assembler takes ONE conversation id and refuses any other conversation's message",
     /export function assemblePlatformAiHistory\(input: \{\s*conversationId: string;/.test(hist) && /if \(m\.conversationId !== conversationId\) throw new HistoryScopeError/.test(hist));

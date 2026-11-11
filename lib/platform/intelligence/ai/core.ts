@@ -68,16 +68,26 @@ import type { ToolTurnResult } from "@/lib/ai/provider";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { PlatformArea } from "@prisma/client";
-import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
-import type { FigureUnit, MetricEnvelope, RankedCategory, RetrievalParams, UnavailableCode } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { METRICS, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
+import type { MetricEnvelope, RetrievalParams, UnavailableCode } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
-import { absoluteUtcStamp, lastEvaluatedStale } from "@/lib/platform/stale-wording";
+import { absoluteUtcStamp } from "@/lib/platform/stale-wording";
 import { buildConversationTurnMessages, type AssembledHistory } from "./conversations/history";
 import {
   BRIEFING_FRAMING_PROMPT, COST_RANKING_KEY, briefingFramingMessage, checkActions, checkFraming, classifyBriefingQuestion, composeBriefing, composeCostRanking, composedLineCount,
   parseFramingReply, readBriefingEnvelopes,
   type BriefingClass, type BriefingCostReason, type BriefingDomainState, type ComposedBriefing, type FramingOutcome,
 } from "./briefing";
+import { labelPlaceholdersFor, placeholdersFor, resolvePlaceholders, windowMixNote } from "./compose/placeholders";
+import { LINK_TARGET_KINDS, SANITISE_KINDS, sanitiseAnswer, strippedLinkTargets, type LinkTargetKind, type SanitiseKind } from "./compose/sanitise";
+import { segmentsText, type AnswerSegment, type TypedAnswerSegment } from "./compose/segments";
+import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
+import {
+  DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
+  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type UnresolvedReason,
+} from "./compose/verdicts";
+import { envelopeHours, quotableWindowPhrase, requestedWindows } from "./compose/windows";
+import { parseAskedPeriods, windowDisclosureText } from "./compose/window-disclosure";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
 
@@ -632,1106 +642,51 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
   }
 }
 
-// ── Link sanitiser (S2 binding 5) ───────────────────────────────────────────
-
 /**
- * S2 F-C1 (ii), 2026-11-08 — a code-written CORRECTION (never model text): replaces the plain
- * window note when the model's prose restates the asked period (period_mismatch > 0). Built only
- * from server data (window_phrase, the requestedWindows period, registry labels); a DISTINCT
- * segment the renderers show prominently ABOVE the answer, and stored typed (B11).
+ * P2 — ONE tool call as the turn hands it to its dispatcher. The production callers
+ * (the ask route, the conversations' turn runner) inject the turn boundary's
+ * `invokeTool` (authz/boundary.ts: pack flag, strict parse, scope, per-call recheck,
+ * handles, tier, audit, envelope, trace — any refusal is this file's NOT_FOUND). Absent
+ * ⇒ the executor directly (core-level tests; the same defences as before P2).
+ * core.ts never imports the boundary or the registry (no cycle; registry.test pins it).
  */
-export type CorrectionSegment = { kind: "correction"; text: string };
-/**
- * F-1 (S2, 2026-11-08) — the code-written WINDOW NOTE (RESOLVED_WITH_WINDOW_NOTE with no
- * period restated: "Note: <metric> covers <its window>, not the <asked> you asked about.").
- * Its OWN segment (it used to be merged into the first text segment, so it read as model
- * prose): stored typed (B11), replayed as its own segment, rendered in a quiet role="note"
- * callout ABOVE the answer. Never model text.
- */
-export type NoteSegment = { kind: "note"; text: string };
-/** The server-written segments that render ABOVE the answer, never in its body. */
-export type ServerNoteSegment = CorrectionSegment | NoteSegment;
+export type PlatformAiToolInvoker = (name: string, rawArgs: string, ctx: {
+  ev: ToolEvidence; paramKeys: readonly string[]; asked: readonly { hours: number }[]; memory?: PlatformAiMemoryHooks;
+}) => Promise<unknown>;
 
-export type AnswerSegment = { kind: "text"; text: string } | { kind: "link"; text: string; href: string } | ServerNoteSegment;
+/** The dispatcher a turn uses: the injected boundary, else the executor over the turn's binding. */
+const dispatcherFor = (invoke: PlatformAiToolInvoker | undefined, binding: PlatformAiBinding): PlatformAiToolInvoker =>
+  invoke ?? ((name, rawArgs, c) => executePlatformAiTool(name, rawArgs, binding, c.ev, c.paramKeys, c.asked, c.memory));
 
-export const LINK_REMOVED = "[link removed]";
-const SENTINEL = "\u0000";
-
-/**
- * The model's text as segments: a link ONLY where its target is exactly one of
- * this turn's resolver hrefs (or, for a Markdown link, an absolute http(s) URL
- * whose exact pathname is one — rendered as that href, rewriteAbsoluteLink, S2
- * ruling 2026-11-05); every other URL, Markdown link / image, HTML tag and raw
- * href is stripped. Rendered as plain text by the UI (no Markdown parser
- * runs on model output at all), so an image can never be fetched.
- */
-/** What the sanitiser stripped, by CATEGORY (counts only — never the stripped text). */
-export const SANITISE_KINDS = ["url", "html", "image", "reference", "link", "path"] as const;
-export type SanitiseKind = (typeof SANITISE_KINDS)[number];
-
-/**
- * S2 ruling 2026-11-05 (FIX 3, re-ruled): an ABSOLUTE Markdown link target whose
- * PATH + QUERY is exactly one of this turn's resolver hrefs renders as OUR href —
- * or null (strip as before). Only `[label](url)` link targets reach this (images are stripped
- * earlier, unconditionally; raw URLs / autolinks keep their own handling).
- *   · a scheme is required (relative and protocol-relative `//host/…` ⇒ null);
- *     the WHATWG parser (`new URL`, no base) must accept it, protocol http: / https: only
- *   · `url.pathname + url.search` — WHATWG's serialised form, as-is — is compared
- *     EXACTLY with `allowed` (this turn's hrefs only): no decoding (an encoded
- *     variant keeps its encoding ⇒ no match), no param reordering, no trailing-
- *     slash folding, nothing normalised to force a match (the parser's own dot-
- *     segment handling, and an empty `?` serialising as no search, are its form)
- *   · a query-carrying URL can therefore never land on a bare href, nor a bare URL
- *     on a query-carrying one (no misroute to another workspace)
- *   · the returned string is the allowed href itself, byte for byte — host, port,
- *     userinfo and fragment of the model's URL are never emitted
- */
-export function rewriteAbsoluteLink(href: string, allowed: ReadonlySet<string>): string | null {
-  if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
-  let url: URL;
-  try { url = new URL(href); } catch { return null; }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  const key = url.pathname + url.search;
-  for (const h of allowed) if (h === key) return h;
-  return null;
-}
-
-/**
- * S2 ruling 2026-11-05 (i): a Markdown link whose sanitised label is longer than
- * this renders as that label in plain text, with no link (counted as a stripped link).
- */
-export const LINK_LABEL_MAX = 120;
-
-/** The sanitiser's URL scrub (one definition: sanitiseAnswer's text and labels, and the link-target diagnosis). */
-function scrubUrls(s: string, onStrip: () => void): string {
-  return s
-    .replace(/\b(?:https?|ftp|data|javascript|vbscript|file|mailto):[^\s)\]>]*/gi, () => { onStrip(); return LINK_REMOVED; })
-    .replace(/\bwww\.[^\s)\]>]+/gi, () => { onStrip(); return LINK_REMOVED; })
-    .replace(/(^|[\s(])\/\/[^\s)\]>]+/g, (_m, pre: string) => { onStrip(); return `${pre}${LINK_REMOVED}`; });
-}
-
-export function sanitiseAnswer(raw: string, allowed: ReadonlySet<string>): { segments: AnswerSegment[]; removed: number; kinds: Partial<Record<SanitiseKind, number>> } {
-  const kinds: Partial<Record<SanitiseKind, number>> = {};
-  const strip = (k: SanitiseKind) => { kinds[k] = (kinds[k] ?? 0) + 1; };
-  const links: { text: string; href: string }[] = [];
-  const keep = (text: string, href: string) => { links.push({ text, href }); return `${SENTINEL}${links.length - 1}${SENTINEL}`; };
-  const stripUrls = (s: string) => scrubUrls(s, () => strip("url"));
-
-  let s = String(raw ?? "").split(SENTINEL).join("");
-  s = s.replace(/<!--[\s\S]*?-->/g, () => { strip("html"); return ""; });
-  s = s.replace(/<\/?[A-Za-z!][^>]*>/g, () => { strip("html"); return ""; });
-  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, () => { strip("image"); return ""; });
-  s = s.replace(/!\[[^\]]*\]\[[^\]]*\]/g, () => { strip("image"); return ""; });
-  s = s.replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, () => { strip("reference"); return ""; });
-  s = s.replace(/\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+["'][^"']*["'])?\s*\)/g, (_m, label: string, href: string) => {
-    const text = stripUrls(label).trim();
-    // S2 ruling 2026-11-05 (FIX 3): an absolute URL whose exact path + query this turn returned ⇒ OUR href (not counted as removed).
-    const ours = allowed.has(href) ? href : rewriteAbsoluteLink(href, allowed);
-    // S2 ruling 2026-11-05 (i): a label over LINK_LABEL_MAX ⇒ plain text, no link.
-    if (ours !== null && text.length <= LINK_LABEL_MAX) return keep(text || ours, ours);
-    strip("link");
-    return text;
-  });
-  s = s.replace(/\[([^\]]*)\]\[[^\]]*\]/g, (_m, label: string) => { strip("reference"); return label; });
-  s = stripUrls(s);
-  // A raw relative href: a link only when it is exactly a resolver href of this turn.
-  s = s.replace(/(^|[\s(:])(\/[A-Za-z0-9_\-./?=&%+~]+)/g, (_m, pre: string, path: string) => {
-    const trimmed = path.replace(/[.,;:!?]+$/, "");
-    const tail = path.slice(trimmed.length);
-    if (allowed.has(trimmed)) return `${pre}${keep(trimmed, trimmed)}${tail}`;
-    strip("path");
-    return `${pre}${LINK_REMOVED}${tail}`;
-  });
-  // Markdown emphasis / code / heading markers read as noise in plain text.
-  s = s.replace(/\*\*|__|`/g, "").replace(/^#{1,6}[ \t]+/gm, "");
-  s = s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-
-  const segments: AnswerSegment[] = [];
-  const parts = s.split(SENTINEL);
-  parts.forEach((p, i) => {
-    if (i % 2 === 1) {
-      const l = links[Number(p)];
-      if (l) segments.push({ kind: "link", text: l.text, href: l.href });
-    } else if (p) segments.push({ kind: "text", text: p });
-  });
-  const removed = Object.values(kinds).reduce((a, n) => a + n, 0);
-  return { segments, removed, kinds };
-}
-
-/** The answer as one string; a server note / correction (its own block on screen) is followed by a separating space. */
-export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => (x.kind === "note" ? `${x.text} ` : x.text)).join("");
-
-/**
- * DIAGNOSIS ONLY (2026-11-04, Preview finding: every turn logs removed=1(link:1)):
- * WHAT KIND of target each Markdown link the sanitiser strips as category "link"
- * pointed at — a closed enum and counts, never the target text. It does not change
- * what is stripped or shown (sanitiseAnswer is unchanged and alone decides); it
- * re-reads the same raw text with the sanitiser's own pre-steps and link pattern.
- *   DRILL_HREF        — exactly the drill.href (API route) of an envelope get_metric returned this turn
- *   API_PATH          — another /api/ path
- *   PAGE_VARIANT      — a root-relative path whose pathname is a returned link's, with a different query / suffix
- *   PAGE_NOT_RETURNED — another root-relative path (a page this turn never returned)
- *   LABEL_OVER_CAP    — a returned (or rewritable) target whose label is over LINK_LABEL_MAX (S2 ruling 2026-11-05 (i))
- *   ABSOLUTE_URL_REWRITTEN — NOT stripped: an absolute URL rendered as this turn's href (rewriteAbsoluteLink, S2 ruling 2026-11-05)
- *   ABSOLUTE_URL      — a scheme, protocol-relative or www. target (stripped)
- *   PLACEHOLDER       — a {{…}} placeholder written as the target
- *   METRIC_ID         — a registry metric id / key written as the target
- *   EMPTY             — no target
- *   OTHER             — anything else (e.g. a page id, a word)
- */
-export const LINK_TARGET_KINDS = ["DRILL_HREF", "API_PATH", "PAGE_VARIANT", "PAGE_NOT_RETURNED", "LABEL_OVER_CAP", "ABSOLUTE_URL_REWRITTEN", "ABSOLUTE_URL", "PLACEHOLDER", "METRIC_ID", "EMPTY", "OTHER"] as const;
-export type LinkTargetKind = (typeof LINK_TARGET_KINDS)[number];
-
-export function strippedLinkTargets(raw: string, allowed: ReadonlySet<string>, envelopes: readonly MetricEnvelope[]): Partial<Record<LinkTargetKind, number>> {
-  const out: Partial<Record<LinkTargetKind, number>> = {};
-  const add = (k: LinkTargetKind) => { out[k] = (out[k] ?? 0) + 1; };
-  const drillHrefs = new Set(envelopes.flatMap((e) => (e.drill && "href" in e.drill && typeof e.drill.href === "string" ? [e.drill.href] : [])));
-  const pathOf = (h: string) => h.split(/[?#]/)[0];
-  const allowedPaths = new Set([...allowed].map(pathOf));
-  // The sanitiser's own steps before its link step (same patterns, same order), so the links seen are the ones it sees.
-  let s = String(raw ?? "").split(SENTINEL).join("");
-  s = s.replace(/<!--[\s\S]*?-->/g, "").replace(/<\/?[A-Za-z!][^>]*>/g, "");
-  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/!\[[^\]]*\]\[[^\]]*\]/g, "").replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, "");
-  for (const m of s.matchAll(/\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+["'][^"']*["'])?\s*\)/g)) {
-    const href = m[2];
-    const exact = allowed.has(href), rewritten = !exact && rewriteAbsoluteLink(href, allowed) !== null;
-    if ((exact || rewritten) && scrubUrls(m[1], () => {}).trim().length > LINK_LABEL_MAX) { add("LABEL_OVER_CAP"); continue; }
-    if (exact) continue;
-    if (rewritten) { add("ABSOLUTE_URL_REWRITTEN"); continue; }
-    if (href === "") add("EMPTY");
-    else if (drillHrefs.has(href)) add("DRILL_HREF");
-    else if (/\{\{/.test(href)) add("PLACEHOLDER");
-    else if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|www\.)/i.test(href)) add("ABSOLUTE_URL");
-    else if (href.startsWith("/api/")) add("API_PATH");
-    else if (href.startsWith("/")) add(allowedPaths.has(pathOf(href)) ? "PAGE_VARIANT" : "PAGE_NOT_RETURNED");
-    else if (KNOWN_KEYS.has(href) || KNOWN_IDS.has(href)) add("METRIC_ID");
-    else add("OTHER");
-  }
-  return out;
-}
-
-// ── Placeholder grounding (S2 binding 4; v1 = S2 rulings C1–C5) ─────────────
+// ── Answer composition → ./compose/* (P1a, 2026-11-09) ──────────────────────
 //
-// THE MODEL NEVER TYPES A FIGURE. It writes a placeholder where a figure goes —
-//   {{m:<metricKey>}}                 a scalar metric, e.g. {{m:incident-broken-now@1}}
-//   {{m:<metricKey>|part=<name>}}     one part of an object-valued metric
-//   {{l:<metricKey>[|part=<name>]}}   S2 F-C2 (2026-11-07): the NAME — the metric's registry label,
-//                                     a category part's declared label, or the category a ranking
-//                                     part picked (renderLabel). {{m:…}} renders the FIGURE only.
-//                                     Same key / part / window resolution and the same
-//                                     unresolved / malformed handling as {{m:…}}.
-//   … |window=N                       digits only; see matchPlaceholderEnvelope (S2 ruling 2026-11-04)
-//   (options in any order, each at most once; `.part` is NOT the syntax — it reads as an email)
-// — and the SERVER substitutes the value, its unit, the status wording AND the
-// envelope's actual window (server text) from the envelope THIS turn returned
-// for that key (C1, C3; window matching in matchPlaceholderEnvelope). No
-// fresh read happens while rendering. After the placeholders are taken out, ANY
-// digit left in the prose replaces the answer with the fallback (C2); the only
-// exemptions are digits inside a registry label this turn's tools returned and
-// an ISO date equal to an envelope's freshness date or EXACTLY its reader-supplied
-// window start. A malformed placeholder, an
-// unknown key, a window or part mismatch, or a model-written unit beside a
-// placeholder ⇒ the fallback too (C5: no extra model round). This closes v0's
-// attribution gap: a figure can only be the figure of the metric it names.
-
-// ── STALE figures (owner rule: stale facts are never shown as current) ──────
-//
-// A figure is STALE when its envelope carries a figure and the registry's per-metric
-// limit (maxAgeMs) says its asOf is too old — stamped at retrieval with the server's
-// clock (freshness.stale) — or when its asOf is missing or unreadable (checked here
-// too: a missing timestamp is never assumed current). A stale figure keeps its value
-// but is worded "last evaluated <time>, may be out of date" (the shared phrasebook,
-// lib/platform/stale-wording.ts — the same words Platform Ops shows), its typed
-// segment carries figureClass "STALE", and the model path adds a server note and the
-// RESOLVED_WITH_STALE_NOTE verdict. A stale signal never triggers a derived section.
-
-/** The figure class of a typed figure segment: absent = current; "STALE" = see above. */
-export const FIGURE_CLASSES = ["STALE"] as const;
-export type FigureClass = (typeof FIGURE_CLASSES)[number];
-
-/** True when `e` carries a figure that must not be presented as current. */
-export function isStaleEnvelope(e: Pick<MetricEnvelope, "status" | "value" | "freshness">): boolean {
-  if (e.status === "UNAVAILABLE" || e.value === null) return false;
-  if (e.freshness?.stale === true) return true;
-  const asOf = e.freshness?.asOf ?? null;
-  return asOf === null || asOf === "" || !Number.isFinite(Date.parse(asOf));
-}
-
-/** "last evaluated 2026-11-08 06:30 UTC, may be out of date" for this envelope (server text). */
-export const staleQualifierOf = (e: Pick<MetricEnvelope, "freshness">): string => lastEvaluatedStale(absoluteUtcStamp(e.freshness?.asOf ?? null));
-
-/** A registry label as the SUBJECT of a stale sentence: a trailing "now" (e.g. "Alert rules firing now") is never repeated for a stale figure. */
-export const staleSubjectLabel = (label: string): string => label.replace(/\s+(?:right\s+)?now$/i, "").trim();
-
-/** The model-path server note for stale placed metrics: "Note: Alert rules firing — last evaluated …, may be out of date." */
-export function staleNoteText(stale: readonly MetricEnvelope[], labelOf: (metric: string) => string): string {
-  return stale.map((e) => `Note: ${staleSubjectLabel(labelOf(e.metric))} — ${staleQualifierOf(e)}.`).join(" ");
-}
-
-/** One well-formed placeholder. Anything else that opens `{{` or closes `}}` is MALFORMED. */
-const PLACEHOLDER = /\{\{\s*([ml]):([a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?)((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
-
-/**
- * THE WRITER of the grammar PLACEHOLDER parses (main fix, S2-approved 2026-11-04):
- * the exact string a get_metric result hands the model to copy. Pinned by a
- * ROUND-TRIP test: every string placeholdersFor emits is consumed whole by
- * PLACEHOLDER and resolves against its own envelope.
- */
-export function formatPlaceholder(key: string, opts: { part?: string | null; window?: number | null; kind?: "m" | "l" } = {}): string {
-  return `{{${opts.kind ?? "m"}:${key}${opts.part ? `|part=${opts.part}` : ""}${typeof opts.window === "number" ? `|window=${opts.window}` : ""}}}`;
-}
-
-/**
- * The placeholder strings for one envelope, server-built (so attribution stays
- * exact: each names this envelope's key, part and window):
- *   · UNAVAILABLE (or no value) or a scalar   ⇒ { placeholder } — UNAVAILABLE renders "unavailable — <reason>"
- *   · an object value                        ⇒ { placeholders: { <part>: … } } — one per part with a declared unit
- * |window=<days> is included whenever the envelope's window.days is a number (it
- * always resolves to this envelope, and keeps two windows of one key apart);
- * never when it is null (a fixed window, or none).
- */
-export function placeholdersFor(e: MetricEnvelope): { placeholder: string } | { placeholders: Record<string, string> } {
-  const window = e.window.days;
-  const units = e.valueUnits;
-  if (e.status === "UNAVAILABLE" || e.value === null || typeof e.value === "number" || units === null || typeof units === "string") {
-    return { placeholder: formatPlaceholder(e.metric, { window }) };
-  }
-  const placeholders: Record<string, string> = {};
-  for (const [part, unit] of Object.entries(units)) if (FIGURE_UNITS.includes(unit)) placeholders[part] = formatPlaceholder(e.metric, { part, window });
-  return { placeholders };
-}
-
-/**
- * S2 F-C2 — the LABEL placeholder strings for one envelope, server-built like placeholdersFor:
- *   labelPlaceholder   {{l:<key>[|window=N]}} — the metric's registry label (always)
- *   labelPlaceholders  { <part>: {{l:<key>|part=<part>…}} } — one per declared CATEGORY part (its
- *                      label) and per RANKING part (the label of the category the server ranked
- *                      first) — only on an object value. Attribution stays server-side: a
- *                      ranking's name and figure both come from the envelope's ranked category.
- */
-export function labelPlaceholdersFor(e: MetricEnvelope): { labelPlaceholder: string; labelPlaceholders?: Record<string, string> } {
-  const window = e.window.days;
-  const labelPlaceholder = formatPlaceholder(e.metric, { window, kind: "l" });
-  const roles = e.partRoles ?? null;
-  if (e.status === "UNAVAILABLE" || e.value === null || typeof e.value === "number" || roles === null) return { labelPlaceholder };
-  const labelPlaceholders: Record<string, string> = {};
-  for (const [part, role] of Object.entries(roles)) {
-    if (role === "category" || role === "ranking") labelPlaceholders[part] = formatPlaceholder(e.metric, { part, window, kind: "l" });
-  }
-  return Object.keys(labelPlaceholders).length > 0 ? { labelPlaceholder, labelPlaceholders } : { labelPlaceholder };
-}
-
-/** The options of one placeholder, or null when malformed (unknown / repeated option, bad window). */
-function placeholderOptions(raw: string): { part: string | null; window: number | null } | null {
-  let part: string | null = null, window: number | null = null;
-  const seen = new Set<string>();
-  for (const opt of raw.split("|").slice(1)) {
-    const [k, v] = opt.split("=");
-    if (seen.has(k)) return null;
-    seen.add(k);
-    if (k === "part" && /^[A-Za-z][A-Za-z0-9]*$/.test(v)) part = v;
-    else if (k === "window" && /^\d{1,3}$/.test(v)) window = Number(v);
-    else return null;
-  }
-  return { part, window };
-}
-/** A unit the model wrote itself next to a placeholder — the server supplies units (C1). */
-const UNIT_BEFORE = /(?:\$|\bUSD|\bUS\$)\s*$/i;
-const UNIT_AFTER = /^\s*(?:%|percent\b|pct\b|[kKM]\b|bn\b|USD\b|dollars?\b|cents?\b)/i;
-
-/**
- * The verdict ENUM (the trace and the counter line carry it; never text).
- * Passing: NONE (no figure, no placeholder), RESOLVED, and RESOLVED_WITH_WINDOW_NOTE
- * (S2 ruling (d) 2026-11-04: a placed metric does not cover the window the operator
- * asked about ⇒ the answer is KEPT and a server note per affected metric is
- * prepended (S2 F-C1 2026-11-07; appended before); it replaces v1's WINDOW_UNSUPPORTED refusal). Every other code
- * replaces the answer with the generic fallback.
- */
-export const PLACEHOLDER_VERDICTS = [
-  "NONE", "RESOLVED", "RESOLVED_WITH_WINDOW_NOTE",
-  /** A placed figure is STALE: the answer is KEPT, each stale figure carries its stale wording and a server note is prepended. */
-  "RESOLVED_WITH_STALE_NOTE",
-  "MALFORMED_PLACEHOLDER", "UNIT_MISMATCH", "WINDOW_MISMATCH", "UNRESOLVED_PLACEHOLDER",
-  "USER_NUMERAL_COLLISION", "UNGROUNDED_DIGIT",
-] as const;
-export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
-
-/** Counts and a code only — never a value, a key or model text (C5). */
-export interface ClaimsSummary { claims: number; resolved: number; unresolved: number; admitted: number; verdict: PlaceholderVerdict }
-
-/**
- * WHY a well-formed placeholder did not resolve (diagnosis, 2026-11-04; trace COUNTS only —
- * never the key or part text the model wrote):
- *   UNKNOWN_KEY  — the metric id is in no registry definition
- *   VERSION      — the id is known (or was read this turn) but not at the written / an unambiguous version
- *   MISSING_PART — an object value and no |part (and it is not a one-part object, safety net 2)
- *   UNKNOWN_PART — a part the value does not have (or a part on a scalar, or a part with no declared unit)
- *   NOT_READ     — a registry key that no get_metric of THIS turn returned
- */
-export const UNRESOLVED_REASONS = ["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"] as const;
-export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
-/**
- * The SHAPE of a malformed placeholder (counts only):
- *   NO_PREFIX     — {{…}} without the "m:" / "l:" prefix
- *   NOT_A_KEY     — the text after "m:" / "l:" is not a metric-key shape (e.g. a label, capitals, spaces)
- *   BAD_OPTION    — the key is well-shaped but an option is unknown, repeated or badly valued
- *   STRAY_BRACES  — an unmatched "{{" or "}}"
- */
-export const MALFORMED_REASONS = ["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"] as const;
-export type MalformedReason = (typeof MALFORMED_REASONS)[number];
-/**
- * S2 2026-11-05 — what kind of digit run made an answer UNGROUNDED_DIGIT (counts only,
- * never the digits or the text): next to a time unit, a currency sign / "dollars", a
- * percent sign / "percent", or anything else. A diagnosis, never an allowance: the
- * verdict is unchanged whatever the kind.
- */
-export const DIGIT_KINDS = ["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER", "NUMBER_WORD"] as const;
-export type DigitKind = (typeof DIGIT_KINDS)[number];
-
-/** PURE — classify each leftover digit run in the model's own prose (after every allowance). */
-export function classifyDigitRuns(prose: string): ReasonCounts<DigitKind> {
-  const out: ReasonCounts<DigitKind> = {};
-  for (const m of prose.matchAll(/\d+(?:[.,]\d+)*/g)) {
-    const before = prose.slice(Math.max(0, m.index - 3), m.index);
-    const after = prose.slice(m.index + m[0].length, m.index + m[0].length + 12);
-    const kind: DigitKind = /[$€£]\s*$/.test(before) || /^\s*(?:dollars?|usd)\b/i.test(after) ? "MONEY_LIKE"
-      : /^\s*(?:%|percent\b)/i.test(after) ? "PERCENT_LIKE"
-      : /^\s*-?\s*(?:h|hrs?|hours?|d|days?|wks?|weeks?|mos?|months?|yrs?|years?)\b/i.test(after) ? "WINDOW_LIKE"
-      : "OTHER";
-    out[kind] = (out[kind] ?? 0) + 1;
-  }
-  return out;
-}
-export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
-
-// ── Number words (S2 N1, 2026-11-08): a count written in words is a figure ──
-//
-// Preview briefing: "one failed domain", "two active incidents", "eight connections
-// requiring reconnection" — counts the model typed in WORDS, which the digit rule never
-// saw. A cardinal number word in the model's own prose (outside every placeholder, after
-// the registry-label allowlist) is treated EXACTLY like a leftover digit: UNGROUNDED_DIGIT
-// ⇒ the fallback, digitBy NUMBER_WORD. INCLUDED: zero … nineteen, twenty … ninety,
-// hundred, thousand, million, billion, dozen, twice, thrice (each states an exact count)
-// and "a single" (states exactly one). EXCLUDED, on purpose: "once" (mostly the
-// conjunction "once it reconnects"), ordinals ("first", "second": order, and the prompt's
-// own "most important first"), "no" / "none" (absence wording the UNAVAILABLE rule
-// already governs), and vague quantifiers ("several", "few", "many", "some": no exact
-// figure is asserted, so none can be wrong). Idioms exempted (a pronoun, not a count):
-// "no one", "one another", "this one", "that one", "which one". "one of …" is NOT
-// exempted (it asserts at least one — conservative: refuse). A number word the operator
-// wrote in the question next to a time unit ("past thirty days") is admitted like
-// admitUserNumerals admits digits.
-const NUMBER_WORD = /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|billions?|dozens?|twice|thrice)\b|\ba\s+single\b/gi;
-const NUMBER_WORD_IDIOM = /\b(?:no\s+one|one\s+another|(?:this|that|which)\s+one)\b/gi;
-const NUMBER_WORD_TIME_UNIT = /^[\s-]+(?:hours?|days?|weeks?|months?|years?)\b/i;
-
-/**
- * ORDERED-LIST MARKERS (Question-style briefing "…as a short bulleted list", 2026-11-08):
- * the model numbered its items ("1. …", "2) …") and the leftover-digit rule read each
- * marker as a figure ⇒ UNGROUNDED_DIGIT ⇒ the fallback. A marker is STRUCTURE: the
- * client's answerBlocks (NUMBERED) reads exactly this shape at a line start as an
- * ordered-list item and drops it — the operator never sees it as a number. Removed here
- * ONLY at a line start (the segment's start when `lineStart`, else after a newline),
- * 1–2 digits then "." or ")" then whitespace. A digit anywhere else — "2 failed", "(1)",
- * "- 2 failed", "1.5" — is still a leftover digit.
- */
-export const LIST_MARKER = /(^|\n)([ \t]*)(\d{1,2})[.)](?=[ \t]+\S)/g;
-/**
- * S2 L1 (#496): a marker is allowed ONLY in sequence — "1" starts a list, and each next
- * marker must be the previous + 1 ("1. 2. 3."), each followed by text. "7. incidents are
- * open", or "1. … 3. …", keeps its digit (refused as a leftover digit, as before): the
- * renderer would renumber it, but the stored text and the export would carry the "7".
- * `seq` carries the expected next marker across the answer's segments (one answer, in order).
- */
-export function stripListMarkers(prose: string, lineStart = true, seq: { next: number } = { next: 1 }): string {
-  return prose.replace(LIST_MARKER, (m, nl: string, ws: string, n: string, offset: number) => {
-    if (offset === 0 && nl === "" && !lineStart) return m;
-    const k = Number(n);
-    if (k !== 1 && k !== seq.next) return m;
-    seq.next = k + 1;
-    return `${nl}${ws} `;
-  });
-}
-
-/** PURE — how many number words the model's own prose states (idioms and the operator's own time window excepted). */
-export function numberWordCount(prose: string, scrubbedQuestion = ""): number {
-  return numberWordMatches(prose, scrubbedQuestion).length;
-}
-
-/** The counted number words (numberWordCount's matches) — one definition for the count and the families. */
-function numberWordMatches(prose: string, scrubbedQuestion: string): string[] {
-  const text = prose.replace(NUMBER_WORD_IDIOM, " ");
-  const out: string[] = [];
-  for (const m of text.matchAll(NUMBER_WORD)) {
-    const after = text.slice(m.index! + m[0].length);
-    if (NUMBER_WORD_TIME_UNIT.test(after) && new RegExp(`\\b${m[0].replace(/\s+/g, "\\s+")}\\b`, "i").test(scrubbedQuestion)) continue;
-    out.push(m[0].toLowerCase().replace(/\s+/g, " "));
-  }
-  return out;
-}
-
-/**
- * (i) S2 2026-11-08 — COUNTS-ONLY word-family diagnosis of the NUMBER_WORD verdict (never the
- * words themselves): one (incl. zero) · two-twenty · tens (thirty…ninety) · single ("a single") ·
- * dozen · scale (hundred / thousand / million / billion) · twice-thrice.
- */
-export const NUMBER_WORD_FAMILIES = ["one", "two-twenty", "tens", "single", "dozen", "scale", "twice-thrice"] as const;
-export type NumberWordFamily = (typeof NUMBER_WORD_FAMILIES)[number];
-export function numberWordFamilies(prose: string, scrubbedQuestion = ""): ReasonCounts<NumberWordFamily> {
-  const out: ReasonCounts<NumberWordFamily> = {};
-  for (const w of numberWordMatches(prose, scrubbedQuestion)) {
-    const f: NumberWordFamily = w === "one" || w === "zero" ? "one" : w === "a single" ? "single" : /^dozens?$/.test(w) ? "dozen" : /^(?:twice|thrice)$/.test(w) ? "twice-thrice"
-      : /^(?:hundred|thousand|million|billion)s?$/.test(w) ? "scale" : /^(?:thirty|forty|fifty|sixty|seventy|eighty|ninety)$/.test(w) ? "tens" : "two-twenty";
-    out[f] = (out[f] ?? 0) + 1;
-  }
-  return out;
-}
-
-const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
-/** The registry label of each metric key (what {{l:<key>}} renders with no part). */
-const LABEL_OF_KEY: ReadonlyMap<string, string> = new Map(METRICS.map((m) => [metricKey(m), m.label]));
-const KNOWN_IDS: ReadonlySet<string> = new Set(METRICS.map((m) => m.id));
-const idOfKey = (k: string) => { const at = k.lastIndexOf("@"); return at >= 0 ? k.slice(0, at) : k; };
-
-/**
- * The EXACT envelope key a placeholder's written key names — or why none. The key
- * match is exact: a written "<id>@N" names only that key. A BARE "<id>" (no @N) is
- * resolved only by safety net (1) (bareKeyNet). Never a fuzzy / label match.
- */
-export type PlaceholderKeyMatch = { kind: "KEY"; key: string } | { kind: "UNRESOLVED"; reason: "UNKNOWN_KEY" | "VERSION" | "NOT_READ" };
-export function placeholderKeyOf(envelopes: readonly MetricEnvelope[], written: string): PlaceholderKeyMatch {
-  const versioned = written.includes("@");
-  const id = idOfKey(written);
-  const readOfId = [...new Set(envelopes.map((e) => e.metric as string))].filter((k) => idOfKey(k) === id);
-  if (versioned) {
-    if (readOfId.includes(written)) return { kind: "KEY", key: written };
-    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
-  } else {
-    const net = bareKeyNet(readOfId);
-    if (net !== null) return { kind: "KEY", key: net };
-    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
-  }
-  if (versioned ? KNOWN_KEYS.has(written) : KNOWN_IDS.has(id)) return { kind: "UNRESOLVED", reason: "NOT_READ" };
-  return { kind: "UNRESOLVED", reason: KNOWN_IDS.has(id) ? "VERSION" : "UNKNOWN_KEY" };
-}
-
-/**
- * SAFETY NET (1), S2-approved 2026-11-04: a BARE id (no @N) resolves iff exactly
- * ONE version of that id was read this turn — it then names that exact key. Two
- * versions read ⇒ null (VERSION: ambiguous); none read ⇒ null (NOT_READ / UNKNOWN_KEY).
- * Dropping this net = `return null`.
- */
-export function bareKeyNet(readKeysOfId: readonly string[]): string | null {
-  return readKeysOfId.length === 1 ? readKeysOfId[0] : null;
-}
-
-/**
- * The part a placeholder renders from ONE envelope — or why none. An UNAVAILABLE
- * envelope renders "unavailable — reason" whatever the part (no figure exists).
- */
-export function placeholderPartOf(e: MetricEnvelope, part: string | null): { kind: "PART"; part: string | null } | { kind: "UNRESOLVED"; reason: "MISSING_PART" | "UNKNOWN_PART" } {
-  if (e.status === "UNAVAILABLE" || e.value === null) return { kind: "PART", part };
-  if (typeof e.value === "number") return part === null ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
-  const units = e.valueUnits;
-  if (units === null || typeof units === "string") return { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
-  if (part === null) {
-    const only = onePartNet(units);
-    return only !== null ? { kind: "PART", part: only } : { kind: "UNRESOLVED", reason: "MISSING_PART" };
-  }
-  const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
-  return own(e.value, part) && own(units, part) ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
-}
-
-/**
- * SAFETY NET (2), S2-approved 2026-11-04: an object value with exactly ONE declared
- * numeric part (e.g. economics-ai-cost's { spendUsd }) resolves without |part — to
- * that part. Two or more declared parts ⇒ null (MISSING_PART): a part-less
- * placeholder never picks a total or a headline for the model (S2 rejected that).
- * Dropping this net = `return null`.
- */
-export function onePartNet(units: Readonly<Record<string, FigureUnit>>): string | null {
-  const parts = Object.entries(units).filter(([, u]) => FIGURE_UNITS.includes(u));
-  return parts.length === 1 && Object.keys(units).length === 1 ? parts[0][0] : null;
-}
-
-/** The shape of each malformed placeholder left in the prose (counts only). */
-export function malformedShapes(prose: string): ReasonCounts<MalformedReason> {
-  const out: ReasonCounts<MalformedReason> = {};
-  const add = (r: MalformedReason) => { out[r] = (out[r] ?? 0) + 1; };
-  const rest = prose.replace(/\{\{([^{}]*)\}\}/g, (_m, inner: string) => {
-    const t = inner.trim();
-    if (!/^[ml]:/.test(t)) { add("NO_PREFIX"); return " "; }
-    const key = t.slice(2).split("|")[0].trim();
-    add(/^[a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?$/.test(key) ? "BAD_OPTION" : "NOT_A_KEY");
-    return " ";
-  });
-  for (const _ of rest.matchAll(/\{\{|\}\}/g)) add("STRAY_BRACES");
-  return out;
-}
-
-// ── The user-numeral allowance (S2-approved 2026-11-04; one named, pinned function) ──
-//
-// The operator's own window ("in the past 30 days") may be echoed. A digit run
-// in the model's prose is admitted ONLY when ALL hold:
-//   · the same digit run appears verbatim (as a whole digit run) in THIS turn's
-//     SCRUBBED question (scrubOperatorText);
-//   · it is adjacent to a time unit — h, hour(s), day(s), week(s), month(s), year(s).
-//     There is NO year branch (S2 cross-impact note): the SEC-AI-005 scrub turns
-//     every 4+ digit run into [number] before the model sees the question, so a
-//     typed year can never match. Relaxing the scrub would need its own S2 ruling.
-//   · it does NOT equal any value in this turn's envelopes (numeric compare,
-//     integer rounding: |value − n| ≤ 0.5). If it does ⇒ USER_NUMERAL_COLLISION.
-// It never makes a metric VALUE acceptable: values come only from placeholders.
-
-export const USER_NUMERAL_TIME_UNIT = /^[\s-]?(?:h|hours?|days?|weeks?|months?|years?)\b/i;
-
-function envelopeValueNumbers(envelopes: readonly MetricEnvelope[]): number[] {
-  const out: number[] = [];
-  for (const e of envelopes) {
-    if (e.status === "UNAVAILABLE" || e.value === null) continue;
-    if (typeof e.value === "number") out.push(e.value);
-    else for (const v of Object.values(e.value)) {
-      if (typeof v === "number" && Number.isFinite(v)) out.push(v);
-      else if (v !== null && typeof v === "object" && typeof v.figure === "number" && Number.isFinite(v.figure)) out.push(v.figure); // a ranking part's figure (S2 ruling 2026-11-05)
-    }
-  }
-  return out;
-}
-
-export function admitUserNumerals(prose: string, scrubbedQuestion: string, envelopes: readonly MetricEnvelope[]): { prose: string; admitted: number; collision: boolean } {
-  let admitted = 0, collision = false;
-  const values = envelopeValueNumbers(envelopes);
-  const out = prose.replace(/(?<![\w.,$])\d+(?![\d.,]\d|\d)/g, (tok: string, offset: number) => {
-    const after = prose.slice(offset + tok.length);
-    if (/^(?:\.\d|,\d|%)/.test(after)) return tok;
-    const n = Number(tok);
-    if (!USER_NUMERAL_TIME_UNIT.test(after)) return tok;
-    if (!new RegExp(`(?<!\\d)${tok}(?!\\d)`).test(scrubbedQuestion)) return tok;
-    if (values.some((v) => Math.abs(v - n) <= 0.5)) { collision = true; return tok; }
-    admitted++;
-    return " ";
-  });
-  return { prose: out, admitted, collision };
-}
-
-// ── The window the operator asked for (unsupported window ⇒ stated, never substituted) ──
-
-const UNIT_HOURS: Record<string, number> = { h: 1, hour: 1, day: 24, week: 168, month: 720, year: 8760 };
-
-/** The windows the scrubbed question names ("past 30 days", "24h"), in hours; [] when none. */
-export function requestedWindows(scrubbedQuestion: string): { n: number; unit: string; hours: number }[] {
-  const out: { n: number; unit: string; hours: number }[] = [];
-  for (const m of scrubbedQuestion.matchAll(/(?<![\w.])(\d{1,3})[\s-]?(h|hours?|days?|weeks?|months?|years?)\b/gi)) {
-    const unit = m[2].toLowerCase().replace(/s$/, "");
-    const n = Number(m[1]);
-    out.push({ n, unit: unit === "h" ? "hour" : unit, hours: n * UNIT_HOURS[unit] });
-  }
-  return out;
-}
-
-/** The span an envelope covers, in hours: days / hours, else the "in the last N days|hours" of its server label (pinned consistent). */
-const envelopeHours = (e: MetricEnvelope): number | null => {
-  if (e.window.days !== null) return e.window.days * 24;
-  if (e.window.hours !== null) return e.window.hours;
-  const m = /^in the last (\d+) (day|hour)s?$/.exec(e.window.label ?? "");
-  return m ? Number(m[1]) * (m[2] === "day" ? 24 : 1) : null;
-};
-
-/**
- * The window an envelope ACTUALLY covers, as the short SERVER phrase stated beside
- * its figures (S2 rulings 2026-11-04): the envelope's `window.label` — built by
- * retrieval from days / hours, else the registry's window.label — never the
- * description, never model text. A date is added ONLY when the reader gave an
- * explicit window start (`window.start`); nothing is inferred. null = point in time.
- *   "in the last 30 days" · "in the last 24 hours" · "this UTC calendar month to date" ("…, since 2026-11-01" with a reader start)
- */
-export function envelopeWindowText(e: MetricEnvelope): string | null {
-  const w = e.window;
-  const label = w.label ?? (w.days !== null ? daysWindowLabel(w.days) : w.hours !== null ? hoursWindowLabel(w.hours) : null);
-  if (!label) return null;
-  return w.start ? `${label}, since ${w.start}` : label;
-}
-
-/** What an envelope's window covers, as the object of "covers …" in a server note. */
-function windowPhrase(e: MetricEnvelope): string {
-  const t = envelopeWindowText(e);
-  if (t === null) return "the current state (no time window)";
-  return t.replace(/^in the /, "the ");
-}
-
-/**
- * S2 F-C1 (2026-11-07) — the envelope's window as a phrase the model may QUOTE (the
- * get_metric result's `window_phrase`): server text only, from the envelope's label
- * and its reader-supplied start (never inferred). The billing-cycle label reads
- * "so far this month"; every other label is used as is; a point in time ⇒ "right now".
- *   "so far this month (since 2026-11-01)" · "in the last 30 days" · "in the last 24 hours"
- */
-export function quotableWindowPhrase(e: MetricEnvelope): string {
-  const w = e.window;
-  const label = w.label ?? (w.days !== null ? daysWindowLabel(w.days) : w.hours !== null ? hoursWindowLabel(w.hours) : null);
-  if (!label) return "right now";
-  const base = label === "this UTC calendar month to date" ? "so far this month" : label;
-  return w.start ? `${base} (since ${w.start})` : base;
-}
-
-/** A figure in its EXPLICIT unit (the envelope's valueUnits — never inferred from a name). */
-const fmtNumber = (n: number, unit: FigureUnit): string => {
-  if (unit === "usd") return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  if (unit === "pct") return `${n.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
-  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-};
-const FIGURE_UNITS: readonly FigureUnit[] = ["count", "usd", "pct"];
-
-/**
- * The text a placeholder renders to, from ONE envelope — or null (unresolvable:
- * a part on a scalar, no part / an unknown part on an object value, or no
- * declared unit for the figure).
- * Status wording (server-written), PER FIGURE:
- *   MEASURED, or a figure that is not an estimate   "<v>"
- *   ESTIMATED and the figure is an estimate         "about <v> (estimated)"
- *   PARTIAL                                         "at least <v>"
- *   PARTIAL and the figure is an estimate           "at least <v> (estimated)"
- *   UNAVAILABLE                                     "unavailable — <reason>";  a null part ⇒ "unavailable" (never 0)
- * A figure IS an estimate (S2, binding): the metric is an estimate (status
- * ESTIMATED, basis.kind "estimated", or the definition's provenance — `estimated`)
- * AND either the part is listed in the envelope's `estimatedParts` (the source of
- * truth; it may list a derived pct), or — when the metric lists none — the
- * figure's unit is usd. A count is never an estimate unless listed.
- * A RANKING part (S2 ruling 2026-11-05; envelope partRoles "ranking", e.g.
- * largestMeasuredCategory) renders "<the figure as above>" plus "; <qualifier>" when
- * the envelope's ranking carries one — all server text; its null (no category
- * measured) renders "unavailable" like any null part. S2 F-C2 (2026-11-07): the
- * FIGURE ONLY — the ranked category's NAME is {{l:<key>|part=<ranking>}} (renderLabel).
- */
-export function renderPlaceholder(e: MetricEnvelope, part: string | null, estimated = false,
-  /** A1–A4 (composed briefing): `window: false` leaves the window out of the qualifier — the composed sentence states it once (quotableWindowPhrase). Wording otherwise identical (F-3).
-   *  `stale: false` leaves the STALE qualifier out — only for a composed sentence that states it once itself. */
-  opts: { window?: boolean; stale?: boolean } = {}): string | null {
-  if (e.status === "UNAVAILABLE" || e.value === null) return `unavailable — ${e.reason ?? "no figure"}`;
-  const units = e.valueUnits ?? null;
-  let n: number | null;
-  let unit: FigureUnit | undefined;
-  let ranked: RankedCategory | null = null;
-  if (typeof e.value === "number") {
-    if (part !== null || typeof units !== "string") return null;
-    n = e.value; unit = units;
-  } else {
-    if (part === null || units === null || typeof units === "string" || !Object.prototype.hasOwnProperty.call(e.value, part)) return null;
-    unit = Object.prototype.hasOwnProperty.call(units, part) ? units[part] : undefined;
-    const raw = e.value[part] ?? null;
-    if (raw === null) return "unavailable";
-    if (typeof raw === "object") {
-      // Only a DECLARED ranking part may hold a ranked category (else unresolvable).
-      if (e.partRoles?.[part] !== "ranking" || typeof raw.label !== "string") return null;
-      ranked = raw; n = raw.figure;
-    } else n = raw;
-  }
-  if (!unit || !FIGURE_UNITS.includes(unit) || typeof n !== "number" || !Number.isFinite(n)) return null;
-  const metricIsEstimate = estimated || e.status === "ESTIMATED" || e.basis?.kind === "estimated";
-  const listed = e.estimatedParts ?? null;
-  const isEstimate = metricIsEstimate && (listed !== null ? part !== null && listed.includes(part) : unit === "usd");
-  // A configuration part (unwindowedParts, e.g. a threshold) is not measured over the window: no window label.
-  const win = opts.window === false || (part !== null && (e.unwindowedParts ?? []).includes(part)) ? null : envelopeWindowText(e);
-  const notes = [...(win !== null ? [win] : []), ...(isEstimate ? ["estimated"] : [])];
-  // STALE: the figure itself says it is not current (server text), so no reader can present it as now.
-  const stale = opts.stale !== false && isStaleEnvelope(e) ? staleQualifierOf(e) : null;
-  const qual = [...(notes.length ? [notes.join(", ")] : []), ...(stale ? [stale] : [])].join("; ");
-  const fig = `${fmtNumber(n, unit)}${qual ? ` (${qual})` : ""}`;
-  // F-3 (S2 2026-11-08): "at least" ONLY for a part that is truly a lower bound — a PARTIAL part the envelope does not list as exact.
-  const floor = e.status === "PARTIAL" && !(part !== null && (e.exactParts ?? []).includes(part));
-  const worded = floor ? `at least ${fig}` : isEstimate ? `about ${fig}` : fig;
-  return ranked ? `${worded}${ranked.qualifier ? `; ${ranked.qualifier}` : ""}` : worded;
-}
-
-/** What a ranking label renders when no category was measured (never a category, never the total). */
-export const NO_RANKED_CATEGORY = "no measured category";
-
-/**
- * S2 F-C2 (2026-11-07) — the text a LABEL placeholder {{l:…}} renders, from ONE envelope —
- * or null (unresolvable ⇒ UNKNOWN_PART ⇒ the fallback). Server text only:
- *   no part                                   the metric's registry label (`metricLabel`)
- *   a RANKING part                            the ranked category's own label (from the
- *                                             envelope's ranked value); none measured /
- *                                             UNAVAILABLE ⇒ NO_RANKED_CATEGORY
- *   a CATEGORY part                           the envelope's partLabels[part]
- *   the TOTAL part                            the metric's registry label
- *   any other part / a part the value lacks   null
- */
-export function renderLabel(e: MetricEnvelope, part: string | null, metricLabel: string | null): string | null {
-  if (part === null) return metricLabel;
-  const role = e.partRoles?.[part];
-  const own = (o: object | null | undefined, k: string) => o !== null && o !== undefined && Object.prototype.hasOwnProperty.call(o, k);
-  if (role === "ranking") {
-    if (e.status === "UNAVAILABLE" || e.value === null || typeof e.value === "number") return own(e.partRoles, part) ? NO_RANKED_CATEGORY : null;
-    if (!own(e.value, part)) return null;
-    const raw = e.value[part];
-    if (raw === null || raw === undefined) return NO_RANKED_CATEGORY;
-    return typeof raw === "object" && typeof raw.label === "string" ? raw.label : null;
-  }
-  if (e.value !== null && typeof e.value === "object" && !own(e.value, part)) return null;
-  if (role === "category") return own(e.partLabels, part) ? e.partLabels![part] : null;
-  if (role === "total") return metricLabel;
-  return null;
-}
-
-/**
- * WINDOW MIXING (S2 ruling 2026-11-05): the code-written note when the figures an
- * answer PLACED (the envelopes its resolved placeholders rendered from — never
- * prose) cover ≥ 2 distinct windows. Each window is its server label in the short
- * form ("this UTC calendar month to date", "the last 30 days": `in the ` ⇒ `the `,
- * no start date), in first-placed order; an envelope with no window (point in
- * time) does not count. One window, or one figure ⇒ null.
- *   "These figures cover different periods (this UTC calendar month to date vs. the last 30 days) and are not directly comparable."
- */
-export function windowMixNote(placed: readonly MetricEnvelope[]): string | null {
-  const windows: string[] = [];
-  for (const e of placed) {
-    const w = e.window;
-    const label = w.label ?? (w.days !== null ? daysWindowLabel(w.days) : w.hours !== null ? hoursWindowLabel(w.hours) : null);
-    if (!label) continue;
-    const short = label.replace(/^in the /, "the ");
-    if (!windows.includes(short)) windows.push(short);
-  }
-  return windows.length >= 2 ? `These figures cover different periods (${windows.join(" vs. ")}) and are not directly comparable.` : null;
-}
-
-/**
- * WHICH of THIS turn's envelopes a placeholder names (S2 ruling 2026-11-04; one
- * named function so the rule is reviewable in one place). The key match is EXACT.
- *   · (the same key + window read twice ⇒ the LAST read renders)
- *   · no envelope for the key this turn                        ⇒ UNREAD (unresolved)
- *   · NO |window: resolves iff the key was read with exactly ONE window this
- *     turn, whatever it is (the same window read twice counts once); two or more
- *     different windows of the key                             ⇒ MISMATCH (ambiguous)
- *   · |window=N: N must equal an envelope's window.days; a fixed-window metric
- *     (window.days null) takes NO |window at all               ⇒ else MISMATCH
- * The rendered figure always states the envelope's actual window (envelopeWindowText),
- * so the operator sees it whichever syntax the model used.
- */
-export type PlaceholderEnvelopeMatch = { kind: "MATCH"; envelope: MetricEnvelope } | { kind: "MISMATCH" } | { kind: "UNREAD" };
-export function matchPlaceholderEnvelope(envelopes: readonly MetricEnvelope[], key: string, window: number | null): PlaceholderEnvelopeMatch {
-  const same = envelopes.filter((e) => e.metric === key);
-  if (same.length === 0) return { kind: "UNREAD" };
-  if (window !== null) {
-    const e = same.filter((x) => x.window.days !== null && x.window.days === window).pop();
-    return e ? { kind: "MATCH", envelope: e } : { kind: "MISMATCH" };
-  }
-  const windows = new Set(same.map((x) => `${x.window.days}|${x.window.hours}`));
-  return windows.size === 1 ? { kind: "MATCH", envelope: same[same.length - 1] } : { kind: "MISMATCH" };
-}
-
-/**
- * QUESTION C (2026-11-08, Preview): "What's costing me the most money in the past 30 days?"
- * — the model read economics-operating-cost@1 (a FIXED window: the billing cycle) with
- * window=30 (ignored at the read: isFixedWindow), then wrote its placeholder with
- * |window=30 to match the operator's period. matchPlaceholderEnvelope (rightly) finds no
- * 30-day envelope ⇒ WINDOW_MISMATCH ⇒ the whole answer became the fallback. The read
- * already ignores a window on a fixed metric (S2 option (a)); the placeholder now does
- * the same, but ONLY when every envelope of the key this turn is fixed-window (days null)
- * AND N is a day-window the operator asked for. The figure still renders the envelope's
- * OWN window, and the asked period then drives the RESOLVED_WITH_WINDOW_NOTE note / the
- * period_mismatch correction. Any other |window=N keeps its strict match.
- */
-export function fixedWindowOption(envelopes: readonly MetricEnvelope[], key: string, window: number | null, askedDays: readonly number[]): number | null {
-  if (window === null || !askedDays.includes(window)) return window;
-  const same = envelopes.filter((e) => e.metric === key);
-  return same.length > 0 && same.every((e) => e.window.days === null) ? null : window;
-}
-
-/**
- * B11 — the answer with every server-rendered FIGURE kept as its own span
- * (metric key + the window it was read with), so a conversation can store it
- * typed (conversations/answer.ts StoredSegment) and mask it in history. Text and
- * links are exactly `segments`; a link's label is flattened (figures inside a
- * link label stay text).
- */
-export type TypedAnswerSegment =
-  | { kind: "text"; text: string }
-  /** `figureClass: "STALE"` ⇔ the envelope's figure is not current (its text carries the stale wording; absent = current). */
-  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass }
-  | { kind: "link"; text: string; href: string }
-  | ServerNoteSegment
-  /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
-  | { kind: "memory"; text: string };
-
-export interface PlaceholderOutcome {
-  segments: AnswerSegment[];
-  /** The same answer with figures as typed spans (B11). Joining its texts gives `segments`' text. */
-  typed: TypedAnswerSegment[];
-  summary: ClaimsSummary;
-  /** metric key → the figures rendered for it (only text that is IN the answer). */
-  figures: Map<string, string[]>;
-  /** The envelopes the resolved placeholders rendered from (for the requested-window check). */
-  placed: MetricEnvelope[];
-  /** Diagnosis (counts only): why placeholders were unresolved / malformed. */
-  unresolvedBy: ReasonCounts<UnresolvedReason>;
-  malformedBy: ReasonCounts<MalformedReason>;
-  /** Diagnosis (counts only): the kinds of leftover digit runs behind UNGROUNDED_DIGIT. */
-  digitBy: ReasonCounts<DigitKind>;
-  /** (i) Counts by NumberWordFamily of the NUMBER_WORD runs (UNGROUNDED_DIGIT only). */
-  wordFamilyBy: ReasonCounts<NumberWordFamily>;
-  /**
-   * The MODEL'S OWN prose (every rendered figure / label taken out), for counts-only
-   * diagnoses (periodMismatchCount). Never traced, stored or returned to a client.
-   */
-  modelProse: string;
-  /** Counts-only diagnoses (S2 2026-11-08): labelRepeatCount / windowRepeatCount over the rendered answer. */
-  labelRepeat: number;
-  windowRepeat: number;
-}
-
-/**
- * Resolve every placeholder in the sanitised segments (text and link labels;
- * hrefs are never touched) and apply the leftover-digit rule. `labels` are the
- * registry labels this turn's tools returned (the ONLY digit allowlist besides
- * envelope freshness dates and exact window-start dates).
- */
-export function resolvePlaceholders(
-  segments: readonly AnswerSegment[], envelopes: readonly MetricEnvelope[], labels: ReadonlySet<string>, scrubbedQuestion = "",
-  /** The metric's DEFINITION is an estimate (registry provenance) — so a PARTIAL floor still says "(estimated)". */
-  isEstimated: (key: string) => boolean = () => false,
-  /** The metric's registry label for {{l:<key>}} (S2 F-C2) — server text; default: the registry. */
-  metricLabel: (key: string) => string | null = (key) => LABEL_OF_KEY.get(key) ?? null,
-): PlaceholderOutcome {
-  let claims = 0, resolved = 0, unresolved = 0, admitted = 0;
-  let malformed = false, unit = false, digit = false, windowMismatch = false, collision = false;
-  const figures = new Map<string, string[]>();
-  const placed: MetricEnvelope[] = [];
-  const unresolvedBy: ReasonCounts<UnresolvedReason> = {};
-  const malformedBy: ReasonCounts<MalformedReason> = {};
-  const digitBy: ReasonCounts<DigitKind> = {};
-  const wordFamilyBy: ReasonCounts<NumberWordFamily> = {};
-  const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
-  const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
-  // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
-  const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
-  const labelList = [...labels].filter((l) => /\d/.test(l) || numberWordCount(l) > 0).sort((a, b) => b.length - a.length);
-  // The day-windows the operator asked about (the Question C rule, fixedWindowOption).
-  // S2 L1: ordered-list markers must run 1, 2, 3, … across the whole answer (stripListMarkers).
-  const markerSeq = { next: 1 };
-  const askedDays = requestedWindows(scrubbedQuestion).filter((a) => a.hours % 24 === 0).map((a) => a.hours / 24);
-  const modelProse: string[] = [];
-  // The rendered answer as one stream (segments in order) with every server span marked —
-  // for the counts-only labelRepeat / windowRepeat diagnoses. Never traced, stored or returned.
-  const stream = { text: "", spans: [] as RenderedSpan[] };
-
-  const resolveParts = (text: string, lineStart = true): { text: string; parts: TypedAnswerSegment[] } => {
-    const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null; stale: boolean } | { kind: "label" })[] = [];
-    const out = text.replace(PLACEHOLDER, (m, kind: "m" | "l", written: string, rawOpts: string, offset: number) => {
-      claims++;
-      const opts = placeholderOptions(rawOpts);
-      if (!opts) { malformed = true; malformedBy.BAD_OPTION = (malformedBy.BAD_OPTION ?? 0) + 1; unresolved++; return " "; }
-      const before = text.slice(0, offset), after = text.slice(offset + m.length);
-      // A unit beside a FIGURE is the model's (C1); a label carries no unit, so the check is figures-only.
-      if (kind === "m" && (UNIT_BEFORE.test(before) || UNIT_AFTER.test(after))) { unit = true; unresolved++; return " "; }
-      const k = placeholderKeyOf(envelopes, written);
-      if (k.kind === "UNRESOLVED") return why(k.reason);
-      const key = k.key;
-      const match = matchPlaceholderEnvelope(envelopes, key, fixedWindowOption(envelopes, key, opts.window, askedDays));
-      if (match.kind === "MISMATCH") { windowMismatch = true; unresolved++; return " "; }
-      if (match.kind === "UNREAD") return why("NOT_READ");
-      const e = match.envelope;
-      if (kind === "l") {
-        // S2 F-C2: the NAME, server text from this envelope (renderLabel); unknown ⇒ unresolved ⇒ the fallback.
-        const label = renderLabel(e, opts.part, metricLabel(key));
-        if (label === null) return why("UNKNOWN_PART");
-        resolved++;
-        meta.push({ kind: "label" });
-        return `${SENTINEL}${label}${SENTINEL}`;
-      }
-      const p = placeholderPartOf(e, opts.part);
-      if (p.kind === "UNRESOLVED") return why(p.reason);
-      const fig = renderPlaceholder(e, p.part, isEstimated(key));
-      if (fig === null) return why("UNKNOWN_PART");
-      resolved++;
-      if (!placed.includes(e)) placed.push(e);
-      figures.set(key, [...(figures.get(key) ?? []), fig]);
-      // The figure's qualifier carries its window unless the part is unwindowed (renderPlaceholder's rule).
-      const windowed = !(p.part !== null && (e.unwindowedParts ?? []).includes(p.part)) && envelopeWindowText(e) !== null;
-      meta.push({ kind: "figure", metric: key, window: e.window.days ?? envelopeWindowText(e), windowPhrase: windowed ? quotableWindowPhrase(e) : null, stale: isStaleEnvelope(e) });
-      return `${SENTINEL}${fig}${SENTINEL}`;
-    });
-    // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
-    let prose = out.replace(new RegExp(`${SENTINEL}[^${SENTINEL}]*${SENTINEL}`, "g"), " ");
-    // Briefing list (2026-11-08): an ordered-list MARKER is structure, not a figure — exactly what
-    // answerBlocks reads as one ("1. " / "2) " at the start of a line; the renderer drops it).
-    prose = stripListMarkers(prose, lineStart, markerSeq);
-    modelProse.push(prose);
-    if (/\{\{|\}\}/.test(prose)) {
-      malformed = true;
-      for (const [r, n] of Object.entries(malformedShapes(prose)) as [MalformedReason, number][]) malformedBy[r] = (malformedBy[r] ?? 0) + n;
-    }
-    for (const l of labelList) prose = prose.split(l).join(" ");
-    prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) || windowStarts.includes(d) ? " " : d));
-    const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
-    prose = u.prose; admitted += u.admitted; if (u.collision) collision = true;
-    if (/\d/.test(prose)) {
-      digit = true;
-      for (const [k, n] of Object.entries(classifyDigitRuns(prose)) as [DigitKind, number][]) digitBy[k] = (digitBy[k] ?? 0) + n;
-    }
-    const words = numberWordCount(prose, scrubbedQuestion);
-    if (words > 0) {
-      digit = true; digitBy.NUMBER_WORD = (digitBy.NUMBER_WORD ?? 0) + words;
-      for (const [f, n] of Object.entries(numberWordFamilies(prose, scrubbedQuestion)) as [NumberWordFamily, number][]) wordFamilyBy[f] = (wordFamilyBy[f] ?? 0) + n;
-    }
-    // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
-    const pieces = out
-      .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
-      .split(SENTINEL);
-    // S2 ruling 2026-11-05 (FIX 2): "at {{m:PARTIAL}}" read "at at least $X". At the text→figure JOIN only
-    // (never a replace over prose): a text piece ending in the word "at" before a figure that renders
-    // "at least …" loses that "at" and its trailing whitespace (the whitespace before it stays).
-    // S2 ruling 2026-11-05 (ii): a dropped "At" (capital A) makes the figure's lead "At least"; otherwise unchanged.
-    for (let i = 0; i + 1 < pieces.length; i += 2) {
-      const at = /^at least\b/.test(pieces[i + 1]) ? /\b(at)\s+$/i.exec(pieces[i]) : null;
-      if (!at) continue;
-      pieces[i] = pieces[i].slice(0, at.index);
-      if (at[1].startsWith("A")) pieces[i + 1] = `At${pieces[i + 1].slice(2)}`;
-    }
-    // Odd pieces are the figures / labels, in placeholder order (one per resolved placeholder).
-    // A label is server text but not a figure: it is stored as text (B11 replays it like prose).
-    const parts: TypedAnswerSegment[] = [];
-    pieces.forEach((piece, i) => {
-      const f = i % 2 === 1 ? meta[(i - 1) / 2] : null;
-      if (f) stream.spans.push({ start: stream.text.length, end: stream.text.length + piece.length, kind: f.kind, text: piece, windowPhrase: f.kind === "figure" ? f.windowPhrase : null });
-      stream.text += piece;
-      if (f?.kind === "figure") parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window, ...(f.stale ? { figureClass: "STALE" as const } : {}) });
-      else if (piece) {
-        const prev = parts[parts.length - 1];
-        if (prev?.kind === "text") prev.text += piece; else parts.push({ kind: "text", text: piece });
-      }
-    });
-    return { text: pieces.join(""), parts };
-  };
-  // A link label never starts a line (answerBlocks never reads a marker in a link): no marker allowance.
-  const resolveText = (text: string): string => resolveParts(text, false).text;
-
-  const typed: TypedAnswerSegment[] = [];
-  const out: AnswerSegment[] = segments.map((x, i) => {
-    if (x.kind === "link") { const t = resolveText(x.text); typed.push({ kind: "link", text: t, href: x.href }); return { ...x, text: t }; }
-    // A text segment starts a line when it is the first, or the segment before it ended one.
-    const r = resolveParts(x.text, i === 0 || /\n[ \t]*$/.test(segments[i - 1].text));
-    typed.push(...r.parts);
-    return { kind: "text", text: r.text };
-  });
-  const verdict: PlaceholderVerdict = malformed ? "MALFORMED_PLACEHOLDER" : unit ? "UNIT_MISMATCH" : windowMismatch ? "WINDOW_MISMATCH"
-    : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
-  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy,
-    // The digit diagnosis describes UNGROUNDED_DIGIT only (another verdict decided the answer first).
-    digitBy: verdict === "UNGROUNDED_DIGIT" ? digitBy : {}, wordFamilyBy: verdict === "UNGROUNDED_DIGIT" ? wordFamilyBy : {}, modelProse: modelProse.join(" "),
-    labelRepeat: labelRepeatCount(stream.text, stream.spans),
-    windowRepeat: windowRepeatCount(stream.text, stream.spans, envelopes.map(quotableWindowPhrase)) };
-}
-
-// ── label_repeat / window_repeat (S2 2026-11-08): counts-only diagnoses ───────
-//
-// Both read the RENDERED answer with the server spans marked at render time (a span is
-// the text one {{m:}} figure or one {{l:}} label rendered to). No rewrite, no verdict
-// change; the trace and the HTTP grounding carry the COUNT, never text.
-
-/** One server-rendered span in the rendered answer stream (offsets into that stream). */
-export interface RenderedSpan { start: number; end: number; kind: "figure" | "label"; text: string; windowPhrase: string | null }
-
-const insideSpan = (spans: readonly RenderedSpan[], at: number) => spans.some((sp) => at >= sp.start && at < sp.end);
-
-/**
- * label_repeat: how many SENTENCES of the rendered answer contain the SAME rendered label
- * text from two (or more) {{l:}} placeholders (e.g. "{{l:…|part=largest…}} for
- * {{l:…|part=providers}}" ⇒ "Providers (Plaid) for Providers (Plaid)"). A sentence ends at
- * ".", "!" or "?" followed by whitespace or the end, in the model's text only (a figure's
- * "$3.30" or a label never ends one). Model-written text equal to a label is not counted.
- */
-export function labelRepeatCount(text: string, spans: readonly RenderedSpan[]): number {
-  const bounds: number[] = [];
-  for (const m of text.matchAll(/[.!?](?=\s|$)/g)) if (!insideSpan(spans, m.index!)) bounds.push(m.index!);
-  const bySentence = new Map<number, Map<string, number>>();
-  for (const sp of spans) {
-    if (sp.kind !== "label") continue;
-    const sentence = bounds.filter((b) => b < sp.start).length;
-    const seen = bySentence.get(sentence) ?? new Map<string, number>();
-    seen.set(sp.text, (seen.get(sp.text) ?? 0) + 1);
-    bySentence.set(sentence, seen);
-  }
-  return [...bySentence.values()].filter((seen) => [...seen.values()].some((c) => c >= 2)).length;
-}
-
-/** window_repeat's reach: a window_phrase that STARTS within this many characters after a figure's end. */
-export const WINDOW_REPEAT_REACH = 80;
-
-/**
- * window_repeat: how many times the model's prose quotes a window_phrase (server text from
- * this turn's get_metric results; exact text, case-insensitive) starting within
- * WINDOW_REPEAT_REACH characters after the END of a rendered figure whose qualifier carries
- * that same window (e.g. "… at least $3.30 (this UTC calendar month to date, since
- * 2026-11-01, estimated) so far this month (since 2026-11-01)"). Each quoted occurrence counts
- * once however many figures precede it; a quote inside a server span is never counted.
- */
-export function windowRepeatCount(text: string, spans: readonly RenderedSpan[], windowPhrases: readonly string[]): number {
-  const lower = text.toLowerCase();
-  const hits = new Set<number>();
-  for (const phrase of new Set(windowPhrases)) {
-    const needle = phrase.toLowerCase();
-    if (!needle) continue;
-    const figures = spans.filter((sp) => sp.kind === "figure" && sp.windowPhrase !== null && sp.windowPhrase.toLowerCase() === needle);
-    if (figures.length === 0) continue;
-    for (let at = lower.indexOf(needle); at !== -1; at = lower.indexOf(needle, at + 1)) {
-      if (insideSpan(spans, at)) continue;
-      if (figures.some((f) => at >= f.end && at - f.end <= WINDOW_REPEAT_REACH)) hits.add(at);
-    }
-  }
-  return hits.size;
-}
-
-// ── period_mismatch (S2 F-C1 (c), 2026-11-07): a counts-only diagnosis ────────
-//
-// When the window note fires (a placed metric does not cover the period the operator
-// asked about), how many ASKED-PERIOD PHRASES the model's own prose contains — e.g. its
-// lead "In the past 30 days, …" over a month-to-date figure. A phrase is a rolling period
-//   "past / last / previous / prior / trailing [N] <unit>", or "N <unit>"
-//   (N in digits or a small number word; unit hour … year; no N = one)
-// whose span equals a period the question asked for (requestedWindows, in hours). A
-// calendar to-date phrase ("so far this month", "this year") is not a rolling period, so
-// it is never counted. A diagnosis only: no rewrite, no verdict change; the trace and the
-// HTTP grounding carry the COUNT, never the phrase. Rendered figures and labels are not
-// the model's prose and are never counted (they carry the server's own window words).
-
-const NUMBER_WORDS: Readonly<Record<string, number>> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12, fourteen: 14, thirty: 30, sixty: 60, ninety: 90 };
-const PERIOD_NUM = `(?:\\d{1,3}|${Object.keys(NUMBER_WORDS).join("|")})`;
-const PERIOD_PHRASE = new RegExp(
-  `\\b(?:(?:past|last|previous|prior|trailing)\\s+(?:(${PERIOD_NUM})[\\s-]+)?|(${PERIOD_NUM})[\\s-]+)(hours?|days?|weeks?|months?|quarters?|years?)\\b`, "gi");
-const PERIOD_UNIT_HOURS: Readonly<Record<string, number>> = { hour: 1, day: 24, week: 168, month: 720, quarter: 2160, year: 8760 };
-
-export function periodMismatchCount(modelProse: string, asked: readonly { hours: number }[]): number {
-  let n = 0;
-  for (const m of modelProse.matchAll(PERIOD_PHRASE)) {
-    const raw = (m[1] ?? m[2] ?? "one").toLowerCase();
-    const count = /^\d+$/.test(raw) ? Number(raw) : NUMBER_WORDS[raw] ?? 1;
-    const hours = count * PERIOD_UNIT_HOURS[m[3].toLowerCase().replace(/s$/, "")];
-    if (asked.some((a) => a.hours === hours)) n++;
-  }
-  return n;
-}
-
-/** The verdicts that keep the answer; every other one is replaced by the fallback. */
-/** "a", "a and b", "a, b and c" — server labels only. */
-const listLabels = (labels: readonly string[]) => labels.length <= 1 ? (labels[0] ?? "") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
-
-/**
- * S2 F-C1 (ii), 2026-11-08 (wording per S2 on #460) — the CORRECTION text, built ONLY from server
- * data: the affected envelopes' registry labels, each one's window_phrase (quotableWindowPhrase)
- * with a leading "in " removed (here only), and the asked period as server-parsed from the
- * operator's question (requestedWindows: n + unit, pluralised; n = 1 ⇒ "the past day"). No model
- * text, no invented explanation.
- *   "Correction: the figures for AI fleet spend vs budget (24 h) cover the last 24 hours, not the past 30 days you asked about; that period cannot be measured for them."
- */
-export function periodCorrectionText(affected: readonly MetricEnvelope[], asked: readonly { n: number; unit: string }[], labelOf: (metric: string) => string): string {
-  const labels = [...new Set(affected.map((e) => labelOf(e.metric)))];
-  const phrases = [...new Set(affected.map((e) => quotableWindowPhrase(e).replace(/^in /, "")))];
-  const period = asked.map((a) => (a.n === 1 ? `past ${a.unit}` : `past ${a.n} ${a.unit}s`)).join(" / ");
-  return `Correction: the figures for ${listLabels(labels)} cover ${listLabels(phrases)}, not the ${period} you asked about; that period cannot be measured for them.`;
-}
-
-export const placeholderPasses = (v: PlaceholderVerdict) => v === "RESOLVED" || v === "NONE" || v === "RESOLVED_WITH_WINDOW_NOTE" || v === "RESOLVED_WITH_STALE_NOTE";
+// The link sanitiser, placeholder grounding, STALE figures, the verdict enum and its
+// diagnoses, and the answer segment shapes moved VERBATIM to compose/{sanitise, placeholders,
+// stale, verdicts, windows, segments, keys}.ts. Every symbol core.ts exported is re-exported
+// here, unchanged, so every importer and test compiles as before.
+export {
+  segmentsText,
+  type AnswerSegment, type CorrectionSegment, type NoteSegment, type ServerNoteSegment, type TypedAnswerSegment,
+} from "./compose/segments";
+export {
+  FIGURE_CLASSES, isStaleEnvelope, staleNoteText, staleQualifierOf, staleSubjectLabel,
+  type FigureClass,
+} from "./compose/stale";
+export {
+  LINK_LABEL_MAX, LINK_REMOVED, LINK_TARGET_KINDS, SANITISE_KINDS, rewriteAbsoluteLink, sanitiseAnswer, strippedLinkTargets,
+  type LinkTargetKind, type SanitiseKind,
+} from "./compose/sanitise";
+export { envelopeWindowText, quotableWindowPhrase, requestedWindows } from "./compose/windows";
+export {
+  DIGIT_KINDS, LIST_MARKER, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, PLACEHOLDER_VERDICTS, UNRESOLVED_REASONS, WINDOW_REPEAT_REACH,
+  classifyDigitRuns, labelRepeatCount, numberWordCount, numberWordFamilies, periodCorrectionText, periodMismatchCount, placeholderPasses, stripListMarkers, windowRepeatCount,
+  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type RenderedSpan, type UnresolvedReason,
+} from "./compose/verdicts";
+export {
+  NO_RANKED_CATEGORY, USER_NUMERAL_TIME_UNIT, admitUserNumerals, bareKeyNet, fixedWindowOption, formatPlaceholder, labelPlaceholdersFor, malformedShapes,
+  matchPlaceholderEnvelope, onePartNet, placeholderKeyOf, placeholderPartOf, placeholdersFor, renderLabel, renderPlaceholder, resolvePlaceholders, windowMixNote,
+  type PlaceholderEnvelopeMatch, type PlaceholderKeyMatch, type PlaceholderOutcome,
+} from "./compose/placeholders";
 
 // ── The turn ────────────────────────────────────────────────────────────────
 
@@ -1971,6 +926,8 @@ export async function runPlatformAiTurn(input: {
    * of that path's own defences only; production callers never pass it.
    */
   classifyBriefing?: boolean;
+  /** P2 — the turn boundary's invokeTool (production callers always pass it); absent ⇒ the executor. */
+  invoke?: PlatformAiToolInvoker;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
   const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
@@ -1994,6 +951,7 @@ export async function runPlatformAiTurn(input: {
   // The period(s) the operator asked about (server-parsed from the scrubbed question): the tool contract (periodContract) and the window note.
   const asked = requestedWindows(question);
   const maxTokens = input.reasoningModel ? PLATFORM_AI_COMPLETION_TOKENS_REASONING : PLATFORM_AI_COMPLETION_TOKENS;
+  const dispatch = dispatcherFor(input.invoke, binding);
 
   let rounds = 0, toolCalls = 0, tokens = 0;
   let raw: string | null = null;
@@ -2011,7 +969,7 @@ export async function runPlatformAiTurn(input: {
         result = { error: `tool budget spent (${PLATFORM_AI_MAX_TOOL_CALLS} calls); answer from the results you have` };
         ev.trace.push({ tool: (PLATFORM_AI_TOOLS as readonly string[]).includes(call.name) || (!!memory && (PLATFORM_AI_MEMORY_TOOLS as readonly string[]).includes(call.name)) ? call.name as PlatformAiTraceStep["tool"] : "unknown", outcome: "BUDGET", refs: [] });
       }
-      else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys, asked, memory); }
+      else { toolCalls++; result = await dispatch(call.name, call.arguments, { ev, paramKeys, asked, memory }); }
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
     if (tokens >= PLATFORM_AI_TURN_TOKEN_CEILING) { stop = "TOKEN_CEILING"; break; }
@@ -2073,7 +1031,12 @@ export async function runPlatformAiTurn(input: {
   const unsupported = placeholderPasses(verdict) && asked.length > 0
     ? placed.placed.filter((e) => { const h = envelopeHours(e); return h === null || !asked.some((a) => a.hours === h); })
     : [];
-  if (unsupported.length > 0) verdict = "RESOLVED_WITH_WINDOW_NOTE";
+  // G1b-1 (S2 P2, 2026-11-10): the asked period (numeric AND calendar phrasings) vs the window each
+  // placed figure was SERVED with ⇒ ONE deterministic disclosure note when any differs (pure: compose/window-disclosure).
+  const disclosure = placeholderPasses(verdict)
+    ? windowDisclosureText(parseAskedPeriods(question), placed.placed, (key) => binding.describeMetric(key)?.label ?? key)
+    : null;
+  if (unsupported.length > 0 || disclosure !== null) verdict = "RESOLVED_WITH_WINDOW_NOTE";
   const replaced = !placeholderPasses(verdict);
   if (!replaced) for (const c of citations) c.figures = placed.figures.get(c.metric) ?? [];
   // S2 ruling 2026-11-05: figures from different windows ⇒ ONE code-written note (decided from the placed envelopes).
@@ -2083,25 +1046,20 @@ export async function runPlatformAiTurn(input: {
   let correction: 1 | undefined;
   if (verdict === "RESOLVED_WITH_WINDOW_NOTE") {
     periodMismatch = periodMismatchCount(placed.modelProse, asked);
-    // The asked period is ALWAYS the server-parsed requestedWindows — never the model's wording.
-    const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
+    // The asked period is ALWAYS server-parsed from the question — never the model's wording.
     const seenKeys = new Set<string>();
     const affected = unsupported.filter((e) => !seenKeys.has(e.metric) && seenKeys.add(e.metric));
-    if (periodMismatch > 0) {
+    if (periodMismatch > 0 && affected.length > 0) {
       // S2 F-C1 (ii): the model restated the asked period ⇒ the note becomes a CORRECTION segment
       // (server data only; the model's prose is neither rewritten, removed nor reordered).
       const text = periodCorrectionText(affected, asked, (key) => binding.describeMetric(key)?.label ?? key);
       answer = [{ kind: "correction", text }, ...answer];
       typed = [{ kind: "correction", text }, ...typed];
       correction = 1;
-    } else {
-      const lines = affected.map((e) => {
-        const def = binding.describeMetric(e.metric);
-        return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
-      });
-      // F-1: its own typed segment (never merged into the model's first text segment).
-      answer = [{ kind: "note", text: lines.join(" ") }, ...answer];
-      typed = [{ kind: "note", text: lines.join(" ") }, ...typed];
+    } else if (disclosure !== null) {
+      // F-1: its own typed segment (never merged into the model's first text segment), BEFORE the figures.
+      answer = [{ kind: "note", text: disclosure }, ...answer];
+      typed = [{ kind: "note", text: disclosure }, ...typed];
     }
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
@@ -2200,12 +1158,15 @@ const BRIEFING_MODEL_TOOLS: readonly string[] = ["find_page", "open_page"];
  */
 async function runComposedBriefing(input: {
   question: string; cls: BriefingClass; binding: PlatformAiBinding; generate: PlatformAiGenerate; model: string; reasoningModel?: boolean; signal?: AbortSignal;
+  invoke?: PlatformAiToolInvoker;
 }): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding, question, cls } = input;
   const paramKeys = modelParamKeys(binding);
   const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [], pages: new Map() };
   // A2: the server's reads, in protocol order (costs only when asked or an alert is firing).
-  const read = (key: string) => executePlatformAiTool("get_metric", JSON.stringify({ id: key }), binding, ev, paramKeys);
+  // P2: the server's own reads go through the same dispatcher (the boundary's per-call recheck included).
+  const dispatch = dispatcherFor(input.invoke, binding);
+  const read = (key: string) => dispatch("get_metric", JSON.stringify({ id: key }), { ev, paramKeys, asked: [] });
   let cost: BriefingCostReason | null = null;
   let composed: ComposedBriefing;
   const lead: TypedAnswerSegment[] = [];
@@ -2215,12 +1176,9 @@ async function runComposedBriefing(input: {
     if (binding.describeMetric(COST_RANKING_KEY) !== null) await read(COST_RANKING_KEY);
     composed = composeCostRanking(ev.envelopes, binding);
     const e = [...ev.envelopes].reverse().find((x) => x.metric === COST_RANKING_KEY && x.status !== "UNAVAILABLE");
-    const asked = requestedWindows(question);
-    const h = e ? envelopeHours(e) : null;
-    if (e && asked.length > 0 && (h === null || !asked.some((a) => a.hours === h))) {
-      const want = asked.map((a) => `${a.n} ${a.unit}${a.n === 1 ? "" : "s"}`).join(" / ");
-      lead.push({ kind: "note", text: `Note: ${binding.describeMetric(e.metric)?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.` });
-    }
+    // G1b-1 (S2 P2): the asked period vs the served window — the SAME deterministic disclosure as the model path.
+    const disclosure = e ? windowDisclosureText(parseAskedPeriods(question), [e], (key) => binding.describeMetric(key)?.label ?? key) : null;
+    if (disclosure) lead.push({ kind: "note", text: disclosure });
   } else {
     cost = await readBriefingEnvelopes(binding, ev, cls, read);
     // S1: the overflow sentence links the Operations page (where the posture tile renders), resolved for THIS token.
@@ -2261,7 +1219,7 @@ async function runComposedBriefing(input: {
         } else if (toolCalls >= PLATFORM_AI_MAX_TOOL_CALLS) {
           ev.trace.push({ tool: call.name as PlatformAiTraceStep["tool"], outcome: "BUDGET", refs: [] });
           result = { error: `tool budget spent (${PLATFORM_AI_MAX_TOOL_CALLS} calls); answer from the results you have` };
-        } else { toolCalls++; result = await executePlatformAiTool(call.name, call.arguments, binding, ev, paramKeys); }
+        } else { toolCalls++; result = await dispatch(call.name, call.arguments, { ev, paramKeys, asked: [] }); }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
       if (tokens >= PLATFORM_AI_TURN_TOKEN_CEILING) break;
@@ -2331,6 +1289,8 @@ export interface PlatformAiAskDeps {
   countUngrounded?(verdict: PlaceholderVerdict, unresolved: number): void;
   /** One metadata line per answered turn (traceLine: tool codes and registry ids, never text). */
   traceTurn?(line: string): void;
+  /** P2 — the turn boundary's invokeTool (the route always passes it; absent ⇒ the executor). */
+  invoke?: PlatformAiToolInvoker;
 }
 
 export interface PlatformAiHttp { status: number; body: Record<string, unknown>; headers?: Record<string, string> }
@@ -2390,6 +1350,7 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     const { result } = await runPlatformAiTurn({
       question, binding: deps.binding, generate: deps.generate, model: deps.model, reasoningModel: deps.reasoningModel,
       signal: AbortSignal.timeout(PLATFORM_AI_TURN_TIMEOUT_MS),
+      ...(deps.invoke ? { invoke: deps.invoke } : {}),
     });
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));

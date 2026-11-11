@@ -19,7 +19,10 @@
  * ONBOARDING REASONS (2026-11-09) — `no_connection_24h`, `link_exited`,
  * `import_failed` and `import_stuck` read only existing facts: the funnel's
  * connection facts, the CONNECTION_LINK_EXITED product events (closed codes
- * only) and the import-status rule's verdicts. Each reason carries a TEXT-ONLY
+ * only) and the import-status rule's verdicts. B12 PR-B adds `link_failed`:
+ * the server-side CONNECTION_ADD_FAILED rows (link-token / exchange / wallet
+ * add; closed codes only, lib/connections/add-failure.ts), same window and
+ * same "no connection since" rule as `link_exited`. Each reason carries a TEXT-ONLY
  * suggested next step (ATTENTION_ACTIONS); none of them contacts a customer.
  * Reserved-domain accounts are LABELLED test, never excluded (OD-4 undecided).
  *
@@ -41,7 +44,7 @@ const HOUR_MS = 3_600_000;
 
 /** `no_connection_24h` fires this long after registering (until `stalled` takes over at ABANDONMENT_HORIZON_DAYS). */
 export const NO_CONNECTION_AFTER_HOURS = 24;
-/** `link_exited` looks back this far for a Plaid Link exit. */
+/** `link_exited` / `link_failed` look back this far for a Plaid Link exit / a server-side add failure. */
 export const LINK_EXIT_WINDOW_DAYS = 7;
 /** `import_failed` / `import_stuck` read bank connections linked this recently (the onboarding import window). */
 export const IMPORT_ATTENTION_DAYS = 14;
@@ -64,6 +67,7 @@ export const ATTENTION_LABELS: Readonly<Record<AttentionKey, string>> = {
   import_failed: `A new bank connection's first import failed (linked in the last ${IMPORT_ATTENTION_DAYS} days)`,
   import_stuck: "A new bank connection's first import was interrupted (a resume is pending)",
   link_exited: `Left bank linking without connecting (last ${LINK_EXIT_WINDOW_DAYS} days), no connection since`,
+  link_failed: `A bank link or wallet add failed on our side (last ${LINK_EXIT_WINDOW_DAYS} days), no connection since`,
   no_connection_24h: `No connection or account yet, ${NO_CONNECTION_AFTER_HOURS} h – ${ABANDONMENT_HORIZON_DAYS} days after registering`,
 };
 
@@ -77,6 +81,7 @@ export const ATTENTION_SHORT: Readonly<Record<AttentionKey, string>> = {
   import_failed: "Import failed",
   import_stuck: "Import interrupted",
   link_exited: "Left linking",
+  link_failed: "Link failed",
   no_connection_24h: "No connection yet",
 };
 
@@ -94,6 +99,7 @@ export const ATTENTION_ACTIONS: Readonly<Record<AttentionKey, string>> = {
   import_failed: `Review the failure reason in the customer's Onboarding timeline and check provider status first. ${CONTACT_REQUIRES_APPROVAL}`,
   import_stuck: `Check the import's latest run in the Onboarding timeline; a resume is pending, so re-check before escalating. ${CONTACT_REQUIRES_APPROVAL}`,
   link_exited: `Review the exit code: an institution or provider code points at the bank's side, a credentials or MFA code at the sign-in step. ${CONTACT_REQUIRES_APPROVAL}`,
+  link_failed: `Review the failed step and code: an institution or provider code points at the bank's side, a server class (DATABASE_ERROR, SERVER_CONFIGURATION, UNEXPECTED) at ours; check provider status and Platform Ops first. ${CONTACT_REQUIRES_APPROVAL}`,
   policy: "Assign a current policy group in Policies (the assigned one is unknown, invalid or retired).",
   unassigned: "Assign a policy group in Policies; access stays restricted until then.",
   no_connection_24h: `Review the invitation and registration in the customer's profile and note them for onboarding follow-up. ${CONTACT_REQUIRES_APPROVAL}`,
@@ -107,6 +113,16 @@ export interface LinkExitFact {
   /** LINK_EXIT_STAGES value (lib/analytics/product-events.ts), or null when the row carries none. */
   stage: string | null;
   /** LINK_EXIT_ERROR_CODES value ("NONE" = a clean cancel), or null when the row carries none. */
+  errorCode: string | null;
+}
+
+/** One server-side link / exchange / wallet-add failure (CONNECTION_ADD_FAILED): closed-vocabulary codes only. */
+export interface LinkFailureFact {
+  userId: string;
+  at: Date;
+  /** CONNECTION_ADD_FAILURE_STAGES value (lib/connections/add-failure.ts), or null when the row carries none. */
+  stage: string | null;
+  /** CONNECTION_ADD_FAILURE_CODES value, or null when the row carries none. */
   errorCode: string | null;
 }
 
@@ -140,6 +156,8 @@ export interface AttentionFacts {
   recentImports?: readonly ImportAttentionFact[];
   /** CONNECTION_LINK_EXITED rows of the last LINK_EXIT_WINDOW_DAYS (codes only). Optional, as above. */
   linkExits?: readonly LinkExitFact[];
+  /** CONNECTION_ADD_FAILED rows of the last LINK_EXIT_WINDOW_DAYS (codes only). Optional, as above. */
+  linkFailures?: readonly LinkFailureFact[];
   /** Active customers with a reserved test e-mail domain — a LABEL (OD-4 undecided), never an exclusion. */
   testAccountIds?: readonly string[];
   /** True when a fleet read hit its row cap: every set is then a floor. */
@@ -185,6 +203,24 @@ export function linkExitDetail(e: Pick<LinkExitFact, "stage" | "errorCode">): st
   const stage = e.stage && CODE.test(e.stage) ? e.stage : "NONE";
   const what = code === "NONE" ? "closed without an error" : `exit code ${code}`;
   return stage === "NONE" ? what : `${what} at ${stage}`;
+}
+
+/** A CONNECTION_ADD_FAILED row → its codes (the same shape and the same two keys as a Link exit). */
+export function linkFailureFactOf(row: { userId: string | null; createdAt: Date; metadata: unknown }): LinkFailureFact | null {
+  return linkExitFactOf(row);
+}
+
+const FAILURE_STAGE_WORDS: Readonly<Record<string, string>> = {
+  LINK_TOKEN: "starting bank linking",
+  EXCHANGE: "connecting the bank",
+  WALLET_ADD: "adding a wallet",
+};
+
+/** The failure detail in words, from the closed vocabularies only (anything else reads "OTHER" / "a connection step"). */
+export function linkFailureDetail(f: Pick<LinkFailureFact, "stage" | "errorCode">): string {
+  const code = f.errorCode && CODE.test(f.errorCode) ? f.errorCode : "OTHER";
+  const step = (f.stage && FAILURE_STAGE_WORDS[f.stage]) ?? "a connection step";
+  return `failed ${step} (${code})`;
 }
 
 const importDetail = (reason: ImportReasonCategory | null): string | undefined => (reason ? IMPORT_REASON_SHORT[reason] : undefined);
@@ -249,6 +285,22 @@ export function foldAttention(facts: AttentionFacts, now: Date): AttentionFold {
     detail(id, "link_exited", linkExitDetail(e));
   }
 
+  // link_failed — the customer's LATEST server-side add failure in the window, with no connection
+  // made at or after it (the same rule as link_exited, so a later success clears it).
+  const latestFailure = new Map<string, LinkFailureFact>();
+  for (const f of facts.linkFailures ?? []) {
+    const t = f.at.getTime();
+    if (t < exitFrom || t > now.getTime() || !active.has(f.userId)) continue;
+    const cur = latestFailure.get(f.userId);
+    if (!cur || t > cur.at.getTime()) latestFailure.set(f.userId, f);
+  }
+  const linkFailed: string[] = [];
+  for (const [id, f] of latestFailure) {
+    if ((lastConn.get(id) ?? -Infinity) >= f.at.getTime()) continue;
+    linkFailed.push(id);
+    detail(id, "link_failed", linkFailureDetail(f));
+  }
+
   // import_failed / import_stuck — the import-status rule's own verdicts: failed, or in progress
   // with its newest run failed (interrupted). Removed / complete / recovered are not a reason.
   const importFailed: string[] = [];
@@ -271,6 +323,7 @@ export function foldAttention(facts: AttentionFacts, now: Date): AttentionFold {
     import_failed: only(importFailed),
     import_stuck: only(importStuck),
     link_exited: only(linkExited),
+    link_failed: only(linkFailed),
     policy: only(facts.policyIssueOwners),
     unassigned: facts.policyFailClosed === true ? only(facts.unassignedOwners ?? []) : new Set<string>(),
     no_connection_24h: only(noConnection),

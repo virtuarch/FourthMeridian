@@ -149,6 +149,11 @@ const pkg = projectBriefPackage(inputs());
   check('concentration carries its denominator and completeness',
     pkg.currentState.concentration?.topWeightPct === 45.2 && pkg.currentState.concentration?.populationValue === 84300.1
       && pkg.currentState.concentration?.populationIsComplete === false);
+  // S2 O-2 — the part is carried beside the whole, so the model never reuses the whole as the part.
+  check('concentration carries the top holding\'s own value (the part), distinct from the whole',
+    pkg.currentState.concentration?.topValue === Math.round(0.4521 * 84300.1 * 100) / 100
+      && pkg.currentState.concentration.topValue < pkg.currentState.concentration.populationValue,
+    String(pkg.currentState.concentration?.topValue));
   check('identity names the day and basis', pkg.identity.asOf === TODAY && pkg.identity.basis === 'CURRENT');
   const hidden = projectBriefPackage(inputs({ accounts: accounts({ redactedCount: 2 }) }));
   check('a hidden account withholds the unknown component rather than zeroing it',

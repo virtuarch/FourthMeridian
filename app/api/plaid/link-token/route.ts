@@ -39,6 +39,7 @@ import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
 import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 import { entitlementsForUser, refuseIfFailClosed } from "@/lib/entitlements/consume";
 import { recordConnectionLinkStarted } from "@/lib/analytics/product-events";
+import { connectionAddFailureCode, recordConnectionAddFailure } from "@/lib/connections/add-failure";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -308,6 +309,14 @@ export async function GET(req: NextRequest) {
       plaid_status:     raw?.status ?? null,
       plaid_error_data: raw?.data   ?? null,
       env:              PLAID_ENV,
+    });
+
+    // B12 PR-B — the failure reaches Platform Operations, not only this log
+    // line: one CONNECTION_ADD_FAILED row {provider, stage, errorCode} with
+    // closed-vocabulary codes only. Best-effort — it never throws, so the
+    // response below is exactly what it was.
+    await recordConnectionAddFailure({
+      userId: user.id, provider: "PLAID", stage: "LINK_TOKEN", errorCode: connectionAddFailureCode(err, code),
     });
 
     return NextResponse.json({ error: message }, { status });

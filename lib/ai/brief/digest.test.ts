@@ -122,7 +122,7 @@ console.log('\n3. what MUST move it');
   differs('a planned expense appearing', (p) => { p.plans = { goals: [], planned: [{ label: 'Kitchen', amount: 40000 }] }; });
   differs('the next checkpoint horizon changing', (p) => { p.plans = { goals: [], planned: [], nextCheckpoint: { metric: 'liquid', horizon: '2026-10-31' } }; });
   differs('concentration appearing', (p) => {
-    p.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'NVDA', topWeightPct: 45.2, populationValue: 84300.1, populationIsComplete: true };
+    p.currentState.concentration = { classification: 'HIGHLY_CONCENTRATED', topSymbol: 'NVDA', topWeightPct: 45.2, topValue: 38103.65, populationValue: 84300.1, populationIsComplete: true };
   });
 }
 
