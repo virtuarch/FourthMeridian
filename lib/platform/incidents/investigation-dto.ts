@@ -12,7 +12,17 @@
  *   ops  resync          POST /api/platform/platform-ops/connections/[id]/resync          (PLATFORM_OPS WRITE, fresh)
  *        request-reauth  POST /api/platform/platform-ops/connections/[id]/request-reauth  (PLATFORM_OPS WRITE, fresh)
  *   cs   refresh-customer POST /api/platform/customer-success/customers/[userId]/refresh  (CUSTOMER_SUCCESS WRITE, fresh)
+ *   ops  run-job         POST /api/platform/platform-ops/operations  { commandId }       (PLATFORM_OPS WRITE, fresh;
+ *                        a fleet command also CONTROL + reason — the route's guards, unchanged)
  * each recording through recordOperatorAction.
+ *
+ * INCIDENT DRAWER PR-B (S2 09gg b) — `run-job`: for a JOB-SOURCED incident
+ * (no connection subject), the newest occurrence's evidence `jobName`, mapped
+ * through job-commands.ts to a REGISTERED operations command. The SERVER derives
+ * the command here; an unmapped job offers nothing. The operations route
+ * re-derives it from the incident's own evidence before recording `incidentId`.
+ * ORDER IS RANK: the FIRST recovery action is the primary one (the drawer
+ * renders it as such); the rest are secondary.
  *
  * LIFECYCLE ACTIONS (PB-1 S6) — the verdict's `availableActions`, narrowed to
  * the ones with a route, on the OPS tier only:
@@ -55,6 +65,7 @@ import type { IncidentNavigationLinkDTO } from "./related-navigation";
 import { deriveDisplayStatus, isOpenState, type DisplayStatus } from "./display-status";
 import { remedyFor, type RemedyClass } from "./explanations";
 import { JOB_LABELS } from "@/components/platform/ops-visual/job-catalog";
+import { jobCommandForJob } from "./job-commands";
 import { OPAQUE_USER_REF_FALLBACK } from "@/lib/platform/opaque-user-ref-format";
 
 export type IncidentTier = "ops" | "cs";
@@ -99,7 +110,21 @@ export interface IncidentRowDTO {
 
 export type RecoveryActionDTO =
   | { kind: "resync" | "request-reauth"; connectionId: string }
-  | { kind: "refresh-customer"; userId: string };
+  | { kind: "refresh-customer"; userId: string }
+  /**
+   * Incident drawer PR-B — run the job this incident was observed under, for
+   * ALL customers, through the existing Manual operations route. `commandId`
+   * is SERVER-derived from the incident's evidence (job-commands.ts);
+   * `jobLabel` is the JOB_LABELS word; `reasonRequired` mirrors the command's
+   * requirement (a fleet run needs a structured reason).
+   */
+  | { kind: "run-job"; commandId: string; jobLabel: string; reasonRequired: boolean };
+
+/** Every recovery action kind (the drawer's "no button without a route" scan iterates this). */
+export const RECOVERY_ACTION_KINDS = ["resync", "request-reauth", "refresh-customer", "run-job"] as const satisfies readonly RecoveryActionDTO["kind"][];
+type _AllKindsListed = Exclude<RecoveryActionDTO["kind"], (typeof RECOVERY_ACTION_KINDS)[number]> extends never ? true : false;
+const _allKindsListed: _AllKindsListed = true;
+void _allKindsListed;
 
 export interface IncidentListDTO extends Omit<IncidentSearchResult, "items"> {
   tier: IncidentTier;
@@ -253,12 +278,18 @@ const OPEN_STATES: ReadonlySet<IncidentVerdict["state"]> = new Set(["active", "a
  *   investigate         ACTIVE ⇒ resync; ERROR with no verified explanation ⇒
  *                       resync + request-reauth (operator judgement; both audited)
  * request-reauth is never offered on a healthy (ACTIVE) connection from here.
+ * Ops, JOB-SOURCED (PR-B): an open incident with NO connection subject whose
+ * newest occurrence names a job mapped to a registered operations command ⇒
+ * run-job (that command, server-derived). An unmapped job ⇒ none. A
+ * connection-scoped incident never gets run-job: its remedy is per connection
+ * (a fleet run is never the fix for one connection's error).
+ * The FIRST action returned is the primary one.
  * CS: an open incident attributed to a customer — that customer's Refresh all,
  * EXCEPT when the customer must act (a refresh is a server retry too).
  * Closed, archived or unattributed ⇒ none.
  */
 export function recoveryActionsFor(
-  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "affected" | "providerError">,
+  inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "verdict" | "affected" | "providerError" | "component">,
   tier: IncidentTier,
 ): RecoveryActionDTO[] {
   const v = inv.verdict;
@@ -272,7 +303,8 @@ export function recoveryActionsFor(
     const userId = "subjectUserId" in v ? v.subjectUserId : null;
     return userId ? [{ kind: "refresh-customer", userId }] : [];
   }
-  if (v.provider !== "PLAID" || !v.plaidItemId || v.subjectState !== "LIVE") return [];
+  if (!v.plaidItemId) return runJobActionFor(inv);
+  if (v.provider !== "PLAID" || v.subjectState !== "LIVE") return [];
   const id = v.plaidItemId;
   switch (remedy) {
     case "customer-reconnect":
@@ -288,6 +320,14 @@ export function recoveryActionsFor(
       return out;
     }
   }
+}
+
+/** PR-B — the run-job action for a job-sourced incident: its evidence's job ⇒ the registered command, or nothing. */
+function runJobActionFor(inv: Pick<IncidentInvestigation<IncidentVerdict | CsIncidentVerdict>, "component">): RecoveryActionDTO[] {
+  const jobName = inv.component?.jobName ?? null;
+  const cmd = jobCommandForJob(jobName);
+  if (!cmd || jobName === null) return [];
+  return [{ kind: "run-job", commandId: cmd.commandId, jobLabel: (JOB_LABELS as Record<string, string>)[jobName] ?? UNKNOWN_JOB_LABEL, reasonRequired: cmd.reasonRequired }];
 }
 
 /** Incident detail v1 — the summary block (pure over the investigation). */

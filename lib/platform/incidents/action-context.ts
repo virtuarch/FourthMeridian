@@ -36,6 +36,29 @@ export async function verifiedIncidentId(
   }
 }
 
+/**
+ * Incident drawer PR-B (S2 09gg b) — a "Run job" posted from an incident drawer
+ * to the Manual operations route carries `?incidentId=`. It is recorded ONLY
+ * when VERIFIED server-side: the incident exists AND its OWN evidence (the
+ * newest occurrence's job, through job-commands.ts) maps to THIS command
+ * (`commandOf`, intelligence/index.ts incidentJobCommandId). Anything else —
+ * absent, malformed, unknown, an incident whose job maps elsewhere or nowhere,
+ * a failed read — is dropped silently: the run is still audited, without an
+ * incidentId. It grants nothing: every route guard runs regardless.
+ */
+export async function verifiedJobIncidentId(
+  candidate: string | null,
+  commandId: string,
+  commandOf: (incidentId: string) => Promise<string | null>,
+): Promise<string | null> {
+  if (!candidate) return null;
+  try {
+    return (await commandOf(candidate)) === commandId ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Spread into an operator-action audit `detail`: `{ incidentId }` when present, else nothing. */
 export function incidentAuditDetail(incidentId: string | null): { incidentId?: string } {
   return incidentId ? { incidentId } : {};

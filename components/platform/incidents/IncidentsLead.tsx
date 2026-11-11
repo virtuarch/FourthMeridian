@@ -41,10 +41,18 @@
  * (never the raw id) and an "Open customer profile" BUTTON opens the audited
  * profile panel in-page (cs-open-customer.ts → the hosted cs_customers panel,
  * whose every open re-reads customers/[userId]); no user id in any URL.
+ *
+ * INCIDENT DRAWER PR-B (S2 09gg b) — the FIRST recovery action is PRIMARY
+ * (recoveryActionsFor ranks by remedy class: customer-reconnect ⇒ request-
+ * reauth, server-retry ⇒ resync, job ⇒ run-job); the rest are secondary. "Run
+ * job" posts the SERVER-provided command to the existing Manual operations
+ * route with `?incidentId=`; its confirmation states the scope ("for all
+ * customers") and, for a fleet command, collects the required reason. Every
+ * action kind has a real route (pinned by incident-drawer-run-job.test.ts).
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { CheckCircle2, ChevronLeft, ChevronRight, KeyRound, RefreshCw, RotateCcw, UserCheck } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, KeyRound, Play, RefreshCw, RotateCcw, UserCheck } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Surface } from "@/components/atlas/Surface";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
@@ -75,7 +83,9 @@ import {
 } from "./incidents-model";
 import { incidentDiagnosisView } from "./diagnosis-model";
 import { incidentLifecycleView, type EpisodeLink } from "./lifecycle-model";
+import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "../widgets/OperatorReasonField";
 
+const PRIMARY_BTN = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--meridian-400)] bg-[var(--meridian-400)] px-3 text-xs font-medium text-white lg:min-h-8";
 const FIELD = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8";
 const ROW_BTN = "group flex min-h-11 w-full min-w-0 items-start gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
 const H = "text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]";
@@ -380,8 +390,10 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
   const recoveryControls = d.recovery.length > 0 && (
     canWrite ? (
       <div className="flex flex-wrap gap-2" data-incident-recovery>
-        {d.recovery.map((a) => (
-          <button key={a.kind} type="button" className={`${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onRecover(a)} aria-haspopup="dialog" data-recovery-action={a.kind}>{RECOVERY_LABEL[a.kind]}</button>
+        {/* PR-B — the first action is primary (ranked server-side by remedy class); the rest are secondary. */}
+        {d.recovery.map((a, i) => (
+          <button key={a.kind} type="button" className={i === 0 ? PRIMARY_BTN : `${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onRecover(a)} aria-haspopup="dialog"
+            data-recovery-action={a.kind} data-recovery-rank={i === 0 ? "primary" : "secondary"}>{recoveryButtonLabel(a)}</button>
         ))}
       </div>
     ) : (
@@ -662,7 +674,47 @@ export function recoveryPath(a: RecoveryActionDTO, incidentId?: string): string 
     case "resync": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/resync${ctx}`;
     case "request-reauth": return `/api/platform/platform-ops/connections/${encodeURIComponent(a.connectionId)}/request-reauth${ctx}`;
     case "refresh-customer": return `/api/platform/customer-success/customers/${encodeURIComponent(a.userId)}/refresh`;
+    // PR-B — the existing Manual operations route; the command rides the body (recoveryBody), the incident the query.
+    case "run-job": return `/api/platform/platform-ops/operations${ctx}`;
   }
+}
+
+/** The button word: "Run job" names the job (a word from the server's DTO). */
+export function recoveryButtonLabel(a: RecoveryActionDTO): string {
+  return a.kind === "run-job" ? `Run ${a.jobLabel}` : RECOVERY_LABEL[a.kind];
+}
+
+/**
+ * PR-B — the POST body. run-job: the SERVER-provided command id (never a job
+ * name), plus the structured reason a fleet command requires. Others: none.
+ */
+export function recoveryBody(a: RecoveryActionDTO, why: OperatorReasonValue | null): string | undefined {
+  if (a.kind !== "run-job") return undefined;
+  const reason = a.reasonRequired && why ? reasonPayload(why) : null;
+  return JSON.stringify(reason ? { commandId: a.commandId, reason } : { commandId: a.commandId });
+}
+
+/** PR-B — the scope sentence every run-job confirmation leads with (pinned). */
+export function runJobScope(jobLabel: string): string {
+  return `Runs ${jobLabel} for all customers.`;
+}
+
+/** The confirmation for an action: static copy, except run-job, which names its job and scope. */
+export function confirmFor(a: RecoveryActionDTO): { title: string; message: string; icon: typeof RefreshCw } {
+  if (a.kind !== "run-job") return CONFIRM[a.kind];
+  return {
+    title: `Run ${a.jobLabel} now?`,
+    message: `${runJobScope(a.jobLabel)} Fleet jobs can trigger provider calls and cost. It runs through the same Run Now path as the Jobs view (one run at a time, rate-limited${a.reasonRequired ? "; a fleet-wide run needs control access and a reason" : ""}). Audited as an operator action, recorded against this incident.`,
+    icon: Play,
+  };
+}
+
+/** What the operations route reported for a run-job, in words. */
+export function runJobOutcomeText(status: number, body: Record<string, unknown>): string {
+  if (status === 409) return "A run of this job is already in progress — nothing new was started.";
+  if (body.outcome === "executed") return "Ran — recorded as a manual run. The incident updates when the lifecycle records the outcome.";
+  if (body.outcome === "failed") return `The run failed${typeof body.error === "string" ? `: ${body.error}` : ""}.`;
+  return "Run job: the server did not report an outcome.";
 }
 
 /** What a request-reauth actually did, in words (the route reports it; never a bare "done"). */
@@ -679,7 +731,7 @@ export function reauthOutcomeText(body: Record<string, unknown>): string {
 /** S2 R1 — the request-reauth confirmation says exactly what the customer receives (pinned by test). */
 export const REQUEST_REAUTH_CONFIRM_MESSAGE = "Marks the connection as needing reauthorization and sends the customer an in-app notice and an email asking them to reconnect (unless one is already open). It does NOT remove the connection or any data. Audited as an operator action.";
 
-export const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; message: string; icon: typeof RefreshCw }>> = {
+export const CONFIRM: Readonly<Record<Exclude<RecoveryActionDTO["kind"], "run-job">, { title: string; message: string; icon: typeof RefreshCw }>> = {
   resync: { title: "Resync this connection now?", message: "Re-runs this connection's sync through the existing per-item path (respects the in-flight lock and manual cooldown). Audited as an operator action.", icon: RefreshCw },
   "request-reauth": { title: "Ask the customer to reauthorize this connection?", message: REQUEST_REAUTH_CONFIRM_MESSAGE, icon: KeyRound },
   "refresh-customer": { title: "Refresh all of this customer's connections?", message: "Runs the customer's Refresh all through the one orchestrator with operator authority. Nothing is reported as refreshed that was skipped or refused. Audited as an operator action.", icon: RotateCcw },
@@ -729,6 +781,7 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
   const { data, error, fresh } = useKeyedJson<IncidentDetailDTO>(incidentDetailApiPath(tier, id), generation);
   const [execution, setExecution] = useState<string | null>(null);
   const [pending, setPending] = useState<RecoveryActionDTO | null>(null);
+  const [why, setWhy] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -737,11 +790,22 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
     setBusy(true);
     setNotice(null);
     try {
-      const r = await fetch(recoveryPath(pending, id), { method: "POST", credentials: "same-origin" });
+      const payload = recoveryBody(pending, why);
+      const r = await fetch(recoveryPath(pending, id), {
+        method: "POST", credentials: "same-origin",
+        ...(payload ? { headers: { "Content-Type": "application/json" }, body: payload } : {}),
+      });
       const body = await r.json().catch(() => ({} as Record<string, unknown>));
+      if (pending.kind === "run-job" && (r.ok || r.status === 409)) {
+        setNotice(runJobOutcomeText(r.status, body as Record<string, unknown>));
+        setGeneration((g) => g + 1);
+        return;
+      }
       if (!r.ok) {
         if (r.status === 429 && typeof body.retryAfterSeconds === "number") throw new Error(`On cooldown — try again in ~${Math.ceil(body.retryAfterSeconds / 60)} min.`);
-        if (r.status === 403) throw new Error("Not authorized (write access with a fresh sign-in is required).");
+        if (r.status === 403) throw new Error(pending.kind === "run-job" && pending.reasonRequired
+          ? "Not authorized (a fleet-wide run needs control access with a fresh sign-in)."
+          : "Not authorized (write access with a fresh sign-in is required).");
         throw new Error(typeof body.error === "string" ? body.error : `${RECOVERY_LABEL[pending.kind]} failed (${r.status})`);
       }
       setNotice(pending.kind === "request-reauth"
@@ -791,11 +855,12 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
 
   if (fresh && error) return <ChartMessage>{`Incident unavailable — ${error}`}</ChartMessage>;
   if (!data || data.incident.id !== id) return <ChartMessage>Reading incident…</ChartMessage>;
-  const c = pending ? CONFIRM[pending.kind] : null;
+  const c = pending ? confirmFor(pending) : null;
+  const needsReason = pending?.kind === "run-job" && pending.reasonRequired;
   return (
     <>
       {notice && <p role="status" className="mb-3 text-xs text-[var(--text-secondary)]">{notice}</p>}
-      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
+      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={(a) => { setWhy(EMPTY_OPERATOR_REASON); setPending(a); }}
         onLifecycle={tier === "ops" ? openLifecycle : undefined}
         onOpenCustomer={tier === "cs" && customerProfileHosted ? requestOpenCustomer : undefined}
         slots={{ remember: <RememberButton area={tier === "ops" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS"} kind="INCIDENT" id={data.incident.id} /> }} />
@@ -806,7 +871,10 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpe
           confirmDisabled={!lifecycleFormValid(lifecyclePending, form)} onConfirm={runLifecycle} onClose={() => setLifecyclePending(null)} />
       )}
       {pending && c && (
-        <ConfirmDialog icon={c.icon} title={c.title} message={c.message} confirmLabel={RECOVERY_LABEL[pending.kind]} confirmTone="meridian" busy={busy} onConfirm={run} onClose={() => setPending(null)} />
+        <ConfirmDialog icon={c.icon} title={c.title}
+          message={needsReason ? <><span>{c.message}</span><OperatorReasonField value={why} onChange={setWhy} disabled={busy} label="Fleet-wide run — a reason is recorded with it" /></> : c.message}
+          confirmLabel={recoveryButtonLabel(pending)} confirmTone="meridian" busy={busy}
+          confirmDisabled={needsReason && reasonPayload(why) === null} onConfirm={run} onClose={() => setPending(null)} />
       )}
       <ExecutionTimelinePanel executionId={execution} eyebrow="Incident evidence" title="Refresh execution" onClose={() => setExecution(null)} />
     </>
