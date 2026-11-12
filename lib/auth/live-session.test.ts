@@ -160,6 +160,7 @@ const ALLOW: Record<string, string> = {
   "lib/sessions.ts#updateMany":                                 "revokeOtherUserSessions: revoke every unrevoked row (incl. expired)",
   "app/api/admin/security/users/[userId]/sessions/route.ts#updateMany": "admin revoke one / all: stamp every unrevoked row",
   "scripts/admin-promote.ts#updateMany":                        "promotion revokes every unrevoked row so the next request re-logs in",
+  "scripts/synthetic-operator.ts#updateMany":                   "the purge stamp (e0-live-sa demotion) revokes every unrevoked row in the same transaction",
 };
 
 function walk(dir: string, out: string[]) {
