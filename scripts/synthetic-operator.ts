@@ -12,10 +12,14 @@
  *   npm run ops:synthetic-operator -- --env=<preview|local> --cleanup --record=<private dir>
  *
  *   E0-LIVE (S2 ruling R-1; Preview ONLY):
- *   npm run ops:synthetic-operator -- --profile=e0-live --env=preview --provision
+ *   npm run ops:synthetic-operator -- --profile=e0-live --env=preview --provision --operators=<role,…>   (only the roles the run uses)
  *   npm run ops:synthetic-operator -- --profile=e0-live --env=preview --revoke-area=CUSTOMER_SUCCESS --operator=rev [--await-signal]
  *   npm run ops:synthetic-operator -- --profile=e0-live --env=preview --regrant-area=CUSTOMER_SUCCESS --operator=rev
  *   npm run ops:synthetic-operator -- --profile=e0-live --env=preview --cleanup --record=<private e0l dir>
+ *
+ *   E0-LIVE suite R revoking actor (S2 09ic; owner-approved; Preview ONLY; immediately before / after suite R):
+ *   npm run ops:synthetic-operator -- --profile=e0-live-sa --env=preview --provision --roster=<same-day e0l dir>
+ *   npm run ops:synthetic-operator -- --profile=e0-live-sa --env=preview --cleanup --record=<private e0lsa dir>
  *
  * PROVISION — one User (role USER, "Synthetic Operator", an @example.test
  * address, email pre-verified, NO TOTP) created in the SAME shape the
@@ -87,6 +91,8 @@ import {
   E0_LIVE_ROSTER, E0_LIVE_FLIP_OPERATOR, isRosterGrant, isE0LiveGrantAllowed, computeE0LiveDeadline, e0LiveDirFor,
   e0LiveOperatorDir, e0LiveRecordDirRefusal, parseE0LiveRecord, classifySignalLine, regrantAuditAction,
   AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS, E0_LIVE_PROFILE, decideE0LiveProvisionExpiry,
+  E0_LIVE_SA, E0_LIVE_SA_ROLE, e0LiveSaDirFor, e0LiveSaRecordDirRefusal, parseE0LiveSaRecord, decideE0LiveSaProvision, decideE0LiveSaExpiry,
+  type E0LiveSaRecord, type E0LiveRole,
   type SyntheticRecord, type CleanupCounts, type SyntheticArea, type E0LiveArea, type E0LiveRecord, type E0LiveOperator,
 } from "./lib/synthetic-operator.core";
 import {
@@ -188,6 +194,8 @@ type Registration = Awaited<ReturnType<typeof loadRegistration>>;
 async function createOperatorInTx(
   tx: Tx, reg: Registration, who: Identity, grants: GrantSpec, allowed: (area: string, level: string) => boolean,
   passwordHash: string, now: Date,
+  /** SYNTHETIC_ROLE (USER) for every profile; E0_LIVE_SA_ROLE ONLY from provisionE0LiveSa (pinned by the test). */
+  role: typeof SYNTHETIC_ROLE | typeof E0_LIVE_SA_ROLE = SYNTHETIC_ROLE,
 ): Promise<{ userId: string; grantIds: Record<string, string> }> {
   const { AuditAction, auditEmailHash, possessive, Prisma, SpaceMemberRole, defaultPolicyGroup, plannedSections } = reg;
   if (!isSyntheticEmailAllowed(who.email)) throw new Error("operator address is not an @example.test address");
@@ -198,7 +206,7 @@ async function createOperatorInTx(
       name: `${who.firstName} ${who.lastName}`,
       firstName: who.firstName,
       lastName: who.lastName,
-      role: SYNTHETIC_ROLE,
+      role,
       passwordHash,
       // NO TOTP here (S1, 2026-11-05): a seed sealed with THIS process's ENCRYPTION_KEY
       // would not open under the target deployment's key (Preview's key is a Vercel
@@ -254,17 +262,18 @@ async function createOperatorInTx(
 }
 
 /** Read back one operator's stored shape; throws (exit 1) on any mismatch. */
-async function checkOperatorShape(db: Db, userId: string, grants: GrantSpec, label: string): Promise<void> {
+async function checkOperatorShape(db: Db, userId: string, grants: GrantSpec, label: string,
+  role: typeof SYNTHETIC_ROLE | typeof E0_LIVE_SA_ROLE = SYNTHETIC_ROLE): Promise<void> {
   const u = await db.user.findUnique({
     where: { id: userId },
     select: { role: true, totpEnabled: true, totpSecret: true, passwordHash: true, email: true, platformGrants: { select: { area: true, level: true, status: true } } },
   });
   const ok = (what: string, cond: boolean) => { if (!cond) throw new Error(`post-provision check failed: ${label}${what}`); pass(`${label}${what}`); };
-  ok("user exists with role USER and an @example.test address", !!u && u.role === "USER" && isSyntheticEmailAllowed(u.email));
+  ok(`user exists with role ${role} and an @example.test address`, !!u && u.role === role && isSyntheticEmailAllowed(u.email));
   ok("no TOTP provisioned (enrolment, if enforced, is the app's own flow)", !u?.totpEnabled && !u?.totpSecret);
   ok("password stored as a bcrypt cost-12 hash", !!u?.passwordHash && /^\$2[aby]\$12\$/.test(u.passwordHash));
   const held = (u?.platformGrants ?? []).map((g) => `${g.area}:${g.level}:${g.status}`).sort();
-  ok(`grants are exactly ${grants.map((g) => `${g.area} ${g.level}`).join(" + ")}, all ACTIVE`,
+  ok(`grants are exactly ${grants.map((g) => `${g.area} ${g.level}`).join(" + ") || "none"}${grants.length ? ", all ACTIVE" : ""}`,
     JSON.stringify(held) === JSON.stringify(grants.map((g) => `${g.area}:${g.level}:ACTIVE`).sort()));
   const [spaces, plaid] = await Promise.all([
     db.spaceMember.count({ where: { userId } }),
@@ -349,10 +358,12 @@ async function revokeArea(db: Db, area: SyntheticArea): Promise<number> {
  * purgeUser(), the zero-rows check, the secret shred and the counts-only record.
  * `opDir` holds that operator's credentials / record / cleanup files.
  */
-async function purgeOperator(db: Db, userId: string, expectedEmail: string, opDir: string, env: string, label: string): Promise<number> {
+async function purgeOperator(db: Db, userId: string, expectedEmail: string, opDir: string, env: string, label: string,
+  /** The roles the recorded user may hold: USER for every operator; the e0-live-sa revoker also SYSTEM_ADMIN. */
+  allowedRoles: ReadonlyArray<typeof SYNTHETIC_ROLE | typeof E0_LIVE_SA_ROLE> = [SYNTHETIC_ROLE]): Promise<number> {
   const u = await db.user.findUnique({ where: { id: userId }, select: { id: true, email: true, role: true } });
   if (!u) refuse([`${label}the recorded synthetic operator no longer exists on this database.`], true);
-  if (u.email !== expectedEmail || !isSyntheticEmailAllowed(u.email) || u.role !== "USER") {
+  if (u.email !== expectedEmail || !isSyntheticEmailAllowed(u.email) || !(allowedRoles as readonly string[]).includes(u.role)) {
     refuse([`${label}the recorded user is not the synthetic operator (email/role mismatch) — refusing to delete it.`], true);
   }
   // REVOKED (disconnected) items do not block: the user purge's cascade
@@ -378,15 +389,17 @@ async function purgeOperator(db: Db, userId: string, expectedEmail: string, opDi
   const stampedAt = new Date(Date.now() - 1000);
   await db.$transaction(async (tx) => {
     const n = await tx.user.updateMany({
-      where: { id: u.id, email: expectedEmail, role: "USER" },
-      data: { deletionRequestedAt: stampedAt, deletionScheduledAt: stampedAt, deactivatedAt: stampedAt },
+      where: { id: u.id, email: expectedEmail, role: { in: [...allowedRoles] } },
+      // The SAME stamp demotes to USER (a no-op for USER operators): an e0-live-sa revoker that a later purge step
+      // failed to delete is never left holding the admin role.
+      data: { deletionRequestedAt: stampedAt, deletionScheduledAt: stampedAt, deactivatedAt: stampedAt, role: SYNTHETIC_ROLE },
     });
     if (n.count !== 1) throw new Error("deletion request stamp matched no synthetic operator");
     await tx.auditLog.create({
       data: {
         userId: u.id,
         action: AuditAction.ACCOUNT_DELETION_REQUESTED,
-        metadata: { deletionScheduledAt: stampedAt.toISOString(), graceDays: 0, synthetic: true, actorType: "SYSTEM", reason: SYNTHETIC_REASON },
+        metadata: { deletionScheduledAt: stampedAt.toISOString(), graceDays: 0, synthetic: true, previousRole: u.role, actorType: "SYSTEM", reason: SYNTHETIC_REASON },
       },
     });
   }, TX_OPTIONS);
@@ -444,8 +457,11 @@ async function cleanup(db: Db, recordDir: string, targetHash: string | null, env
 
 // ── E0-LIVE profile (S2 ruling R-1) ──────────────────────────────────────────
 
-async function provisionE0Live(db: Db, targetHash: string | null): Promise<number> {
-  for (const o of E0_LIVE_ROSTER) {
+async function provisionE0Live(db: Db, targetHash: string | null, roles: readonly E0LiveRole[]): Promise<number> {
+  // S2 L4 lesson: provision ONLY the roster operators the run uses (--operators, required by the gate).
+  const roster = E0_LIVE_ROSTER.filter((o) => roles.includes(o.role));
+  if (roster.length === 0 || roster.length !== roles.length) refuse(["--operators selects no roster operator (or an unknown one)."], false);
+  for (const o of roster) {
     if (!isSyntheticEmailAllowed(o.email)) refuse([`roster operator ${o.role} does not have an @example.test address.`], false);
     for (const g of o.grants) if (!isRosterGrant(o.role, g.area, g.level)) refuse([`roster operator ${o.role} carries a grant outside the e0-live allowlist.`], false);
   }
@@ -471,7 +487,7 @@ async function provisionE0Live(db: Db, targetHash: string | null): Promise<numbe
     provisionedAt: now.toISOString(), cleanupDeadline: deadline.toISOString(),
   };
   const plan: Array<{ op: E0LiveOperator; dir: string; password: string; passwordHash: string }> = [];
-  for (const o of E0_LIVE_ROSTER) {
+  for (const o of roster) {
     const password = passwordFromBytes(randomBytes(24));
     secrets.push(password);
     plan.push({ op: o, dir: e0LiveOperatorDir(rosterDir, o.role), password, passwordHash: await bcrypt.hash(password, 12) });
@@ -513,11 +529,11 @@ async function provisionE0Live(db: Db, targetHash: string | null): Promise<numbe
   const outside = await db.platformGrant.count({
     where: { userId: { in: created.map((c) => c.userId) }, area: { notIn: ["PLATFORM_OPS", "CUSTOMER_SUCCESS"] } },
   });
-  if (outside !== 0 || !E0_LIVE_ROSTER.every((o) => o.grants.every((g) => isE0LiveGrantAllowed(g.area, g.level)))) {
+  if (outside !== 0 || !roster.every((o) => o.grants.every((g) => isE0LiveGrantAllowed(g.area, g.level)))) {
     throw new Error("post-provision check failed: a roster operator holds an area outside PLATFORM_OPS / CUSTOMER_SUCCESS");
   }
   pass("no roster operator holds any area outside PLATFORM_OPS / CUSTOMER_SUCCESS");
-  pass("credentials written per operator (0600 in 0700)");
+  pass(`credentials written per operator (0600 in 0700): ${roster.map((o) => o.role).join(", ")} only`);
   console.log(`\n  private directory: ${rosterDir}`);
   console.log(`  cleanup deadline:  ${deadline.toISOString()}  (same UTC day — run --cleanup before it)\n`);
   return 0;
@@ -653,9 +669,112 @@ async function cleanupE0Live(db: Db, rosterDir: string, targetHash: string | nul
   return 0;
 }
 
+// ── E0-LIVE-SA profile (S2 09ic; owner-approved) — the suite R revoking actor ─────
+//
+// ONE synthetic System Admin (e0l-sa@example.test), NO Platform grants, beside a live same-day e0-live roster
+// that includes rev. Provisioned IMMEDIATELY before suite R, purged IMMEDIATELY after (zero rows). This tool never
+// calls the grant route; the private runner does, as this identity, over HTTP.
+
+async function provisionE0LiveSa(db: Db, targetHash: string | null, rosterDir: string): Promise<number> {
+  const loc = e0LiveRecordDirRefusal(rosterDir, defaultPrivateBase());
+  if (loc) refuse([`--roster: ${loc}`], false);
+  const revDir = e0LiveOperatorDir(rosterDir, E0_LIVE_FLIP_OPERATOR);
+  let rev: E0LiveRecord | null = null;
+  if (existsSync(path.join(revDir, RECORD_FILE))) {
+    try { rev = parseE0LiveRecord(readPrivateJson(revDir, RECORD_FILE), E0_LIVE_FLIP_OPERATOR); }
+    catch (e) { refuse([`rev record rejected: ${e instanceof Error ? e.message : String(e)}`], false); }
+  }
+  const now = new Date();
+  const window = decideE0LiveSaProvision(now, rev, targetHash);
+  if (!window.ok) refuse([window.reason], false);
+  const revRecord = rev as E0LiveRecord;
+
+  const revUser = await db.user.findUnique({ where: { id: revRecord.userId }, select: { email: true, role: true } });
+  if (!revUser || revUser.email !== FLIP_OP.email || revUser.role !== SYNTHETIC_ROLE) {
+    refuse(["the roster's rev operator does not exist on this database (or is not the roster user) — no revoker without suite R."], true);
+  }
+  const existing = await db.user.count({ where: { OR: [{ email: E0_LIVE_SA.email }, { username: E0_LIVE_SA.username }] } });
+  if (existing > 0) refuse(["an e0-live-sa revoker already exists on this database — run --cleanup with its record first."], true);
+
+  const deadline = computeE0LiveDeadline(now);
+  const bcrypt = (await import("bcryptjs")).default;
+  const reg = await loadRegistration();
+  const password = passwordFromBytes(randomBytes(24));
+  secrets.push(password);
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  // Secrets reach disk BEFORE the account exists; on a failed transaction they are shredded.
+  const dir = e0LiveSaDirFor(defaultPrivateBase(), now);
+  createPrivateDir(dir);
+  const base = {
+    profile: "e0-live-sa" as const, env: "preview" as const, targetHash, email: E0_LIVE_SA.email, roster: path.basename(rosterDir),
+    provisionedAt: now.toISOString(), cleanupDeadline: deadline.toISOString(),
+  };
+  const credentials = (userId: string | null) => ({ kind: "synthetic-operator-e0lsa-credentials", ...base, userId, password });
+  writePrivateJson(dir, CREDENTIALS_FILE, credentials(null), true);
+
+  let created: { userId: string; grantIds: Record<string, string> };
+  try {
+    created = await db.$transaction(async (tx) => {
+      // NO grants: the SA acts only through the guarded admin grant route (requireFreshSystemAdmin).
+      return createOperatorInTx(tx, reg, E0_LIVE_SA, [], () => false, passwordHash, now, E0_LIVE_SA_ROLE);
+    }, TX_OPTIONS);
+  } catch (e) {
+    shredFile(path.join(dir, CREDENTIALS_FILE));
+    throw e;
+  }
+
+  writePrivateJson(dir, CREDENTIALS_FILE, credentials(created.userId));
+  const record: E0LiveSaRecord = { kind: "synthetic-operator-e0lsa-record", ...base, userId: created.userId };
+  writePrivateJson(dir, RECORD_FILE, record, true);
+
+  await checkOperatorShape(db, created.userId, [], "sa: ", E0_LIVE_SA_ROLE);
+  pass("sa: credentials written to the private directory (0600 in 0700)");
+  console.log(`\n  private directory: ${dir}`);
+  console.log(`  cleanup deadline:  ${deadline.toISOString()}  (purge IMMEDIATELY after suite R: --profile=e0-live-sa --cleanup --record=<this dir>)\n`);
+  return 0;
+}
+
+async function cleanupE0LiveSa(db: Db, recordDir: string, targetHash: string | null): Promise<number> {
+  const loc = e0LiveSaRecordDirRefusal(recordDir, defaultPrivateBase());
+  if (loc) refuse([loc], false);
+  let record: E0LiveSaRecord;
+  try { record = parseE0LiveSaRecord(readPrivateJson(recordDir, RECORD_FILE)); }
+  catch (e) { refuse([`record rejected: ${e instanceof Error ? e.message : String(e)}`], false); }
+  if (record.env !== "preview" || record.targetHash !== targetHash) {
+    refuse(["the record was provisioned on a different environment/database than this connection — refusing."], false);
+  }
+  const u = await db.user.findUnique({ where: { id: record.userId }, select: { id: true } });
+  if (!u && existsSync(path.join(recordDir, CLEANUP_FILE))) {
+    pass("sa: already cleaned by an earlier run — skipped");
+  } else {
+    // The SAME per-user cleanup; the stamp demotes SYSTEM_ADMIN → USER before purgeUser deletes the account.
+    const rc = await purgeOperator(db, record.userId, E0_LIVE_SA.email, recordDir, "preview", "sa: ", [SYNTHETIC_ROLE, E0_LIVE_SA_ROLE]);
+    if (rc !== 0) return rc;
+  }
+  // Grant provenance pointing at the revoker is SetNull on delete (schema PlatformGrant grantedBy / revokedBy): must be zero.
+  const linked = await db.platformGrant.count({ where: { OR: [{ grantedById: record.userId }, { revokedById: record.userId }] } });
+  if (linked !== 0) {
+    console.error(`\n  FAILED — sa: ${linked} grant row(s) still reference the revoker after the purge.\n`);
+    return 3;
+  }
+  pass("sa: zero rows remain for the revoker (user, grants, conversations, messages, sessions) and zero grant rows reference it");
+  // Disclosed residue: append-only audit rows that name the revoker as the acting admin (performedByAdminId, no FK).
+  const auditNamingSa = await db.auditLog.count({ where: { performedByAdminId: record.userId } });
+  console.log(`  disclosed residue: ${auditNamingSa} append-only audit row(s) name the revoker as the acting admin (kept by design)`);
+  printPurgeDispatch();
+  console.log(`  private directory: ${recordDir}\n`);
+  return 0;
+}
+
 async function main(): Promise<void> {
   const decision = decideSyntheticOperator(process.argv.slice(2), process.env);
   if (!decision.ok) refuse(decision.reasons, false);
+  if (decision.profile === "e0-live-sa" && decision.command.kind === "provision") {
+    // S2 09ic: the SA profile has its own hard stop — refuse before any database contact or file write.
+    const saExpiry = decideE0LiveSaExpiry(new Date());
+    if (!saExpiry.ok) refuse([saExpiry.reason], false);
+  }
   if (decision.profile === "e0-live" && decision.command.kind === "provision") {
     // S2 09eh: hard stop — refuse before any database contact or file write.
     const expiry = decideE0LiveProvisionExpiry(new Date());
@@ -671,9 +790,15 @@ async function main(): Promise<void> {
     if (role.length !== 1 || role[0].ok !== true) {
       refuse(["the connecting principal does not bypass RLS (rolbypassrls / rolsuper) — its counts of the FORCE-RLS conversation tables would be vacuous; use the direct (migration) principal."], true);
     }
+    if (decision.profile === "e0-live-sa") {
+      const c = decision.command;
+      process.exitCode = c.kind === "provision" ? await provisionE0LiveSa(db, decision.targetHash, path.resolve(c.rosterDir))
+        : await cleanupE0LiveSa(db, path.resolve(c.recordDir), decision.targetHash);
+      return;
+    }
     if (decision.profile === "e0-live") {
       const c = decision.command;
-      process.exitCode = c.kind === "provision" ? await provisionE0Live(db, decision.targetHash)
+      process.exitCode = c.kind === "provision" ? await provisionE0Live(db, decision.targetHash, c.roles)
         : c.kind === "revoke-area" ? await revokeAreaE0Live(db, c.area, c.awaitSignal)
         : c.kind === "regrant-area" ? await regrantAreaE0Live(db, c.area)
         : await cleanupE0Live(db, path.resolve(c.recordDir), decision.targetHash);

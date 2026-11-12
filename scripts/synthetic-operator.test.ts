@@ -17,6 +17,8 @@ import {
   E0_LIVE_PROFILE, E0_LIVE_ROSTER, E0_LIVE_AREAS, ALWAYS_FORBIDDEN_AREAS, E0_LIVE_FLIP_OPERATOR, e0LiveOperator, isE0LiveGrantAllowed,
   isRosterGrant, isE0LiveFlipArea, computeE0LiveDeadline, e0LiveDirFor, e0LiveOperatorDir, e0LiveRecordDirRefusal, parseE0LiveRecord,
   classifySignalLine, regrantAuditAction, AWAIT_SIGNAL_GO, AWAIT_SIGNAL_MAX_MS, E0_LIVE_PROFILE_EXPIRES, decideE0LiveProvisionExpiry,
+  parseE0LiveOperators, E0_LIVE_SA, E0_LIVE_SA_ROLE, E0_LIVE_SA_PROFILE, E0_LIVE_SA_PROFILE_EXPIRES, decideE0LiveSaExpiry, decideE0LiveSaProvision,
+  e0LiveSaDirFor, e0LiveSaRecordDirRefusal, parseE0LiveSaRecord,
 } from "./lib/synthetic-operator.core";
 import { createPrivateDir, writePrivateJson, shredFile } from "./lib/synthetic-operator.files";
 import { PlaidItemStatus } from "@prisma/client";
@@ -192,9 +194,14 @@ check("S2 Fix A: cleanup shreds EVERY secret file (credentials.json, totp.json)"
     && /export const SECRET_FILES = \[CREDENTIALS_FILE, TOTP_FILE\] as const;/.test(readFileSync("scripts/lib/synthetic-operator.files.ts", "utf8")));
 check("every interactive transaction carries the remote-target bounds (TX_OPTIONS: maxWait 10 s, timeout 60 s)",
   /const TX_OPTIONS = \{ maxWait: 10_000, timeout: 60_000 \} as const;/.test(src)
-    && (src.match(/db\.\$transaction\(/g) ?? []).length === 5 && (src.match(/\}, TX_OPTIONS\)/g) ?? []).length === 5);
+    && (src.match(/db\.\$transaction\(/g) ?? []).length === 6 && (src.match(/\}, TX_OPTIONS\)/g) ?? []).length === 6);
 check("the purge dispatch is printed, never run", /ops:platform-ai-conversations-purge -- --env=preview/.test(src) && !/spawn|execSync|exec\(/.test(src));
-check("the role written is SYNTHETIC_ROLE and no SYSTEM_ADMIN appears", /role: SYNTHETIC_ROLE/.test(src) && !/SYSTEM_ADMIN/.test(src));
+check("the role written is SYNTHETIC_ROLE everywhere except ONE call: provisionE0LiveSa passes E0_LIVE_SA_ROLE (S2 09ic); no SYSTEM_ADMIN literal in code",
+  /role: typeof SYNTHETIC_ROLE \| typeof E0_LIVE_SA_ROLE = SYNTHETIC_ROLE,/.test(createOpBody) && /^      role,$/m.test(createOpBody)
+  && (src.match(/E0_LIVE_SA_ROLE\)/g) ?? []).length === 2
+  && /createOperatorInTx\(tx, reg, E0_LIVE_SA, \[\], \(\) => false, passwordHash, now, E0_LIVE_SA_ROLE\)/.test(src)
+  && (src.match(/createOperatorInTx\(tx,/g) ?? []).length === 3
+  && !/["']SYSTEM_ADMIN["']/.test(src));
 check("no session-level SET is issued", !/\bSET\s+(SESSION|LOCAL|default_transaction|role)/i.test(src));
 check("stdout never prints the password, TOTP seed or otpauth URI",
   !/console\.(log|error)\([^)]*(password|totpSeed|otpauth)/i.test(src));
@@ -220,27 +227,29 @@ check("the purge function the cleanup uses is the one process-deletions calls",
 
 console.log("\nsynthetic operator — e0-live profile: the gate (Preview only)\n");
 const E0 = (...a: string[]) => ["--profile=e0-live", ...a];
-const d0 = decideSyntheticOperator(E0("--env=preview", "--provision"), PREV);
+/** S2 L4 lesson: an e0-live provision names ONLY the roster operators the run uses. */
+const OPS = "--operators=ops,rev";
+const d0 = decideSyntheticOperator(E0("--env=preview", "--provision", OPS), PREV);
 check("--profile=e0-live --env=preview --provision on a non-Production Supabase target ⇒ allowed, profile e0-live",
-  d0.ok && d0.profile === "e0-live" && d0.env === "preview" && d0.command.kind === "provision", d0);
-check("e0-live --env=local ⇒ refused even on loopback (Preview-only)", !ok(decideSyntheticOperator(E0("--env=local", "--provision"), LOCAL)));
-check("e0-live --env=production ⇒ refused", !ok(decideSyntheticOperator(E0("--env=production", "--provision"), E({ DATABASE_URL: direct(PROD_REF) }))));
-check("e0-live --env=preview pointed at the PRODUCTION ref ⇒ refused", !ok(decideSyntheticOperator(E0("--env=preview", "--provision"), E({ DATABASE_URL: direct(PROD_REF) }))));
+  d0.ok && d0.profile === "e0-live" && d0.env === "preview" && d0.command.kind === "provision" && d0.command.roles.join() === "ops,rev", d0);
+check("e0-live --env=local ⇒ refused even on loopback (Preview-only)", !ok(decideSyntheticOperator(E0("--env=local", "--provision", OPS), LOCAL)));
+check("e0-live --env=production ⇒ refused", !ok(decideSyntheticOperator(E0("--env=production", "--provision", OPS), E({ DATABASE_URL: direct(PROD_REF) }))));
+check("e0-live --env=preview pointed at the PRODUCTION ref ⇒ refused", !ok(decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ DATABASE_URL: direct(PROD_REF) }))));
 check("e0-live with FM_PRODUCTION_DB_REF unset ⇒ refused",
-  !ok(decideSyntheticOperator(E0("--env=preview", "--provision"), E({ FM_PRODUCTION_DB_REF: undefined, DATABASE_URL: direct(PREV_REF) }))));
+  !ok(decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ FM_PRODUCTION_DB_REF: undefined, DATABASE_URL: direct(PREV_REF) }))));
 check("e0-live with VERCEL_ENV=production ⇒ refused",
-  !ok(decideSyntheticOperator(E0("--env=preview", "--provision"), E({ DATABASE_URL: direct(PREV_REF), VERCEL_ENV: "production" }))));
+  !ok(decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ DATABASE_URL: direct(PREV_REF), VERCEL_ENV: "production" }))));
 check("e0-live with DATABASE_URL / DIRECT_URL on different databases ⇒ refused",
-  !ok(decideSyntheticOperator(E0("--env=preview", "--provision"), E({ DATABASE_URL: direct(PREV_REF), DIRECT_URL: direct(PROD_REF) }))));
-check("e0-live --env=preview on a loopback target ⇒ refused (cannot prove Preview)", !ok(decideSyntheticOperator(E0("--env=preview", "--provision"), LOCAL)));
+  !ok(decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ DATABASE_URL: direct(PREV_REF), DIRECT_URL: direct(PROD_REF) }))));
+check("e0-live --env=preview on a loopback target ⇒ refused (cannot prove Preview)", !ok(decideSyntheticOperator(E0("--env=preview", "--provision", OPS), LOCAL)));
 for (const envv of ["staging", "PREVIEW", "", "dev"]) {
-  check(`e0-live --env=${envv || "<empty>"} ⇒ refused`, !ok(decideSyntheticOperator(E0(`--env=${envv}`, "--provision"), PREV)));
+  check(`e0-live --env=${envv || "<empty>"} ⇒ refused`, !ok(decideSyntheticOperator(E0(`--env=${envv}`, "--provision", OPS), PREV)));
 }
-check("e0-live with no --env ⇒ refused", !ok(decideSyntheticOperator(E0("--provision"), PREV)));
+check("e0-live with no --env ⇒ refused", !ok(decideSyntheticOperator(E0("--provision", OPS), PREV)));
 for (const p of ["g1", "E0-LIVE", "", "e0-live2", "e0"]) {
   check(`--profile=${p || "<empty>"} ⇒ refused (only e0-live is a profile)`, !ok(decideSyntheticOperator([`--profile=${p}`, "--env=preview", "--provision"], PREV)));
 }
-check("two --profile flags ⇒ refused", !ok(decideSyntheticOperator(["--profile=e0-live", ...E0("--env=preview", "--provision")], PREV)));
+check("two --profile flags ⇒ refused", !ok(decideSyntheticOperator(["--profile=e0-live", ...E0("--env=preview", "--provision", OPS)], PREV)));
 const dRev = decideSyntheticOperator(E0("--env=preview", "--revoke-area=CUSTOMER_SUCCESS", "--operator=rev"), PREV);
 check("e0-live --revoke-area=CUSTOMER_SUCCESS --operator=rev ⇒ allowed (no signal)",
   dRev.ok && dRev.profile === "e0-live" && dRev.command.kind === "revoke-area" && dRev.command.area === "CUSTOMER_SUCCESS" && dRev.command.awaitSignal === false, dRev);
@@ -281,9 +290,9 @@ const dClean = decideSyntheticOperator(E0("--env=preview", "--cleanup", "--recor
 check("e0-live --cleanup --record=<dir> ⇒ allowed", dClean.ok && dClean.profile === "e0-live" && dClean.command.kind === "cleanup", dClean);
 check("e0-live an unknown flag ⇒ refused", !ok(decideSyntheticOperator(E0("--env=preview", "--provision", "--force"), PREV)));
 const e0Refusals = JSON.stringify([
-  decideSyntheticOperator(E0("--env=preview", "--provision"), E({ DATABASE_URL: direct(PROD_REF) })),
-  decideSyntheticOperator(E0("--env=preview", "--provision"), E({ DATABASE_URL: direct(PREV_REF), DIRECT_URL: direct(PROD_REF) })),
-  decideSyntheticOperator(E0("--env=local", "--provision"), LOCAL),
+  decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ DATABASE_URL: direct(PROD_REF) })),
+  decideSyntheticOperator(E0("--env=preview", "--provision", OPS), E({ DATABASE_URL: direct(PREV_REF), DIRECT_URL: direct(PROD_REF) })),
+  decideSyntheticOperator(E0("--env=local", "--provision", OPS), LOCAL),
 ]);
 check("e0-live refusals name the rule, never a secret, ref, host or URL",
   !e0Refusals.includes(SECRET) && !e0Refusals.includes(PROD_REF) && !e0Refusals.includes(PREV_REF) && !e0Refusals.includes("supabase.co") && !e0Refusals.includes("postgresql://"));
@@ -401,7 +410,7 @@ try {
 
 console.log("\nsynthetic operator — e0-live: the script refuses before contact\n");
 for (const argv of [
-  E0("--env=local", "--provision"),
+  E0("--env=local", "--provision", OPS),
   E0("--env=preview", "--revoke-area=CUSTOMER_SUCCESS", "--operator=cs1"),
   E0("--env=preview", "--regrant-area=SECURITY_OPS", "--operator=rev"),
   ["--env=preview", "--regrant-area=CUSTOMER_SUCCESS", "--operator=rev"],
@@ -445,7 +454,9 @@ check("e0-live cleanup reuses the SAME per-user cleanup (purgeOperator) as the d
 const purgeBody = src.slice(src.indexOf("async function purgeOperator("), src.indexOf("function printPurgeDispatch("));
 check("the shared per-user cleanup keeps the REVOKED-item guard, the zero-grace stamp bound to the expected address, and the shred",
   /providerConnectionBlocksCleanup\(plaidItems\.map\(\(i\) => i\.status\)\)/.test(purgeBody)
-  && /where: \{ id: u\.id, email: expectedEmail, role: "USER" \}/.test(purgeBody)
+  && /where: \{ id: u\.id, email: expectedEmail, role: \{ in: \[\.\.\.allowedRoles\] \} \}/.test(purgeBody)
+  && /data: \{ deletionRequestedAt: stampedAt, deletionScheduledAt: stampedAt, deactivatedAt: stampedAt, role: SYNTHETIC_ROLE \}/.test(purgeBody)
+  && /allowedRoles: ReadonlyArray<typeof SYNTHETIC_ROLE \| typeof E0_LIVE_SA_ROLE> = \[SYNTHETIC_ROLE\]/.test(purgeBody)
   && /for \(const f of SECRET_FILES\) shredFile\(path\.join\(opDir, f\)\);/.test(purgeBody));
 
 // ══ e0-live hard stop (S2 09eh) ═══════════════════════════════════════════════
@@ -476,6 +487,114 @@ check("revoke / regrant / cleanup (e0-live) are NOT gated by the expiry",
   (src.match(/decideE0LiveProvisionExpiry\(/g) ?? []).length === 2
   && !/decideE0LiveProvisionExpiry/.test(between("const FLIP_OP =", "async function cleanupE0Live("))
   && !/decideE0LiveProvisionExpiry/.test(e0CleanBody));
+
+// ══ e0-live --operators (S2 L4 lesson) ════════════════════════════════════════
+console.log("\nsynthetic operator — e0-live --operators: provision only what the run uses\n");
+check("e0-live --provision WITHOUT --operators ⇒ refused", !ok(decideSyntheticOperator(["--profile=e0-live", "--env=preview", "--provision"], PREV)));
+const dSub = decideSyntheticOperator(["--profile=e0-live", "--env=preview", "--provision", "--operators=rev"], PREV);
+check("e0-live --operators=rev ⇒ allowed, roles [rev]", dSub.ok && dSub.profile === "e0-live" && dSub.command.kind === "provision" && dSub.command.roles.join() === "rev", dSub);
+check("--operators keeps roster order", (() => { const r = parseE0LiveOperators("rev,cs2,ops"); return r.ok && r.roles.join() === "ops,cs2,rev"; })());
+for (const bad of ["", "sa", "ops,ops", "ops,,rev", "OPS", "ops,admin"]) {
+  check(`--operators=${bad || "<empty>"} ⇒ refused`, !parseE0LiveOperators(bad).ok && !ok(decideSyntheticOperator(["--profile=e0-live", "--env=preview", "--provision", `--operators=${bad}`], PREV)));
+}
+check("--operators outside --provision ⇒ refused",
+  !ok(decideSyntheticOperator(["--profile=e0-live", "--env=preview", "--cleanup", "--record=/x/synthetic-operator-e0l-20261110T080000Z", "--operators=rev"], PREV)));
+check("e0-live --roster ⇒ refused (e0-live-sa only)", !ok(decideSyntheticOperator(["--profile=e0-live", "--env=preview", "--provision", OPS, "--roster=/x"], PREV)));
+check("default profile: --operators / --roster ⇒ refused",
+  !ok(decideSyntheticOperator(["--env=preview", "--provision", "--operators=rev"], PREV)) && !ok(decideSyntheticOperator(["--env=preview", "--provision", "--roster=/x"], PREV)));
+const provE0 = src.slice(src.indexOf("async function provisionE0Live("), src.indexOf("const FLIP_OP ="));
+check("provisionE0Live creates ONLY the selected roles (roster = E0_LIVE_ROSTER filtered by roles; plan + checks iterate it)",
+  /const roster = E0_LIVE_ROSTER\.filter\(\(o\) => roles\.includes\(o\.role\)\);/.test(provE0) && /for \(const o of roster\) \{\s*const password/.test(provE0)
+  && /provisionE0Live\(db, decision\.targetHash, c\.roles\)/.test(src));
+
+// ══ PROFILE e0-live-sa (S2 09ic) ═══════════════════════════════════════════════
+console.log("\nsynthetic operator — e0-live-sa: the suite R revoking actor (Preview only)\n");
+const SA = (...a: string[]) => ["--profile=e0-live-sa", ...a];
+const ROSTER = "--roster=/x/synthetic-operator-e0l-20261112T000500Z";
+const dSa = decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER), PREV);
+check("e0-live-sa --provision --roster on Preview ⇒ allowed, profile e0-live-sa",
+  dSa.ok && dSa.profile === "e0-live-sa" && dSa.command.kind === "provision" && dSa.command.rosterDir.endsWith("synthetic-operator-e0l-20261112T000500Z"), dSa);
+check("e0-live-sa --provision without --roster ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--provision"), PREV)));
+check("e0-live-sa --env=local ⇒ refused", !ok(decideSyntheticOperator(SA("--env=local", "--provision", ROSTER), LOCAL)));
+check("e0-live-sa --env=production ⇒ refused", !ok(decideSyntheticOperator(SA("--env=production", "--provision", ROSTER), E({ DATABASE_URL: direct(PROD_REF) }))));
+check("e0-live-sa on the PRODUCTION ref ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER), E({ DATABASE_URL: direct(PROD_REF) }))));
+check("e0-live-sa with VERCEL_ENV=production ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER), E({ DATABASE_URL: direct(PREV_REF), VERCEL_ENV: "production" }))));
+for (const f of ["--revoke-area=CUSTOMER_SUCCESS", "--regrant-area=CUSTOMER_SUCCESS", "--operator=rev", "--await-signal", "--operators=rev"]) {
+  check(`e0-live-sa ${f.split("=")[0]} ⇒ refused (provision / cleanup only)`, !ok(decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER, f), PREV)));
+}
+const dSaClean = decideSyntheticOperator(SA("--env=preview", "--cleanup", "--record=/x/synthetic-operator-e0lsa-20261112T000500Z"), PREV);
+check("e0-live-sa --cleanup --record ⇒ allowed", dSaClean.ok && dSaClean.profile === "e0-live-sa" && dSaClean.command.kind === "cleanup", dSaClean);
+check("e0-live-sa --cleanup without --record ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--cleanup"), PREV)));
+check("e0-live-sa --roster with --cleanup ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--cleanup", "--record=/x", ROSTER), PREV)));
+check("e0-live-sa provision + cleanup together ⇒ refused", !ok(decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER, "--cleanup", "--record=/x"), PREV)));
+const saRefusals = JSON.stringify([
+  decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER), E({ DATABASE_URL: direct(PROD_REF) })),
+  decideSyntheticOperator(SA("--env=preview", "--provision", ROSTER), E({ DATABASE_URL: direct(PREV_REF), DIRECT_URL: direct(PROD_REF) })),
+]);
+check("e0-live-sa refusals name the rule, never a secret, ref, host or URL",
+  !saRefusals.includes(SECRET) && !saRefusals.includes(PROD_REF) && !saRefusals.includes(PREV_REF) && !saRefusals.includes("postgresql://"));
+
+console.log("\nsynthetic operator — e0-live-sa identity, window, records\n");
+check("the revoker identity is exactly e0l-sa@example.test / e0l_sa, frozen, never a roster or default address",
+  E0_LIVE_SA.email === "e0l-sa@example.test" && E0_LIVE_SA.username === "e0l_sa" && Object.isFrozen(E0_LIVE_SA) && isSyntheticEmailAllowed(E0_LIVE_SA.email)
+  && !E0_LIVE_ROSTER.some((o) => o.email === E0_LIVE_SA.email) && (E0_LIVE_SA.email as string) !== SYNTHETIC_EMAIL);
+check("the revoker role constant is SYSTEM_ADMIN and is a PrismaUserRole value; the default role stays USER",
+  E0_LIVE_SA_ROLE === "SYSTEM_ADMIN" && enumBody("UserRole").includes("SYSTEM_ADMIN") && SYNTHETIC_ROLE === "USER" && E0_LIVE_SA_PROFILE === "e0-live-sa");
+check("E0_LIVE_SA_PROFILE_EXPIRES pinned (an extension is a reviewed change)", E0_LIVE_SA_PROFILE_EXPIRES === "2026-12-15T23:59:59Z");
+check("e0-live-sa expiry: after ⇒ refused, before ⇒ allowed",
+  !decideE0LiveSaExpiry(new Date(Date.parse(E0_LIVE_SA_PROFILE_EXPIRES) + 1)).ok && decideE0LiveSaExpiry(new Date("2026-11-12T12:00:00Z")).ok);
+const nowSa = new Date("2026-11-12T10:00:00Z");
+const revRec = { provisionedAt: "2026-11-12T00:05:00.000Z", targetHash: "h1", cleanupDeadline: "2026-11-12T23:59:59.000Z" };
+check("SA window: same-day rev record on the same database ⇒ allowed", decideE0LiveSaProvision(nowSa, revRec, "h1").ok);
+check("SA window: no rev record ⇒ refused (the SA exists only for suite R)", !decideE0LiveSaProvision(nowSa, null, "h1").ok);
+check("SA window: another database ⇒ refused", !decideE0LiveSaProvision(nowSa, revRec, "h2").ok);
+check("SA window: a roster from another UTC day ⇒ refused", !decideE0LiveSaProvision(nowSa, { ...revRec, provisionedAt: "2026-11-11T23:00:00.000Z" }, "h1").ok);
+check("SA window: past the roster's deadline ⇒ refused", !decideE0LiveSaProvision(nowSa, { ...revRec, cleanupDeadline: "2026-11-12T09:00:00.000Z" }, "h1").ok);
+check("SA private dir = synthetic-operator-e0lsa-<UTC stamp>; --record bound to it",
+  path.basename(e0LiveSaDirFor("/home/x/FourthMeridian-private", nowSa)) === "synthetic-operator-e0lsa-20261112T100000Z"
+  && e0LiveSaRecordDirRefusal("/home/x/FourthMeridian-private/synthetic-operator-e0lsa-20261112T100000Z", "/home/x/FourthMeridian-private") === null
+  && e0LiveSaRecordDirRefusal("/home/x/FourthMeridian-private/synthetic-operator-e0l-20261112T100000Z", "/home/x/FourthMeridian-private") !== null
+  && e0LiveSaRecordDirRefusal("/tmp/synthetic-operator-e0lsa-20261112T100000Z", "/home/x/FourthMeridian-private") !== null);
+const saRec = { kind: "synthetic-operator-e0lsa-record", profile: "e0-live-sa", env: "preview", targetHash: "h1", email: "e0l-sa@example.test",
+  userId: "ckabcdefgh12345678", roster: "synthetic-operator-e0l-20261112T000500Z", provisionedAt: nowSa.toISOString(), cleanupDeadline: "2026-11-12T23:59:59.000Z" };
+check("SA record parses", parseE0LiveSaRecord(saRec).userId === "ckabcdefgh12345678");
+for (const [what, bad] of [["another email", { ...saRec, email: "e0l-rev@example.test" }], ["env local", { ...saRec, env: "local" }],
+  ["a non-roster dir", { ...saRec, roster: "synthetic-operator-20261112T000500Z" }], ["a bad userId", { ...saRec, userId: "x" }], ["another kind", { ...saRec, kind: "synthetic-operator-e0l-record" }]] as const) {
+  check(`SA record with ${what} ⇒ rejected`, (() => { try { parseE0LiveSaRecord(bad); return false; } catch { return true; } })());
+}
+
+console.log("\nsynthetic operator — e0-live-sa source pins\n");
+const saProvBody = src.slice(src.indexOf("async function provisionE0LiveSa("), src.indexOf("async function cleanupE0LiveSa("));
+const saCleanBody = src.slice(src.indexOf("async function cleanupE0LiveSa("), src.indexOf("async function main("));
+check("SA provision: the window (same-day rev record, same database, expiry) is decided BEFORE any read or write",
+  saProvBody.indexOf("decideE0LiveSaProvision(now, rev, targetHash)") > 0
+  && saProvBody.indexOf("decideE0LiveSaProvision(now, rev, targetHash)") < saProvBody.indexOf("db.user.findUnique(")
+  && saProvBody.indexOf("decideE0LiveSaProvision(now, rev, targetHash)") < saProvBody.indexOf("createPrivateDir("));
+check("SA provision: refuses when the revoker exists; requires the live rev roster user",
+  /an e0-live-sa revoker already exists/.test(saProvBody) && /revUser\.email !== FLIP_OP\.email/.test(saProvBody));
+check("SA provision: ONE $transaction through the shared registration writer, NO grants, role E0_LIVE_SA_ROLE; post-check of that shape",
+  /db\.\$transaction\(async \(tx\) => \{[\s\S]*createOperatorInTx\(tx, reg, E0_LIVE_SA, \[\], \(\) => false, passwordHash, now, E0_LIVE_SA_ROLE\)/.test(saProvBody)
+  && /checkOperatorShape\(db, created\.userId, \[\], "sa: ", E0_LIVE_SA_ROLE\)/.test(saProvBody));
+check("SA provision: secrets on disk BEFORE the transaction; shredded if it fails",
+  saProvBody.indexOf("writePrivateJson(dir, CREDENTIALS_FILE, credentials(null), true)") < saProvBody.indexOf("db.$transaction(")
+  && /catch \(e\) \{\s*shredFile\(path\.join\(dir, CREDENTIALS_FILE\)\);\s*throw e;/.test(saProvBody));
+check("SA provision never calls the grant route, never notifies, never writes a grant",
+  !/platform-grants|notifyPlatformAccessChange|platformGrant\.create|platformGrant\.upsert/.test(saProvBody));
+check("SA cleanup: the SAME per-user purge (demotes in the stamp, then purgeUser), then ZERO grant rows referencing it, else exit 3",
+  /await purgeOperator\(db, record\.userId, E0_LIVE_SA\.email, recordDir, "preview", "sa: ", \[SYNTHETIC_ROLE, E0_LIVE_SA_ROLE\]\)/.test(saCleanBody)
+  && /grantedById: record\.userId \}, \{ revokedById: record\.userId \}/.test(saCleanBody) && /return 3;/.test(saCleanBody)
+  && /performedByAdminId: record\.userId/.test(saCleanBody));
+check("main: e0-live-sa --provision checks its expiry BEFORE the database import",
+  (() => { const m = src.slice(src.indexOf("async function main(")); return m.indexOf("decideE0LiveSaExpiry(new Date())") > 0 && m.indexOf("decideE0LiveSaExpiry(new Date())") < m.indexOf('await import("@/lib/db")'); })());
+check("only the e0-live-sa profile reaches provisionE0LiveSa / cleanupE0LiveSa",
+  /if \(decision\.profile === "e0-live-sa"\) \{\s*const c = decision\.command;\s*process\.exitCode = c\.kind === "provision" \? await provisionE0LiveSa\(/.test(src)
+  && (src.match(/await provisionE0LiveSa\(/g) ?? []).length === 1 && (src.match(/await cleanupE0LiveSa\(/g) ?? []).length === 1);
+for (const argv of [SA("--env=local", "--provision", ROSTER), SA("--env=preview", "--provision")]) {
+  const rr = spawnSync(process.execPath, [...process.execArgv, SCRIPT, ...argv], {
+    encoding: "utf8", env: { ...process.env, DATABASE_URL: direct(PREV_REF), DIRECT_URL: "", FM_PRODUCTION_DB_REF: PROD_REF },
+  });
+  check(`${argv.join(" ")} exits 2 with 'nothing was contacted'`, rr.status === 2 && /REFUSED — nothing was contacted/.test(rr.stderr), { status: rr.status, err: rr.stderr.slice(0, 300) });
+}
 
 if (failures) { console.error(`\n${failures} check(s) failed, ${passed} passed`); process.exit(1); }
 console.log(`\nall ${passed} checks passed`);

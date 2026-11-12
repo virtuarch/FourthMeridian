@@ -129,9 +129,11 @@ export function recordDirRefusal(recordDir: string, privateBase: string): string
 
 export const SYNTHETIC_FLAGS = new Set(["env", "provision", "revoke-area", "cleanup", "record"]);
 /** Flags that exist ONLY under --profile=e0-live (refused by the default profile). */
-export const E0_LIVE_ONLY_FLAGS = new Set(["operator", "await-signal", "regrant-area"]);
-/** Every flag the CLI parses (the default profile still refuses E0_LIVE_ONLY_FLAGS). */
-export const ALL_FLAGS = new Set([...SYNTHETIC_FLAGS, "profile", ...E0_LIVE_ONLY_FLAGS]);
+export const E0_LIVE_ONLY_FLAGS = new Set(["operator", "await-signal", "regrant-area", "operators"]);
+/** Flags that exist ONLY under --profile=e0-live-sa (refused by every other profile). */
+export const E0_LIVE_SA_ONLY_FLAGS = new Set(["roster"]);
+/** Every flag the CLI parses (the default profile still refuses E0_LIVE_ONLY_FLAGS and E0_LIVE_SA_ONLY_FLAGS). */
+export const ALL_FLAGS = new Set([...SYNTHETIC_FLAGS, "profile", ...E0_LIVE_ONLY_FLAGS, ...E0_LIVE_SA_ONLY_FLAGS]);
 
 export type SyntheticCommand =
   | { kind: "provision" }
@@ -139,7 +141,8 @@ export type SyntheticCommand =
   | { kind: "cleanup"; recordDir: string };
 
 export type E0LiveCommand =
-  | { kind: "provision" }
+  /** S2 L4 lesson: ONLY the roster operators the run uses (--operators=<role,…>, required). */
+  | { kind: "provision"; roles: readonly E0LiveRole[] }
   | { kind: "revoke-area"; area: E0LiveArea; operator: "rev"; awaitSignal: boolean }
   | { kind: "regrant-area"; area: E0LiveArea; operator: "rev" }
   | { kind: "cleanup"; recordDir: string };
@@ -147,6 +150,7 @@ export type E0LiveCommand =
 export type SyntheticDecision =
   | { ok: true; profile: "g1"; env: "local" | "preview"; targetHash: string | null; command: SyntheticCommand }
   | { ok: true; profile: "e0-live"; env: "preview"; targetHash: string | null; command: E0LiveCommand }
+  | { ok: true; profile: "e0-live-sa"; env: "preview"; targetHash: string | null; command: E0LiveSaCommand }
   | { ok: false; reasons: string[] };
 
 function flagValue(args: readonly string[], name: string): string | null | undefined {
@@ -167,11 +171,12 @@ export function decideSyntheticOperator(args: readonly string[], env: NodeJS.Pro
   }
   const profile = flagValue(args, "profile");
   if (profile !== undefined) {
-    if (profile !== E0_LIVE_PROFILE) return refuse(`--profile must be exactly \`${E0_LIVE_PROFILE}\` (omit it for the default acceptance operator).`);
-    return decideE0Live(args, env);
+    if (profile === E0_LIVE_PROFILE) return decideE0Live(args, env);
+    if (profile === E0_LIVE_SA_PROFILE) return decideE0LiveSa(args, env);
+    return refuse(`--profile must be exactly \`${E0_LIVE_PROFILE}\` or \`${E0_LIVE_SA_PROFILE}\` (omit it for the default acceptance operator).`);
   }
-  const e0Only = [...E0_LIVE_ONLY_FLAGS].filter((n) => flagValue(args, n) !== undefined);
-  if (e0Only.length) return refuse(`${e0Only.map((n) => `--${n}`).join(", ")} exist only under --profile=${E0_LIVE_PROFILE}.`);
+  const e0Only = [...E0_LIVE_ONLY_FLAGS, ...E0_LIVE_SA_ONLY_FLAGS].filter((n) => flagValue(args, n) !== undefined);
+  if (e0Only.length) return refuse(`${e0Only.map((n) => `--${n}`).join(", ")} exist only under --profile=${E0_LIVE_PROFILE} / ${E0_LIVE_SA_PROFILE}.`);
 
   const envFlag = flagValue(args, "env");
   if (envFlag === undefined || envFlag === "") return refuse("exactly one --env=<local|preview> is required.");
@@ -414,9 +419,12 @@ function decideE0Live(args: readonly string[], env: NodeJS.ProcessEnv): Syntheti
   const record = flagValue(args, "record");
   const operator = flagValue(args, "operator");
   const awaitSignal = flagValue(args, "await-signal");
+  const operators = flagValue(args, "operators");
 
+  if ([...E0_LIVE_SA_ONLY_FLAGS].some((n) => flagValue(args, n) !== undefined)) return refuse(`--roster exists only under --profile=${E0_LIVE_SA_PROFILE}.`);
   const commands = [provision, revoke, regrant, cleanup].filter((v) => v !== undefined).length;
   if (commands !== 1) return refuse("exactly one of --provision, --revoke-area=<AREA>, --regrant-area=<AREA>, --cleanup is required.");
+  if (operators !== undefined && provision === undefined) return refuse("--operators applies only to --provision.");
   if (provision !== undefined && provision !== "") return refuse("--provision takes no value.");
   if (cleanup !== undefined && cleanup !== "") return refuse("--cleanup takes no value.");
   if (awaitSignal !== undefined && awaitSignal !== "") return refuse("--await-signal takes no value.");
@@ -427,7 +435,9 @@ function decideE0Live(args: readonly string[], env: NodeJS.ProcessEnv): Syntheti
 
   let command: E0LiveCommand;
   if (provision !== undefined) {
-    command = { kind: "provision" };
+    const roles = parseE0LiveOperators(operators);
+    if (!roles.ok) return refuse(roles.reason);
+    command = { kind: "provision", roles: roles.roles };
   } else if (flip) {
     if (operator !== E0_LIVE_FLIP_OPERATOR) {
       return refuse(`--revoke-area / --regrant-area require --operator=${E0_LIVE_FLIP_OPERATOR} and act on no other operator.`);
@@ -479,6 +489,135 @@ export function parseE0LiveRecord(raw: unknown, role: E0LiveRole): E0LiveRecord 
   if (r.env !== "preview") throw new Error("record env is not preview");
   if (r.targetHash !== null && typeof r.targetHash !== "string") throw new Error("record targetHash invalid");
   return r as E0LiveRecord;
+}
+
+// ── e0-live --operators (S2 L4 lesson: provision only the identities a run uses) ─
+
+/** Parse --operators=<role,…>: REQUIRED for an e0-live provision; non-empty, roster roles only, no duplicates. */
+export function parseE0LiveOperators(v: string | null | undefined): { ok: true; roles: E0LiveRole[] } | { ok: false; reason: string } {
+  if (v === undefined || v === null || v === "") return { ok: false, reason: "--provision (e0-live) requires --operators=<role,…> — only the roster operators the run uses (ops, cs1, cs2, cs3, rev)." };
+  const parts = v.split(",").map((x) => x.trim());
+  if (parts.some((p) => !e0LiveOperator(p))) return { ok: false, reason: "--operators names a role outside the e0-live roster (ops, cs1, cs2, cs3, rev)." };
+  if (new Set(parts).size !== parts.length) return { ok: false, reason: "--operators names a role twice." };
+  // Roster order, so records and checks are deterministic.
+  return { ok: true, roles: E0_LIVE_ROSTER.map((o) => o.role).filter((r) => parts.includes(r)) };
+}
+
+// ══ PROFILE e0-live-sa (S2 09ic; owner-approved) — the suite R revoking actor ═
+//
+// ONE synthetic System Admin, e0l-sa@example.test, Preview ONLY, NO Platform grants, provisioned
+// immediately before suite R and purged immediately after (same UTC day). It exists only so the
+// suite R revocation goes through the GUARDED grant route (app/api/admin/platform-grants, called by
+// the private runner over HTTP) — this tool never calls that route. The default and e0-live
+// profiles are unchanged: they still write role USER only (SYNTHETIC_ROLE).
+
+export const E0_LIVE_SA_PROFILE = "e0-live-sa" as const;
+/** The ONE role this profile writes — and the only place a non-USER role exists in this tool. */
+export const E0_LIVE_SA_ROLE = "SYSTEM_ADMIN" as const;
+/** Hard stop for --profile=e0-live-sa --provision (same end as the e0-live profile; extending it is a reviewed change). */
+export const E0_LIVE_SA_PROFILE_EXPIRES = "2026-12-15T23:59:59Z" as const;
+
+export const E0_LIVE_SA: Readonly<{ role: "sa"; email: string; username: string; firstName: string; lastName: string }> = Object.freeze({
+  role: "sa", email: `e0l-sa${SYNTHETIC_EMAIL_DOMAIN}`, username: "e0l_sa", firstName: "E0L", lastName: "Sa",
+});
+
+export type E0LiveSaCommand =
+  | { kind: "provision"; rosterDir: string }
+  | { kind: "cleanup"; recordDir: string };
+
+/** Pure: may an e0-live-sa PROVISION run at `now`? */
+export function decideE0LiveSaExpiry(now: Date): E0LiveExpiryDecision {
+  return decideE0LiveProvisionExpiry(now, E0_LIVE_SA_PROFILE_EXPIRES);
+}
+
+export const E0_LIVE_SA_DIR_PREFIX = "synthetic-operator-e0lsa-";
+const E0_LIVE_SA_DIR_NAME = /^synthetic-operator-e0lsa-\d{8}T\d{6}Z$/;
+
+export function e0LiveSaDirFor(privateBase: string, at: Date): string {
+  return path.join(privateBase, `${E0_LIVE_SA_DIR_PREFIX}${utcStamp(at)}`);
+}
+/** --record (e0-live-sa) must name a synthetic-operator-e0lsa-<stamp> directory directly inside the private base. */
+export function e0LiveSaRecordDirRefusal(recordDir: string, privateBase: string): string | null {
+  const abs = path.resolve(recordDir);
+  const base = path.resolve(privateBase);
+  if (path.dirname(abs) !== base || !E0_LIVE_SA_DIR_NAME.test(path.basename(abs))) {
+    return "--record must be a synthetic-operator-e0lsa-<UTC stamp> directory directly inside the private evidence base.";
+  }
+  return null;
+}
+
+/**
+ * Pure: the SA may be provisioned only beside a LIVE e0-live roster of the SAME UTC day and the SAME database
+ * that includes the rev operator (the SA exists only to revoke rev's grants), and only before the same-day deadline.
+ */
+export function decideE0LiveSaProvision(now: Date, rev: Pick<E0LiveRecord, "provisionedAt" | "targetHash" | "cleanupDeadline"> | null, targetHash: string | null): { ok: true } | { ok: false; reason: string } {
+  const exp = decideE0LiveSaExpiry(now);
+  if (!exp.ok) return exp;
+  if (!rev) return { ok: false, reason: "the roster directory has no rev operator record — the SA exists only for suite R (rev)." };
+  if (rev.targetHash !== targetHash) return { ok: false, reason: "the rev record was provisioned on a different database than this connection." };
+  const day = (iso: string) => iso.slice(0, 10);
+  if (typeof rev.provisionedAt !== "string" || day(rev.provisionedAt) !== now.toISOString().slice(0, 10)) return { ok: false, reason: "the roster was not provisioned on this UTC day — the SA is same-day only." };
+  if (Date.parse(rev.cleanupDeadline) <= now.getTime()) return { ok: false, reason: "the roster's same-day cleanup deadline has passed." };
+  if (computeE0LiveDeadline(now).getTime() <= now.getTime()) return { ok: false, reason: "the same-day cleanup deadline has passed — provision on a new UTC day." };
+  return { ok: true };
+}
+
+function decideE0LiveSa(args: readonly string[], env: NodeJS.ProcessEnv): SyntheticDecision {
+  const refuse = (...reasons: string[]): SyntheticDecision => ({ ok: false, reasons });
+  const envFlag = flagValue(args, "env");
+  if (envFlag === undefined || envFlag === "") return refuse("exactly one --env=preview is required.");
+  if (envFlag === "production") return refuse("--env=production is refused: the e0-live-sa revoker is Preview-only.");
+  if (envFlag !== "preview") return refuse("--profile=e0-live-sa is Preview-only: --env must be exactly `preview`.");
+  const notHere = ["revoke-area", ...E0_LIVE_ONLY_FLAGS].filter((n) => flagValue(args, n) !== undefined);
+  if (notHere.length) return refuse(`${notHere.map((n) => `--${n}`).join(", ")} do not apply to --profile=${E0_LIVE_SA_PROFILE} (provision / cleanup only).`);
+  const provision = flagValue(args, "provision");
+  const cleanup = flagValue(args, "cleanup");
+  const record = flagValue(args, "record");
+  const roster = flagValue(args, "roster");
+  if ([provision, cleanup].filter((v) => v !== undefined).length !== 1) return refuse("exactly one of --provision, --cleanup is required.");
+  if (provision !== undefined && provision !== "") return refuse("--provision takes no value.");
+  if (cleanup !== undefined && cleanup !== "") return refuse("--cleanup takes no value.");
+  if (record !== undefined && cleanup === undefined) return refuse("--record applies only to --cleanup.");
+  if (roster !== undefined && provision === undefined) return refuse("--roster applies only to --provision.");
+  let command: E0LiveSaCommand;
+  if (provision !== undefined) {
+    if (!roster) return refuse("--provision (e0-live-sa) requires --roster=<the same-day synthetic-operator-e0l directory>.");
+    command = { kind: "provision", rosterDir: roster };
+  } else {
+    if (!record) return refuse("--cleanup requires --record=<path to the private synthetic-operator-e0lsa directory>.");
+    command = { kind: "cleanup", recordDir: record };
+  }
+  const gate = decideRepairEnvGuard({
+    apply: true, envFlag, databaseUrl: env.DATABASE_URL, directUrl: env.DIRECT_URL,
+    productionRef: env.FM_PRODUCTION_DB_REF, vercelEnv: env.VERCEL_ENV, env,
+  });
+  if (!gate.ok) return refuse(...gate.reasons);
+  if (gate.env !== "preview") return refuse("the environment could not be proven to be Preview.");
+  return { ok: true, profile: "e0-live-sa", env: "preview", targetHash: gate.targetHash, command };
+}
+
+export interface E0LiveSaRecord {
+  kind: "synthetic-operator-e0lsa-record";
+  profile: typeof E0_LIVE_SA_PROFILE;
+  env: "preview";
+  targetHash: string | null;
+  email: string;
+  userId: string;
+  /** The roster directory (basename) it serves. */
+  roster: string;
+  provisionedAt: string;
+  cleanupDeadline: string;
+}
+
+export function parseE0LiveSaRecord(raw: unknown): E0LiveSaRecord {
+  const r = raw as Partial<E0LiveSaRecord> | null;
+  if (!r || r.kind !== "synthetic-operator-e0lsa-record" || r.profile !== E0_LIVE_SA_PROFILE) throw new Error("not an e0-live-sa record");
+  if (typeof r.userId !== "string" || !/^[a-z0-9]{8,40}$/i.test(r.userId)) throw new Error("record has no valid userId");
+  if (r.email !== E0_LIVE_SA.email || !isSyntheticEmailAllowed(r.email)) throw new Error("record email is not the e0-live-sa address");
+  if (r.env !== "preview") throw new Error("record env is not preview");
+  if (r.targetHash !== null && typeof r.targetHash !== "string") throw new Error("record targetHash invalid");
+  if (typeof r.roster !== "string" || !/^synthetic-operator-e0l-\d{8}T\d{6}Z$/.test(r.roster)) throw new Error("record roster is not an e0-live roster directory");
+  return r as E0LiveSaRecord;
 }
 
 // ── Revoke / regrant ─────────────────────────────────────────────────────────
