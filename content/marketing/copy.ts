@@ -157,10 +157,10 @@ export const LEGAL = {
   },
   privacy: {
     title: "Privacy Policy",
-    updated: "October 2026",
+    updated: "November 2026",
   },
   ai: {
     title: "AI Disclosures",
-    updated: "October 2026",
+    updated: "November 2026",
   },
 } as const;

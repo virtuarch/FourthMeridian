@@ -1,4 +1,4 @@
-*Effective November 2, 2026.*
+*Effective November 12, 2026.*
 
 This Privacy Policy explains what information Fourth Meridian (the "Service") collects, how we use it, and the choices you have. Fourth Meridian is currently offered as a closed, invite-only beta.
 
@@ -31,6 +31,18 @@ You can disconnect a connection at any time. Disconnecting stops syncing, remove
 ## 4. AI processing
 
 The Daily Brief and Conversations send relevant portions of your financial context to OpenAI's API for processing. See our [AI Disclosures](/legal/ai) for exactly what is sent, what is never sent, what Fourth Meridian remembers, and the limits of AI-generated output.
+
+### Operator tools and AI
+
+When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. Only authorized staff can use them, and daily spending limits cap their use.
+
+What is sent to the AI provider is technical facts such as status and error codes, counts, times, the name of your financial institution, and the stage of your account setup, with coded references (pseudonymous identifiers) instead of your name or email, plus the question the staff member asks. Our tools do not include your name, email address or username in what they send to the AI provider, and staff are instructed not to type them into questions. Nor do they include your account balances or other amounts from your accounts, or any message or other text written by you or your financial institution.
+
+When these tools show your name, email address or username to authorized support staff, it appears only on their screen and the view is recorded.
+
+Staff conversations with these tools expire after 7 days, and the tools keep no memory between conversations. Records of staff access are kept for security purposes.
+
+Our AI provider, OpenAI, does not use this information to train its models under its API terms, and we have not opted in to any data sharing. We do not ask OpenAI to store these requests. Under its current API data policy, OpenAI may keep them for up to 30 days to monitor for abuse before deleting them, unless the law requires it to keep them longer or it is needed to protect against harm.
 
 ## 5. Sharing
 
