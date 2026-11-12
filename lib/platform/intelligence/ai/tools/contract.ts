@@ -143,10 +143,12 @@ export const AGGREGATE_PATH_SHAPE = /^[a-z][A-Za-z0-9]{0,40}(?:\.[A-Za-z0-9_-]{1
 /**
  * S2 09io A5 — the instruction sentences the placeables add to the pack tools' descriptions (stated verbatim in the
  * PR). Placeholder SYNTAX only: no value, no field or key the tool does not already return, no new data class.
+ * S2 09jr S-a: the results now carry the ready-to-copy strings (a record's / the result's `placeholders`), so the
+ * rules point the model at those — copy, never build.
  */
-export const RECORD_PLACE_RULE = "State a code, count or time field by copying {{r:h|<field>}}.";
-export const aggregatePlaceRule = (tool: string, examplePath: string): string =>
-  `State a count by copying {{a:${tool}|<key path>}}, e.g. {{a:${tool}|${examplePath}}}.`;
+export const RECORD_PLACE_RULE = "State a code, count or time by copying placeholders.<field>.";
+export const aggregatePlaceRule = (_tool: string, examplePath: string): string =>
+  `State a count by copying its placeholders entry, e.g. placeholders["${examplePath}"].`;
 
 /** `prefix.<key>` count paths, one per key of a closed vocabulary (the pack's own list — never a value it read). */
 export const countPaths = (prefix: string, keys: readonly string[]): AggregatePathSpec[] =>

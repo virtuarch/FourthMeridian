@@ -512,8 +512,8 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     h.status === 200 && !Object.prototype.hasOwnProperty.call(h.body, "trace") && Object.prototype.hasOwnProperty.call(h.body, "toolTrace") && traced.length === 1, Object.keys(h.body));
   check("the route's counter line logs codes and counts only", /countUngrounded: \(verdict, unresolved\) => console\.warn\(`\[platform-ai\] answer replaced: verdict=\$\{verdict\} unresolved=\$\{unresolved\}/.test(src("app/api/platform/ai/ask/route.ts")));
   check("the prompt and get_metric's description teach COPYING the server's placeholder string verbatim (guidance; enforcement is the server)",
-    /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string from your get_metric result VERBATIM/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && /never type, shorten or edit one/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    /NEVER type a number, a digit or a number word yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string VERBATIM from a get_metric OR pack tool result — copy, never build/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /Never type, shorten or edit one; never write a handle \(h_…\) in prose/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\{\{r:…\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\{\{a:…\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && JSON.stringify(platformAiToolSchemas([])).includes("copy the placeholder string from this result verbatim"));
 }
 
@@ -1189,7 +1189,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
   check("the prompt teaches: copy the placeholder (the server built its window); never drill.href",
-    /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /never drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    /Never type, shorten or edit one/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /never drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
 }
 
@@ -1781,9 +1781,10 @@ console.log("\n7. prompt injection — no write tools exist; no image exfil");
     PLATFORM_AI_SYSTEM_PROMPT.includes("The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns."));
   const lmDesc = (platformAiToolSchemas([]) as { function: { name: string; description: string } }[]).find((x) => x.function.name === "list_metrics")!.function.description;
   check("…and list_metrics names largestMeasuredCategory for 'most' / 'largest' questions", /largestMeasuredCategory/.test(lmDesc) && /never a category/.test(lmDesc), lmDesc);
-  check("S2 2026-11-05 / F-C2: the prompt forbids mentioning placeholders and typing a figure's name ({{l:…}} names it)",
-    /Never mention placeholders\. \{\{m:…\}\} renders a figure only, never a name, and you never type a name for one: copy "labelPlaceholder"/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && /\{\{l:<metric>\|part=<name>\|window=<days>\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT));
+  // S2 09jr S-b: {{r:…}} / {{a:…}} named beside {{m:…}}; the {{l:…}} FORM is no longer spelled out (copy, never build).
+  check("S2 2026-11-05 / F-C2: the prompt forbids mentioning placeholders and typing a figure's name (a label placeholder names it)",
+    /Never mention placeholders\. \{\{m:…\}\}, \{\{r:…\}\} and \{\{a:…\}\} render values, never a name, and you never type a name: copy "labelPlaceholder"/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && !/\{\{l:<metric>/.test(PLATFORM_AI_SYSTEM_PROMPT));
   {
     const { mechanismLeakCount } = await import("./core");
     check("mechanismLeakCount: whole word, case-insensitive, plural too; not inside another word",
@@ -1959,7 +1960,7 @@ console.log("\n12. operational briefing — multi-area binding, coverage, briefi
     order.every((o, i) => PLATFORM_AI_SYSTEM_PROMPT.indexOf(o) > -1 && (i === 0 || PLATFORM_AI_SYSTEM_PROMPT.indexOf(o) > PLATFORM_AI_SYSTEM_PROMPT.indexOf(order[i - 1]))));
   check("prompt: coverage gaps are stated, never implied fine; the read-only, no-digit, no-identity rules stay; 180 words for a briefing",
     /never imply that something you could not read is fine/.test(PLATFORM_AI_SYSTEM_PROMPT) && /READ-ONLY/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /no customer identities/.test(PLATFORM_AI_SYSTEM_PROMPT) && /180 words for a briefing/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /NEVER type a number, a digit or a number word yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /no customer identities/.test(PLATFORM_AI_SYSTEM_PROMPT) && /180 words for a briefing/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && !/^For cost questions/m.test(PLATFORM_AI_SYSTEM_PROMPT));
   check("briefing domains cover the owner's list; security / email / MFA are disclosed as not yet covered",
     BRIEFING_DOMAINS.map((d) => d.key).join() === "health,impact,incidents,sync,reliability,costs" && BRIEFING_DOMAINS.every((d) => d.metrics.every((k) => METRICS.some((m) => metricKey(m) === k)))
@@ -2088,7 +2089,7 @@ console.log("\n4q. Question C (fixed-window placeholder |window = the asked peri
   check("N1: the operator's own worded window is admitted (\"past thirty days\" in the question), not otherwise",
     numberWordCount("In the past thirty days.", "costs in the past thirty days?") === 0 && numberWordCount("In the past thirty days.", "costs lately?") === 1 && numberWordCount("thirty connections", "past thirty days") === 1);
   check("N1 (b): the prompt tells the model counts are figures and to copy the count part's placeholder",
-    /never write one as a word/.test(PLATFORM_AI_SYSTEM_PROMPT) && /count part's placeholder/.test(PLATFORM_AI_SYSTEM_PROMPT));
+    /never write one as a word/.test(PLATFORM_AI_SYSTEM_PROMPT) && /copy its placeholder\./.test(PLATFORM_AI_SYSTEM_PROMPT));
   // Minor (S2): cost only when asked / anomalous; next actions carry a find_page / open_page link.
   const sys = (words.transcript[0] as { content: string }).content;
   check("briefing step 6: cost only when asked or anomalous — no economics read for a general status question (prompt + coverage block)",

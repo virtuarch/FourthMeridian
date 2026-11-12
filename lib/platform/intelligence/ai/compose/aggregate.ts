@@ -141,6 +141,32 @@ export function extractAggregatePlaceholders(raw: string, captures: ReadonlyMap<
   return { text, spans, unresolved, claims };
 }
 
+/** S2 09jr S-a — the ready-to-copy aggregate placeholder for one allowlisted path of a tool (server text: codes only). */
+export function aggregatePlaceholderText(tool: string, path: string): string | null {
+  const s = `{{a:${tool}|${path}}}`;
+  return new RegExp(`^${AGGREGATE_PLACEHOLDER.source}$`).test(s) ? s : null;
+}
+
+/**
+ * S2 09jr S-a — the `placeholders` map a pack AGGREGATE result carries (path → "{{a:<tool>|<path>}}"): exactly the
+ * B2-allowlisted paths that THIS call's own result holds a value of the path's closed type for AND that this turn's
+ * captures can still fill (a path that conflicts between two calls of the turn is left out — it would not fill).
+ * Built from the tool name and the allowlisted path CODES only: never a value (the value is already in the result),
+ * never a key the result does not carry, never text from the result. Call it AFTER captureAggregateResult.
+ */
+export function aggregatePlaceholdersFor(captures: ReadonlyMap<string, AggregateCapture> | undefined, tool: string, rules: readonly AggregatePathRule[] | undefined, result: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!rules || rules.length === 0 || !isPlain(result) || result.status === "UNAVAILABLE") return out;
+  const cap = captures?.get(tool);
+  for (const r of rules) {
+    if (!closedValueOk(r.type, ownValueAt(result, r.path), r.type === "code" ? (r.values ?? []) : undefined)) continue;
+    if (!cap?.values.get(r.path)) continue;
+    const p = aggregatePlaceholderText(tool, r.path);
+    if (p) out[r.path] = p;
+  }
+  return out;
+}
+
 /** "connection_health_overview" → "connection health overview" (a registered tool name; code, never data). */
 export const aggregateToolWords = (tool: string): string => tool.replace(/_/g, " ");
 

@@ -78,6 +78,15 @@ export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
 export const MALFORMED_REASONS = ["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"] as const;
 export type MalformedReason = (typeof MALFORMED_REASONS)[number];
 /**
+ * S2 09jr S-d — WHY a turn's record placeholders failed, by SHAPE only (trace counts; metadata, a closed set, pinned):
+ *   RECORD_MALFORMED   — a `{{r:…}}` that is not the `{{r:h_<16>|<field>}}` shape (a built / edited placeholder);
+ *   RECORD_BARE_HANDLE — a handle key (h_…) written as plain prose instead of a placeholder.
+ * Neither says whether a handle or field exists (a well-formed `{{r:…}}` that does not resolve is counted by the
+ * existing unresolved count only — no oracle). These two, and only these, make RECORD_UNRESOLVED retryable (S-c).
+ */
+export const RECORD_REASONS = ["RECORD_MALFORMED", "RECORD_BARE_HANDLE"] as const;
+export type RecordReason = (typeof RECORD_REASONS)[number];
+/**
  * S2 2026-11-05 — what kind of digit run made an answer UNGROUNDED_DIGIT (counts only,
  * never the digits or the text): next to a time unit, a currency sign / "dollars", a
  * percent sign / "percent", or anything else. A diagnosis, never an allowance: the

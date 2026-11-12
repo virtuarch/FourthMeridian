@@ -122,11 +122,11 @@ console.log("\nG1 — wiring: both routes, response only, no per-operator branch
   const h = code(read("lib/platform/intelligence/ai/conversations/handlers.ts"));
   const rs = h.slice(h.indexOf("async function runAndSettle("), h.indexOf("async function admit("));
   // B1: the same destructure also splits off figureSources (tools/figure-sources.test.ts).
-  const split = "const { toolTrace, figureSources, ...outcome } = run;";
+  const split = "const { toolTrace, figureSources, answerVerdict, ...outcome } = run;";
   check("the handler splits the trace off BEFORE the settle (the stored outcome never carries it)",
     rs.indexOf(split) > 0 && rs.indexOf(split) < rs.indexOf("settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome)"), rs);
   check("create AND append responses carry the trace of the turn they ran (a replay carries none)",
-    (h.match(/pairResponse\(\d+, [^;]*r\.memoryProposal, r\.toolTrace, r\.figureSources\)/g) ?? []).length === 2);
+    (h.match(/pairResponse\(\d+, [^;]*r\.memoryProposal, r\.toolTrace, r\.figureSources, r\.answerVerdict\)/g) ?? []).length === 2);
   const store = code(read("lib/platform/intelligence/ai/conversations/store.ts"));
   check("the conversations store never mentions a tool trace (persist nothing new)", !/toolTrace/.test(store));
   const src = code(read("lib/platform/intelligence/ai/tools/tool-trace.ts"));

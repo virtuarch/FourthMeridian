@@ -89,13 +89,13 @@ import {
   type ModelRecord, type RawRecord, type RecordFields, type RecordRunResult,
 } from "../evidence/record-envelope";
 import { closedValueOk, type ClosedValue } from "../compose/closed";
-import { captureAggregateResult } from "../compose/aggregate";
+import { aggregatePlaceholdersFor, captureAggregateResult } from "../compose/aggregate";
 import { MORE_TOOLS_NAME, toolCallableIn, type PlatformAiTurnRouter } from "../engine/router";
 import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack, type ToolTier } from "../tools/contract";
 import { PLATFORM_AI_TOOL_REGISTRY, type LegacyToolContext, type PlatformAiTool } from "../tools/registry";
 import { createHandleTable } from "./handles";
 import { PLATFORM_AI_RECORD_SOURCES, type RecordRenderSource } from "./record-render";
-import { RECORD_REF_FIELD, type TurnRecordRef } from "../compose/record";
+import { RECORD_REF_FIELD, recordPlaceholderText, type TurnRecordRef } from "../compose/record";
 import {
   createDenialLog, createTurnScope,
   type BoundaryDenialReason, type DenialRow, type FreshGuard, type PlatformAiRecheck,
@@ -198,6 +198,17 @@ export interface TurnBoundary {
 const refusedFlag = (reason: BoundaryDenialReason): { refused?: true } =>
   (reason === "UNKNOWN_TOOL" || reason === "ARGS_INVALID" ? {} : { refused: true });
 
+/**
+ * Step 6 — THE tier gate, one function for both of its uses (S2 09js): a CUSTOMER_SUCCESS-tier tool is admitted only
+ * with a FRESH CS audience on THIS call (`csFresh`, from step 4's per-call recheck); an OPS-tier tool needs none.
+ *   "REFUSED"  — a CS-tier tool without a fresh CS audience (step 6 refuses the call: TIER_REFUSED);
+ *   "CS"       — a CS-tier tool WITH a fresh CS audience (the only case a T2 `name` placeholder may be offered);
+ *   "OPS"      — an OPS-tier tool (never a T2 placeholder, whatever the operator's other grants).
+ */
+export type TierGate = "REFUSED" | "CS" | "OPS";
+export const tierGate = (tier: ToolTier, csFresh: boolean): TierGate =>
+  (tier === "CUSTOMER_SUCCESS" ? (csFresh ? "CS" : "REFUSED") : "OPS");
+
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
 
 export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
@@ -288,7 +299,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     }
 
     // 6. tier: a CS-tier tool needs a FRESH CS audience.
-    if (tool.requires.tier === "CUSTOMER_SUCCESS" && !csFresh) return refuse("TIER_REFUSED");
+    if (tierGate(tool.requires.tier, csFresh) === "REFUSED") return refuse("TIER_REFUSED");
 
     const binding = bindingFor(surviving);
     if (!binding) return refuse("RECHECK_REFUSED");
@@ -316,6 +327,13 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
       if (tool.placeablePaths?.length) {
         c.ev.aggregates ??= new Map();
         captureAggregateResult(c.ev.aggregates, tool.name, tool.placeablePaths, out);
+        // S2 09jr S-a: the ready-to-copy {{a:<tool>|<path>}} strings for the allowlisted paths THIS result holds (and the
+        // turn can still fill) — built from the tool name + path codes only; no value, no new key of the tool's own.
+        const placeholders = aggregatePlaceholdersFor(c.ev.aggregates, tool.name, tool.placeablePaths, out);
+        if (Object.keys(placeholders).length > 0) {
+          (c.ev.issuedPlaceholders ??= []).push(...Object.values(placeholders));
+          return { ...(out as Record<string, unknown>), placeholders };
+        }
       }
       return out;
     }
@@ -426,11 +444,22 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
         facts: Object.freeze({ ...withoutT2(r.fields) }),
         closed: Object.freeze(closed),
       }));
+      // S2 09jr S-a / 09js: ready-to-copy {{r:<handle>|<field>}} strings — the handle the model already has + a field
+      // CODE, never a value: "ref" (T1) for EVERY record; the T2 "name" ONLY when step 6's own gate says this call is a
+      // CS-tier tool with a FRESH CS audience (tierGate === "CS"; never for an OPS-tier tool / an Ops viewer) and the
+      // schema declares it; then one per A1-allowlisted closed field THIS result gives a value for (the keys of `closed`).
+      // The T2 VALUE still reaches an operator only through authz/record-render.ts (its read-time checks are unchanged).
+      const placeholders: Record<string, string> = {};
+      const offered = [RECORD_REF_FIELD, ...(tierGate(tool.requires.tier, csFresh) === "CS" && (schema.t2Fields ?? []).includes("name") ? ["name"] : []), ...Object.keys(closed)];
+      for (const f of offered) { const p = recordPlaceholderText(handle, f); if (p) placeholders[f] = p; }
+      const issued = Object.values(placeholders);
+      if (issued.length > 0) (ctx.ev.issuedPlaceholders ??= []).push(...issued);
       return {
         handle,
         kind: schema.kind,
         fields: withoutT2(r.fields),
         ...(schema.t2Fields?.length ? { t2Fields: [...schema.t2Fields] } : {}),
+        ...(issued.length > 0 ? { placeholders } : {}),
       };
     });
 

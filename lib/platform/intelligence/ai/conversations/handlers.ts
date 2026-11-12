@@ -37,7 +37,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import { admitPlatformAiSpend, pickerGuardRefusal, type PlatformAiBinding, type PlatformAiGuardVerdict, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
+import { admitPlatformAiSpend, pickerGuardRefusal, type AnswerVerdict, type PlatformAiBinding, type PlatformAiGuardVerdict, type PlatformAiSpendAdmission, type PlatformAiSpendGate } from "../core";
 import { RECORD_GONE_TEXT } from "../compose/record";
 import type { StoredAnswer, StoredRecordSegment } from "./answer";
 import {
@@ -307,7 +307,9 @@ async function pairResponse(status: number, conversation: ConversationRecord | n
   /** S2 09hu G1 — THIS request's turn trace (metadata only; never stored, so never on a replay). */
   toolTrace?: readonly PlatformAiToolTraceEntry[],
   /** B1 — THIS request's placed spans (metadata only; never stored, so never on a replay), positioned on the content below. */
-  figureSources?: readonly PlacedSpan[]): Promise<ConversationHttp> {
+  figureSources?: readonly PlacedSpan[],
+  /** S2 09jr E-b — THIS request's closed answer verdict (response only; never stored, so never on a replay). */
+  answerVerdict?: AnswerVerdict): Promise<ConversationHttp> {
   if (pair.assistant.status === "PENDING" && status === 200) {
     return { status: 409, body: { error: "This question is still being answered.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
   }
@@ -329,6 +331,8 @@ async function pairResponse(status: number, conversation: ConversationRecord | n
       ...(toolTrace ? { toolTrace: [...toolTrace] } : {}),
       // B1: the metadata-only figure sources of the turn THIS request ran (tools/figure-sources.ts) — response only.
       ...(positioned ? { figureSources: positioned } : {}),
+      // S2 09jr E-b: the closed verdict of the turn THIS request ran — response only, never inside toolTrace.
+      ...(answerVerdict ? { answerVerdict } : {}),
     },
   };
 }
@@ -403,16 +407,18 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
 async function runAndSettle(
   v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
   deps: { store: ConversationTurnStoreSeam } & TurnRunDeps, subjects?: TurnSubjects,
-): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null; toolTrace: readonly PlatformAiToolTraceEntry[]; figureSources: readonly PlacedSpan[] }> {
+): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null; toolTrace: readonly PlatformAiToolTraceEntry[]; figureSources: readonly PlacedSpan[]; answerVerdict?: AnswerVerdict }> {
   let run: ConversationTurnOutcome;
   try { run = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access, ...(subjects ? { subjects } : {}) }); }
   catch { run = { status: "FAILED", failureCode: "PROVIDER" }; }
   // S2 09hu G1: the tool trace is RESPONSE ONLY — it is split off before the settle, so it can never be stored.
   // B1: so are the figure sources (placed spans' closed codes) — split off here, never stored.
-  const { toolTrace, figureSources, ...outcome } = run;
+  // S2 09jr E-b: and so is the closed answer verdict — split off here, never stored, never on a replay.
+  const { toolTrace, figureSources, answerVerdict, ...outcome } = run;
   try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
   const settled = (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
-  return { pair: settled, memoryProposal: outcome.status === "COMPLETE" ? outcome.memoryProposal ?? null : null, toolTrace: toolTrace ?? [], figureSources: figureSources ?? [] };
+  return { pair: settled, memoryProposal: outcome.status === "COMPLETE" ? outcome.memoryProposal ?? null : null, toolTrace: toolTrace ?? [], figureSources: figureSources ?? [],
+    ...(answerVerdict ? { answerVerdict } : {}) };
 }
 
 /** v0's pre-provider gates (§5.3): kill switch → global freeze → daily cap. null = admitted. */
@@ -513,7 +519,7 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
         // P4b: the turn binds the areas the operator holds NOW (own + each other area's own fresh guard).
         const turnAccess = await heldAccessFor(deps, access, v.operatorId);
         const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
-        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources);
+        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources, r.answerVerdict);
       }
     }
   } finally {
@@ -574,7 +580,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
         // P4b: the turn binds the areas the operator holds NOW — fresh guards at turn time; a lost area is simply absent.
         const turnAccess = await heldAccessFor(deps, access, v.operatorId);
         const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
-        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources);
+        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources, r.answerVerdict);
       }
     }
   } finally {

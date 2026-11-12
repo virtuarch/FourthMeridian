@@ -230,6 +230,11 @@ export interface ModelRecord {
   readonly kind: string;
   readonly fields: RecordFields;
   readonly t2Fields?: readonly T2FieldName[];
+  /**
+   * S2 09jr S-a — field code → the ready-to-copy `{{r:<handle>|<field>}}` for each A1-allowlisted CLOSED field this
+   * record has a value for (authz/boundary.ts). Placeholder strings only: never a value, never "ref", never a T2 name.
+   */
+  readonly placeholders?: Readonly<Record<string, string>>;
 }
 
 export interface ModelRecordResult {

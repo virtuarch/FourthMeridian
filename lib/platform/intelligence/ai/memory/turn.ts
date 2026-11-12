@@ -40,7 +40,7 @@ const PROPOSABLE: readonly MemoryFactType[] = ["WATCHING_ISSUE", "OPERATIONAL_ST
 
 export const MEMORY_PROMPT_RULES = [
   "Memory is never an answer. For current state, call the live tools (get_metric, open_page) in this turn.",
-  "Cite a remembered item only with its {{mem:<id>}} placeholder (copy it exactly); never write its date yourself.",
+  "Cite a remembered item only with its {{mem:…}} placeholder (copy it exactly); never write its date yourself.",
   "For a CHANGED item, say it has changed and give the live reading from a tool. Never present remembered state as current, and never repeat a note as fact.",
   "UNVERIFIED means it could not be re-checked now: never phrase it as current.",
 ].join("\n");

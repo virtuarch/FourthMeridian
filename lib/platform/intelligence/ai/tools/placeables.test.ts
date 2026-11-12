@@ -11,7 +11,8 @@
  *   A3  an unknown / non-allowlisted / foreign / forged / re-minted placeholder ⇒ the SAME fallback; a failed
  *       render ⇒ the SAME "[no longer available]" (oracle uniformity across every reason); injection tests;
  *   A4  stored as a V3 record segment (closed value only), re-rendered on read; history replays a kind marker;
- *   A5  no new data to the provider: the tool results the model receives are byte-identical to the tool's own;
+ *   A5  no new data to the provider: the tool results the model receives are the tool's own + (S2 09jr S-a) ONLY a
+ *       `placeholders` map of ready-to-copy strings built from codes (handle / tool + field / path) — never a value;
  *   B1  {{a:…}} fills only from THIS turn's own result of that tool (no call ⇒ unavailable; two disagreeing calls ⇒
  *       unavailable; a second turn starts empty);
  *   B2  the per-tool closed resultPath allowlist (pinned), contractProblems refusals;
@@ -314,9 +315,21 @@ async function main() {
     check("B5: ONE code-written point-in-time note", good.result.notes.filter((n) => /point-in-time/.test(n)).length === 1 && good.result.notes.includes("Overview counts are point-in-time reads (probe overview as of 2026-11-09 12:00 UTC)."), good.result.notes);
     // A5: the tool messages the model received are byte-identical to what each tool returned (the boundary adds nothing).
     const toolMsgs = (good.transcript as ToolMsg[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
-    check("A5: the overview result reached the model unchanged (no placeholder / value / key added)", JSON.stringify(toolMsgs[0]) === JSON.stringify(await probeOverview.run({}, {} as never)), toolMsgs[0]);
-    check("A5: the record result carries the handle + the closed fields as before — no `closed`, `placeable`, value map or id",
-      !/"closed"|placeable|crec0000/.test(JSON.stringify(toolMsgs[1])) && JSON.stringify(Object.keys(toolMsgs[1].records[0])) === JSON.stringify(["handle", "kind", "fields", "t2Fields"]), toolMsgs[1]);
+    // S2 09jr S-a (supersedes 09io A5's "byte-identical"): the ONLY addition is `placeholders` — ready-to-copy strings
+    // built from the tool name / handle and the allowlisted path / closed field CODES; no value, no new data class.
+    const { placeholders: aggPh, ...aggRest } = toolMsgs[0] as Record<string, unknown>;
+    check("S-a: the overview result = the tool's own result + `placeholders` only", JSON.stringify(aggRest) === JSON.stringify(await probeOverview.run({}, {} as never)), toolMsgs[0]);
+    check("S-a: the aggregate `placeholders` map = exactly the B2-allowlisted paths this result holds a closed value for → {{a:<tool>|<path>}}",
+      JSON.stringify(aggPh) === JSON.stringify({ open: "{{a:probe_overview|open}}", "byState.OPEN": "{{a:probe_overview|byState.OPEN}}", asOf: "{{a:probe_overview|asOf}}", worst: "{{a:probe_overview|worst}}" }), aggPh);
+    check("S-a: no placeholder for an absent allowlisted path (byState.RESOLVED), a non-allowlisted key (note, labels) or a value; no duplicated value",
+      !/RESOLVED|note|labels|98765|e0placeable/.test(JSON.stringify(aggPh)), aggPh);
+    const rec0 = toolMsgs[1].records[0] as Record<string, unknown>;
+    check("S-a: the record result carries the handle + the closed fields as before + `placeholders` — no `closed`, `placeable`, value map or id",
+      !/"closed"|placeable|crec0000/.test(JSON.stringify(toolMsgs[1])) && JSON.stringify(Object.keys(rec0)) === JSON.stringify(["handle", "kind", "fields", "t2Fields", "placeholders"]), toolMsgs[1]);
+    const h0 = rec0.handle as string;
+    check("S-a / 09js: the record `placeholders` = ref + exactly the A1-allowlisted closed fields with a value → {{r:<handle>|<field>}} (an OPS tool: never a T2 name; never a bool, an opaque ref, a null field, a value)",
+      JSON.stringify(rec0.placeholders) === JSON.stringify({ ref: `{{r:${h0}|ref}}`, state: `{{r:${h0}|state}}`, openedAt: `{{r:${h0}|openedAt}}`, attempts: `{{r:${h0}|attempts}}` })
+        && !/\|name\}|retried|customer|closedAt/.test(JSON.stringify(rec0.placeholders)), rec0.placeholders);
     check("nothing the model never had is in the answer (no free-text note, no T2 sentinel)", !text.includes(FREE_TEXT) && !text.includes(T2_SENTINEL));
   }
 
