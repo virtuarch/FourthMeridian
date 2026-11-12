@@ -68,7 +68,9 @@ import {
   capSettingUsdOf, parseCapSettingRow, parseOperatorCapRow, platformAiReserveUsd, platformAiTurnsThatFit,
   resolvePlatformAiCaps, type CapInputs, type CapRefusalCause, type CapSource, type PlatformAiCapOutcome,
 } from "@/lib/platform/ai/platform-ai-spend.core";
-import type { PlatformAiBlanketCapSummary, PlatformAiCapsSummary } from "@/lib/platform/ai/cost-controls.types";
+import type {
+  PlatformAiBlanketCapSummary, PlatformAiCapsSummary, PlatformAiFleetUsageToday, PlatformAiOperatorUsageView,
+} from "@/lib/platform/ai/cost-controls.types";
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -125,6 +127,12 @@ export interface OperatorCapView {
   override: { state: "SET" | "INVALID"; dailyUsd: number | null; updatedAt: string } | null;
   effective: CapOutcomeView;
   fitsTurns: number | null;
+  /**
+   * PLATFORM AI COST MANAGEMENT — APPENDED. This operator's usage today against their
+   * cap, the platform cap and the turn cap (platform-ai-usage-today.ts). Absent / null ⇒
+   * not available. SYSTEM_ADMIN only, like the rest of this model.
+   */
+  today?: PlatformAiOperatorUsageView | null;
 }
 
 export interface PlatformAiCapsReadModel {
@@ -137,6 +145,8 @@ export interface PlatformAiCapsReadModel {
   /** Overrides above the effective platform cap (null when the platform cap does not resolve). */
   overridesAbovePlatformCap: number | null;
   note: string;
+  /** PLATFORM AI COST MANAGEMENT — APPENDED. Today's platform totals, by model and by feature (null ⇒ not available). */
+  usageToday?: Omit<PlatformAiFleetUsageToday, "self"> | null;
 }
 
 export const CAPS_NOTE =

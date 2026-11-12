@@ -23,6 +23,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { env } from "@/lib/env";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { incidentDetailDTO, type IncidentDetailDTO } from "@/lib/platform/incidents/investigation-dto";
@@ -58,5 +59,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       ? csIncidentNavigationLinks(dto, (target, params) => resolveNavigationTarget("CUSTOMER_SUCCESS", navToken, target, params, { now }))
       : [];
   });
-  return NextResponse.json({ ...dto, navigation } satisfies CsIncidentDetailResponse, { headers: NO_STORE });
+  // PR-D: the drawer learns whether the Platform AI assessment exists from the server (pack flag OFF ⇒ nothing renders).
+  const body = { ...dto, navigation };
+  return NextResponse.json({ ...body, aiAssessmentAvailable: env.isPlatformAiPackIncidentsEnabled } satisfies CsIncidentDetailResponse, { headers: NO_STORE });
 }

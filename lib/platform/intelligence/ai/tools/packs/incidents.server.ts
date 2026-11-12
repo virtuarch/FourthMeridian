@@ -28,11 +28,14 @@ import type { CsIncidentVerdict, IncidentAccessors, IncidentVerdict } from "@/li
 import { incidentLabel, type SyncIssueDomain } from "@/lib/platform/sync-issue-semantics";
 import type { RecordRenderSource } from "../../authz/record-render";
 import type { FreshGuard } from "../../authz/recheck";
-import type { T2FieldName } from "../../evidence/record-envelope";
+import { placeableUnion, type T2FieldName } from "../../evidence/record-envelope";
 import type { ToolTier } from "../contract";
 import { refOfRid } from "./customers";
 import { customerRid, findCustomerById } from "./customers.server";
-import { INCIDENT_CS_AREA, INCIDENT_OPS_AREA, INCIDENT_RID, incidentsPackTools, type IncidentsPackReaders, type IncidentsToolContext } from "./incidents";
+import {
+  INCIDENT_CS_AREA, INCIDENT_DETAIL_CS_SCHEMA, INCIDENT_DETAIL_SCHEMA, INCIDENT_LIST_CS_SCHEMA, INCIDENT_LIST_SCHEMA, INCIDENT_OPS_AREA, INCIDENT_RID,
+  incidentsPackTools, type IncidentsPackReaders, type IncidentsToolContext,
+} from "./incidents";
 
 type Accessors = Pick<IncidentAccessors, "brokenNow" | "needsVerification" | "search" | "investigate" | "detail">;
 type Client = typeof systemDb;
@@ -80,6 +83,8 @@ export function incidentRecordSource(acc: Accessors = incidentAccessors, client:
     (v && "subjectUserId" in v && typeof v.subjectUserId === "string" && v.subjectUserId.length > 0 ? v.subjectUserId : null);
   return {
     t2Fields: T2,
+    // S2 09io A1: every INCIDENT RECORD schema's placeable closed fields (the detail list is the superset).
+    placeable: placeableUnion(INCIDENT_LIST_SCHEMA, INCIDENT_DETAIL_SCHEMA, INCIDENT_LIST_CS_SCHEMA, INCIDENT_DETAIL_CS_SCHEMA),
     async revalidate(rid, area, guard) {
       const t = tokenFor(area, guard);
       return t && (await verdictOf(rid, area, guard)) ? t.tier : null;

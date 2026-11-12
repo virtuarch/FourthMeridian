@@ -60,7 +60,7 @@ import {
   RECORD_LIST_MAX, boolFlag, code, count, isoTime, opaqueRef,
   type Code, type RawRecord, type RecordFields, type RecordRunResult, type RecordSchema,
 } from "../../evidence/record-envelope";
-import type { PlatformAiToolContract } from "../contract";
+import { RECORD_PLACE_RULE, aggregatePlaceRule, countPaths, type AggregatePathSpec, type PlatformAiToolContract } from "../contract";
 
 /** The record kind every incidents-pack record (and incident subject handle) carries. */
 export const INCIDENT_RECORD_KIND = "INCIDENT";
@@ -171,11 +171,26 @@ const DETAIL_FIELDS: RecordSchema["fields"] = {
 
 const CUSTOMER_FIELD: RecordSchema["fields"] = { customer: { type: "opaqueRef", nullable: true } };
 
-export const INCIDENT_LIST_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, fields: BASE_FIELDS };
-export const INCIDENT_DETAIL_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, fields: { ...BASE_FIELDS, ...DETAIL_FIELDS } };
+/**
+ * S2 09io A1 — the CLOSED T1 fields the model may place as {{r:h|<field>}} (codes, counts, times; pinned by
+ * tools/placeables.test.ts). Never: the CS `customer` ref (an opaque ref), a bool, a T2 name.
+ */
+export const INCIDENT_BASE_PLACEABLE = [
+  "state", "severity", "domain", "kind", "provider", "operation", "firstSeenAt", "lastSeenAt", "resolvedAt", "occurrences", "spread",
+  "affectedSources", "generation", "causeStatus", "cause", "closure",
+] as const;
+export const INCIDENT_DETAIL_PLACEABLE = [
+  ...INCIDENT_BASE_PLACEABLE,
+  "displayStatus", "remedy", "providerErrorCode", "connectionStatus", "sourceState", "attempts", "attemptsSucceeded", "attemptsFailed",
+  "lastSucceededAt", "lastFailedAt", "earlierEpisodes", "closureOutcome", "resolutionReason", "recoveryProofs", "timelineEvents",
+  "lastEventType", "lastActionCode", "lastOutcomeCode",
+] as const;
+
+export const INCIDENT_LIST_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, fields: BASE_FIELDS, placeable: INCIDENT_BASE_PLACEABLE };
+export const INCIDENT_DETAIL_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, fields: { ...BASE_FIELDS, ...DETAIL_FIELDS }, placeable: INCIDENT_DETAIL_PLACEABLE };
 /** CS tier: + the affected customer's T1 ref; T2 (name / email) exists behind the record as NAMES only. */
-export const INCIDENT_LIST_CS_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, t2Fields: ["name", "email"], fields: { ...BASE_FIELDS, ...CUSTOMER_FIELD } };
-export const INCIDENT_DETAIL_CS_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, t2Fields: ["name", "email"], fields: { ...BASE_FIELDS, ...DETAIL_FIELDS, ...CUSTOMER_FIELD } };
+export const INCIDENT_LIST_CS_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, t2Fields: ["name", "email"], fields: { ...BASE_FIELDS, ...CUSTOMER_FIELD }, placeable: INCIDENT_BASE_PLACEABLE };
+export const INCIDENT_DETAIL_CS_SCHEMA: RecordSchema = { kind: INCIDENT_RECORD_KIND, t2Fields: ["name", "email"], fields: { ...BASE_FIELDS, ...DETAIL_FIELDS, ...CUSTOMER_FIELD }, placeable: INCIDENT_DETAIL_PLACEABLE };
 
 // ── Mappers (verdict / investigation → closed fields; named fields only, never a spread) ──
 
@@ -297,6 +312,17 @@ export interface IncidentOverview {
   readonly causeStatus: Readonly<Record<CauseStatusCode, number>>;
 }
 
+/**
+ * S2 09io B2 — incident_overview's CLOSED placeable result paths ({{a:incident_overview|<path>}}): every count it
+ * returns, keyed by the module's own vocabularies, and its asOf instant. Pinned by tools/placeables.test.ts.
+ */
+export const INCIDENT_OVERVIEW_PATHS: readonly AggregatePathSpec[] = [
+  { path: "brokenNow", type: "count" }, { path: "needsVerification", type: "count" },
+  { path: "widespread", type: "count" }, { path: "customerActionable", type: "count" },
+  ...countPaths("bySeverity", SEVERITIES), ...countPaths("byDomain", DOMAINS), ...countPaths("causeStatus", CAUSE_STATUSES),
+  { path: "asOf", type: "isoTime" },
+];
+
 const tally = <K extends string>(keys: readonly K[], values: readonly string[]): Record<K, number> => {
   const out = Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
   for (const v of values) if ((keys as readonly string[]).includes(v)) out[v as K]++;
@@ -379,8 +405,9 @@ export function incidentsPackTools<Ctx extends IncidentsToolContext>(readers: In
     {
       name: "incident_overview", pack: "incidents", scope: "AGGREGATE", customerLinkable: false, pii: 0, cost: { toolCalls: 1 },
       requires: { areas: [INCIDENT_OPS_AREA, INCIDENT_CS_AREA], level: "READ", tier: "OPS" },
-      description: "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records.",
+      description: "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records. " + aggregatePlaceRule("incident_overview", "bySeverity.critical"),
       args: { properties: {} },
+      placeablePaths: INCIDENT_OVERVIEW_PATHS,
       run: async (_args, ctx) => {
         const c = ctx as IncidentsToolContext;
         const now = readers.now();
@@ -400,25 +427,25 @@ export function incidentsPackTools<Ctx extends IncidentsToolContext>(readers: In
     },
     {
       ...ops, name: "list_incidents", recordSchema: INCIDENT_LIST_SCHEMA, cost: { toolCalls: 1 },
-      description: `Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. ${CAUSE_RULE}`,
+      description: `Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. ${CAUSE_RULE} ${RECORD_PLACE_RULE}`,
       args: { properties: { status: STATUS_ARG, severity: SEVERITY_ARG } },
       run: listRun(readers, "ops"),
     },
     {
       ...ops, name: "investigate_incident", recordSchema: INCIDENT_DETAIL_SCHEMA, cost: { toolCalls: 2 },
-      description: "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes.",
+      description: "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes. " + RECORD_PLACE_RULE,
       args: { properties: handle },
       run: investigateRun(readers, "ops"),
     },
     {
       ...cs, name: "list_incidents_cs", recordSchema: INCIDENT_LIST_CS_SCHEMA, cost: { toolCalls: 1 },
-      description: "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}.",
+      description: "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}. " + RECORD_PLACE_RULE,
       args: { properties: { status: STATUS_ARG, severity: SEVERITY_ARG } },
       run: listRun(readers, "cs"),
     },
     {
       ...cs, name: "investigate_incident_cs", recordSchema: INCIDENT_DETAIL_CS_SCHEMA, cost: { toolCalls: 2 },
-      description: "Customer Success view of investigate_incident (+ customer).",
+      description: "Customer Success view of investigate_incident (+ customer). " + RECORD_PLACE_RULE,
       args: { properties: handle },
       run: investigateRun(readers, "cs"),
     },

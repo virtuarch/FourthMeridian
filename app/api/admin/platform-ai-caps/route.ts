@@ -4,7 +4,10 @@
  *                                     every current operator (SYSTEM_ADMIN users +
  *                                     ACTIVE platform-grant holders) with their
  *                                     override and effective cap, and how many
- *                                     worst-case turns each fits.
+ *                                     worst-case turns each fits; plus today's
+ *                                     ESTIMATED usage (platform totals, by model,
+ *                                     by feature, each operator's spend, remaining
+ *                                     and state — platform-ai-usage-today.ts).
  * POST /api/admin/platform-ai-caps  — ONE action per request:
  *                                     SET_BLANKET | SET_OVERRIDE | RESET_OVERRIDE.
  *
@@ -36,6 +39,7 @@ import { platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import {
   applyPlatformAiCapsAction, loadPlatformAiCapsReadModel, type PlatformAiCapsRefusalCode,
 } from "@/lib/platform/ai/platform-ai-caps-admin";
+import { withPlatformAiUsageToday } from "@/lib/platform/ai/platform-ai-usage-today";
 
 export const runtime = "nodejs";
 
@@ -49,7 +53,7 @@ const STATUS: Record<PlatformAiCapsRefusalCode, number> = {
 export async function GET() {
   const [, err] = await requireSystemAdmin();
   if (err) return err;
-  const model = await loadPlatformAiCapsReadModel(platformAiModel().model);
+  const model = await withPlatformAiUsageToday(await loadPlatformAiCapsReadModel(platformAiModel().model));
   return NextResponse.json(model, { headers: NO_STORE });
 }
 
@@ -66,6 +70,6 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     return NextResponse.json({ error: result.reason, code: result.code }, { status: STATUS[result.code], headers: NO_STORE });
   }
-  const model = await loadPlatformAiCapsReadModel(platformAiModel().model);
+  const model = await withPlatformAiUsageToday(await loadPlatformAiCapsReadModel(platformAiModel().model));
   return NextResponse.json({ result, model }, { headers: NO_STORE });
 }

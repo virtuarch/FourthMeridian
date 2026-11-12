@@ -456,7 +456,32 @@ function main() {
     // THE MUTATION-ROUTE PIN: every mutating incident route is fresh WRITE+ on PLATFORM_OPS, rate-limited,
     // mints its Ops token from that guard, and writes ONLY through the audited lifecycle transition.
     const incidentRoutes = walk("app/api/platform").filter((f) => /\/(incidents|sync-issues)(\/|$)/.test(f) && f.endsWith("route.ts"));
-    const mutating = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
+    const posting = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
+    // S2 ruling 09gg (d) — the drawer's Platform AI ASSESSMENT: exactly one POST per tier. It spends (one
+    // Platform AI turn) but NEVER changes incident state, so it is not a mutation: named here, and pinned
+    // below to a fresh READ guard on its own area, the limiter, and no SyncIssue / lifecycle / direct DB / direct
+    // audit write in the route. Its ONLY writes are the Platform AI turn-ledger rows and, on the CS tier, the
+    // PLATFORM_AI_RECORD_VIEWED audit the governed tool boundary records (S2 09he Q1).
+    const AI_ASSESSMENT = [
+      "app/api/platform/customer-success/incidents/[id]/assessment/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/assessment/route.ts",
+    ];
+    check("the assessment POSTs are exactly the two named routes, each POST only",
+      JSON.stringify(posting.filter((f) => /\/assessment\/route\.ts$/.test(f)).sort()) === JSON.stringify(AI_ASSESSMENT)
+      && AI_ASSESSMENT.every((f) => !/export\s+(async\s+)?(function|const)\s+(PUT|PATCH|DELETE|GET)\b/.test(code(f))));
+    for (const f of AI_ASSESSMENT) {
+      const s2 = code(f);
+      const area = f.includes("/customer-success/") ? "CUSTOMER_SUCCESS" : "PLATFORM_OPS";
+      const other = area === "CUSTOMER_SUCCESS" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";
+      check(`${f}: fresh ${area} READ on its own area (never the other area, never a stale guard)`,
+        s2.includes(`const [auth, err] = await requireFreshPlatformAccess("${area}", "READ");`) && !/requirePlatformAccess\(/.test(s2) && !s2.includes(`"${other}"`));
+      check(`${f}: the #352 per-operator limiter, after the guard`,
+        /const limited = await limitPlatformMutation\(auth\.user\.id, "(cs-)?incident-ai-assessment"\);\s*if \(limited\) return limited;/.test(s2)
+        && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
+      check(`${f}: never touches incident state (no SyncIssue / lifecycle / direct DB / direct audit write in the route; only turn-ledger rows + the boundary RECORD_VIEWED audit on CS)`,
+        !/syncIssue\.|auditLog\.|systemDb|applyOperatorTransition|runIncidentOperatorAction|lifecycleState/.test(s2));
+    }
+    const mutating = posting.filter((f) => !AI_ASSESSMENT.includes(f));
     // S2 ruling 09gg (c) (owner yes 2026-11-11): Customer Success gains exactly two POSTs — the
     // customer-update preview and the approve-and-send. They message a CUSTOMER; they never change
     // incident state (pinned below). Incident LIFECYCLE mutations stay acknowledge + resolve, Ops only.

@@ -34,6 +34,7 @@
 
 import { HANDLE_KEY_PATTERN, TOOL_RESULT_STATUSES, type ToolResultStatus, type ToolTier } from "../tools/contract";
 import type { PlatformArea } from "@prisma/client";
+import { placeableNameForbidden, type ClosedValueType } from "../compose/closed";
 
 // ── The closed field types (branded) ─────────────────────────────────────────
 
@@ -114,6 +115,28 @@ export interface RecordSchema {
   readonly fields: Readonly<Record<string, FieldSpec>>;
   /** T2 fields that exist behind the record (names only — never a value here). */
   readonly t2Fields?: readonly T2FieldName[];
+  /**
+   * S2 09io A1 — the CLOSED T1 fields the model may place as `{{r:h|<field>}}` (the server renders the value
+   * THIS turn's tool returned, under a fresh guard at render time). ONLY fields of a PLACEABLE_FIELD_TYPES type
+   * (code / count / isoTime) — never "ref" (placed already), a T2 name, a bool, a registry name (institution), an
+   * opaque ref or a handle, and never a field whose name carries a forbidden word (compose/closed.ts: identities,
+   * free text, institution text, amounts). validateRecordSchema refuses any other entry; absent ⇒ none.
+   */
+  readonly placeable?: readonly string[];
+}
+
+/** The field types a `placeable` entry may have (A1: enum / code / count / server-formatted date). */
+export const PLACEABLE_FIELD_TYPES = ["code", "count", "isoTime"] as const satisfies readonly ClosedValueType[];
+
+/** The union of the schemas' placeable fields (a record KIND's render-time allowlist, authz/record-render.ts). */
+export const placeableUnion = (...schemas: readonly RecordSchema[]): readonly string[] =>
+  Object.freeze([...new Set(schemas.flatMap((s) => [...(s.placeable ?? [])]))].sort());
+
+/** The closed value type of a placeable field of this schema, or null (not placeable). */
+export function placeableTypeOf(s: RecordSchema, field: string): ClosedValueType | null {
+  if (!(s.placeable ?? []).includes(field) || !Object.prototype.hasOwnProperty.call(s.fields, field)) return null;
+  const t = s.fields[field].type;
+  return (PLACEABLE_FIELD_TYPES as readonly string[]).includes(t) ? (t as ClosedValueType) : null;
 }
 
 /** Lists are bounded: at most this many records leave the boundary per call (+ truncated). */
@@ -131,6 +154,15 @@ export function validateRecordSchema(s: RecordSchema): string[] {
     if (f.type === "registryName" && (f.names.length === 0 || f.names.some((v) => typeof v !== "string"))) out.push(`field:${k}:empty_registry`);
   }
   for (const t of s?.t2Fields ?? []) if (!(T2_FIELD_NAMES as readonly string[]).includes(t)) out.push("t2Fields:unknown");
+  // S2 09io A1: every placeable entry is a declared closed field (code / count / isoTime) with an allowed name.
+  const placeable: readonly unknown[] = Array.isArray(s?.placeable) ? s.placeable : s?.placeable === undefined ? [] : ["?"];
+  if (new Set(placeable).size !== placeable.length) out.push("placeable:duplicate");
+  for (const p of placeable) {
+    const f = typeof p === "string" && Object.prototype.hasOwnProperty.call(s?.fields ?? {}, p) ? s.fields[p] : null;
+    if (!f) { out.push(`placeable:${String(p).slice(0, 40)}:not_a_field`); continue; }
+    if (p === "ref" || (T2_FIELD_NAMES as readonly string[]).includes(p as string) || placeableNameForbidden(p as string)) out.push(`placeable:${p}:forbidden_name`);
+    if (!(PLACEABLE_FIELD_TYPES as readonly string[]).includes(f.type)) out.push(`placeable:${p}:not_a_closed_type`);
+  }
   return out;
 }
 

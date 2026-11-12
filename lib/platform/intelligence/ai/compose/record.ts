@@ -29,6 +29,7 @@
  */
 
 import { T2_FIELD_NAMES, type T2FieldName } from "../evidence/record-envelope";
+import { closedTypeOf, closedValueOk, formatClosedValue, type ClosedValue } from "./closed";
 
 // ── Private sentinels (the model's own copies are stripped before parsing) ──
 
@@ -78,8 +79,17 @@ export interface TurnRecordRef {
   readonly rk: string;
   readonly rid: string;
   readonly a: string;
-  /** The field codes `{{r:h|f}}` may name for this record: "ref" + the schema's t2Fields. */
+  /**
+   * The field codes `{{r:h|f}}` may name for this record: "ref" + the schema's t2Fields + (S2 09io A1) the
+   * schema's `placeable` CLOSED fields that THIS turn's tool returned a non-null value for (keys of `closed`).
+   */
   readonly fields: readonly string[];
+  /**
+   * S2 09io A1/A2 — the values of those placeable closed fields EXACTLY as the tool returned them to the model this
+   * turn (code / count / isoTime only). Absent for a re-minted / adopted record (no tool returned it this turn) ⇒
+   * no closed field is placeable for it. Never serialised to the model; a placed one rides on the span (`v`).
+   */
+  readonly closed?: Readonly<Record<string, ClosedValue>>;
   /**
    * P8 — the record's CLOSED field values as the model received them (codes / counts / times / flags; never a T2
    * value). Present for records a tool returned this turn; absent for a re-minted / adopted record (unknown).
@@ -93,9 +103,26 @@ export type TurnRecordLookup = (handle: string) => TurnRecordRef | null;
 
 /** A resolved record span (stored typed; its text is rendered at read time). */
 /** `text` is ALWAYS RECORD_PENDING_TEXT (the fail-closed display marker) — never a value; the stored segment drops it. */
-export interface RecordSpan { kind: "record"; text: typeof RECORD_PENDING_TEXT; rk: string; rid: string; a: string; f: string }
+export interface RecordSpan {
+  kind: "record"; text: typeof RECORD_PENDING_TEXT; rk: string; rid: string; a: string; f: string;
+  /**
+   * S2 09io A1/A2 — a CLOSED T1 field's value as THIS turn's tool returned it (code / count / isoTime; never T2,
+   * never "ref"). Rendered only by authz/record-render.ts, after the same fresh area check + record revalidation +
+   * tier as every record span (else the uniform "[no longer available]"). Absent for "ref" and T2 fields.
+   */
+  v?: number | string;
+}
 
 export const isT2Field = (f: string): f is T2FieldName => (T2_FIELD_NAMES as readonly string[]).includes(f);
+
+/** S2 09io A1 — a placeable closed field: not "ref", not a T2 name (the record-envelope schema rule decides the rest). */
+export const isClosedField = (f: string): boolean => f !== RECORD_REF_FIELD && !isT2Field(f) && RECORD_FIELD_SHAPE.test(f);
+
+/** A stored / span closed value → its server text, or null (not a closed value: the renderer shows "unavailable"). */
+export function renderClosedValue(v: unknown): string | null {
+  const t = closedTypeOf(v);
+  return t ? formatClosedValue(t, v) : null;
+}
 
 export interface RecordExtraction {
   /** The text with every resolved placeholder replaced by a private sentinel, every unresolved one by a space. */
@@ -122,10 +149,15 @@ export function extractRecordPlaceholders(raw: string, lookup: TurnRecordLookup 
     claims++;
     let ref: TurnRecordRef | null = null;
     try { ref = lookup ? lookup(handle) : null; } catch { ref = null; }
+    // S2 09io A1/A3: a closed field resolves ONLY with a value this turn's tool returned for this handle (the
+    // boundary's `closed`), of a closed shape; anything else is the same unresolved as an unknown field.
+    const closed = ref && isClosedField(field) && ref.closed && Object.prototype.hasOwnProperty.call(ref.closed, field) ? ref.closed[field] : null;
+    const closedOk = !!closed && closedValueOk(closed.type, closed.value) && closedTypeOf(closed.value) === closed.type;
     const ok = !!ref && ref.fields.includes(field) && RECORD_KIND_SHAPE.test(ref.rk) && RECORD_ID_SHAPE.test(ref.rid) && RECORD_FIELD_SHAPE.test(field)
+      && (!isClosedField(field) || closedOk)
       && spans.length < RECORD_SPANS_MAX;
     if (!ok) { unresolved++; return " "; }
-    spans.push({ kind: "record", text: RECORD_PENDING_TEXT, rk: ref!.rk, rid: ref!.rid, a: ref!.a, f: field });
+    spans.push({ kind: "record", text: RECORD_PENDING_TEXT, rk: ref!.rk, rid: ref!.rid, a: ref!.a, f: field, ...(closedOk ? { v: closed!.value } : {}) });
     facts.push(ref!.facts ?? null);
     return `${RECORD_OPEN}${String.fromCharCode(97 + spans.length - 1)}${RECORD_CLOSE}`;
   });
