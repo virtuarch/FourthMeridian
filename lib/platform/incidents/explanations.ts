@@ -224,6 +224,35 @@ export function remedyFor(code: string | null, itemStatus: string | null): Remed
   return r;
 }
 
+/**
+ * Incident drawer PR-D (S2 09gg d) — the Platform AI assessment's server answers per remedy CLASS:
+ * "Can FourthMeridian fix it", "Does the customer need to act" and the operator's next step when
+ * no recovery action applies. Server text, never the model's; same meanings as the class notes above.
+ * None of them claims a recovery (the assessment's no-unverified-recovery pin scans them).
+ */
+export const REMEDY_CLASS_ANSWERS: Readonly<Record<RemedyClass, { canFix: string; customer: string; operatorNext: string }>> = {
+  "customer-reconnect": {
+    canFix: "Not on our own. A server retry cannot help; the customer has to reconnect.",
+    customer: `Yes. ${RECONNECT_ACTION}`,
+    operatorNext: "Do not resync. Make sure the customer has been prompted to reconnect; follow up through Customer Success if it stays open.",
+  },
+  "customer-re-add": {
+    canFix: "No. The connection is gone at the provider; only the customer can add it again.",
+    customer: "Yes. Add this bank again from the Connections page if they want it connected.",
+    operatorNext: "Nothing to retry or reauthorize. Only the customer can add the connection again.",
+  },
+  "server-retry": {
+    canFix: "Usually, yes. This looks transient or provider-side; a later retry can help.",
+    customer: "No. Nothing is required of the customer.",
+    operatorNext: "Wait, then retry once the provider responds. Check whether other connections are affected (spread).",
+  },
+  investigate: {
+    canFix: "Not known yet. There is no verified explanation, so it needs an operator's judgement.",
+    customer: "Not known. Nothing has been asked of the customer.",
+    operatorNext: "Check the recent attempts and the timeline before acting.",
+  },
+};
+
 export function customerActionRequiredFor(code: string | null, itemStatus: string | null): boolean {
   const r = remedyFor(code, itemStatus);
   return r === "customer-reconnect" || r === "customer-re-add";

@@ -221,7 +221,7 @@ async function main(): Promise<void> {
       check(`${name}: rendered Diagnosis section has no customer id / institution`, dh.length > 0 && !dh.includes(ITEM.userId) && !dh.includes("Example Bank"));
       check(`${name}: Diagnosis section has no link and no recovery/lifecycle control`, !/<a\s/.test(dh) && !/data-recovery-action|data-lifecycle-action/.test(dh));
     }
-    check("control: the CS drawer still names the customer in its summary (tiered elsewhere, not in diagnosis)", render(dcs).includes(ITEM.userId) && !render(d).includes(ITEM.userId));
+    check("control: the CS drawer names the customer in its summary by PRIV-ref only (never the raw id; not in diagnosis)", render(dcs).includes("data-incident-customer-ref") && !render(dcs).includes(ITEM.userId) && !render(d).includes(ITEM.userId));
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

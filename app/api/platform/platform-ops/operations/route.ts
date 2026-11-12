@@ -16,6 +16,14 @@
  *          runOperation (in-flight lock + runJob(trigger:"manual") for a
  *          mutating run; a plan for a dry-run) → AuditLog.
  *
+ * INCIDENT DRAWER PR-B (S2 09gg b) — a Run Now posted from an incident drawer
+ * carries `?incidentId=`. It is CONTEXT ONLY: every guard above runs exactly as
+ * for the Jobs view. The id rides the audit rows ONLY when verified — the
+ * incident exists and its OWN evidence (newest occurrence's job, through
+ * lib/platform/incidents/job-commands.ts) maps to THIS command — else it is
+ * dropped silently (lib/platform/incidents/action-context.ts). The body's
+ * `commandId` is the only command input; no job name is read from the client.
+ *
  * NEVER BYPASS CANONICAL EXECUTION: this route does not run any job body
  * itself. runOperation resolves the SCHEDULED_JOBS body and runs it through
  * runJob — the one execution path, the one JobRun ledger. This route owns only
@@ -46,6 +54,8 @@ import {
   type OperationOutcome,
   type DryRunPlan,
 } from "@/lib/platform/operations/execute";
+import { incidentAuditDetail, incidentIdFromSearch, verifiedJobIncidentId } from "@/lib/platform/incidents/action-context";
+import { incidentJobCommandId } from "@/lib/platform/incidents/intelligence";
 
 // Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
 // duration must stay below the stale-execution reaper's threshold
@@ -168,6 +178,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
   }
 
+  // Incident drawer PR-B — the incident this run was taken for, VERIFIED against
+  // the incident's own evidence (context only; after every guard, before any row).
+  const incidentRef = incidentAuditDetail(
+    await verifiedJobIncidentId(incidentIdFromSearch(req.nextUrl.searchParams), command.id, incidentJobCommandId),
+  );
+
   // PLATFORM-SEC-1 — a fleet-wide run records WHO and WHY before it starts: the
   // run can outlive this request (function timeout), and the EXECUTED row below
   // is written only after it returns. If this intent row cannot be written,
@@ -180,7 +196,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       execution: { commandId: command.id, jobRunId: null },
       result: "SUCCESS",
       reason,
-      detail: { kind: command.kind, phase: "requested" },
+      detail: { kind: command.kind, phase: "requested", ...incidentRef },
     });
   }
 
@@ -206,6 +222,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       kind: command.kind,
       outcome: result.outcome,
       ...(result.status ? { jobRunStatus: result.status } : {}),
+      ...incidentRef,
     },
   });
 

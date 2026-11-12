@@ -12,7 +12,9 @@
  *   · production + caps MISSING ⇒ refused (503) before any provider request; unknown / absent
  *     VERCEL_ENV likewise; preview + MISSING ⇒ the test default caps admit the turn (S2 ruling 8);
  *   · concurrency: N simultaneous turns where the cap has room for k reserves ⇒ exactly k reach
- *     the provider, the rest are refused COST_CAP before it (the reservation prevents overshoot).
+ *     the provider, the rest are refused COST_CAP before it (the reservation prevents overshoot);
+ *   · D5 PR4: an operator override of 0 refuses that operator's first turn COST_CAP (429) with
+ *     generous env caps, 0 provider requests; an invalid override row refuses (503) the same way.
  */
 
 import { handlePlatformAiAsk, type PlatformAiAskDeps, type PlatformAiBinding } from "../../core";
@@ -57,7 +59,7 @@ export const COST_CAP_ROUTE_CASES: readonly RouteCase[] = [
 const MODEL = "gpt-4o-mini";
 
 /** An in-memory fm_system stand-in: transactions serialised (the advisory locks' effect), RateLimit buckets kept. */
-function memoryClient(): { client: SpendClient; held(): number } {
+function memoryClient(overrides: Record<string, number> = {}): { client: SpendClient; held(): number } {
   const buckets = new Map<string, number>();
   let chain: Promise<unknown> = Promise.resolve();
   const bk = (key: string, w: Date) => `${key}@${w.toISOString()}`;
@@ -66,6 +68,8 @@ function memoryClient(): { client: SpendClient; held(): number } {
     aiInvocation: { findMany: async () => [] },
     // D5 PR2: the blanket cap settings, read in the transaction — none set here (env / test default apply).
     platformSetting: { findMany: async () => [] },
+    // D5 PR4: the operator's own override row, read in the transaction (none unless the case sets one).
+    platformAiOperatorCap: { findUnique: async ({ where }: { where: { userId: string } }) => (where.userId in overrides ? { dailyUsd: overrides[where.userId] } : null) },
     rateLimit: {
       findMany: async ({ where }: { where: { key: string | { startsWith: string } } }) =>
         typeof where.key === "string" ? [] : [...buckets].filter(([k]) => k.startsWith((where.key as { startsWith: string }).startsWith)).map(([k, count]) => ({ key: k.split("@")[0], count })),
@@ -116,6 +120,29 @@ export const COST_CAP_UNIT_CASES: readonly UnitCase[] = [
   envCase("cost-cap.unrecognised-env-missing-refused", { operatorRaw: undefined, platformRaw: undefined, vercelEnv: "staging" }, false),
   envCase("cost-cap.production-invalid-refused", { operatorRaw: "10 USD", platformRaw: "50", vercelEnv: "production" }, false),
   envCase("cost-cap.preview-missing-default", { operatorRaw: undefined, platformRaw: undefined, vercelEnv: "preview" }, true),
+  {
+    kind: "unit", id: "cost-cap.operator-override-zero-refused", pack: "boundary", gates: ["COST_CAP"],
+    async run(ctx) {
+      const m = memoryClient({ [ctx.operatorId("ops")]: 0 });
+      const r = await askWith(ctx, { operatorRaw: "20", platformRaw: "100", vercelEnv: "production" }, m.client, new Date());
+      return [
+        ...(r.status === 429 && r.reason === "COST_CAP" ? [] : [`status ${r.status} reason ${String(r.reason)}`]),
+        ...(r.requests === 0 ? [] : [`${r.requests} provider request(s)`]),
+        ...(m.held() === 0 ? [] : ["a reservation was taken"]),
+      ];
+    },
+  },
+  {
+    kind: "unit", id: "cost-cap.operator-override-invalid-refused", pack: "boundary", gates: ["COST_CAP"],
+    async run(ctx) {
+      const m = memoryClient({ [ctx.operatorId("ops")]: 25 });
+      const r = await askWith(ctx, { operatorRaw: "20", platformRaw: "100", vercelEnv: "production" }, m.client, new Date());
+      return [
+        ...(r.status === 503 && r.reason === "ALLOWANCE_UNAVAILABLE" ? [] : [`status ${r.status} reason ${String(r.reason)}`]),
+        ...(r.requests === 0 ? [] : [`${r.requests} provider request(s)`]),
+      ];
+    },
+  },
   {
     kind: "unit", id: "cost-cap.concurrent-turns-no-overshoot", pack: "boundary", gates: ["COST_CAP"],
     async run(ctx) {

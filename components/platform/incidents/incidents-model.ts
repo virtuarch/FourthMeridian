@@ -39,7 +39,7 @@ export const LINK_WORD: Readonly<Record<IncidentLinkKind, string>> = {
   PREVIOUS_EPISODE: "Previous episode", NEXT_EPISODE: "Next episode",
 };
 export const RECOVERY_LABEL: Readonly<Record<RecoveryActionDTO["kind"], string>> = {
-  resync: "Resync connection", "request-reauth": "Request reauthorization", "refresh-customer": "Refresh all for this customer",
+  resync: "Resync connection", "request-reauth": "Request reauthorization", "refresh-customer": "Refresh all for this customer", "run-job": "Run job",
 };
 
 /** "3 Nov 14:02 UTC" — absolute, so a list read later still says when. */
@@ -276,7 +276,7 @@ export function primaryGuidance(d: Pick<IncidentDetailDTO, "summary" | "recovery
       return {
         headline: "Customer must reconnect",
         body: customerAction ?? "The customer must reconnect this bank from the Connections page.",
-        caveat: "A server resync can't fix this, so it isn't offered.",
+        caveat: "A server retry can't fix this: only the customer reconnecting can, so resync isn't offered.",
       };
     case "customer-re-add":
       return {
@@ -292,8 +292,13 @@ export function primaryGuidance(d: Pick<IncidentDetailDTO, "summary" | "recovery
       };
     case "investigate":
       return { headline: "Investigate", body: "There is no verified explanation for this failure yet. Check the diagnosis and recent attempts before acting.", caveat: null };
-    default:
-      return null;
+    default: {
+      // PR-B — a job-sourced incident: the job it was observed under can be run again (for all customers).
+      const job = d.recovery.find((a) => a.kind === "run-job");
+      return job && job.kind === "run-job"
+        ? { headline: "Run the job again", body: `This incident was observed under ${job.jobLabel}. Running it again retries the work for all customers.`, caveat: null }
+        : null;
+    }
   }
 }
 

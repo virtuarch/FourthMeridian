@@ -52,6 +52,8 @@ import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutc
 import type { ConversationTurnOutcome } from "./turn";
 import type { MemoryProposalCard } from "../memory/turn";
 import type { MemoryReaders } from "../memory/revalidate";
+import type { PlatformAiToolTraceEntry } from "../tools/tool-trace";
+import { storedFigureSources, type PlacedSpan } from "./figure-positions";
 import type { ScopedArea } from "../authz/boundary";
 import { extractSubjects, storedSubjectText, type SubjectFlags, type SubjectIdentifier } from "../authz/subject";
 import { answerReadable, type TurnAreaPart } from "./multi-area";
@@ -301,19 +303,32 @@ const conversationDto = (c: ConversationRecord) => ({
 });
 
 /** A replay (§5.1): COMPLETE / FAILED ⇒ 200 with the stored pair; PENDING ⇒ 409 TURN_IN_FLIGHT. */
-async function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null): Promise<ConversationHttp> {
+async function pairResponse(status: number, conversation: ConversationRecord | null, pair: TurnPair, access: AreaAccess | null, memoryProposal?: MemoryProposalCard | null,
+  /** S2 09hu G1 — THIS request's turn trace (metadata only; never stored, so never on a replay). */
+  toolTrace?: readonly PlatformAiToolTraceEntry[],
+  /** B1 — THIS request's placed spans (metadata only; never stored, so never on a replay), positioned on the content below. */
+  figureSources?: readonly PlacedSpan[]): Promise<ConversationHttp> {
   if (pair.assistant.status === "PENDING" && status === 200) {
     return { status: 409, body: { error: "This question is still being answered.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
   }
   const records = await renderMessageRecords([pair.assistant], access);
+  const assistantMessage = messageDto(pair.assistant, access, false, records);
+  // B1: each placed span's segment in assistantMessage.content (1:1 with the stored segments) — fail closed to [].
+  const stored = pair.assistant.status === "COMPLETE" && pair.assistant.content !== null && typeof pair.assistant.content !== "string" ? pair.assistant.content.segments : null;
+  const content = Array.isArray(assistantMessage.content) ? (assistantMessage.content as { kind: string; text: string }[]) : null;
+  const positioned = figureSources ? (stored && content ? storedFigureSources(figureSources, stored, content) : []) : null;
   return {
     status,
     body: {
       ...(conversation ? { conversation: conversationDto(conversation) } : {}),
       userMessage: messageDto(pair.user, access, false),
-      assistantMessage: messageDto(pair.assistant, access, false, records),
+      assistantMessage,
       // Memory (design v2 §3): the confirm card of THIS turn only — never stored, never on a replay.
       ...(memoryProposal && pair.assistant.status === "COMPLETE" ? { memoryProposal } : {}),
+      // S2 09hu G1: the metadata-only tool trace of the turn THIS request ran (tools/tool-trace.ts) — response only.
+      ...(toolTrace ? { toolTrace: [...toolTrace] } : {}),
+      // B1: the metadata-only figure sources of the turn THIS request ran (tools/figure-sources.ts) — response only.
+      ...(positioned ? { figureSources: positioned } : {}),
     },
   };
 }
@@ -388,13 +403,16 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
 async function runAndSettle(
   v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
   deps: { store: ConversationTurnStoreSeam } & TurnRunDeps, subjects?: TurnSubjects,
-): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null }> {
-  let outcome: ConversationTurnOutcome;
-  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access, ...(subjects ? { subjects } : {}) }); }
-  catch { outcome = { status: "FAILED", failureCode: "PROVIDER" }; }
+): Promise<{ pair: TurnPair; memoryProposal: MemoryProposalCard | null; toolTrace: readonly PlatformAiToolTraceEntry[]; figureSources: readonly PlacedSpan[] }> {
+  let run: ConversationTurnOutcome;
+  try { run = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access, ...(subjects ? { subjects } : {}) }); }
+  catch { run = { status: "FAILED", failureCode: "PROVIDER" }; }
+  // S2 09hu G1: the tool trace is RESPONSE ONLY — it is split off before the settle, so it can never be stored.
+  // B1: so are the figure sources (placed spans' closed codes) — split off here, never stored.
+  const { toolTrace, figureSources, ...outcome } = run;
   try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
   const settled = (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
-  return { pair: settled, memoryProposal: outcome.status === "COMPLETE" ? outcome.memoryProposal ?? null : null };
+  return { pair: settled, memoryProposal: outcome.status === "COMPLETE" ? outcome.memoryProposal ?? null : null, toolTrace: toolTrace ?? [], figureSources: figureSources ?? [] };
 }
 
 /** v0's pre-provider gates (§5.3): kill switch → global freeze → daily cap. null = admitted. */
@@ -495,7 +513,7 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
         // P4b: the turn binds the areas the operator holds NOW (own + each other area's own fresh guard).
         const turnAccess = await heldAccessFor(deps, access, v.operatorId);
         const r = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
-        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal);
+        return pairResponse(201, out.conversation, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources);
       }
     }
   } finally {
@@ -556,7 +574,7 @@ export async function handleAppendMessage(v: Viewer, id: string, body: unknown, 
         // P4b: the turn binds the areas the operator holds NOW — fresh guards at turn time; a lost area is simply absent.
         const turnAccess = await heldAccessFor(deps, access, v.operatorId);
         const r = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, turnAccess, deps, subjects);
-        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal);
+        return pairResponse(200, null, r.pair, turnAccess, r.memoryProposal, r.toolTrace, r.figureSources);
       }
     }
   } finally {

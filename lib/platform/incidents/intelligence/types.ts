@@ -565,6 +565,19 @@ export interface IncidentInvestigation<T extends IncidentVerdict = IncidentVerdi
   providerError?: IncidentProviderError;
   /** Incident detail v1 — the connection's refresh attempts; null when the incident is not item-scoped. */
   attempts?: IncidentAttemptsSummary | null;
+  /**
+   * Incident drawer PR-A — the job the NEWEST occurrence was observed under,
+   * re-read from that occurrence's frozen evidence summary (evidence.ts
+   * OccurrenceEvidenceSummary). Null when no occurrence is readable or it names
+   * no job; absent on readers that predate it. Raw facts only — the DTO words them.
+   */
+  component?: IncidentOccurrenceComponent | null;
+}
+
+/** The job facts of an incident's newest occurrence (raw; investigation-dto.ts maps them to client words). */
+export interface IncidentOccurrenceComponent {
+  jobName: string | null;
+  jobRunId: string | null;
 }
 
 /** PB-1 Phase 2B accessors (implemented in ./index.ts); token-checked before any read. */

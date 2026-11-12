@@ -62,7 +62,12 @@
  * P4 — RECORDS FOR COMPOSE AND REPLAY (design v2 §6.3, §8.2):
  *   · `recordRef(handle)` — THIS turn's handle → {rk, rid, a, fields}: the only thing a
  *     {{r:h|field}} placeholder resolves against (compose/record.ts). Fields = "ref" + the
- *     record schema's t2Fields (names only). Closure state, never serialised or logged.
+ *     record schema's t2Fields (names only) + (S2 09io A1) the schema's `placeable` CLOSED fields
+ *     this call's result gave a non-null value for, with those values (`closed`, exactly what the
+ *     model received). A re-minted / adopted handle carries none. Closure state, never serialised or logged.
+ *   · S2 09io B1 — an AGGREGATE tool's result is captured into the turn's evidence (`ev.aggregates`,
+ *     compose/aggregate.ts captureAggregateResult: its allowlisted closed paths only) for
+ *     {{a:<tool>|<path>}}. Nothing else changes: the result returned to the model is the tool's own.
  *   · `remint(refs)` — replay re-authz: a prior answer's record span gets a handle of THIS
  *     turn ONLY when its area is in the turn's live scope and passes the per-call recheck
  *     (the boundary's own recheck: a refusal removes the area, as for a tool call) AND its
@@ -80,9 +85,11 @@ import {
   type PlatformAiBinding, type PlatformAiToolInvoker, type PlatformAiTraceStep, type PlatformAiTurnTools,
 } from "../core";
 import {
-  RECORD_LIST_MAX, T2_FIELD_NAMES, validateRecordFields, validateRecordRunShape, validateRecordSchema,
+  RECORD_LIST_MAX, T2_FIELD_NAMES, placeableTypeOf, validateRecordFields, validateRecordRunShape, validateRecordSchema,
   type ModelRecord, type RawRecord, type RecordFields, type RecordRunResult,
 } from "../evidence/record-envelope";
+import { closedValueOk, type ClosedValue } from "../compose/closed";
+import { captureAggregateResult } from "../compose/aggregate";
 import { MORE_TOOLS_NAME, toolCallableIn, type PlatformAiTurnRouter } from "../engine/router";
 import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack, type ToolTier } from "../tools/contract";
 import { PLATFORM_AI_TOOL_REGISTRY, type LegacyToolContext, type PlatformAiTool } from "../tools/registry";
@@ -184,6 +191,13 @@ export interface TurnBoundary {
   adoptRecord(subject: { rk: string; rid: string }, areas: readonly PlatformArea[]): Promise<string | null>;
 }
 
+/**
+ * S2 09hu G1 — the metadata `refused` flag for a denial: every reason except UNKNOWN_TOOL (no such
+ * tool ⇒ "not_found") and ARGS_INVALID (already the INVALID_ARGS outcome). Never the reason itself.
+ */
+const refusedFlag = (reason: BoundaryDenialReason): { refused?: true } =>
+  (reason === "UNKNOWN_TOOL" || reason === "ARGS_INVALID" ? {} : { refused: true });
+
 const UNAVAILABLE_RESULT = Object.freeze({ status: "UNAVAILABLE" as const, records: Object.freeze([]) as readonly ModelRecord[], truncated: false });
 
 export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
@@ -224,7 +238,8 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     const refuse = (reason: BoundaryDenialReason): unknown => {
       denials.emit({ tool: toolCode, pack: packCode, reason });
       // The executor's own trace codes: the tool's name only when the executor would have known it.
-      c.ev.trace.push({ tool: (isRouted ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      // S2 09hu G1: a scope / pack / tier / handle refusal is flagged `refused` (metadata only; the model sees the same NOT_FOUND).
+      c.ev.trace.push({ tool: (isRouted ? tool!.name : "unknown") as PlatformAiTraceStep["tool"], outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [], ...refusedFlag(reason) });
       trace.push({ tool: toolCode, pack: packCode, outcome: reason });
       return NOT_FOUND;
     };
@@ -296,6 +311,12 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     if (tool.scope === "AGGREGATE") {
       const out = await tool.run(runArgs, ctx);
       trace.push({ tool: tool.name, pack: tool.pack, outcome: "OK" });
+      // S2 09io B1/B2: THIS call's own result, its allowlisted closed paths only, into THIS turn's evidence
+      // (compose/aggregate.ts) — the only thing {{a:<tool>|<path>}} fills from. The result itself is unchanged.
+      if (tool.placeablePaths?.length) {
+        c.ev.aggregates ??= new Map();
+        captureAggregateResult(c.ev.aggregates, tool.name, tool.placeablePaths, out);
+      }
       return out;
     }
     return runRecordTool(tool, runArgs, ctx, surviving, csFresh, fresh);
@@ -308,7 +329,7 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
   async function invokeMoreTools(rawArgs: string, c: Parameters<PlatformAiToolInvoker>[2]): Promise<unknown> {
     const refuse = (reason: BoundaryDenialReason): unknown => {
       denials.emit({ tool: MORE_TOOLS_NAME, pack: "router", reason });
-      c.ev.trace.push({ tool: "unknown", outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [] });
+      c.ev.trace.push({ tool: "unknown", outcome: reason === "ARGS_INVALID" ? "INVALID_ARGS" : "NOT_FOUND", refs: [], ...refusedFlag(reason) });
       trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: reason });
       return NOT_FOUND;
     };
@@ -334,6 +355,8 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     routed = [...routed, pack];
     expansions++;
     trace.push({ tool: MORE_TOOLS_NAME, pack: "router", outcome: "OK" });
+    // S2 09hu G1: the meta-tool's own metadata step (no ref, no argument), so the response trace counts it.
+    c.ev.trace.push({ tool: (MORE_TOOLS_NAME as string) as PlatformAiTraceStep["tool"], outcome: "OK", refs: [] });
     return { added: pack, tools: callable };
   }
 
@@ -388,10 +411,20 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
     // 12. handles minted; the record id stays here.
     const records: ModelRecord[] = kept.map((r) => {
       const handle = handles.mint({ kind: r.ref.kind, area: r.ref.area, tier: r.ref.tier, recordId: r.ref.recordId });
+      // S2 09io A1/A2: the schema's PLACEABLE closed fields with the non-null value THIS result gives the model
+      // (validated above against the schema; re-checked as a closed shape) — the only values {{r:h|<field>}} can fill.
+      const closed: Record<string, ClosedValue> = {};
+      for (const f of schema.placeable ?? []) {
+        const type = placeableTypeOf(schema, f);
+        const v = (r.fields as Readonly<Record<string, unknown>>)[f];
+        if (type && !(T2_FIELD_NAMES as readonly string[]).includes(f) && closedValueOk(type, v)) closed[f] = Object.freeze({ type, value: v });
+      }
       // P8: the record's CLOSED field values ride with the handle (compose/causal.ts reads a placed incident's causeStatus / cause).
       recordRefs.set(handle, Object.freeze({
-        rk: r.ref.kind, rid: r.ref.recordId, a: r.ref.area, fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])]),
+        rk: r.ref.kind, rid: r.ref.recordId, a: r.ref.area,
+        fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? []), ...Object.keys(closed)]),
         facts: Object.freeze({ ...withoutT2(r.fields) }),
+        closed: Object.freeze(closed),
       }));
       return {
         handle,

@@ -386,6 +386,16 @@ export const AuditAction = {
   // the incident `detail`, provider text or a customer id.
   SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
   SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
+  // Incident customer update (owner yes; S2 ruling 09gg (c)) — a Customer Success
+  // operator APPROVED one customer update for an incident, from
+  // POST /api/platform/customer-success/incidents/[id]/customer-update/send
+  // (lib/platform/incidents/customer-update/service.ts). Reason REQUIRED. Written
+  // BEFORE the notification is created (an approval whose send then fails stays
+  // on record; nothing is marked sent). Target = SYNC_INCIDENT (the incident id);
+  // the customer appears ONLY as a PRIV-ref (opaqueUserRef) in detail.recipientRef.
+  // NEVER the message text: its length and a hash only (paragraphLength,
+  // paragraphHash, draftHash, edited), plus the remedy class and verifiedRecovery.
+  INCIDENT_CUSTOMER_UPDATE_APPROVED: "INCIDENT_CUSTOMER_UPDATE_APPROVED",
 
   // B11 — Platform AI conversations (docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §7.5).
   // CREATED / DELETED: the operator's own conversation, written through
@@ -505,6 +515,13 @@ export const AuditAction = {
   // removed (lib/platform/customer/assign.ts; reason-required; change carries
   // the before/after USD figure, a policy value, never a balance).
   CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED: "CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED",
+  // PLATFORM AI CAPS D5 PR4 — a System Admin set (CHANGED) or removed (RESET) one
+  // operator's Platform AI daily $ override (PlatformAiOperatorCap; app/api/admin/
+  // platform-ai-caps). Reason-required. Target PLATFORM_AI_OPERATOR_CAP keyed by the
+  // PRIV-ref (opaqueUserRef), never the raw user id; detail = { targetRef, previous,
+  // next, selfEdit, reason } — policy figures, never a balance or a spend.
+  PLATFORM_AI_OPERATOR_CAP_CHANGED: "PLATFORM_AI_OPERATOR_CAP_CHANGED",
+  PLATFORM_AI_OPERATOR_CAP_RESET:   "PLATFORM_AI_OPERATOR_CAP_RESET",
   CUSTOMER_COHORT_ASSIGNED:        "CUSTOMER_COHORT_ASSIGNED",
   // BETA RECONCILIATION (owner ruling 2026-10-30) — a PLATFORM_OPS CONTROL
   // holder gave every ACTIVE customer with NO assignment the beta default
@@ -776,12 +793,16 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.WALLET_HISTORY_RESUMED,
   AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
   AuditAction.SYNC_INCIDENT_RESOLVED,
+  AuditAction.INCIDENT_CUSTOMER_UPDATE_APPROVED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  // Platform AI caps D5 PR4 — a System Admin's per-operator Platform AI $ override.
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_CHANGED,
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   // Beta reconciliation — the fleet-wide default-assignment run (counts only).
   AuditAction.CUSTOMER_POLICY_RECONCILED,

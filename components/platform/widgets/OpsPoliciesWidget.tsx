@@ -82,7 +82,7 @@ import { AiCostControlsPanel } from "./AiCostControlsPanel";
 import type { OperationalControlsReadModel } from "@/lib/platform/policies/operational-controls.types";
 import { MaintenanceModePanel } from "./MaintenanceModePanel";
 import { PlaidWebhookPanel } from "./PlaidWebhookPanel";
-import { platformViewTarget } from "@/lib/platform/workspaces";
+import { platformViewTarget, type PlatformSectionVariant } from "@/lib/platform/workspaces";
 import { PolicyGroupsPanel } from "./PolicyGroupsPanel";
 import type { PolicyGroupsResponse } from "@/app/api/platform/platform-ops/policy-groups/route";
 import {
@@ -563,7 +563,8 @@ export function PoliciesSurface({
  */
 export function OpsPoliciesWidget({ section, access, onOpenWorkspace, variant }: {
   section: PlatformSection; access?: { canControl: boolean }; onOpenWorkspace?: (workspaceId: string) => void;
-  variant?: PoliciesVariant;
+  /** A Policies slice; any other section variant (none is ever routed here) ⇒ the full host. */
+  variant?: PlatformSectionVariant;
 }) {
   if (variant === "groups") return <PolicyGroupsHost />;
   if (variant === "defaults") return <PoliciesDefaultsHost section={section} access={access} onOpenWorkspace={onOpenWorkspace} />;

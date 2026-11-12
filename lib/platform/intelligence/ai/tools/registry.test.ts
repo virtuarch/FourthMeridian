@@ -162,7 +162,9 @@ async function main() {
   console.log("\n6. static — tools/* is pure and declares no scope");
   {
     const files = readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${DIR}/${f}`);
-    check("tools/ is contract.ts + registry.ts", files.sort().join() === `${DIR}/contract.ts,${DIR}/registry.ts`, files);
+    // S2 09hu G1: + tool-trace.ts (the response's metadata-only tool trace; pinned by tool-trace.test.ts) — under the same purity checks below.
+    // B1: + figure-sources.ts (the response's metadata-only figure sources; pinned by figure-sources.test.ts) — same purity checks.
+    check("tools/ is contract.ts + figure-sources.ts + registry.ts + tool-trace.ts", files.sort().join() === `${DIR}/contract.ts,${DIR}/figure-sources.ts,${DIR}/registry.ts,${DIR}/tool-trace.ts`, files);
     for (const f of files) {
       const s = code(readFileSync(path.join(ROOT, f), "utf8"));
       check(`${f}: no db / prisma client / fetch / env / clock`, !/@\/lib\/db|systemDb|\bprisma\.|new PrismaClient|\bfetch\(|@\/lib\/env|process\.env|new Date\(|Date\.now/.test(s));

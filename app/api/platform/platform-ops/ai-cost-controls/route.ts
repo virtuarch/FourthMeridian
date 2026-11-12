@@ -36,6 +36,11 @@ import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit"
 import { applyAiCostControlChanges, loadAiCostControlsReadModel, type AiCostControlsMutationResult } from "@/lib/platform/ai/cost-controls";
 import { AI_COST_CONTROL_KEYS, type AiCostControlsReadModel, type AiCostControlsRefusal } from "@/lib/platform/ai/cost-controls.types";
 import { recordControlRefusal } from "@/lib/platform/control-refusal";
+import { loadPlatformAiBlanketCapsSummary } from "@/lib/platform/ai/platform-ai-caps-admin";
+import { platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
+import { loadPlatformAiFleetUsageToday } from "@/lib/platform/ai/platform-ai-usage-today";
+import { platformAiManageLimitsHref } from "@/lib/platform/ai/platform-ai-usage-today.core";
+import { adminApiAccess, type SessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -43,10 +48,37 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 export type AiCostControlsResponse = AiCostControlsReadModel;
 
+/**
+ * PLATFORM AI CAPS D5 PR5 — the READ-ONLY "Platform AI (operators)" card: the two
+ * blanket caps and their sources (never the per-operator list), appended to every
+ * model this route returns so a PATCH reply does not drop the card. A read failure
+ * yields null (the card says "not available"); it never fails the cost controls.
+ * Nothing here writes a cap: those are SYSTEM_ADMIN-only at /api/admin/platform-ai-caps.
+ *
+ * PLATFORM AI COST MANAGEMENT — also appends today's ESTIMATED Platform AI usage:
+ * platform totals, by model, by feature, COUNTS of people at their limit, and the
+ * VIEWER's own figures (`self`). No other person's identity or figures; a read
+ * failure yields null ("not available").
+ *
+ * The "Manage limits" link (platformAiManageLimitsHref) is decided HERE, from the
+ * session, with the same admin-access rule /api/admin/platform-ai-caps enforces
+ * (adminApiAccess → requireSystemAdmin). Everyone else gets null: no link, no href.
+ * The link grants nothing; the caps page and its API keep their own guards.
+ */
+async function withPlatformAiCaps(model: AiCostControlsReadModel, viewer: SessionUser): Promise<AiCostControlsReadModel> {
+  const aiModel = platformAiModel().model;
+  const viewerId = viewer.id;
+  const [platformAiCaps, platformAiUsageToday] = await Promise.all([
+    loadPlatformAiBlanketCapsSummary(aiModel).catch(() => null),
+    loadPlatformAiFleetUsageToday(aiModel, viewerId),
+  ]);
+  return { ...model, platformAiCaps, platformAiUsageToday, platformAiManageLimitsHref: platformAiManageLimitsHref(adminApiAccess(viewer)) };
+}
+
 export async function GET() {
-  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
+  const [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
-  const model = await loadAiCostControlsReadModel();
+  const model = await withPlatformAiCaps(await loadAiCostControlsReadModel(), auth.user);
   return NextResponse.json(model satisfies AiCostControlsResponse, { headers: NO_STORE });
 }
 
@@ -87,10 +119,12 @@ export async function PATCH(req: NextRequest) {
   try { reason = parseOperatorReason(body.reason); }
   catch (e) { return refuse(NextResponse.json({ error: e instanceof OperatorActionValidationError ? e.message : "A reason is required." }, { status: 400, headers: NO_STORE }), "VALIDATION"); }
 
-  const result = await applyAiCostControlChanges({
+  const applied = await applyAiCostControlChanges({
     changes: body.changes,
     reason,
     actor: { id: auth.user.id, ...meta },
   });
+  // D5 PR5 — the reply (applied or refused) carries the same read-only caps card as GET.
+  const result = { ...applied, model: await withPlatformAiCaps(applied.model, auth.user) } as AiCostControlsMutationResult;
   return result.ok ? respond(result) : refuse(respond(result), result.code, result.control);
 }

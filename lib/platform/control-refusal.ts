@@ -47,9 +47,11 @@ export async function recordControlRefusal(
   refusal: ControlRefusal,
   req: ControlRefusalRequest = {},
   client: OperatorActionWriteClient = systemDb,
+  /** The operator area the refused route belongs to (default PLATFORM_OPS — every control before the CS incident update). */
+  area: "PLATFORM_OPS" | "CUSTOMER_SUCCESS" = "PLATFORM_OPS",
 ): Promise<void> {
   try {
-    const input = buildControlRefusalInput(operatorActorFrom(auth, "PLATFORM_OPS"), refusal, req);
+    const input = buildControlRefusalInput(operatorActorFrom(auth, area), refusal, req);
     await client.auditLog.create({ data: buildOperatorActionData(input) });
   } catch (error) {
     console.error("[control-refusal] audit write failed:", error instanceof Error ? error.message : "unknown error");

@@ -250,6 +250,19 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
     ],
   },
   {
+    key: "platform-ai-caps",
+    label: "Set the Platform AI daily $ caps — blanket values and per-operator overrides",
+    status: "SHIPPED",
+    capability: "SYSTEM_ADMIN",
+    rationale:
+      "A spend guardrail over the operators' own AI (S2 09fb C1). An operator who " +
+      "could raise their own cap would hold the guardrail they are bound by, so no " +
+      "platform grant reaches it: SYSTEM_ADMIN only, fresh auth on every write, one " +
+      "reason-required audited action per request (D5 PR4). The caps only ever " +
+      "refuse turns; PLATFORM_AI_ENABLED still decides whether Platform AI runs.",
+    routes: ["app/api/admin/platform-ai-caps/route.ts"],
+  },
+  {
     key: "emergency-administration",
     label: "Emergency administration — the DISABLE_SYSTEM_ADMIN kill switch, break-glass",
     status: "SHIPPED",

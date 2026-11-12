@@ -174,6 +174,24 @@ export function buildOccurrenceEvidenceSummary(i: OccurrenceEvidenceSummary): Oc
 }
 
 /**
+ * Incident drawer PR-A — the READ side of the occurrence summary: the select an
+ * investigation uses for its newest occurrence, and the reshaper of that row.
+ * A stored value is never trusted: only `jobName` / `jobRunId` strings survive
+ * (capped like the builder), and a summary naming no job is "no component".
+ */
+export const OCCURRENCE_COMPONENT_SELECT = { evidenceSummary: true } as const;
+
+export function occurrenceComponentOfRow(row: unknown): { jobName: string; jobRunId: string | null } | null {
+  if (typeof row !== "object" || row === null) return null;
+  const s = (row as { evidenceSummary?: unknown }).evidenceSummary;
+  if (typeof s !== "object" || s === null || Array.isArray(s)) return null;
+  const e = s as Record<string, unknown>;
+  const str = (x: unknown) => (typeof x === "string" && x !== "" ? x.slice(0, 128) : null);
+  const jobName = str(e.jobName);
+  return jobName ? { jobName, jobRunId: str(e.jobRunId) } : null;
+}
+
+/**
  * Re-shape a STORED resolutionEvidence through the typed builder before it is
  * copied anywhere (the archive). Anything that does not conform is dropped to
  * null — a stored value is never trusted to be allowlist-only.

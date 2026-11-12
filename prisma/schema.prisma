@@ -493,6 +493,11 @@ model User {
   // Platform AI operational memory (Preview only; S2-approved design v2). Operator-private:
   // owner + ACTIVE-grant RLS, no fm_system table path. Cascade on account purge.
   platformAiMemoryFacts       PlatformAiMemoryFact[]   @relation("PlatformAiMemoryOwner")
+  // Platform AI per-operator daily cap (D5 PR3; fm_system only, nothing reads it yet).
+  // The subject's own row cascades on account purge; a cap SET BY this user on
+  // someone else's row keeps the row and nulls updatedById (SetNull).
+  platformAiOperatorCap       PlatformAiOperatorCap?   @relation("PlatformAiOperatorCapSubject")
+  platformAiOperatorCapsSet   PlatformAiOperatorCap[]  @relation("PlatformAiOperatorCapUpdatedBy")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4203,6 +4208,14 @@ model CommsDelivery {
   // carried forward on a later COMPLAINED / BOUNCED row of the same message.
   // Never set by a send: ACCEPTED is not delivered.
   deliveredAt         DateTime?
+  // Incident customer update (S2 09gg c / 09gh) — the Platform Ops incident
+  // (SyncIssue.id) an operator-approved customer update belongs to. SOFT ref:
+  // no FK (an incident is archived and pruned on its own clock; this ledger row
+  // must outlive neither more nor less than its 90 days). Never rendered to a
+  // customer. Set only by the INCIDENT_CUSTOMER_UPDATE send (createNotification
+  // ledgerTag). NO index (09gh): the per-incident read is bounded first by
+  // @@index([recipientUserId, createdAt]) — the incident's own subject and window.
+  incidentId          String?
   createdAt           DateTime  @default(now())
 
   @@index([createdAt])
@@ -5419,4 +5432,29 @@ model PlatformAiMemoryFact {
   @@index([operatorUserId, platformArea, deletedAt, expiresAt])
   @@index([expiresAt])
   @@index([deletedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM AI PER-OPERATOR CAP (D5 PR3, S2-approved plan 09fb)
+//
+// One row per operator: a whole-USD daily Platform AI spend cap that overrides
+// the platform-wide per-operator setting. Migration
+// 20261111120000_platform_ai_operator_cap. ADDITIVE; nothing reads it yet.
+// fm_system ONLY (SELECT, INSERT, UPDATE, DELETE) + fm_backup SELECT; RLS
+// ENABLE + FORCE; fm_app / fm_auth hold nothing. CHECK 0 <= dailyUsd <= 20
+// (S2 R4 ceiling = PLATFORM_AI_OPERATOR_CAP_CEILING_USD).
+// ─────────────────────────────────────────────────────────────────────────────
+model PlatformAiOperatorCap {
+  /// The capped operator. Cascade: the cap dies with the account.
+  userId      String   @id
+  user        User     @relation("PlatformAiOperatorCapSubject", fields: [userId], references: [id], onDelete: Cascade)
+  /// Whole USD per UTC day, 0..20 (DB CHECK).
+  dailyUsd    Int
+  /// SYSTEM_ADMIN who last set the cap. SetNull: the row survives that admin's purge.
+  updatedById String?
+  updatedBy   User?    @relation("PlatformAiOperatorCapUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([updatedById])
 }

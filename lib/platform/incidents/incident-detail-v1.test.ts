@@ -216,7 +216,7 @@ async function main(): Promise<void> {
   check("diagnosis: verified code + attempts summary (3 failed, 0 succeeded)",
     d.diagnosis.providerErrorCode === "NO_ACCOUNTS" && d.diagnosis.attempts?.counts.failed === 3 && d.diagnosis.attempts.counts.succeeded === 0 && d.diagnosis.attempts.recent[0].httpStatus === 400);
   const g = primaryGuidance(d, explainProviderError("NO_ACCOUNTS").customerAction);
-  check("primary guidance = customer reconnect (text, with why no resync)", g?.headline === "Customer must reconnect" && /re-select the accounts/.test(g.body) && /resync can't fix/.test(g.caveat ?? ""));
+  check("primary guidance = customer reconnect (text, with why no resync)", g?.headline === "Customer must reconnect" && /re-select the accounts/.test(g.body) && /server retry can't fix this/.test(g.caveat ?? ""));
   const html = renderToStaticMarkup(createElement(IncidentDetailSurface, { d, canWrite: true, onSelect: () => {}, onRecover: () => {}, onLifecycle: () => {} }));
   check("drawer: status pill 'Action needed' first, impact line, guidance block", /data-status-pill[^>]*>.*Action needed/.test(html) && html.includes("data-incident-impact") && html.includes('data-incident-guidance="customer-reconnect"')
     && html.indexOf("data-status-pill") < html.indexOf("data-incident-guidance") && html.indexOf("data-incident-guidance") < html.indexOf("data-incident-diagnosis"));
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
   }
   check("control: CS tier names the customer", JSON.stringify(incidentDetailDTO(csInv!, "cs", NOW)).includes(ITEM.userId));
   const keys = Object.keys(d).sort().join();
-  check("detail DTO keys are exactly the allowlist", keys === "affected,archive,checkedAt,diagnosis,evidence,incident,lifecycleActions,recovery,recurrences,recurrencesTruncated,related,resolutionReasonCode,summary,tier,timeline", keys);
+  check("detail DTO keys are exactly the allowlist", keys === "affected,archive,checkedAt,component,diagnosis,evidence,incident,lifecycleActions,recovery,recurrences,recurrencesTruncated,related,resolutionReasonCode,summary,tier,timeline", keys);
   check("summary / diagnosis keys are exactly the allowlist",
     Object.keys(d.summary).sort().join() === "customerActionRequired,displayStatus,firstDetectedAt,lastObservedAt,ongoing,remedy,resolvedAt"
     && Object.keys(d.diagnosis).sort().join() === "attempts,providerErrorCode,providerErrorSource,providerErrorUnrecognised,recurrence");

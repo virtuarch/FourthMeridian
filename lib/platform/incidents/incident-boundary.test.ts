@@ -456,15 +456,62 @@ function main() {
     // THE MUTATION-ROUTE PIN: every mutating incident route is fresh WRITE+ on PLATFORM_OPS, rate-limited,
     // mints its Ops token from that guard, and writes ONLY through the audited lifecycle transition.
     const incidentRoutes = walk("app/api/platform").filter((f) => /\/(incidents|sync-issues)(\/|$)/.test(f) && f.endsWith("route.ts"));
-    const mutating = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
-    check("the mutating incident routes are exactly acknowledge + resolve under platform-ops",
+    const posting = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
+    // S2 ruling 09gg (d) — the drawer's Platform AI ASSESSMENT: exactly one POST per tier. It spends (one
+    // Platform AI turn) but NEVER changes incident state, so it is not a mutation: named here, and pinned
+    // below to a fresh READ guard on its own area, the limiter, and no SyncIssue / lifecycle / direct DB / direct
+    // audit write in the route. Its ONLY writes are the Platform AI turn-ledger rows and, on the CS tier, the
+    // PLATFORM_AI_RECORD_VIEWED audit the governed tool boundary records (S2 09he Q1).
+    const AI_ASSESSMENT = [
+      "app/api/platform/customer-success/incidents/[id]/assessment/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/assessment/route.ts",
+    ];
+    check("the assessment POSTs are exactly the two named routes, each POST only",
+      JSON.stringify(posting.filter((f) => /\/assessment\/route\.ts$/.test(f)).sort()) === JSON.stringify(AI_ASSESSMENT)
+      && AI_ASSESSMENT.every((f) => !/export\s+(async\s+)?(function|const)\s+(PUT|PATCH|DELETE|GET)\b/.test(code(f))));
+    for (const f of AI_ASSESSMENT) {
+      const s2 = code(f);
+      const area = f.includes("/customer-success/") ? "CUSTOMER_SUCCESS" : "PLATFORM_OPS";
+      const other = area === "CUSTOMER_SUCCESS" ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";
+      check(`${f}: fresh ${area} READ on its own area (never the other area, never a stale guard)`,
+        s2.includes(`const [auth, err] = await requireFreshPlatformAccess("${area}", "READ");`) && !/requirePlatformAccess\(/.test(s2) && !s2.includes(`"${other}"`));
+      check(`${f}: the #352 per-operator limiter, after the guard`,
+        /const limited = await limitPlatformMutation\(auth\.user\.id, "(cs-)?incident-ai-assessment"\);\s*if \(limited\) return limited;/.test(s2)
+        && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
+      check(`${f}: never touches incident state (no SyncIssue / lifecycle / direct DB / direct audit write in the route; only turn-ledger rows + the boundary RECORD_VIEWED audit on CS)`,
+        !/syncIssue\.|auditLog\.|systemDb|applyOperatorTransition|runIncidentOperatorAction|lifecycleState/.test(s2));
+    }
+    const mutating = posting.filter((f) => !AI_ASSESSMENT.includes(f));
+    // S2 ruling 09gg (c) (owner yes 2026-11-11): Customer Success gains exactly two POSTs — the
+    // customer-update preview and the approve-and-send. They message a CUSTOMER; they never change
+    // incident state (pinned below). Incident LIFECYCLE mutations stay acknowledge + resolve, Ops only.
+    const CS_CUSTOMER_UPDATE = [
+      "app/api/platform/customer-success/incidents/[id]/customer-update/preview/route.ts",
+      "app/api/platform/customer-success/incidents/[id]/customer-update/send/route.ts",
+    ];
+    check("the mutating incident routes are exactly acknowledge + resolve under platform-ops, plus the CS customer-update preview + send",
       JSON.stringify(mutating.sort()) === JSON.stringify([
+        ...CS_CUSTOMER_UPDATE,
         "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
         "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
       ]), mutating.join(", "));
-    check("Customer Success has NO mutating incident route (CS is read-only)",
-      !mutating.some((f) => f.startsWith("app/api/platform/customer-success/")));
-    for (const f of mutating) {
+    check("Customer Success has NO incident-STATE mutation (its only POSTs are the customer update)",
+      mutating.filter((f) => f.startsWith("app/api/platform/customer-success/")).every((f) => CS_CUSTOMER_UPDATE.includes(f)));
+    for (const f of CS_CUSTOMER_UPDATE) {
+      const s2 = code(f);
+      check(`${f}: fresh CUSTOMER_SUCCESS WRITE — never a plain/stale guard, never Ops`,
+        /const \[auth, err\] = await requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "WRITE"\)/.test(s2) && !/requirePlatformAccess\(|PLATFORM_OPS/.test(s2));
+      check(`${f}: the #352 per-operator limiter, after the guard`,
+        /const limited = await limitPlatformMutation\(auth\.user\.id, "cs-incident-customer-update-(preview|send)"\);\s*if \(limited\) return limited;/.test(s2)
+        && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
+      check(`${f}: token minted from the guard and required to be the CS tier`, /const token = incidentAudienceFor\(auth\);/.test(s2) && /token\.audience !== "CUSTOMER_SUCCESS"/.test(s2));
+      check(`${f}: never touches incident state (no SyncIssue / lifecycle / direct DB)`,
+        !/syncIssue\.|auditLog\.|systemDb|applyOperatorTransition|runIncidentOperatorAction/.test(s2));
+    }
+    const customerUpdateLib = walk("lib/platform/incidents/customer-update").filter((f) => !/\.test\.ts$/.test(f));
+    check("lib/platform/incidents/customer-update/ never writes a SyncIssue or runs a lifecycle transition",
+      customerUpdateLib.length > 0 && customerUpdateLib.every((f) => !/syncIssue\.|applyOperatorTransition|lifecycleState/.test(code(f))), customerUpdateLib.join(", "));
+    for (const f of mutating.filter((x) => !CS_CUSTOMER_UPDATE.includes(x))) {
       const s2 = code(f);
       check(`${f}: fresh PLATFORM_OPS WRITE (S2 ruling) — never a plain/stale guard`,
         /const \[auth, err\] = await requireFreshPlatformAccess\("PLATFORM_OPS", "(WRITE|CONTROL)"\)/.test(s2) && !/requirePlatformAccess\(/.test(s2));
@@ -491,7 +538,7 @@ function main() {
     check("applyOperatorTransition is called only by the operator-route runner",
       callers.join() === "lib/platform/incidents/operator-route.ts", callers.join(", "));
     const runnerCallers = prod.filter((f) => /runIncidentOperatorAction\(/.test(code(f)) && f !== "lib/platform/incidents/operator-route.ts").sort();
-    check("…and the runner only by the two Platform Ops routes", JSON.stringify(runnerCallers) === JSON.stringify(mutating.sort()), runnerCallers.join(", "));
+    check("…and the runner only by the two Platform Ops routes", JSON.stringify(runnerCallers) === JSON.stringify(mutating.filter((x) => !CS_CUSTOMER_UPDATE.includes(x)).sort()), runnerCallers.join(", "));
   }
 
   if (failures > 0) {

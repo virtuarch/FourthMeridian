@@ -427,6 +427,7 @@ export function PlatformWorkspaceBody({
   access = READ_ONLY_ACCESS,
   lead,
   hosted = NO_HOSTED_KEYS,
+  hostedPanels,
   viewId,
 }: {
   sectionKeys: readonly PlatformViewSection[];
@@ -441,6 +442,8 @@ export function PlatformWorkspaceBody({
   lead?:       PlatformViewLead;
   /** The view's HOSTED keys — rendered only when the lead asks (drawers / detail). */
   hosted?:     readonly string[];
+  /** Incident drawer PR-A — keys rendered ONLY as a panel in exactly the named variant (not composed). */
+  hostedPanels?: Readonly<Record<string, PlatformSectionVariant>>;
   /** PB-1 2B — the open view's id, for a lead shared by several views (the incidents presets). */
   viewId?:     string;
 }) {
@@ -452,10 +455,14 @@ export function PlatformWorkspaceBody({
   // plane flags, reasons, confirmations) stays inside the widget, unchanged.
   // A key outside this view's `hosted`, without an enabled row, or without a
   // widget renders nothing (fails safe, like an inline section).
+  // A PANEL-only key (hostedPanels) renders only in its one named variant — never the full widget.
+  const panelOnly = (key: string): boolean => !hosted.includes(key) && hostedPanels?.[key] != null;
   const hasHosted = (key: string): boolean =>
-    hosted.includes(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null;
+    (hosted.includes(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null)
+    || (panelOnly(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null);
   const renderHosted: RenderHosted = (key, onOpenWorkspace, variant) => {
     if (!hasHosted(key)) return null;
+    if (panelOnly(key) && variant !== hostedPanels![key]) return null;
     const row = dbByKey.get(key)!;
     const Widget = PLATFORM_WIDGET_REGISTRY[key];
     // A variant rides only where the lead asks for one (the Policies drawers),
@@ -715,6 +722,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
             onOpen={setActiveTab}
             lead={activeViewDef?.lead}
             hosted={activeViewDef?.hosted}
+            hostedPanels={activeViewDef?.hostedPanels}
             viewId={activeViewDef?.id}
           />
         </div>

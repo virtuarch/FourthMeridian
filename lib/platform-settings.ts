@@ -338,18 +338,23 @@ const aiCostBoolean = (
 /**
  * PLATFORM AI CAPS D5 PR2 — a blanket Platform AI daily $ cap. SECURITY_SENSITIVE
  * (a spend guardrail): that class can never carry a PLATFORM_OPS surface (pinned in
- * platform-settings.test.ts). NO write surface at all — so no route, the admin
- * security console included (its allow-list is the ADMIN_SECURITY surface), can
- * write it; the later SA-only /admin action adds its own surface deliberately.
- * ABSENT_MEANS_OFF with an empty default: absence is "not set", never a value.
- * Integer ≥ 0; the ceiling is the resolver's, not the descriptor's.
+ * platform-settings.test.ts). NO generic write surface — so no surface-derived route,
+ * the admin security console included (its allow-list is the ADMIN_SECURITY surface),
+ * can write it. D5 PR4: its ONE writer is the SA-only service
+ * lib/platform/ai/platform-ai-caps-admin.ts (app/api/admin/platform-ai-caps), which
+ * names the two keys itself. ABSENT_MEANS_OFF with an empty default: absence is
+ * "not set", never a value. Integer 0..max, where max = the resolver's code ceiling
+ * (S2 R4: refused at this single writer, not only clamped at read; the literals are
+ * pinned equal to platform-ai-spend.core's ceilings by platform-settings.test.ts).
+ * Resettable (D5 PR4): clearing the value deletes the row, back to "not set".
  */
-const platformAiCap = (key: PlatformSettingKeyType, label: string, description: string): Descriptor => ({
+export const PLATFORM_AI_CAP_SETTING_MAX_USD = Object.freeze({ perOperator: 20, platform: 100 });
+const platformAiCap = (key: PlatformSettingKeyType, label: string, description: string, max: number): Descriptor => ({
   key, label, description,
-  class: "SECURITY_SENSITIVE", valueType: "integer", min: 0,
+  class: "SECURITY_SENSITIVE", valueType: "integer", min: 0, max,
   default: DEFAULTS[key], missingRow: "ABSENT_MEANS_OFF",
   writeSurfaces: [], writeCapability: "SYSTEM_ADMIN",
-  operatorConfigurable: false, resettable: false,
+  operatorConfigurable: false, resettable: true,
 });
 
 /**
@@ -492,10 +497,12 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   platform_ai_daily_usd_per_operator: platformAiCap(
     "platform_ai_daily_usd_per_operator", "Platform AI daily cap — per operator (USD / UTC day)",
     "The estimated Platform AI spend one operator may reach in a UTC day before their next turn is refused. Whole dollars; 0 refuses every turn. Absent means not set: the deployment's environment value applies, then (Preview / development only) a test default; Production with nothing set refuses. Clamped to the code ceiling.",
+    PLATFORM_AI_CAP_SETTING_MAX_USD.perOperator,
   ),
   platform_ai_daily_usd_platform: platformAiCap(
     "platform_ai_daily_usd_platform", "Platform AI daily cap — platform (USD / UTC day)",
     "The estimated Platform AI spend across every operator in a UTC day before the next turn is refused. Whole dollars; 0 refuses every turn. Absent means not set: the deployment's environment value applies, then (Preview / development only) a test default; Production with nothing set refuses. Clamped to the code ceiling.",
+    PLATFORM_AI_CAP_SETTING_MAX_USD.platform,
   ),
 };
 

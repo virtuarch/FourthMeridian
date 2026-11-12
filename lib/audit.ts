@@ -219,7 +219,9 @@ export type OperatorTargetKind =
   // B11 — one operator's own Platform AI conversation (its id): create / delete. Never content.
   | "PLATFORM_AI_CONVERSATION"
   // Platform AI operational memory — one operator's own fact (its id; "all" / "aggregate" for bulk rows). Never a note or ref id.
-  | "PLATFORM_AI_MEMORY";
+  | "PLATFORM_AI_MEMORY"
+  // Platform AI caps D5 PR4 — one operator's Platform AI $ override, keyed by the PRIV-ref (opaqueUserRef), never the raw id.
+  | "PLATFORM_AI_OPERATOR_CAP";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -241,6 +243,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.CUSTOMER_POLICY_ASSIGNED,
   AuditAction.CUSTOMER_POLICY_OVERLAY_CHANGED,
   AuditAction.CUSTOMER_AI_ALLOWANCE_OVERRIDE_CHANGED,
+  // Platform AI caps D5 PR4 — setting or removing an operator's Platform AI $ override.
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_CHANGED,
+  AuditAction.PLATFORM_AI_OPERATOR_CAP_RESET,
   AuditAction.CUSTOMER_COHORT_ASSIGNED,
   // Beta reconciliation — creates the default assignment for every active
   // unassigned customer at once; consequential, so it carries a reason.
@@ -292,6 +297,9 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // `resolved`) shows; both carry a reason.
   AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
   AuditAction.SYNC_INCIDENT_RESOLVED,
+  // Incident customer update (S2 09gg c) — approving a message to a customer is
+  // consequential (it is sent in the platform's name); reason required.
+  AuditAction.INCIDENT_CUSTOMER_UPDATE_APPROVED,
   // SEC-PLAT-2 — platform-wide signup / product switches, revoking a sent
   // invitation, and cross-tenant merchant merge decisions are consequential and
   // now carry a reason. Approve / deny / resend / direct invite stay

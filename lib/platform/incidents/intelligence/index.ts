@@ -30,7 +30,7 @@ import { systemDb } from "@/lib/db";
 import { latestStageAttemptsBySubject, recentItemAttempts } from "@/lib/platform/refresh/projections";
 import { allowlistedProviderCode, isUnrecognisedProviderCode, providerErrorCodeOfDetail } from "../explanations";
 import { ATTEMPTS_READ_CAP, summariseAttempts, unreadableAttempts } from "../attempts-summary";
-import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
+import { EVIDENCE_DIGEST_SELECT, OCCURRENCE_COMPONENT_SELECT, evidenceDigestOf, occurrenceComponentOfRow } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
 import { criticalCapableKinds, deriveIncidentVerdicts, operationOf } from "./core";
@@ -46,6 +46,7 @@ import {
   timelineEventOf,
 } from "./search-core";
 import { isRegistryCode } from "../codes";
+import { jobCommandForJob } from "../job-commands";
 import { attemptEndpointsFor, isPastStaleWindow, UNKNOWN_EVIDENCE } from "./staleness";
 import type {
   ArchivedIncidentFacts,
@@ -56,6 +57,7 @@ import type {
   IncidentFacts,
   IncidentInvestigation,
   IncidentLink,
+  IncidentOccurrenceComponent,
   IncidentRowFacts,
   IncidentSearchQuery,
   IncidentTimeline,
@@ -441,7 +443,7 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
       const accountId = row?.financialAccountId ?? arch?.financialAccountId ?? null;
       const incidentKey = row?.incidentKey ?? arch?.incidentKey ?? null;
 
-      const [events, archiveExtra, relationsRaw, items, occAccounts] = await Promise.all([
+      const [events, archiveExtra, relationsRaw, items, occAccounts, component] = await Promise.all([
         row
           ? client.syncIssueEvent.findMany({ where: { incidentId: id }, orderBy: [{ at: "desc" }, { id: "desc" }], take: TIMELINE_READ_CAP + 1, select: EVENT_SELECT })
           : Promise.resolve(null),
@@ -454,6 +456,8 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
         }),
         itemId ? client.plaidItem.findMany({ where: { id: { in: [itemId] } }, select: { id: true, institutionName: true, status: true, errorCode: true } }) : Promise.resolve([]),
         row && itemId && !accountId ? loadOccurrenceAccounts([id], client) : Promise.resolve(new Map<string, string[]>()),
+        // Incident drawer PR-A — the newest occurrence's job (live rows only; an archive keeps no occurrences).
+        row ? newestOccurrenceComponent(id, client) : Promise.resolve(null),
       ]);
 
       // Timeline — newest TIMELINE_READ_CAP read, then rendered OLDEST FIRST, each row field-for-field.
@@ -537,10 +541,35 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
         archive: { archived: verdict.state === "archived", archivedAt, ...archiveDates({ resolvedAt: verdict.resolvedAt, archivedAt }) },
         providerError,
         attempts,
+        component,
       };
       return out;
     },
   };
+}
+
+/**
+ * Incident drawer PR-A — the job facts of incident `id`'s NEWEST occurrence,
+ * from its frozen evidence summary (one row, one JSON column; read and reshaped
+ * through evidence.ts — only `jobName` / `jobRunId` strings survive, and the
+ * DTO words and allowlists them). Never throws — an unreadable read is "no
+ * component", never a hidden incident.
+ */
+export async function newestOccurrenceComponent(
+  id: string,
+  client: Pick<IncidentFactsReader, "syncIssueOccurrence">,
+): Promise<IncidentOccurrenceComponent | null> {
+  try {
+    const rows = await client.syncIssueOccurrence.findMany({
+      where: { syncIssueId: id },
+      orderBy: [{ observedAt: "desc" }, { id: "desc" }],
+      take: 1,
+      select: OCCURRENCE_COMPONENT_SELECT,
+    });
+    return occurrenceComponentOfRow(rows[0] ?? null);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -561,6 +590,29 @@ export async function incidentBelongsToItem(
     return row !== null && row.plaidItemId === plaidItemId;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Incident drawer PR-B (S2 09gg b) — the registered operations command incident
+ * `incidentId`'s OWN evidence maps to: the incident must exist (one primary-key
+ * read), and its newest occurrence's job (newestOccurrenceComponent) must map
+ * through job-commands.ts. Null otherwise. The operations route records the
+ * incident id ONLY when this equals the command it ran (action-context.ts
+ * verifiedJobIncidentId). Decides nothing about open/closed. Never throws.
+ */
+export async function incidentJobCommandId(
+  incidentId: string,
+  client: { syncIssue: Pick<Db["syncIssue"], "findUnique"> } & Pick<IncidentFactsReader, "syncIssueOccurrence"> = systemDb,
+): Promise<string | null> {
+  if (!INCIDENT_ID.test(incidentId)) return null;
+  try {
+    const row = await client.syncIssue.findUnique({ where: { id: incidentId }, select: { id: true } });
+    if (!row) return null;
+    const component = await newestOccurrenceComponent(incidentId, client);
+    return jobCommandForJob(component?.jobName ?? null)?.commandId ?? null;
+  } catch {
+    return null;
   }
 }
 

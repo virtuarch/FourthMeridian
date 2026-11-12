@@ -3,10 +3,11 @@
  *
  * 1. precedence matrix: OPERATOR_OVERRIDE > PLATFORM_SETTING > ENV > TEST_DEFAULT (preview/dev) > REFUSE
  *    for the operator cap; PLATFORM_SETTING > ENV > TEST_DEFAULT > REFUSE for the platform cap;
- * 2. a present but invalid SETTING refuses CAP_INVALID (S2 R2, 09fp); an invalid override is
- *    still skipped (no override source yet; R2 applies to it in PR4); null = absent = not set;
+ * 2. a present but invalid SETTING refuses CAP_INVALID (S2 R2, 09fp); since D5 PR4 a present
+ *    invalid OVERRIDE refuses CAP_INVALID OPERATOR too (S2 09fq); null = absent = not set;
  * 3. 0 is a cap of 0 (every turn refused), never "unlimited";
- * 4. the code ceilings ($20 / $100) clamp EVERY source with the clamped flag — ENV too
+ * 4. the code ceilings ($20 / $100) clamp SETTING / ENV / TEST_DEFAULT with the clamped flag — ENV too
+ *    since D5 PR2 (S2 E1); an OVERRIDE above the ceiling refuses CAP_INVALID instead (Q2, S2 09fu);
  *    since D5 PR2 (S2 E1); an INVALID env refuses even when a higher source wins (S2 E2);
  * 5. the test default is preview/development only; Production with nothing set ⇒ CAP_MISSING;
  * 6. equivalence: env-only resolution equals the PRE-D5 resolver, a frozen copy below,
@@ -21,7 +22,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   PLATFORM_AI_OPERATOR_CAP_CEILING_USD, PLATFORM_AI_PLATFORM_CAP_CEILING_USD, PLATFORM_AI_SPEND_TEST_DEFAULTS,
-  envOnlyCapsInput, platformAiSpendDecision, resolvePlatformAiCaps, resolvePlatformAiSpendCaps, toResolvedCaps,
+  capSettingUsdOf, envOnlyCapsInput, parseOperatorCapRow, platformAiSpendDecision, platformAiTurnsThatFit, resolvePlatformAiCaps, resolvePlatformAiSpendCaps, toResolvedCaps,
   type CapInputs, type PlatformAiCapOutcome, type PlatformAiCapsInput, type ResolvedCaps,
 } from "./platform-ai-spend.core";
 
@@ -111,7 +112,7 @@ function main() {
     check("an INVALID env value with no higher source still refuses CAP_INVALID", (() => { const r = resolvePlatformAiCaps(input({ operatorRaw: "5.", vercelEnv: "preview" })); return refused(r.operator, "CAP_INVALID"); })());
   }
 
-  console.log("2. a present but invalid SETTING refuses CAP_INVALID (S2 R2); an invalid override is skipped (PR4: R2)");
+  console.log("2. a present but invalid SETTING or OVERRIDE refuses CAP_INVALID (S2 R2; override D5 PR4, S2 09fq)");
   {
     const bad: unknown[] = [-1, 1.5, 0.01, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.5];
     for (const v of bad) {
@@ -121,12 +122,13 @@ function main() {
       const pl = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", settingPlatformUsd: v as number }));
       check(`R2: platform setting ${String(v)} ⇒ CAP_INVALID for PLATFORM (env 70 does NOT rescue it); operator unaffected`,
         refused(pl.platform, "CAP_INVALID") && is(pl.operator, 7, "ENV") && (() => { const c = toResolvedCaps(pl); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "PLATFORM"; })(), pl);
-      // Overrides: unchanged skip semantics until PR4 (no override source exists yet).
+      // D5 PR4 (S2 09fq): a present invalid override refuses CAP_INVALID OPERATOR; platform unaffected.
       const ov = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: v as number }));
-      check(`override ${String(v)} still skipped ⇒ ENV wins (TODO PR4: R2)`, is(ov.operator, 7, "ENV"), ov.operator);
+      check(`R2 override ${String(v)} ⇒ CAP_INVALID for OPERATOR (env 7 does NOT rescue it); platform unaffected`,
+        refused(ov.operator, "CAP_INVALID") && is(ov.platform, 70, "ENV") && (() => { const c = toResolvedCaps(ov); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "OPERATOR"; })(), ov);
     }
     const r = resolvePlatformAiCaps(input({ operatorRaw: "7", operatorOverrideUsd: 2.5, settingPerOperatorUsd: 4 }));
-    check("an invalid override falls through to a valid setting", is(r.operator, 4, "PLATFORM_SETTING"), r.operator);
+    check("D5 PR4: an invalid override does NOT fall through to a valid setting ⇒ CAP_INVALID", refused(r.operator, "CAP_INVALID"), r.operator);
     check("R2: an invalid setting refuses even when a valid override would win", (() => { const x = resolvePlatformAiCaps(input({ operatorRaw: "7", operatorOverrideUsd: 3, settingPerOperatorUsd: 2.5 })); return refused(x.operator, "CAP_INVALID"); })());
     const t = resolvePlatformAiCaps(input({ vercelEnv: "development", operatorOverrideUsd: -3, settingPerOperatorUsd: -3, settingPlatformUsd: 1.25 }));
     check("R2: invalid settings in development ⇒ CAP_INVALID (the test default does NOT rescue them)", refused(t.operator, "CAP_INVALID") && refused(t.platform, "CAP_INVALID"), t);
@@ -136,6 +138,24 @@ function main() {
     check("absent (null) settings are unchanged: not set ⇒ ENV", is(absent.operator, 7, "ENV") && is(absent.platform, 70, "ENV"), absent);
     const absentProd = resolvePlatformAiCaps(input({ vercelEnv: "production" }));
     check("absent settings + nothing else in production ⇒ CAP_MISSING (unchanged)", refused(absentProd.operator, "CAP_MISSING") && refused(absentProd.platform, "CAP_MISSING"), absentProd);
+  }
+
+  console.log("2b. D5 PR4: the override row parser (PlatformAiOperatorCap.dailyUsd, CHECK 0..20)");
+  {
+    check("no row ⇒ ABSENT ⇒ null (not set)", parseOperatorCapRow(null).state === "ABSENT" && capSettingUsdOf(parseOperatorCapRow(undefined)) === null);
+    for (const v of [0, 1, 7, PLATFORM_AI_OPERATOR_CAP_CEILING_USD]) {
+      const r = parseOperatorCapRow({ dailyUsd: v });
+      check(`dailyUsd ${v} ⇒ SET ${v}`, r.state === "SET" && r.usd === v, r);
+    }
+    for (const v of [-1, 21, 500, 2.5, Number.NaN, "5", null, undefined, Number.POSITIVE_INFINITY]) {
+      const r = parseOperatorCapRow({ dailyUsd: v });
+      check(`dailyUsd ${JSON.stringify(v) ?? String(v)} ⇒ INVALID (not a whole number 0..20) ⇒ NaN ⇒ the resolver refuses CAP_INVALID OPERATOR`,
+        r.state === "INVALID" && Number.isNaN(capSettingUsdOf(r)) && refused(resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: capSettingUsdOf(r) })).operator, "CAP_INVALID"), r);
+    }
+    const zero = toResolvedCaps(resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: capSettingUsdOf(parseOperatorCapRow({ dailyUsd: 0 })) })));
+    check("override row 0 ⇒ operator cap 0 (that operator is off), source OPERATOR_OVERRIDE", zero.state === "OK" && zero.operatorUsd === 0 && zero.source.operator === "OPERATOR_OVERRIDE", zero);
+    check("turns that fit: floor(cap / reserve); null on an unknown cap or reserve",
+      platformAiTurnsThatFit(10, 3) === 3 && platformAiTurnsThatFit(0, 3) === 0 && platformAiTurnsThatFit(0.9, 0.3) === 3 && platformAiTurnsThatFit(null, 3) === null && platformAiTurnsThatFit(10, null) === null && platformAiTurnsThatFit(10, 0) === null);
   }
 
   console.log("3. 0 means refuse every turn, never unlimited");
@@ -155,7 +175,13 @@ function main() {
   {
     check("ceilings are $20 operator / $100 platform", PLATFORM_AI_OPERATOR_CAP_CEILING_USD === 20 && PLATFORM_AI_PLATFORM_CAP_CEILING_USD === 100);
     const hi = resolvePlatformAiCaps(input({ operatorOverrideUsd: 500, settingPlatformUsd: 1000 }));
-    check("override 500 ⇒ 20, source CEILING, askedUsd 500, clamped", is(hi.operator, 20, "CEILING", { askedUsd: 500, clamped: true }) && hi.operator.ok && hi.operator.askedSource === "OPERATOR_OVERRIDE", hi.operator);
+    check("Q2 (S2 09fu): override 500 ⇒ CAP_INVALID for OPERATOR (never clamped)", refused(hi.operator, "CAP_INVALID"), hi.operator);
+    for (const v of [21, 1000]) {
+      const r = resolvePlatformAiCaps(input({ operatorRaw: "7", platformRaw: "70", operatorOverrideUsd: v, settingPerOperatorUsd: 5 }));
+      check(`Q2: override ${v} above the ceiling ⇒ CAP_INVALID OPERATOR (the setting $5 / env do NOT rescue it); platform unaffected`,
+        refused(r.operator, "CAP_INVALID") && is(r.platform, 70, "ENV") && (() => { const c = toResolvedCaps(r); return c.state === "REFUSE" && c.cause === "CAP_INVALID" && c.cap === "OPERATOR"; })(), r);
+    }
+    check("Q2: override exactly 20 ⇒ 20, own source (not clamped, not refused)", is(resolvePlatformAiCaps(input({ operatorOverrideUsd: 20, settingPlatformUsd: 100 })).operator, 20, "OPERATOR_OVERRIDE"));
     check("platform setting 1000 ⇒ 100, source CEILING, askedUsd 1000, clamped", is(hi.platform, 100, "CEILING", { askedUsd: 1000, clamped: true }) && hi.platform.ok && hi.platform.askedSource === "PLATFORM_SETTING", hi.platform);
     const ps = resolvePlatformAiCaps(input({ settingPerOperatorUsd: 21 }));
     check("per-operator setting 21 ⇒ 20 clamped (askedSource PLATFORM_SETTING)", is(ps.operator, 20, "CEILING", { askedUsd: 21, clamped: true }) && ps.operator.ok && ps.operator.askedSource === "PLATFORM_SETTING", ps.operator);
@@ -204,8 +230,9 @@ function main() {
     const src = strip("lib/platform/ai/platform-ai-spend.ts");
     check("D5 PR2: the pre-transaction probe is env only and refuses ONLY on CAP_INVALID (a MISSING env waits for the settings)",
       /const envProbe = toResolvedCaps\(resolvePlatformAiCaps\(envOnlyCapsInput\(capInputs\)\)\);\s*if \(envProbe\.state === "REFUSE" && envProbe\.cause === "CAP_INVALID"\)/.test(src));
-    check("D5 PR2: the in-transaction resolution passes the two settings and a NULL override (per-operator table is PR3/PR4)",
-      /operatorOverrideUsd: null,\s*settingPerOperatorUsd: capSettingUsdOf\(perOperator\), settingPlatformUsd: capSettingUsdOf\(platform\),/.test(src));
+    check("D5 PR4: the in-transaction resolution passes the two settings and the operator's override row (parsed, R2)",
+      /operatorOverrideUsd: capSettingUsdOf\(override\),\s*settingPerOperatorUsd: capSettingUsdOf\(perOperator\), settingPlatformUsd: capSettingUsdOf\(platform\),/.test(src)
+      && /const override = parseOperatorCapRow\(overrideRow\);/.test(src));
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

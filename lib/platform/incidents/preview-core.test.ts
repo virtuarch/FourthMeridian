@@ -224,13 +224,27 @@ function main() {
     ];
     // PB-1 S6 — DELIBERATE FENCE UPDATE: the operator controls landed as exactly two
     // Platform Ops POST routes (guard / limiter / audit pinned in incident-boundary.test.ts §12).
-    // Customer Success gains none: its incident routes stay the two reads above.
+    // Customer Success gains no incident-STATE control: its incident routes stay the two reads above,
+    // plus (S2 ruling 09gg (c), owner yes 2026-11-11) the customer-update read model, preview, send
+    // and the per-incident delivery read — pinned in customer-update.test.ts and incident-boundary.test.ts.
     const S6_CONTROLS = [
       "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
       "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
     ];
-    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls",
-      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS].sort()), controlRoutes.join(", "));
+    const CS_CUSTOMER_UPDATE = [
+      "app/api/platform/customer-success/incidents/[id]/customer-update/route.ts",
+      "app/api/platform/customer-success/incidents/[id]/customer-update/preview/route.ts",
+      "app/api/platform/customer-success/incidents/[id]/customer-update/send/route.ts",
+      "app/api/platform/customer-success/incidents/[id]/deliveries/route.ts",
+    ];
+    // S2 ruling 09gg (d): the drawer's Platform AI assessment, one POST per tier — READ-guarded, never an
+    // incident-state change (guard / limiter / no-state-touch pinned in incident-boundary.test.ts).
+    const AI_ASSESSMENT = [
+      "app/api/platform/customer-success/incidents/[id]/assessment/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/assessment/route.ts",
+    ];
+    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls + the four CS customer-update routes + the two AI assessment POSTs",
+      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS, ...CS_CUSTOMER_UPDATE, ...AI_ASSESSMENT].sort()), controlRoutes.join(", "));
     for (const f of BROWSER) {
       const s = code(f);
       const area = f.includes("/platform-ops/") ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";

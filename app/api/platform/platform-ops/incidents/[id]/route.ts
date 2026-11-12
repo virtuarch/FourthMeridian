@@ -21,6 +21,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { env } from "@/lib/env";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { incidentDetailDTO, type IncidentDetailDTO } from "@/lib/platform/incidents/investigation-dto";
@@ -51,10 +52,12 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const navToken = metricAccessFor(auth);
     return navToken
       ? incidentNavigationLinks(
-        { verdict: inv.verdict, itemCount: inv.affected.itemCount, recurrences: inv.recurrences },
+        { verdict: inv.verdict, itemCount: inv.affected.itemCount, recurrences: inv.recurrences, component: inv.component ?? null },
         (target, params) => resolveNavigationTarget("PLATFORM_OPS", navToken, target, params, { now }),
       )
       : [];
   });
-  return NextResponse.json({ ...incidentDetailDTO(inv, "ops", now), navigation } satisfies OpsIncidentDetailResponse, { headers: NO_STORE });
+  // PR-D: the drawer learns whether the Platform AI assessment exists from the server (pack flag OFF ⇒ nothing renders).
+  const body = { ...incidentDetailDTO(inv, "ops", now), navigation };
+  return NextResponse.json({ ...body, aiAssessmentAvailable: env.isPlatformAiPackIncidentsEnabled } satisfies OpsIncidentDetailResponse, { headers: NO_STORE });
 }

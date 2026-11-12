@@ -38,16 +38,22 @@ import {
   MEMORY_SPAN_SHAPE, answerIdentityProblems, isStoredAnswer, storableAnswerVersion, storedRecordSegments,
   type EvidenceRef, type StoredAnswer, type StoredRecordSegment, type StoredSegment,
 } from "./answer";
-import type { TurnRecordLookup } from "../compose/record";
+import { isClosedField, type TurnRecordLookup } from "../compose/record";
+import { closedTypeOf } from "../compose/closed";
 import type { MemoryProposalCard, MemoryTurn } from "../memory/turn";
+import type { PlatformAiToolTraceEntry } from "../tools/tool-trace";
+import type { PlacedSpan } from "./figure-positions";
+import type { TypedAnswerSegment } from "../compose/segments";
 import { assemblePlatformAiHistory, type AssembledHistory, type HistoryMessage, type HistoryScope } from "./history";
 import { answerReadable } from "./multi-area";
 import type { PlatformArea } from "@prisma/client";
 
 /** The settle outcome (store.ts SettleOutcome, restated here so this module stays free of the data module). */
 export type ConversationTurnOutcome =
-  | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null }
-  | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH" };
+  | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[];
+      /** B1: the placed spans' closed sources (tools/figure-sources.ts) — response only (never stored). */ figureSources?: readonly PlacedSpan[] }
+  | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH"; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[];
+      /** B1: response only (never stored; a FAILED turn places nothing). */ figureSources?: readonly PlacedSpan[] };
 
 /** What the CURRENT token can see, for history's earlier-evidence filter: the binding's own accessors. */
 export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric" | "resolvePage">, reminted?: ReadonlyMap<StoredRecordSegment, string>, heldAreas?: ReadonlySet<PlatformArea>): HistoryScope {
@@ -108,8 +114,13 @@ export function storedAnswerOf(result: PlatformAiAnswer, record: Pick<PlatformAi
       else pushText(s.text);
     } else if (s.kind === "correction" || s.kind === "note") segs.push({ kind: s.kind, text: clip(s.text, STORED_TEXT_MAX) });
     else if (s.kind === "memory") { if (MEMORY_SPAN_SHAPE.test(s.text)) segs.push({ kind: "memory", text: s.text }); }
-    // P4: a record span keeps its ref only (kind, id, area, field code) — never a value (V2).
-    else if (s.kind === "record") { if (segs.filter((x) => x.kind === "record").length < STORED_RECORDS_MAX) segs.push({ kind: "record", rk: s.rk, rid: s.rid, a: s.a, f: s.f }); }
+    // P4: a record span keeps its ref only (kind, id, area, field code) — never a T2 value (V2).
+    // S2 09io A4: a CLOSED field's span also keeps its closed value `v` (V3; rendered at read time under fresh guards).
+    else if (s.kind === "record") {
+      if (segs.filter((x) => x.kind === "record").length < STORED_RECORDS_MAX) {
+        segs.push({ kind: "record", rk: s.rk, rid: s.rid, a: s.a, f: s.f, ...(s.v !== undefined && isClosedField(s.f) && closedTypeOf(s.v) !== null ? { v: s.v } : {}) });
+      }
+    }
     else pushText(s.text);
   }
   const segments = segs.slice(0, STORED_SEGMENTS_MAX);
@@ -196,8 +207,13 @@ export interface ConversationTurnRun {
   history: AssembledHistory | null;
   /** The provider transcript (tests only; the route never logs or stores it). */
   transcript: unknown[] | null;
-  /** The v0 result (tests only). */
+  /** The v0 result (tests; the turn runner reads ONLY its metadata `trace` for the response's toolTrace — S2 09hu G1). */
   result: PlatformAiAnswer | null;
+  /**
+   * B1 — the turn's typed answer (COMPLETE only; else absent). The turn runner reads ONLY each figure / record
+   * span's kind and closed codes (tools/figure-sources.ts placedSpansOf) for the response's figureSources.
+   */
+  typed?: readonly TypedAnswerSegment[] | null;
 }
 
 /** Run ONE conversation turn. Never throws: a provider failure, a timeout or an unstorable answer ⇒ FAILED with a code. */
@@ -227,7 +243,7 @@ export async function runConversationTurn(input: ConversationTurnInput): Promise
       memoryProposal = fin.card;
       if (fin.refusals.length > 0) input.onMemoryRefusals?.(fin.refusals);
     }
-    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record), ...(input.memory ? { memoryProposal } : {}) }, history, transcript, result };
+    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record), ...(input.memory ? { memoryProposal } : {}) }, history, transcript, result, typed: record.typed };
   } catch (err) {
     let code: "KILL_SWITCH" | "TIMEOUT" | "PROVIDER";
     try { code = input.classify(err); } catch { code = "PROVIDER"; }
