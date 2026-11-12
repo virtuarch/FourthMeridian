@@ -18,7 +18,7 @@ import path from "node:path";
 import { LIVE_CASES, PA1_PACKS } from "./cases";
 import {
   CONNECTION_ERROR_CODES, CONNECTION_STATUS_CODES, FUNNEL_STAGE_KEY_OF_LABEL, IMPORT_HEALTH_CODES, INCIDENT_PROVIDER_CODES, INCIDENT_STATE_CODES,
-  LIVE_FIELD_MAP, ROUTE, guardedFacts, oracleKeyFor, projectOracle,
+  LIVE_FIELD_MAP, ROUTE, guardedFacts, keyOfField, oracleKeyFor, projectOracle,
 } from "./field-map";
 import { PLATFORM_AI_TOOL_REGISTRY } from "../../tools/registry";
 import { FUNNEL_STAGE_LABELS } from "@/lib/platform/growth/product-analytics-core";
@@ -26,8 +26,9 @@ import { stageKeyOf } from "../../tools/packs/customers";
 import { CONNECTION_ERROR_CODES as PACK_CONNECTION_ERROR_CODES, CUSTOMER_CONNECTION_SCHEMA, overviewOfHealth } from "../../tools/packs/connections";
 import { INCIDENT_LIST_SCHEMA } from "../../tools/packs/incidents";
 import { ONBOARDING_TIMELINE_SCHEMA, importsOf } from "../../tools/packs/onboarding";
-import { recordFieldCodes } from "../../tools/figure-sources";
-import { T2_FIELD_NAMES } from "../../evidence/record-envelope";
+import { placedSourceOf } from "../../tools/figure-sources";
+import type { TypedAnswerSegment } from "../../compose/segments";
+import { oracleKeyOfSource } from "./score";
 
 let failures = 0;
 let passed = 0;
@@ -48,12 +49,20 @@ const EXPECTED_COUNTS: Record<string, { mapped: number; unmapped: number }> = {
   onboarding: { mapped: 38, unmapped: 5 },
   connections: { mapped: 28, unmapped: 10 },
 };
-/** B1: per pack, MAPPED facts split by source, how many the figureSources annotation can carry, how many the model can place today. */
-const EXPECTED_B1: Record<string, { mapped: number; record: number; aggregate: number; annotatable: number; placeableToday: number }> = {
-  customers: { mapped: 12, record: 12, aggregate: 0, annotatable: 12, placeableToday: 0 },
-  incidents: { mapped: 34, record: 34, aggregate: 0, annotatable: 34, placeableToday: 0 },
-  onboarding: { mapped: 38, record: 29, aggregate: 9, annotatable: 29, placeableToday: 0 },
-  connections: { mapped: 28, record: 17, aggregate: 11, annotatable: 17, placeableToday: 0 },
+/** S2 09io — guarded facts per pack: MAPPED / of those PLACEABLE by {{r:…}} / {{a:…}} / UNMAPPED. */
+const EXPECTED_PLACEABLE: Record<string, { mapped: number; placeable: number; unmapped: number }> = {
+  // Not placeable (bools stay out of A1): customers identity.deactivatedAt (deactivated), incidents summary.customerActionRequired.
+  customers: { mapped: 12, placeable: 11, unmapped: 17 },
+  incidents: { mapped: 34, placeable: 33, unmapped: 15 },
+  onboarding: { mapped: 38, placeable: 38, unmapped: 5 },
+  connections: { mapped: 28, placeable: 28, unmapped: 10 },
+};
+/** B1: per pack, MAPPED / PLACEABLE (S2 09io) / ANNOTATABLE end-to-end (figureSources → score.ts → oracleKeyFor keys the fact). */
+const EXPECTED_B1: Record<string, { mapped: number; placeable: number; annotatable: number }> = {
+  customers: { mapped: 12, placeable: 11, annotatable: 11 },
+  incidents: { mapped: 34, placeable: 33, annotatable: 33 },
+  onboarding: { mapped: 38, placeable: 38, annotatable: 38 },
+  connections: { mapped: 28, placeable: 28, annotatable: 28 },
 };
 
 console.log("\nG2 — completeness and shape\n");
@@ -150,40 +159,67 @@ console.log("\nG2 — per-pack mapped / unmapped report\n");
   for (const u of unmappedList) console.log(`    UNMAPPED ${u}`);
   check("one fact per guarded (case, oracle field)", facts.length === guarded.reduce((a, c) => a + (c.oracle.kind === "guarded-route" ? c.oracle.fields.length : 0), 0));
   check("pinned per-pack counts (a change to the mapping or the cases is deliberate)", JSON.stringify(byPack) === JSON.stringify(EXPECTED_COUNTS), byPack);
+
+  // S2 09io — of the MAPPED facts, how many the answer can now PLACE: a record field in that tool's schema `placeable`
+  // list ({{r:h|<field>}}, A1), or an aggregate path in that tool's `placeablePaths` ({{a:<tool>|<path>}}, B2; an
+  // object path counts when its sub-keys are placeable). A mapped fact that is not placeable (e.g. a bool) stays mapped.
+  const placeableOf = (e: Extract<(typeof LIVE_FIELD_MAP)[number], { status: "MAPPED" }>): boolean => {
+    const tool = PLATFORM_AI_TOOL_REGISTRY.find((t) => t.name === e.tool);
+    if (!tool) return false;
+    if (e.source.kind === "record") return (tool.recordSchema?.placeable ?? []).includes(e.source.field);
+    const p = e.source.path;
+    return (tool.placeablePaths ?? []).some((x) => x.path === p || x.path.startsWith(`${p}.`));
+  };
+  const placeableByPack: Record<string, { mapped: number; placeable: number; unmapped: number }> = {};
+  for (const p of PA1_PACKS) placeableByPack[p] = { mapped: 0, placeable: 0, unmapped: 0 };
+  for (const f of facts) {
+    const b = (placeableByPack[f.pack] ??= { mapped: 0, placeable: 0, unmapped: 0 });
+    if (f.status === "MAPPED") { b.mapped++; if (placeableOf(f.entry)) b.placeable++; } else b.unmapped++;
+  }
+  console.log(`    mapped / placeable / unmapped by pack: ${JSON.stringify(placeableByPack)}`);
+  const notPlaceable = [...new Set(facts.filter((f) => f.status === "MAPPED" && !placeableOf(f.entry)).map((f) => `${f.pack} ${f.field} via ${f.status === "MAPPED" ? f.entry.tool : ""}`))];
+  for (const u of notPlaceable) console.log(`    MAPPED, NOT PLACEABLE ${u}`);
+  check("pinned per-pack mapped / placeable / unmapped (S2 09io; a change to the allowlists or the mapping is deliberate)",
+    JSON.stringify(placeableByPack) === JSON.stringify(EXPECTED_PLACEABLE), placeableByPack);
 }
 
-console.log("\nB1 — which MAPPED facts the response's figureSources can carry end-to-end (per pack)\n");
+console.log("\nB1 — which MAPPED facts the response's figureSources carry end-to-end (per pack)\n");
 {
-  // The served annotation (tools/figure-sources.ts) carries a record span as (recordKind, fieldCode) from the closed
-  // registry sets, and a metric figure as (metricKey, resultPath) under get_metric. A MAPPED fact is:
-  //   · ANNOTATABLE — its source is a record field the annotation can name (score.ts observeServedAnswer → oracleKeyFor);
-  //   · PLACEABLE TODAY — the model can actually put that field in an answer: {{r:h|<field>}} resolves only for
-  //     "ref" + the schema's t2Fields (authz/boundary.ts recordRef fields — pinned below); an AGGREGATE pack figure
-  //     has NO placeholder at all (only get_metric envelopes have {{m:…}}; any other digit replaces the answer).
-  const FIELDS = recordFieldCodes();
-  const boundary = read("lib/platform/intelligence/ai/authz/boundary.ts");
-  check("pinned: a record placeholder resolves only for ref + the schema's t2Fields (authz/boundary.ts)",
-    boundary.includes("fields: Object.freeze([RECORD_REF_FIELD, ...(schema.t2Fields ?? [])])"));
-  check("no MAPPED entry is sourced from get_metric (a metric figure's resultPath maps to no oracle field today)",
-    !LIVE_FIELD_MAP.some((e) => e.status === "MAPPED" && (e.tool as string) === "get_metric"));
-  const PLACEABLE = new Set<string>(["ref", ...T2_FIELD_NAMES]);
-  const facts = guarded.flatMap((c) => guardedFacts(c)).filter((f) => f.status === "MAPPED");
-  const report: Record<string, { mapped: number; record: number; aggregate: number; annotatable: number; placeableToday: number }> = {};
-  for (const p of PA1_PACKS) report[p] = { mapped: 0, record: 0, aggregate: 0, annotatable: 0, placeableToday: 0 };
-  for (const f of facts) {
-    if (f.status !== "MAPPED") continue;
-    const r = (report[f.pack] ??= { mapped: 0, record: 0, aggregate: 0, annotatable: 0, placeableToday: 0 });
-    r.mapped++;
-    const s = f.entry.source;
-    if (s.kind === "aggregate") { r.aggregate++; continue; }
-    r.record++;
-    if (FIELDS.get(s.recordKind)?.has(s.field)) r.annotatable++;
-    if (PLACEABLE.has(s.field)) r.placeableToday++;
+  // PLACEABLE (S2 09io): the model can place the fact — a record field in the tool schema's `placeable` list
+  // ({{r:h|<field>}}) or an aggregate path in the tool's `placeablePaths` ({{a:<tool>|<path>}}).
+  // ANNOTATABLE (B1): a placed fill of it yields a figureSources entry (tools/figure-sources.ts placedSourceOf, from the
+  // FILL's codes) that score.ts oracleKeyOfSource keys to THIS fact (field-map oracleKeyFor) — i.e. end-to-end matchable.
+  const report: Record<string, { mapped: number; placeable: number; annotatable: number }> = {};
+  for (const p of PA1_PACKS) report[p] = { mapped: 0, placeable: 0, annotatable: 0 };
+  const notAnnotatable: string[] = [];
+  for (const c of guarded) {
+    for (const f of guardedFacts(c)) {
+      if (f.status !== "MAPPED") continue;
+      const r = (report[f.pack] ??= { mapped: 0, placeable: 0, annotatable: 0 });
+      r.mapped++;
+      const tool = PLATFORM_AI_TOOL_REGISTRY.find((t) => t.name === f.entry.tool);
+      const s = f.entry.source;
+      // The fills the model can make for this fact (none ⇒ not placeable).
+      const fills: TypedAnswerSegment[] = s.kind === "record"
+        ? ((tool?.recordSchema?.placeable ?? []).includes(s.field) ? [{ kind: "record", text: "[restricted]", rk: s.recordKind, rid: "x", a: "CUSTOMER_SUCCESS", f: s.field } as TypedAnswerSegment] : [])
+        : (tool?.placeablePaths ?? []).filter((x) => x.path === s.path || x.path.startsWith(`${s.path}.`))
+          .map((x) => ({ kind: "figure", text: "1", metric: `agg:${f.entry.tool}:${x.path}`, window: null, aggregate: { tool: f.entry.tool, resultPath: x.path } }) as TypedAnswerSegment);
+      if (fills.length === 0) continue;
+      r.placeable++;
+      const ok = fills.some((fill) => {
+        const src = placedSourceOf(fill);
+        if (!src) return false;
+        const key = oracleKeyOfSource(c, { segment: 0, start: 0, end: 1, ...src }, [f.entry.tool]);
+        return key !== null && keyOfField(key, f.field);
+      });
+      if (ok) r.annotatable++; else notAnnotatable.push(`${f.pack} ${f.field} [${c.id}]`);
+    }
   }
-  console.log(`    B1 matchability by pack: ${JSON.stringify(report)}`);
-  check("every MAPPED record fact is annotatable (its kind + field is a closed registry code the annotation can carry)",
-    Object.values(report).every((r) => r.annotatable === r.record));
-  check("pinned B1 report (a change to the mapping, the cases or the placeable set is deliberate)", JSON.stringify(report) === JSON.stringify(EXPECTED_B1), report);
+  console.log(`    B1 mapped / placeable / annotatable by pack: ${JSON.stringify(report)}`);
+  for (const u of notAnnotatable) console.log(`    PLACEABLE, NOT ANNOTATABLE ${u}`);
+  check("every PLACEABLE mapped fact is annotatable end-to-end (its fill's figureSources entry keys to that fact)",
+    Object.values(report).every((r) => r.annotatable === r.placeable), notAnnotatable);
+  check("pinned B1 report (a change to the mapping, the cases or the allowlists is deliberate)", JSON.stringify(report) === JSON.stringify(EXPECTED_B1), report);
 }
 
 console.log("\nG2 — purity and isolation\n");

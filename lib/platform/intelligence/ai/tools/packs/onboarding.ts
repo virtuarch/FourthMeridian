@@ -55,7 +55,7 @@ import {
   RECORD_LIST_MAX, boolFlag, code, count, isoTime, opaqueRef,
   type Code, type RawRecord, type RecordFields, type RecordRunResult, type RecordSchema,
 } from "../../evidence/record-envelope";
-import type { PlatformAiToolContract } from "../contract";
+import { RECORD_PLACE_RULE, aggregatePlaceRule, countPaths, type AggregatePathSpec, type PlatformAiToolContract } from "../contract";
 import { CUSTOMER_AREA, CUSTOMER_RECORD_KIND, CUSTOMER_RID, refOfRid, stageKeyOf } from "./customers";
 
 export const ONBOARDING_OPS_AREA: PlatformArea = "PLATFORM_OPS";
@@ -101,8 +101,13 @@ const linkCode = (raw: string | null | undefined): string | null => (raw === nul
 
 const T2: RecordSchema["t2Fields"] = ["name", "email"];
 
+/*
+ * S2 09io A1 — each schema's `placeable`: the CLOSED T1 fields the model may place as {{r:h|<field>}} (codes,
+ * counts, times; pinned by tools/placeables.test.ts). Never the ref, a bool (invited, testAccount, floor), a T2 name.
+ */
 export const ONBOARDING_ATTENTION_SCHEMA: RecordSchema = {
   kind: CUSTOMER_RECORD_KIND, t2Fields: T2,
+  placeable: ["reason", "reasonAt", "registeredAt", "linkErrorCode", "addFailureStage", "importReason", "otherReasons"],
   fields: {
     ref: { type: "opaqueRef" },
     reason: { type: "code", values: REASONS },
@@ -118,6 +123,11 @@ export const ONBOARDING_ATTENTION_SCHEMA: RecordSchema = {
 
 export const ONBOARDING_TIMELINE_SCHEMA: RecordSchema = {
   kind: CUSTOMER_RECORD_KIND, t2Fields: T2,
+  placeable: [
+    "registeredAt", "verifiedAt", "firstSessionAt", "stage", "bankConnections", "walletConnections", "firstConnectedAt", "importsInProgress",
+    "importsComplete", "importsRecovered", "importsFailed", "importsRemoved", "importsInterrupted", "lastImportFailure", "importHealth",
+    "firstWealthRegenAt", "firstAiTurnAt", "firstBriefAt",
+  ],
   fields: {
     ref: { type: "opaqueRef" },
     registeredAt: { type: "isoTime", nullable: true },
@@ -273,6 +283,21 @@ export interface OnboardingOverview {
 
 const safeCount = (n: unknown) => (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0);
 
+/**
+ * S2 09io B2 — onboarding_overview's CLOSED placeable result paths ({{a:onboarding_overview|<path>}}): the import
+ * counts, the needs-help counts (present in the result only for a fresh CS call — the path list is the same for
+ * every operator; an absent value is unavailable), keyed by the pack's own vocabularies, and asOf. NEVER
+ * needsHelp.nextSteps (text). Pinned by tools/placeables.test.ts.
+ */
+export const ONBOARDING_OVERVIEW_PATHS: readonly AggregatePathSpec[] = [
+  { path: "imports.windowDays", type: "count" }, { path: "imports.started", type: "count" }, { path: "imports.interruptedInProgress", type: "count" },
+  ...countPaths("imports.byStatus", IMPORT_STATUSES), ...countPaths("imports.failedReasons", IMPORT_REASONS),
+  { path: "needsHelp.customers", type: "count" }, { path: "needsHelp.testAccounts", type: "count" },
+  ...countPaths("needsHelp.byReason", REASONS), ...countPaths("needsHelp.linkExitCodes", LINK_CODES), ...countPaths("needsHelp.addFailureCodes", LINK_CODES),
+  ...countPaths("needsHelp.addFailureStages", [...ADD_FAILURE_STAGES, "OTHER"]), ...countPaths("needsHelp.stages", STAGES),
+  { path: "asOf", type: "isoTime" },
+];
+
 export function importsOf(nci: NewConnectionImports): NonNullable<OnboardingOverview["imports"]> {
   const byStatus: Record<string, number> = {};
   for (const s of IMPORT_STATUSES) byStatus[s] = safeCount(nci.byStatus?.[s]);
@@ -337,8 +362,9 @@ export function onboardingPackTools<Ctx extends OnboardingToolContext>(readers: 
     {
       name: "onboarding_overview", pack: "onboarding", scope: "AGGREGATE", customerLinkable: false, pii: 0, cost: { toolCalls: 1 },
       requires: { areas: [ONBOARDING_OPS_AREA, CUSTOMER_AREA], level: "READ", tier: "OPS" },
-      description: "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records.",
+      description: "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records. " + aggregatePlaceRule("onboarding_overview", "imports.byStatus.failed"),
       args: { properties: {} },
+      placeablePaths: ONBOARDING_OVERVIEW_PATHS,
       run: async (_args, ctx) => {
         const c = ctx as OnboardingToolContext;
         const now = readers.now();
@@ -359,7 +385,7 @@ export function onboardingPackTools<Ctx extends OnboardingToolContext>(readers: 
     },
     {
       ...cs, name: "list_onboarding_attention", recordSchema: ONBOARDING_ATTENTION_SCHEMA,
-      description: "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter.",
+      description: "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter. " + RECORD_PLACE_RULE,
       args: { properties: { reason: { kind: "enum", values: REASONS, optional: true } } },
       run: async (args, ctx) => {
         const token = csToken(ctx);
@@ -371,7 +397,7 @@ export function onboardingPackTools<Ctx extends OnboardingToolContext>(readers: 
     },
     {
       ...cs, name: "get_onboarding_timeline", recordSchema: ONBOARDING_TIMELINE_SCHEMA,
-      description: "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt.",
+      description: "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt. " + RECORD_PLACE_RULE,
       args: { properties: { customer: { kind: "handle", recordKind: CUSTOMER_RECORD_KIND } } },
       // The boundary resolved the handle to the keyed rid; it must still name exactly one visible customer.
       revalidate: async (rid) => CUSTOMER_RID.test(rid) && (await readers.resolveRid(rid)) !== null,

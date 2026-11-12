@@ -45,6 +45,12 @@ export const PLACEHOLDER_VERDICTS = [
    * and counted. Passing (never replaced, never retried).
    */
   "UNMARKED_CAUSAL",
+  /**
+   * S2 09io B3 — a `{{a:<tool>|<resultPath>}}` that does not fill from THIS turn's own result of that tool (the tool
+   * was not called, the path is not in its closed allowlist, the value is absent / not of its closed type /
+   * conflicting between calls, a malformed one) ⇒ the safe fallback, the same whatever the reason (never retried).
+   */
+  "AGGREGATE_UNRESOLVED",
 ] as const;
 export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
 

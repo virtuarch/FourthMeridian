@@ -33,9 +33,13 @@ import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import type { RecordRenderSource } from "../../authz/record-render";
 import type { FreshGuard } from "../../authz/recheck";
-import type { T2FieldName } from "../../evidence/record-envelope";
+import { placeableUnion, type T2FieldName } from "../../evidence/record-envelope";
 import type { ToolTier } from "../contract";
-import { CUSTOMER_AREA, CUSTOMER_RID, customersPackTools, refOfRid, ridOfRefToken, type CustomersPackReaders, type CustomersToolContext } from "./customers";
+import {
+  ATTENTION_SCHEMA, CUSTOMER_AREA, CUSTOMER_RID, PROFILE_SCHEMA, RECENTLY_JOINED_SCHEMA, customersPackTools, refOfRid, ridOfRefToken,
+  type CustomersPackReaders, type CustomersToolContext,
+} from "./customers";
+import { ONBOARDING_ATTENTION_SCHEMA, ONBOARDING_TIMELINE_SCHEMA } from "./onboarding";
 
 type Client = typeof systemDb;
 
@@ -106,6 +110,8 @@ export function customerRecordSource(client: Client = systemDb): RecordRenderSou
   const T2: readonly T2FieldName[] = ["name", "email"];
   return {
     t2Fields: T2,
+    // S2 09io A1: every CUSTOMER-kind RECORD schema's placeable closed fields (customers + onboarding packs).
+    placeable: placeableUnion(ATTENTION_SCHEMA, RECENTLY_JOINED_SCHEMA, PROFILE_SCHEMA, ONBOARDING_ATTENTION_SCHEMA, ONBOARDING_TIMELINE_SCHEMA),
     async revalidate(rid: string, area: PlatformArea, guard: FreshGuard): Promise<ToolTier | null> {
       if (area !== CUSTOMER_AREA || guard.csTier !== true) return null;
       return (await resolveCustomerRid(rid, client)) ? "CUSTOMER_SUCCESS" : null;

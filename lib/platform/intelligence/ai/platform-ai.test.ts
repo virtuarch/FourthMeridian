@@ -504,10 +504,12 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   const counted: unknown[][] = [];
   const traced: string[] = [];
   const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...two, { content: "{{m:provider-outcome@1|part=failing}} failing, 40 calls." }]).generate,
-    countUngrounded: (...a) => counted.push(a), traceTurn: (l) => traced.push(l) }));
+    countUngrounded: (...a) => counted.push(a), traceTurn: (l) => traced.push(l), toolTrace: (tr) => tr.map((x) => ({ tool: x.tool, outcome: x.outcome })) }));
   check("the handler counts a replaced answer with the verdict CODE and the unresolved count only", h.status === 200 && JSON.stringify(counted) === JSON.stringify([["UNRESOLVED_PLACEHOLDER", 1]]), counted);
   check("…the response's claims are counts; no value in grounding / claims / trace", JSON.stringify((h.body as { claims: unknown }).claims) === JSON.stringify({ claims: 1, resolved: 0, unresolved: 1, admitted: 0 })
-    && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.trace]) + traced.join()), [h.body.grounding, traced]);
+    && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.toolTrace]) + traced.join()), [h.body.grounding, traced]);
+  check("S2 09hz: the 200 body has no legacy `trace` key (the trace is the log line only) and still carries `toolTrace`",
+    h.status === 200 && !Object.prototype.hasOwnProperty.call(h.body, "trace") && Object.prototype.hasOwnProperty.call(h.body, "toolTrace") && traced.length === 1, Object.keys(h.body));
   check("the route's counter line logs codes and counts only", /countUngrounded: \(verdict, unresolved\) => console\.warn\(`\[platform-ai\] answer replaced: verdict=\$\{verdict\} unresolved=\$\{unresolved\}/.test(src("app/api/platform/ai/ask/route.ts")));
   check("the prompt and get_metric's description teach COPYING the server's placeholder string verbatim (guidance; enforcement is the server)",
     /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string from your get_metric result VERBATIM/.test(PLATFORM_AI_SYSTEM_PROMPT)
@@ -1834,7 +1836,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   check("the module is briefing.ts (A1–A4, pure) + core.ts + ledger.ts", files.sort().join() === `${dir}/briefing.ts,${dir}/core.ts,${dir}/ledger.ts`, files);
   // P1a: the answer-composition code moved to compose/*; the same purity scans cover it, and compose/* never imports core.ts (no cycle).
   const composeFiles = readdirSync(path.join(ROOT, dir, "compose")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `${dir}/compose/${f}`);
-  check("compose/* (P1a; P4 + record.ts; P8 + causal.ts) is the split-out answer composition", composeFiles.sort().join() === ["causal", "keys", "placeholders", "record", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
+  check("compose/* (P1a; P4 + record.ts; P8 + causal.ts; S2 09io + aggregate.ts, closed.ts) is the split-out answer composition", composeFiles.sort().join() === ["aggregate", "causal", "closed", "keys", "placeholders", "record", "sanitise", "segments", "stale", "verdicts", "window-disclosure", "windows"].map((m) => `${dir}/compose/${m}.ts`).join(), composeFiles);
   for (const f of composeFiles) check(`${f}: never imports core.ts`, !/from "\.\.\/core"|intelligence\/ai\/core"/.test(src(f)));
   for (const f of [...files, ...composeFiles]) {
     const s = code(src(f));
@@ -1847,7 +1849,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
   // P5: and the PURE subject extraction / fill (authz/subject.ts — pinned pure in authz/subject.test.ts).
   check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["./authz/subject", "./briefing", "./compose/causal", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["./authz/subject", "./briefing", "./compose/aggregate", "./compose/causal", "./compose/placeholders", "./compose/record", "./compose/sanitise", "./compose/segments", "./compose/stale", "./compose/verdicts", "./compose/window-disclosure", "./compose/windows", "./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "@/lib/platform/stale-wording", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   // STALE — the shared phrasebook core and briefing import is pure: no imports at all (no db, env, clock or provider).
   check("lib/platform/stale-wording.ts is pure (imports nothing, reads no clock)", !/^import\s/m.test(src("lib/platform/stale-wording.ts")) && !/Date\.now\(|new Date\(\)/.test(code(src("lib/platform/stale-wording.ts"))));
   const ledger = src(`${dir}/ledger.ts`);

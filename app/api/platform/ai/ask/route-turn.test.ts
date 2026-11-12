@@ -15,7 +15,7 @@
  *      incidentTotalText) for the same world and the same operator;
  *   2. an answer citing that metric renders the metric's registry link, and a
  *      link the turn did not return is stripped;
- *   3. the response carries the metadata-only trace, and the route logs it;
+ *   3. the response carries the metadata-only toolTrace (never the legacy trace), and the route logs the trace;
  *   4. (v1) the model writes {{m:<key>}}; the server renders the tile's figure.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs app/api/platform/ai/ask/route-turn.test.ts
@@ -61,7 +61,6 @@ type Answer = {
   citations: { metric: string; status: string; href: string | null; figures: string[] }[];
   grounding: { replaced: boolean; verdict: string };
   claims: { claims: number; resolved: number; unresolved: number; admitted: number };
-  trace: { tool: string; outcome: string; refs: string[]; drillLink?: boolean }[];
   toolTrace?: { tool: string; pack: string; tier: string; outcome: string; calls: number }[];
   figureSources?: { segment: number; start: number; end: number; source: string; metricKey?: string; resultPath?: string }[];
 };
@@ -132,8 +131,8 @@ async function main() {
     t.check("a link this turn did not return (another surface; a page never resolved) is stripped", forged.status === 200 && forged.body.answer.every((s) => s.kind === "text"), forged.body.answer);
 
     t.section("3. the metadata-only trace");
-    t.check("the response carries the trace: get_metric MEASURED (+drill), find_page OK",
-      r.body.trace.map((x) => `${x.tool}:${x.outcome}`).join() === "get_metric:MEASURED,find_page:OK" && r.body.trace[0].drillLink === true, r.body.trace);
+    t.check("S2 09hz: the 200 body carries NO legacy `trace` key (it is logged, not returned) — and still carries `toolTrace`",
+      r.status === 200 && !Object.prototype.hasOwnProperty.call(r.body, "trace") && Array.isArray(r.body.toolTrace) && r.body.toolTrace.length > 0, Object.keys(r.body));
     t.check("S2 09hu G1: the response carries toolTrace — tool / pack / tier / outcome / calls only, no ref",
       JSON.stringify(r.body.toolTrace) === JSON.stringify([
         { tool: "get_metric", pack: "metrics", tier: "OPS", outcome: "ok", calls: 1 },

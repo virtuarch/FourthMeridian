@@ -58,7 +58,9 @@
  *                   outcome code, for an UNAVAILABLE read its retrieval
  *                   UnavailableCode, registry ids the server itself returned) so an
  *                   operator or reviewer can see what the turn read; never an
- *                   argument the model wrote, never prompt or answer text.
+ *                   argument the model wrote, never prompt or answer text. It is
+ *                   LOGGED (traceLine) and never in the HTTP body (S2 09hz): the
+ *                   200 body carries only the `toolTrace` projection.
  *
  * PURE apart from the injected `generate` and binding: no I/O, no clock beyond
  * the injected `now`, no module state.
@@ -86,6 +88,10 @@ import {
   type RecordSpan, type TurnRecordLookup,
 } from "./compose/record";
 import { causalInPlay, markUnbackedCausal } from "./compose/causal";
+import {
+  AGGREGATE_PRIVATE_CHARS, AGGREGATE_SENTINEL, aggregateAsOfLabel, aggregateKey, aggregateNoteText, extractAggregatePlaceholders,
+  type AggregateCaptures, type AggregateSpan,
+} from "./compose/aggregate";
 import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
 import {
   DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
@@ -371,9 +377,15 @@ export interface ToolEvidence {
    * the href (conversations/answer.ts). Optional: v0 callers need not supply it.
    */
   pages?: Map<string, { id: string; params: Record<string, string> }>;
+  /**
+   * S2 09io B1 — THIS turn's pack AGGREGATE results, by tool: only each tool's allowlisted closed paths
+   * (compose/aggregate.ts captureAggregateResult, called by the turn boundary on the result the tool just
+   * returned). The ONLY thing {{a:<tool>|<path>}} fills from; per turn, never stored, never cross-turn.
+   */
+  aggregates?: AggregateCaptures;
 }
 
-export const PLATFORM_AI_TOOLS = ["list_metrics", "get_metric", "find_page", "open_page"] as const;
+export const PLATFORM_AI_TOOLS =["list_metrics", "get_metric", "find_page", "open_page"] as const;
 /** Platform AI operational memory (design v2 §3) — offered ONLY when the memory flag is effective. */
 export const PLATFORM_AI_MEMORY_TOOLS = ["recall_memory", "propose_memory"] as const;
 
@@ -1037,11 +1049,15 @@ export async function runPlatformAiTurn(input: {
   const evaluate = (text: string | null) => {
     const memText: string[] = [];
     const memIds: string[] = [];
-    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "").replace(RECORD_PRIVATE_CHARS, "");
+    let modelRaw = (text ?? BUDGET_FALLBACK).replace(/[\uE000\uE001]/g, "").replace(RECORD_PRIVATE_CHARS, "").replace(AGGREGATE_PRIVATE_CHARS, "");
     // P4 (design v2 §9): {{inferred}}…{{/inferred}} (paired) and {{r:h|field}} — this turn's handles only.
     modelRaw = markInferred(modelRaw).text;
     const rec = extractRecordPlaceholders(modelRaw, input.records);
     modelRaw = rec.text;
+    // S2 09io B1–B4: {{a:<tool>|<path>}} — THIS turn's own pack aggregate results only (ev.aggregates); a private,
+    // digit-free sentinel until AFTER the verdict, so the leftover-digit rule below is unchanged.
+    const agg = extractAggregatePlaceholders(modelRaw, ev.aggregates);
+    modelRaw = agg.text;
     // P8 (design v2 §9, compose/causal.ts): with the incident contract in play, an unmarked causal sentence not
     // backed by a CONFIRMED cause of an incident it places is marked inferred ("Likely: …") — UNMARKED_CAUSAL.
     const causal = markUnbackedCausal(modelRaw, {
@@ -1062,15 +1078,19 @@ export async function runPlatformAiTurn(input: {
     const placed = resolvePlaceholders(s.segments, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
     // P4: record claims join the counts; an identity shape in the MODEL'S OWN prose is a hard fail
     // (IDENTITY_LEAK, before every other verdict); an unresolved record / a bare handle ⇒ RECORD_UNRESOLVED.
-    if (rec.claims > 0) {
-      placed.summary.claims += rec.claims;
-      placed.summary.resolved += rec.claims - rec.unresolved;
-      placed.summary.unresolved += rec.unresolved;
+    for (const x of [rec, agg]) {
+      if (x.claims === 0) continue;
+      placed.summary.claims += x.claims;
+      placed.summary.resolved += x.claims - x.unresolved;
+      placed.summary.unresolved += x.unresolved;
     }
     if (identityShapesIn(placed.modelProse).length > 0) placed.summary.verdict = "IDENTITY_LEAK";
     else if (rec.unresolved > 0 || hasHandleText(placed.modelProse)) placed.summary.verdict = "RECORD_UNRESOLVED";
+    // S2 09io B3: any aggregate placeholder that did not fill (tool not called this turn, path not allowed, value
+    // absent / conflicting, malformed) ⇒ ONE verdict, the same safe fallback whatever the reason (never retried).
+    else if (agg.unresolved > 0) placed.summary.verdict = "AGGREGATE_UNRESOLVED";
     else if (causal.marked > 0 && (placed.summary.verdict === "RESOLVED" || placed.summary.verdict === "NONE")) placed.summary.verdict = "UNMARKED_CAUSAL";
-    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans };
+    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans, aggSpans: agg.spans };
   };
   let first = evaluate(raw);
   // B1 (S2-approved): ONE corrective retry, only for UNGROUNDED_DIGIT (incl. NUMBER_WORD) / WINDOW_MISMATCH,
@@ -1089,7 +1109,7 @@ export async function runPlatformAiTurn(input: {
       ...(pass ? {} : { digitBy: second.placed.digitBy, wordFamilyBy: second.placed.wordFamilyBy }) };
     if (pass) { first = second; raw = out.content ?? ""; }
   }
-  const { memText, memIds, removed, kinds, placed, spans } = first;
+  const { memText, memIds, removed, kinds, placed, spans, aggSpans } = first;
   let answer = placed.segments;
   let typed: TypedAnswerSegment[] = placed.typed;
   let verdict = placed.summary.verdict;
@@ -1175,6 +1195,27 @@ export async function runPlatformAiTurn(input: {
       return out;
     });
   }
+  // S2 09io B4/B5: aggregate spans — server text in the display answer; a typed FIGURE in the stored one (metric
+  // `agg:<tool>:<path>`, window "as of <stamp>": a point-in-time value, labelled so) + ONE code-written note.
+  if (!replaced && aggSpans.length > 0) {
+    answer = answer.map((x) => ({ ...x, text: fillAggregates(x.text, aggSpans) }));
+    typed = typed.flatMap((x): TypedAnswerSegment[] => {
+      if (x.kind === "record") return [x];
+      if (x.kind !== "text") return [{ ...x, text: fillAggregates(x.text, aggSpans) }];
+      const out: TypedAnswerSegment[] = [];
+      let last = 0;
+      for (const m of x.text.matchAll(AGGREGATE_SENTINEL)) {
+        if (m.index! > last) out.push({ kind: "text", text: x.text.slice(last, m.index) });
+        const sp = aggSpans[m[1].charCodeAt(0) - 97];
+        if (sp) out.push({ kind: "figure", text: sp.text, metric: aggregateKey(sp.tool, sp.path), window: aggregateAsOfLabel(sp.asOf), aggregate: { tool: sp.tool, resultPath: sp.path } });
+        last = m.index! + m[0].length;
+      }
+      if (last < x.text.length) out.push({ kind: "text", text: x.text.slice(last) });
+      return out;
+    });
+    const aggNote = aggregateNoteText(aggSpans);
+    if (aggNote && !notes.includes(aggNote)) notes.push(aggNote);
+  }
   // P4: record spans — a typed `record` span in the stored answer (rendered at READ time by
   // authz/record-render.ts), the fail-closed marker in the display answer until rendered;
   // inferred spans render "Likely: …" in both. (A replaced answer carries no sentinel.)
@@ -1234,6 +1275,11 @@ export async function runPlatformAiTurn(input: {
     transcript: messages,
     record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })), areasRead: areasReadOf(ev.envelopes, typed) },
   };
+}
+
+/** S2 09io B4: the aggregate sentinels → their server text (an unknown index vanishes — never model text). */
+function fillAggregates(t: string, spans: readonly AggregateSpan[]): string {
+  return t.replace(AGGREGATE_SENTINEL, (_m, l: string) => spans[l.charCodeAt(0) - 97]?.text ?? "");
 }
 
 /** The model tools a composed briefing offers: page lookups only (its facts are the server's). */
@@ -1615,7 +1661,11 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     if (subj?.note && !result.notes.includes(subj.note)) result.notes.push(subj.note);
     if (result.grounding.replaced) deps.countUngrounded?.(result.grounding.verdict, result.claims.unresolved);
     deps.traceTurn?.(traceLine(result));
-    return { status: 200, body: { ...result, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(result.trace) } : {}),
+    // S2 09hz — the legacy `trace` stays in the server log line above (traceLine) and is NOT in the 200 body;
+    // the client-facing trace is `toolTrace` only (tool / pack / tier / outcome / calls — never a ref).
+    // B1: plus `figureSources` (the placed spans' closed sources, positioned on `answer`; never stored).
+    const { trace, ...answer } = result;
+    return { status: 200, body: { ...answer, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(trace) } : {}),
       ...(deps.figureSources ? { figureSources: deps.figureSources(record.typed, result.answer, recordText) } : {}) } };
   } catch (err) {
     const c = deps.classify(err);

@@ -30,13 +30,22 @@
  * VERSIONING: the writer emits the LOWEST version that can express the answer
  * (storableAnswerVersion) — an answer with no record segment and no COST_CAP stop is
  * written as V1, byte-identical to before P4, so a rollback can still read every row
- * written by today's tools. The reader accepts V1 | V2 (V1 rows stay readable as they are).
+ * written by today's tools. The reader accepts V1 | V2 | V3 (V1 rows stay readable as they are).
+ *
+ * S2 09io — StoredAnswerV3 (A4): a record segment of a CLOSED T1 field (`f` = a schema `placeable` field,
+ * never "ref" / a T2 name) carries `v`: the closed value (code / count / ISO instant — compose/closed.ts
+ * shapes ONLY) its turn's tool returned. It is rendered like every record segment: at READ time, after a
+ * fresh area check + record revalidation + tier (authz/record-render.ts); 7-day retention unchanged. A
+ * "ref" / T2 segment never carries `v`. Only an answer with such a segment is V3 (a pre-09io reader reads it
+ * as unreadable — fail closed, never as text). An aggregate fill ({{a:…}}, B5) needs no version: it is a
+ * FIGURE segment (metric `agg:<tool>:<path>`, window "as of <stamp>").
  *
  * No database, no key, no I/O.
  */
 
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
-import { RECORD_FIELD_SHAPE, RECORD_ID_SHAPE, RECORD_KIND_SHAPE, hasHandleText, identityShapesIn } from "../compose/record";
+import { RECORD_FIELD_SHAPE, RECORD_ID_SHAPE, RECORD_KIND_SHAPE, hasHandleText, identityShapesIn, isClosedField } from "../compose/record";
+import { closedTypeOf } from "../compose/closed";
 
 /** Registry ids (metric keys like "provider-outcome@1", page ids like "PLATFORM_OPS:platform-incidents:open"). */
 export const REF_ID_SHAPE = /^[A-Za-z0-9_:@.-]{1,120}$/;
@@ -45,6 +54,8 @@ const PARAM_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
 export const STORED_ANSWER_VERSION = 1 as const;
 /** P4 — the version that can carry record segments and the COST_CAP stop. */
 export const STORED_ANSWER_V2 = 2 as const;
+/** S2 09io A4 — the version whose record segments may carry a CLOSED field's value (`v`). */
+export const STORED_ANSWER_V3 = 3 as const;
 export const STORED_SEGMENTS_MAX = 200;
 export const STORED_TEXT_MAX = 4_000;
 export const STORED_CITATIONS_MAX = 24;
@@ -53,8 +64,11 @@ export const EVIDENCE_REFS_MAX = 32;
 /** P4 — at most this many record segments per stored answer (= compose/record.ts RECORD_SPANS_MAX). */
 export const STORED_RECORDS_MAX = 20;
 
-/** P4 (V2 only) — a record placed by {{r:h|field}}: kind, id, area, field CODE. Never a value; never in evidenceRefs. */
-export interface StoredRecordSegment { kind: "record"; rk: string; rid: string; a: string; f: string }
+/**
+ * P4 (V2+) — a record placed by {{r:h|field}}: kind, id, area, field CODE. Never a T2 value; never in evidenceRefs.
+ * S2 09io A4 (V3 only): `v` — a CLOSED field's closed value (code / count / ISO instant), for a closed field only.
+ */
+export interface StoredRecordSegment { kind: "record"; rk: string; rid: string; a: string; f: string; v?: number | string }
 
 export type StoredSegment =
   | { kind: "text"; text: string }
@@ -85,7 +99,7 @@ export type StoredStop = "ANSWERED" | "ROUND_LIMIT" | "TOKEN_CEILING" | "COST_CA
 
 /** A stored answer, V1 or V2 (the validator enforces what each version may carry). */
 export interface StoredAnswer {
-  v: typeof STORED_ANSWER_VERSION | typeof STORED_ANSWER_V2;
+  v: typeof STORED_ANSWER_VERSION | typeof STORED_ANSWER_V2 | typeof STORED_ANSWER_V3;
   segments: StoredSegment[];
   citations: StoredCitation[];
   /** Deterministic, code-written notes (never model text). */
@@ -126,12 +140,16 @@ function validSegment(s: unknown, v: number): s is StoredSegment {
       const entries = Object.entries(s.params);
       return entries.length <= 8 && entries.every(([k, val]) => PARAM_KEY.test(k) && typeof val === "string" && val.length <= 120);
     }
-    case "record":
-      return v === STORED_ANSWER_V2 && exactKeys(s, ["kind", "rk", "rid", "a", "f"])
-        && typeof s.rk === "string" && RECORD_KIND_SHAPE.test(s.rk)
+    case "record": {
+      const base = typeof s.rk === "string" && RECORD_KIND_SHAPE.test(s.rk)
         && typeof s.rid === "string" && RECORD_ID_SHAPE.test(s.rid)
         && isArea(s.a)
         && typeof s.f === "string" && RECORD_FIELD_SHAPE.test(s.f);
+      if (!base) return false;
+      // S2 09io A4: V3 — a closed field's segment carries its closed value; a ref / T2 segment never does.
+      if ("v" in s) return v === STORED_ANSWER_V3 && exactKeys(s, ["kind", "rk", "rid", "a", "f", "v"]) && isClosedField(s.f as string) && closedTypeOf(s.v) !== null;
+      return (v === STORED_ANSWER_V2 || v === STORED_ANSWER_V3) && exactKeys(s, ["kind", "rk", "rid", "a", "f"]);
+    }
     default: return false;
   }
 }
@@ -144,16 +162,17 @@ function validCitation(c: unknown): c is StoredCitation {
 export function isStoredAnswer(a: unknown): a is StoredAnswer {
   if (!isObj(a) || !exactKeys(a, ["v", "segments", "citations", "notes", "stop"])) return false;
   const v = a.v;
-  if (v !== STORED_ANSWER_VERSION && v !== STORED_ANSWER_V2) return false;
+  if (v !== STORED_ANSWER_VERSION && v !== STORED_ANSWER_V2 && v !== STORED_ANSWER_V3) return false;
   return Array.isArray(a.segments) && a.segments.length <= STORED_SEGMENTS_MAX && a.segments.every((s) => validSegment(s, v))
     && a.segments.filter((s) => (s as { kind?: unknown }).kind === "record").length <= STORED_RECORDS_MAX
     && Array.isArray(a.citations) && a.citations.length <= STORED_CITATIONS_MAX && a.citations.every(validCitation)
     && Array.isArray(a.notes) && a.notes.length <= STORED_NOTES_MAX && a.notes.every((n) => isText(n, 400))
-    && (a.stop === "ANSWERED" || a.stop === "ROUND_LIMIT" || a.stop === "TOKEN_CEILING" || (v === STORED_ANSWER_V2 && a.stop === "COST_CAP"));
+    && (a.stop === "ANSWERED" || a.stop === "ROUND_LIMIT" || a.stop === "TOKEN_CEILING" || (v !== STORED_ANSWER_VERSION && a.stop === "COST_CAP"));
 }
 
-/** The lowest version that can express `a` (V2 only for a record segment or the COST_CAP stop). */
-export function storableAnswerVersion(a: Pick<StoredAnswer, "segments" | "stop">): typeof STORED_ANSWER_VERSION | typeof STORED_ANSWER_V2 {
+/** The lowest version that can express `a` (V2 for a record segment or the COST_CAP stop; V3 for a closed-field value). */
+export function storableAnswerVersion(a: Pick<StoredAnswer, "segments" | "stop">): typeof STORED_ANSWER_VERSION | typeof STORED_ANSWER_V2 | typeof STORED_ANSWER_V3 {
+  if (a.segments.some((s) => s.kind === "record" && s.v !== undefined)) return STORED_ANSWER_V3;
   return a.stop === "COST_CAP" || a.segments.some((s) => s.kind === "record") ? STORED_ANSWER_V2 : STORED_ANSWER_VERSION;
 }
 

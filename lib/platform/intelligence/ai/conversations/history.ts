@@ -41,6 +41,7 @@
  */
 
 import { RECORD_GONE_TEXT, recordReplayMarker } from "../compose/record";
+import { parseAggregateKey } from "../compose/aggregate";
 import type { EvidenceRef, StoredAnswer, StoredRecordSegment } from "./answer";
 import {
   PLATFORM_AI_HISTORY_CHARS_PER_TOKEN,
@@ -94,8 +95,16 @@ export class HistoryScopeError extends Error {
 
 const minuteIso = (d: Date) => `${d.toISOString().slice(0, 16)}Z`;
 
-/** The replay marker for one prior figure (design §4.2). */
-export const figureMarker = (metric: string, at: Date) => `[figure from ${metric}, as of ${minuteIso(at)}, re-read it with get_metric]`;
+/**
+ * The replay marker for one prior figure (design §4.2). S2 09io B5: a prior AGGREGATE fill (metric
+ * `agg:<tool>:<path>`) names its tool instead — never its value; it re-reads only with that tool in a turn.
+ */
+export const figureMarker = (metric: string, at: Date) => {
+  const agg = parseAggregateKey(metric);
+  return agg
+    ? `[figure from ${agg.tool}, as of ${minuteIso(at)}, re-read it with ${agg.tool}]`
+    : `[figure from ${metric}, as of ${minuteIso(at)}, re-read it with get_metric]`;
+};
 
 /** Digit runs (with separators) in a prior answer's prose. */
 const DIGITS = /[-+]?[$€£]?\d[\d,.]*%?/g;
