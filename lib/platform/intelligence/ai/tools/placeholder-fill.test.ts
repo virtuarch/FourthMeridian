@@ -113,9 +113,10 @@ const display = (r: { result: PlatformAiAnswer }) => r.result.answer.map((s) => 
 async function main() {
   console.log("S-a — ready-to-copy strings: closed fields / allowlisted paths only, built from codes");
   {
-    check("recordPlaceholderText: a turn handle + a closed field code only (never ref, a T2 name, a malformed handle / field)",
-      recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "state") === "{{r:h_AAAAAAAAAAAAAAAA|state}}" && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "ref") === null
-        && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "name") === null && recordPlaceholderText("h_short", "state") === null && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "x}}{{y") === null);
+    check("recordPlaceholderText: a turn handle + ref / name / a closed field code only (never email or another T2 name, a malformed handle / field)",
+      recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "state") === "{{r:h_AAAAAAAAAAAAAAAA|state}}" && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "ref") === "{{r:h_AAAAAAAAAAAAAAAA|ref}}"
+        && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "name") === "{{r:h_AAAAAAAAAAAAAAAA|name}}" && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "email") === null
+        && recordPlaceholderText("h_short", "state") === null && recordPlaceholderText("h_AAAAAAAAAAAAAAAA", "x}}{{y") === null);
     check("aggregatePlaceholderText: a tool name + a path code only", aggregatePlaceholderText("probe_overview", "byState.OPEN") === "{{a:probe_overview|byState.OPEN}}"
       && aggregatePlaceholderText("probe_overview", "a}}{{m:x") === null && aggregatePlaceholderText("Bad Tool", "open") === null);
 
@@ -125,13 +126,80 @@ async function main() {
     check("a turn copying ONLY the issued strings is kept: every placeholder resolved, verdict RESOLVED", !r.result.grounding.replaced && r.result.claims.unresolved === 0 && r.result.claims.claims === 4, r.result.grounding);
     check("the aggregate result: placeholders = the allowlisted paths holding a closed value (open, byState.OPEN, asOf, worst)",
       JSON.stringify(Object.keys(agg.placeholders as object).sort()) === JSON.stringify(["asOf", "byState.OPEN", "open", "worst"]));
-    check("the record: placeholders = its closed fields with a value (state, attempts) — never ref, name (T2), closedAt (null), retried (bool), customer (opaque ref)",
-      JSON.stringify(Object.keys(rec.placeholders as object)) === JSON.stringify(["state", "attempts"]) && !("t2Fields" in (rec.placeholders as object)));
+    check("the record (an OPS-tier tool, an Ops viewer): placeholders = ref + its closed fields with a value (state, attempts) — NO name (T2), never closedAt (null), retried (bool), customer (opaque ref)",
+      JSON.stringify(Object.keys(rec.placeholders as object)) === JSON.stringify(["ref", "state", "attempts"]) && !("name" in (rec.placeholders as object)) && !("t2Fields" in (rec.placeholders as object)));
     check("no duplicated value: every map entry is EXACTLY the template over its own key code (a path / field) — no value (98765, 3, OPEN, 4321, the asOf instant)",
       Object.entries(agg.placeholders as Record<string, string>).every(([k, v]) => v === `{{a:probe_overview|${k}}}`)
         && Object.entries(rec.placeholders as Record<string, string>).every(([k, v]) => v === `{{r:${String(rec.handle)}|${k}}}`)
         && !/98765|4321|2026-11-12T03/.test(JSON.stringify([agg.placeholders, rec.placeholders]).split(String(rec.handle)).join("H")));
     check("no T2 field name, no record id, no T2 value anywhere the model received", !JSON.stringify(r.requests).includes(RID) && !JSON.stringify(r.requests).includes(T2_SENTINEL) && !/\|name\}\}/.test(JSON.stringify(r.toolResults)));
+  }
+
+  console.log("\nS2 09js — ref for every record; the T2 `name` ONLY behind step 6's own CS gate (tierGate)");
+  {
+    const csTool = (tier: "OPS" | "CUSTOMER_SUCCESS", area: PlatformArea): PlatformAiTool => ({
+      ...base, name: `probe_${tier.toLowerCase()}_${area.toLowerCase()}`, args: { properties: {} }, scope: "RECORD", customerLinkable: false, recordSchema: SCHEMA,
+      requires: { areas: [area], level: "READ", tier },
+      run: async () => ({ status: "CONFIRMED", asOf: AS_OF, truncated: false, records: [{ ref: { kind: "PROBE", recordId: RID, area, tier, linkedUserIds: [] }, fields: { state: "OPEN", attempts: 2, closedAt: null, retried: false, customer: "user #0a1b2c3d" } }] }),
+    } as PlatformAiTool);
+    /** One call of `tool` for an operator holding `areas`; `csFresh` = whether the CS area's per-call recheck carries the fresh CS tier. */
+    const call = async (tool: PlatformAiTool, areas: PlatformArea[], csFresh: boolean) => {
+      const b = createTurnBoundary({
+        operatorId: OP, correlationId: `corr-${Math.random()}`, areas: areas.map((a) => ({ scope: scopeOf(a), binding: binding() })), binding: binding(),
+        recheck: async (a) => (areas.includes(a) ? { ...guard(a), csTier: a === "CUSTOMER_SUCCESS" && csFresh } : null),
+        packs: ["metrics"], packEnabled: () => true, registry: [tool],
+      });
+      const ev = { envelopes: [], hrefs: new Set<string>(), definitions: [], labels: new Set<string>(), trace: [], pages: new Map() };
+      return await b.invoke(tool.name, "{}", { ev: ev as never, paramKeys: [], asked: [] }) as { records?: { handle: string; placeholders?: Record<string, string> }[] };
+    };
+    const { tierGate } = await import("../authz/boundary");
+    check("tierGate: CS tool + fresh CS ⇒ CS; CS tool without ⇒ REFUSED; an OPS tool ⇒ OPS whatever the audience",
+      tierGate("CUSTOMER_SUCCESS", true) === "CS" && tierGate("CUSTOMER_SUCCESS", false) === "REFUSED" && tierGate("OPS", true) === "OPS" && tierGate("OPS", false) === "OPS");
+    const cs = await call(csTool("CUSTOMER_SUCCESS", "CUSTOMER_SUCCESS"), ["CUSTOMER_SUCCESS"], true);
+    const h = cs.records?.[0]?.handle ?? "";
+    check("a CS-tier tool with a FRESH CS audience: ref + name + the closed fields", JSON.stringify(cs.records?.[0]?.placeholders) === JSON.stringify({ ref: `{{r:${h}|ref}}`, name: `{{r:${h}|name}}`, state: `{{r:${h}|state}}`, attempts: `{{r:${h}|attempts}}` }), cs);
+    check("…never email (the other T2 name) and never a T2 value", !/\|email\}\}|Quillon/.test(JSON.stringify(cs)));
+    const stale = await call(csTool("CUSTOMER_SUCCESS", "CUSTOMER_SUCCESS"), ["CUSTOMER_SUCCESS"], false);
+    check("a CS turn WITHOUT a fresh CS audience: the CS tool is refused at step 6 ⇒ no record, no `name` entry anywhere", JSON.stringify(stale) === JSON.stringify({ found: false }) && !/\|name\}\}/.test(JSON.stringify(stale)), stale);
+    const staleOps = await call(csTool("OPS", "CUSTOMER_SUCCESS"), ["CUSTOMER_SUCCESS"], false);
+    check("…and an OPS-tier tool in that turn: ref + closed fields, NO `name`", !!staleOps.records?.[0]?.placeholders?.ref && !("name" in (staleOps.records?.[0]?.placeholders ?? {})), staleOps);
+    const opsViewer = await call(csTool("OPS", "PLATFORM_OPS"), ["PLATFORM_OPS"], false);
+    check("an Ops-viewer turn: the results contain NO `name` entry (ref + closed fields only)",
+      JSON.stringify(Object.keys(opsViewer.records?.[0]?.placeholders ?? {})) === JSON.stringify(["ref", "state", "attempts"]) && !/\|name\}\}/.test(JSON.stringify(opsViewer)), opsViewer);
+    const both = await call(csTool("OPS", "PLATFORM_OPS"), ["PLATFORM_OPS", "CUSTOMER_SUCCESS"], true);
+    check("an OPS-tier tool for an operator who ALSO holds a fresh CS audience: still NO `name` (the tool's tier decides)", !/\|name\}\}/.test(JSON.stringify(both)) && !!both.records?.[0]?.placeholders?.ref, both);
+    const src = (await import("node:fs")).readFileSync(`${process.cwd()}/lib/platform/intelligence/ai/authz/boundary.ts`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    check("step 6 and the `name` entry share ONE gate (tierGate); no second CS-tier condition exists in the boundary",
+      /if \(tierGate\(tool\.requires\.tier, csFresh\) === "REFUSED"\) return refuse\("TIER_REFUSED"\);/.test(src) && /tierGate\(tool\.requires\.tier, csFresh\) === "CS" && \(schema\.t2Fields \?\? \[\]\)\.includes\("name"\)/.test(src)
+        && !/requires\.tier === "CUSTOMER_SUCCESS"/.test(src));
+    const name = await turn([(hh) => `Owner {{r:${hh}|name}}.`], { tools: [overview(), list()] });
+    check("an Ops turn that writes {{r:h|name}} anyway still resolves only as before (a masked span at render time; the read-time T2 checks are unchanged)",
+      !name.result.grounding.replaced && name.record.typed.some((t) => t.kind === "record" && t.f === "name") && !display(name).includes(T2_SENTINEL));
+  }
+
+  console.log("\nS2 09js — no description or prompt tells the model to BUILD a placeholder");
+  {
+    const { PLATFORM_AI_TOOL_REGISTRY } = await import("./registry");
+    const { PLATFORM_AI_SYSTEM_PROMPT, platformAiToolSchemas } = await import("../core");
+    const memorySrc = (await import("node:fs")).readFileSync(`${process.cwd()}/lib/platform/intelligence/ai/memory/turn.ts`, "utf8");
+    const memoryPrompt = (memorySrc.match(/^\s*"[^"\n]*\{\{[^"\n]*",?$/gm) ?? []).join("\n");
+    const texts: [string, string][] = [
+      ["system prompt", PLATFORM_AI_SYSTEM_PROMPT],
+      ...((platformAiToolSchemas(["view"], { memory: true }) as { function: { name: string; description: string } }[]).map((x): [string, string] => [x.function.name, x.function.description])),
+      ...PLATFORM_AI_TOOL_REGISTRY.map((t): [string, string] => [t.name, t.description]),
+      ["memory context rules", memoryPrompt],
+    ];
+    // A build-style instruction: a placeholder TEMPLATE (a <slot> or a bare `h|` inside {{…}}), or a "form is" / build verb not negated.
+    const TEMPLATE = /\{\{[^}]*(?:<[^>]*>|:h\|)[^}]*\}\}/;
+    const BUILD = /\b(?:the form is|in the form|build|construct|assemble|compose)\b/gi;
+    const bad = texts.flatMap(([n, t]) => [
+      ...(TEMPLATE.test(t) ? [`${n}: template ${t.match(TEMPLATE)![0]}`] : []),
+      ...[...t.matchAll(BUILD)].filter((m) => !/(?:never|don't|do not|not)\s*,?\s*$/i.test(t.slice(Math.max(0, m.index! - 12), m.index))).map((m) => `${n}: "${t.slice(Math.max(0, m.index! - 20), m.index! + 20)}"`),
+    ]);
+    check(`${texts.length} texts (prompt, every tool description, the memory rules): no placeholder template, no un-negated build instruction`, bad.length === 0 && memoryPrompt.length > 0, bad);
+    check("…and the prompt / descriptions still say copy, never build", /copy, never build/.test(PLATFORM_AI_SYSTEM_PROMPT) && texts.some(([, t]) => /copy it, don't build it/.test(t)));
+    check("the two reworded pack sentences point at the placeholders maps", PLATFORM_AI_TOOL_REGISTRY.some((t) => t.description.includes("(place the incident there by copying placeholders.ref)"))
+      && PLATFORM_AI_TOOL_REGISTRY.some((t) => t.name === "list_incidents_cs" && t.description.includes("Place the customer by copying placeholders.name.")));
   }
 
   console.log("\nS-a INJECTION — placeholder text inside a tool-result VALUE never becomes a placeholder, never resolves");

@@ -37,7 +37,7 @@
       "type": "function",
       "function": {
         "name": "get_metric",
-        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
+        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -150,7 +150,7 @@
       "type": "function",
       "function": {
         "name": "get_metric",
-        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
+        "description": "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), window_phrase (the period these figures actually cover, in words you may quote), asked_period_available (present when the question names a period: false ⇒ this metric does not cover that period, so never say its figures do; when another of its windows does, asked_period_window names it), placeholder / placeholders (figures) and labelPlaceholder / labelPlaceholders (names). To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (copy it, don't build it). To name the metric or a category, copy its label placeholder ({{l:…}}) the same way. Link drill.page, never drill.href.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -233,7 +233,7 @@
       "type": "function",
       "function": {
         "name": "recall_memory",
-        "description": "Read OPERATOR MEMORY: with no id, the index of remembered items injected in this turn; with an id, that one item. Each has its type, the live subject label, concern, the operator's note, a {{mem:<id>}} placeholder for when it was noted, and the live check (UNCHANGED, CHANGED, UPDATED or UNVERIFIED). It never returns a value: for current state, read the live metric or page.",
+        "description": "Read OPERATOR MEMORY: with no id, the index of remembered items injected in this turn; with an id, that one item. Each has its type, the live subject label, concern, the operator's note, a {{mem:…}} placeholder for when it was noted (copy it exactly), and the live check (UNCHANGED, CHANGED, UPDATED or UNVERIFIED). It never returns a value: for current state, read the live metric or page.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -396,7 +396,7 @@
         "type": "function",
         "function": {
           "name": "list_incidents",
-          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}. State a code, count or time by copying placeholders.<field>.",
+          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (place the incident there by copying placeholders.ref); otherwise wrap it in {{inferred}}…{{/inferred}}. State a code, count or time by copying placeholders.<field>.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -455,7 +455,7 @@
         "type": "function",
         "function": {
           "name": "list_incidents_cs",
-          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}. State a code, count or time by copying placeholders.<field>.",
+          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer by copying placeholders.name. State a code, count or time by copying placeholders.<field>.",
           "parameters": {
             "type": "object",
             "properties": {

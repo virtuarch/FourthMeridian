@@ -327,9 +327,9 @@ async function main() {
     check("S-a: the record result carries the handle + the closed fields as before + `placeholders` — no `closed`, `placeable`, value map or id",
       !/"closed"|placeable|crec0000/.test(JSON.stringify(toolMsgs[1])) && JSON.stringify(Object.keys(rec0)) === JSON.stringify(["handle", "kind", "fields", "t2Fields", "placeholders"]), toolMsgs[1]);
     const h0 = rec0.handle as string;
-    check("S-a: the record `placeholders` = exactly the A1-allowlisted closed fields with a value → {{r:<handle>|<field>}} (never ref, a T2 name, a bool, an opaque ref, a null field, a value)",
-      JSON.stringify(rec0.placeholders) === JSON.stringify({ state: `{{r:${h0}|state}}`, openedAt: `{{r:${h0}|openedAt}}`, attempts: `{{r:${h0}|attempts}}` })
-        && !/\|ref\}|\|name\}|retried|customer|closedAt/.test(JSON.stringify(rec0.placeholders)), rec0.placeholders);
+    check("S-a / 09js: the record `placeholders` = ref + exactly the A1-allowlisted closed fields with a value → {{r:<handle>|<field>}} (an OPS tool: never a T2 name; never a bool, an opaque ref, a null field, a value)",
+      JSON.stringify(rec0.placeholders) === JSON.stringify({ ref: `{{r:${h0}|ref}}`, state: `{{r:${h0}|state}}`, openedAt: `{{r:${h0}|openedAt}}`, attempts: `{{r:${h0}|attempts}}` })
+        && !/\|name\}|retried|customer|closedAt/.test(JSON.stringify(rec0.placeholders)), rec0.placeholders);
     check("nothing the model never had is in the answer (no free-text note, no T2 sentinel)", !text.includes(FREE_TEXT) && !text.includes(T2_SENTINEL));
   }
 

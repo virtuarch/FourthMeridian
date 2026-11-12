@@ -366,7 +366,7 @@ const STATUS_ARG = { kind: "enum", values: STATUS_FILTER, optional: true, descri
 const SEVERITY_ARG = { kind: "enum", values: SEVERITIES, optional: true } as const;
 
 /** The one sentence every incidents tool states (the inferred-cause contract, design v2 §9). */
-const CAUSE_RULE = "State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}.";
+const CAUSE_RULE = "State a cause as fact ONLY when causeStatus is CONFIRMED (place the incident there by copying placeholders.ref); otherwise wrap it in {{inferred}}…{{/inferred}}.";
 
 const viewed = { action: AuditAction.PLATFORM_AI_RECORD_VIEWED, detail: { surface: "platform-ai", recordKind: INCIDENT_RECORD_KIND } } as const;
 
@@ -439,7 +439,7 @@ export function incidentsPackTools<Ctx extends IncidentsToolContext>(readers: In
     },
     {
       ...cs, name: "list_incidents_cs", recordSchema: INCIDENT_LIST_CS_SCHEMA, cost: { toolCalls: 1 },
-      description: "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}. " + RECORD_PLACE_RULE,
+      description: "Customer Success view of list_incidents: + customer (user # ref). Place the customer by copying placeholders.name. " + RECORD_PLACE_RULE,
       args: { properties: { status: STATUS_ARG, severity: SEVERITY_ARG } },
       run: listRun(readers, "cs"),
     },

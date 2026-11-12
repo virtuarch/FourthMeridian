@@ -143,13 +143,16 @@ export interface RecordExtraction {
 }
 
 /**
- * S2 09jr S-a — the ready-to-copy record placeholder for one of THIS turn's handles and one A1-allowlisted closed
- * field (authz/boundary.ts builds a record's `placeholders` map with it). Server text only: the handle the boundary
- * minted and the field CODE — never a value. null for anything that is not that shape.
+ * S2 09jr S-a / 09js — the ready-to-copy record placeholder for one of THIS turn's handles and one field CODE: "ref"
+ * (T1), the T2 "name" (the caller — authz/boundary.ts — offers it only behind step 6's CS gate), or an A1-allowlisted
+ * closed field. Server text only: the handle the boundary minted and the field code — never a value. null for any
+ * other field (another T2 name such as "email" included) or shape.
  */
+export const RECORD_PLACEHOLDER_T2_FIELDS: readonly string[] = ["name"];
 export function recordPlaceholderText(handle: string, field: string): string | null {
   const s = `{{r:${handle}|${field}}}`;
-  return /^h_[A-Za-z0-9_-]{16}$/.test(handle) && isClosedField(field) && new RegExp(`^${RECORD_PLACEHOLDER.source}$`).test(s) ? s : null;
+  const fieldOk = field === RECORD_REF_FIELD || RECORD_PLACEHOLDER_T2_FIELDS.includes(field) || isClosedField(field);
+  return /^h_[A-Za-z0-9_-]{16}$/.test(handle) && fieldOk && new RegExp(`^${RECORD_PLACEHOLDER.source}$`).test(s) ? s : null;
 }
 
 /**
