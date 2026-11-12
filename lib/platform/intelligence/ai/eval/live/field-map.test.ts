@@ -46,6 +46,14 @@ const EXPECTED_COUNTS: Record<string, { mapped: number; unmapped: number }> = {
   onboarding: { mapped: 38, unmapped: 5 },
   connections: { mapped: 28, unmapped: 10 },
 };
+/** S2 09io — guarded facts per pack: MAPPED / of those PLACEABLE by {{r:…}} / {{a:…}} / UNMAPPED. */
+const EXPECTED_PLACEABLE: Record<string, { mapped: number; placeable: number; unmapped: number }> = {
+  // Not placeable (bools stay out of A1): customers identity.deactivatedAt (deactivated), incidents summary.customerActionRequired.
+  customers: { mapped: 12, placeable: 11, unmapped: 17 },
+  incidents: { mapped: 34, placeable: 33, unmapped: 15 },
+  onboarding: { mapped: 38, placeable: 38, unmapped: 5 },
+  connections: { mapped: 28, placeable: 28, unmapped: 10 },
+};
 
 console.log("\nG2 — completeness and shape\n");
 {
@@ -141,6 +149,28 @@ console.log("\nG2 — per-pack mapped / unmapped report\n");
   for (const u of unmappedList) console.log(`    UNMAPPED ${u}`);
   check("one fact per guarded (case, oracle field)", facts.length === guarded.reduce((a, c) => a + (c.oracle.kind === "guarded-route" ? c.oracle.fields.length : 0), 0));
   check("pinned per-pack counts (a change to the mapping or the cases is deliberate)", JSON.stringify(byPack) === JSON.stringify(EXPECTED_COUNTS), byPack);
+
+  // S2 09io — of the MAPPED facts, how many the answer can now PLACE: a record field in that tool's schema `placeable`
+  // list ({{r:h|<field>}}, A1), or an aggregate path in that tool's `placeablePaths` ({{a:<tool>|<path>}}, B2; an
+  // object path counts when its sub-keys are placeable). A mapped fact that is not placeable (e.g. a bool) stays mapped.
+  const placeableOf = (e: Extract<(typeof LIVE_FIELD_MAP)[number], { status: "MAPPED" }>): boolean => {
+    const tool = PLATFORM_AI_TOOL_REGISTRY.find((t) => t.name === e.tool);
+    if (!tool) return false;
+    if (e.source.kind === "record") return (tool.recordSchema?.placeable ?? []).includes(e.source.field);
+    const p = e.source.path;
+    return (tool.placeablePaths ?? []).some((x) => x.path === p || x.path.startsWith(`${p}.`));
+  };
+  const placeableByPack: Record<string, { mapped: number; placeable: number; unmapped: number }> = {};
+  for (const p of PA1_PACKS) placeableByPack[p] = { mapped: 0, placeable: 0, unmapped: 0 };
+  for (const f of facts) {
+    const b = (placeableByPack[f.pack] ??= { mapped: 0, placeable: 0, unmapped: 0 });
+    if (f.status === "MAPPED") { b.mapped++; if (placeableOf(f.entry)) b.placeable++; } else b.unmapped++;
+  }
+  console.log(`    mapped / placeable / unmapped by pack: ${JSON.stringify(placeableByPack)}`);
+  const notPlaceable = [...new Set(facts.filter((f) => f.status === "MAPPED" && !placeableOf(f.entry)).map((f) => `${f.pack} ${f.field} via ${f.status === "MAPPED" ? f.entry.tool : ""}`))];
+  for (const u of notPlaceable) console.log(`    MAPPED, NOT PLACEABLE ${u}`);
+  check("pinned per-pack mapped / placeable / unmapped (S2 09io; a change to the allowlists or the mapping is deliberate)",
+    JSON.stringify(placeableByPack) === JSON.stringify(EXPECTED_PLACEABLE), placeableByPack);
 }
 
 console.log("\nG2 — purity and isolation\n");

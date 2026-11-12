@@ -20,6 +20,11 @@
  * entry, every MAPPED record field exists in the tool's record schema, every copied vocabulary equals
  * the pack's own, and the route files exist.
  *
+ * PLACEABLE (S2 09io): a MAPPED record field the tool's schema lists as `placeable` ({{r:<handle>|<field>}} renders it)
+ * or a MAPPED aggregate path in the tool's `placeablePaths` ({{a:<tool>|<path>}}). field-map.test.ts reports and pins
+ * mapped / placeable / unmapped per pack (it reads the registry; this file stays pack-free). A mapped field that is
+ * not placeable (a bool) can still be checked when the answer states it in words, never as a placed value.
+ *
  * Where the tool and the route differ by construction, the entry is UNMAPPED (never a guess): a
  * record id the model never sees, a count where the route has a list, a value the tool regroups.
  *

@@ -300,7 +300,7 @@
         "type": "function",
         "function": {
           "name": "list_customer_attention",
-          "description": "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason.",
+          "description": "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -332,7 +332,7 @@
         "type": "function",
         "function": {
           "name": "list_recently_joined",
-          "description": "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited.",
+          "description": "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -357,7 +357,7 @@
         "type": "function",
         "function": {
           "name": "get_customer_profile",
-          "description": "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated.",
+          "description": "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -380,7 +380,7 @@
         "type": "function",
         "function": {
           "name": "incident_overview",
-          "description": "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records.",
+          "description": "Incident counts now: brokenNow, needsVerification, bySeverity, byDomain, widespread, customerActionable, causeStatus. No records. State a count by copying {{a:incident_overview|<key path>}}, e.g. {{a:incident_overview|bySeverity.critical}}.",
           "parameters": {
             "type": "object",
             "properties": {},
@@ -396,7 +396,7 @@
         "type": "function",
         "function": {
           "name": "list_incidents",
-          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}.",
+          "description": "Platform Ops incidents, most urgent first, ≤10, identity-free: handle + state, severity, domain, kind, operation, times, spread, causeStatus, cause. State a cause as fact ONLY when causeStatus is CONFIRMED (and place the incident {{r:h|ref}} in that sentence); otherwise wrap it in {{inferred}}…{{/inferred}}. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -432,7 +432,7 @@
         "type": "function",
         "function": {
           "name": "investigate_incident",
-          "description": "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes.",
+          "description": "One incident by handle (a list result or [incident h_…]): + displayStatus, remedy, providerErrorCode, attempts, recovery, closure, last action/outcome codes. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -455,7 +455,7 @@
         "type": "function",
         "function": {
           "name": "list_incidents_cs",
-          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}.",
+          "description": "Customer Success view of list_incidents: + customer (user # ref). Place the customer with {{r:h|name}}. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -491,7 +491,7 @@
         "type": "function",
         "function": {
           "name": "investigate_incident_cs",
-          "description": "Customer Success view of investigate_incident (+ customer).",
+          "description": "Customer Success view of investigate_incident (+ customer). State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -514,7 +514,7 @@
         "type": "function",
         "function": {
           "name": "onboarding_overview",
-          "description": "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records.",
+          "description": "Onboarding counts: new-connection imports (7 d) by status / failed reason; with Customer Success also needsHelp (per onboarding reason, link codes, funnel stages, nextSteps text). No records. State a count by copying {{a:onboarding_overview|<key path>}}, e.g. {{a:onboarding_overview|imports.byStatus.failed}}.",
           "parameters": {
             "type": "object",
             "properties": {},
@@ -530,7 +530,7 @@
         "type": "function",
         "function": {
           "name": "list_onboarding_attention",
-          "description": "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter.",
+          "description": "Customers who need onboarding help (Customer Success), ≤10: handle, ref, reason, reasonAt, registeredAt, linkErrorCode, addFailureStage, importReason, otherReasons, testAccount. Optional reason filter. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -558,7 +558,7 @@
         "type": "function",
         "function": {
           "name": "get_onboarding_timeline",
-          "description": "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt.",
+          "description": "One customer's onboarding by handle: registeredAt, invited, verifiedAt, firstSessionAt, stage, bank / wallet connections, imports by status, lastImportFailure, firstWealthRegenAt, firstAiTurnAt, firstBriefAt. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {
@@ -581,7 +581,7 @@
         "type": "function",
         "function": {
           "name": "connection_health_overview",
-          "description": "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers.",
+          "description": "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers. State a count by copying {{a:connection_health_overview|<key path>}}, e.g. {{a:connection_health_overview|byHealth.ERROR}}.",
           "parameters": {
             "type": "object",
             "properties": {},
@@ -597,7 +597,7 @@
         "type": "function",
         "function": {
           "name": "get_customer_connections",
-          "description": "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt.",
+          "description": "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt. State a code, count or time field by copying {{r:h|<field>}}.",
           "parameters": {
             "type": "object",
             "properties": {

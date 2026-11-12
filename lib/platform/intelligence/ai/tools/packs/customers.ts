@@ -44,7 +44,7 @@ import {
   RECORD_LIST_MAX, boolFlag, code, count, isoTime, opaqueRef,
   type RawRecord, type RecordFields, type RecordRunResult, type RecordSchema,
 } from "../../evidence/record-envelope";
-import type { PlatformAiToolContract } from "../contract";
+import { RECORD_PLACE_RULE, type PlatformAiToolContract } from "../contract";
 
 /** The record kind every customers-pack record (and subject handle) carries. */
 export const CUSTOMER_RECORD_KIND = "CUSTOMER";
@@ -86,8 +86,13 @@ export const stageKeyOf = (label: string | null | undefined): string | null =>
 
 const T2: RecordSchema["t2Fields"] = ["name", "email"];
 
+/*
+ * S2 09io A1 — each schema's `placeable`: the CLOSED T1 fields the model may place as {{r:h|<field>}} (codes,
+ * counts, times; pinned by tools/placeables.test.ts). Never the ref (placed as "ref"), a bool, a T2 name.
+ */
 export const ATTENTION_SCHEMA: RecordSchema = {
   kind: CUSTOMER_RECORD_KIND, t2Fields: T2,
+  placeable: ["reason", "reasons"],
   fields: {
     ref: { type: "opaqueRef" },
     reason: { type: "code", values: REASONS },
@@ -98,6 +103,7 @@ export const ATTENTION_SCHEMA: RecordSchema = {
 
 export const RECENTLY_JOINED_SCHEMA: RecordSchema = {
   kind: CUSTOMER_RECORD_KIND, t2Fields: T2,
+  placeable: ["joinedAt", "stage", "importHealth", "connections"],
   fields: {
     ref: { type: "opaqueRef" },
     joinedAt: { type: "isoTime", nullable: true },
@@ -110,6 +116,7 @@ export const RECENTLY_JOINED_SCHEMA: RecordSchema = {
 
 export const PROFILE_SCHEMA: RecordSchema = {
   kind: CUSTOMER_RECORD_KIND, t2Fields: T2,
+  placeable: ["joinedAt", "stage", "presence", "lastActive", "connections", "brokenConnections", "openIncidents", "aiTurns30d", "lastEngagedAt"],
   fields: {
     ref: { type: "opaqueRef" },
     joinedAt: { type: "isoTime", nullable: true },
@@ -212,7 +219,7 @@ export function customersPackTools<Ctx extends CustomersToolContext>(readers: Cu
   return [
     {
       ...common, name: "list_customer_attention", audit: viewed, recordSchema: ATTENTION_SCHEMA,
-      description: "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason.",
+      description: "Customers who need help now (Customer Success), most reasons first, ≤10. Each record: handle, ref, reason (primary), reasons (count), testAccount. Optional reason filters to one reason. " + RECORD_PLACE_RULE,
       args: { properties: { reason: { kind: "enum", values: REASONS, optional: true } } },
       run: async (args, ctx) => {
         const token = csTokenOf(ctx);
@@ -224,7 +231,7 @@ export function customersPackTools<Ctx extends CustomersToolContext>(readers: Cu
     },
     {
       ...common, name: "list_recently_joined", audit: viewed, recordSchema: RECENTLY_JOINED_SCHEMA,
-      description: "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited.",
+      description: "Customers who registered in the last `days` (default 14), newest first, ≤10. Each record: handle, ref, joinedAt, stage, importHealth, connections, invited. " + RECORD_PLACE_RULE,
       args: { properties: { days: { kind: "int", min: 1, max: 30, offered: [7, 14, 30], optional: true } } },
       run: async (args, ctx) => {
         csTokenOf(ctx);
@@ -237,7 +244,7 @@ export function customersPackTools<Ctx extends CustomersToolContext>(readers: Cu
     {
       ...common, name: "get_customer_profile", recordSchema: PROFILE_SCHEMA,
       audit: { action: AuditAction.CUSTOMER_PROFILE_VIEWED, detail: { surface: "platform-ai", recordKind: CUSTOMER_RECORD_KIND } },
-      description: "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated.",
+      description: "One customer's status by handle (from a customers tool result or a [customer h_…] in the question): joinedAt, stage, presence, lastActive, connections, brokenConnections, openIncidents, aiTurns30d, lastEngagedAt, deactivated. " + RECORD_PLACE_RULE,
       args: { properties: { customer: { kind: "handle", recordKind: CUSTOMER_RECORD_KIND } } },
       // The boundary resolved the handle to the rid; it must still name exactly one visible customer.
       revalidate: async (rid) => CUSTOMER_RID.test(rid) && (await readers.resolveRid(rid)) !== null,

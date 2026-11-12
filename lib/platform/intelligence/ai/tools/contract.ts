@@ -33,6 +33,7 @@ import type { PlatformArea } from "@prisma/client";
 import type { AuditActionType } from "@/lib/audit-actions";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { RecordSchema } from "../evidence/record-envelope";
+import { placeableNameForbidden, type ClosedValueType } from "../compose/closed";
 
 // ── Result status ────────────────────────────────────────────────────────────
 
@@ -122,6 +123,35 @@ export type ToolScopeSpec =
   | { readonly scope: "RECORD"; readonly customerLinkable: false; readonly audit?: AuditSpec }
   | { readonly scope: "RECORD"; readonly customerLinkable: true; readonly audit: AuditSpec };
 
+/**
+ * S2 09io B2 — ONE placeable path of an AGGREGATE tool's result: `{{a:<tool>|<path>}}` renders the value at
+ * `path` (dotted own keys, no array index) of THIS turn's own result of that tool, when it is of `type`
+ * (count / isoTime / code — a code must be in `values`). The per-tool list is CLOSED (written out from the
+ * pack's own vocabularies) and pinned by tools/placeables.test.ts; contractProblems refuses a path on a RECORD
+ * tool, a path segment carrying a forbidden word (identities, free text, institution text, amounts —
+ * compose/closed.ts) and a code path without its closed set.
+ */
+export interface AggregatePathSpec {
+  readonly path: string;
+  readonly type: ClosedValueType;
+  readonly values?: readonly string[];
+}
+
+/** A placeable result path: 1–4 dotted own-key segments (a vocabulary key may carry `_` / `-`). */
+export const AGGREGATE_PATH_SHAPE = /^[a-z][A-Za-z0-9]{0,40}(?:\.[A-Za-z0-9_-]{1,64}){0,3}$/;
+
+/**
+ * S2 09io A5 — the instruction sentences the placeables add to the pack tools' descriptions (stated verbatim in the
+ * PR). Placeholder SYNTAX only: no value, no field or key the tool does not already return, no new data class.
+ */
+export const RECORD_PLACE_RULE = "State a code, count or time field by copying {{r:h|<field>}}.";
+export const aggregatePlaceRule = (tool: string, examplePath: string): string =>
+  `State a count by copying {{a:${tool}|<key path>}}, e.g. {{a:${tool}|${examplePath}}}.`;
+
+/** `prefix.<key>` count paths, one per key of a closed vocabulary (the pack's own list — never a value it read). */
+export const countPaths = (prefix: string, keys: readonly string[]): AggregatePathSpec[] =>
+  keys.map((k) => ({ path: `${prefix}.${k}`, type: "count" as const }));
+
 /** 0 = no personal data; 1 = opaque refs / codes / timestamps; 2 = names or emails exist behind the tool (never sent to the model). */
 export type PiiClass = 0 | 1 | 2;
 
@@ -151,6 +181,8 @@ export type PlatformAiToolContract<Ctx = unknown> = {
   readonly revalidate?: (ref: string, ctx: Ctx) => Promise<boolean>;
   /** P2 — a RECORD tool's closed record shape (evidence/record-envelope.ts); required when scope = RECORD. */
   readonly recordSchema?: RecordSchema;
+  /** S2 09io B2 — an AGGREGATE tool's closed placeable result paths (`{{a:<tool>|<path>}}`); absent ⇒ none. */
+  readonly placeablePaths?: readonly AggregatePathSpec[];
 } & ToolScopeSpec;
 
 // ── Runtime validation ──────────────────────────────────────────────────────
@@ -178,6 +210,20 @@ export function contractProblems(c: PlatformAiToolContract<never>): string[] {
   const tc = c.cost?.toolCalls;
   if (!(typeof tc === "function" || (typeof tc === "number" && Number.isInteger(tc) && tc >= 1))) out.push("cost.toolCalls: not a positive integer or function");
   if (typeof c.run !== "function") out.push("run: missing");
+  if (c.placeablePaths !== undefined) {
+    const paths: readonly AggregatePathSpec[] = Array.isArray(c.placeablePaths) ? c.placeablePaths : [];
+    if (!Array.isArray(c.placeablePaths) || c.scope !== "AGGREGATE") out.push("placeablePaths: an AGGREGATE tool's list only");
+    if (new Set(paths.map((p) => p?.path)).size !== paths.length) out.push("placeablePaths: duplicate path");
+    for (const p of paths) {
+      const path = typeof p?.path === "string" ? p.path : "";
+      if (!AGGREGATE_PATH_SHAPE.test(path)) { out.push(`placeablePaths.${path.slice(0, 60)}: not a path`); continue; }
+      // An UPPER_CASE segment is a closed-vocabulary code (a provider error code such as OAUTH_STATE_ID_MISMATCH is a code,
+      // not an id); every other segment (the result's own keys, lower-case vocabulary keys) is checked word by word.
+      if (path.split(".").some((seg) => (!/^[A-Z][A-Z0-9_]*$/.test(seg) && placeableNameForbidden(seg)) || seg === "__proto__" || seg === "constructor" || seg === "prototype")) out.push(`placeablePaths.${path}: forbidden segment`);
+      if (!["count", "isoTime", "code"].includes(p.type)) out.push(`placeablePaths.${path}: not a closed type`);
+      if (p.type === "code" && !(Array.isArray(p.values) && p.values.length > 0 && p.values.every((v) => typeof v === "string"))) out.push(`placeablePaths.${path}: a code path without its closed set`);
+    }
+  }
   for (const [k, a] of Object.entries(c.args?.properties ?? {})) {
     if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(k)) out.push(`args.${k}: not an argument name`);
     if (!(ARG_KINDS as readonly string[]).includes(a.kind)) { out.push(`args.${k}: kind ${String((a as { kind?: unknown }).kind)} is not a closed kind`); continue; }

@@ -47,7 +47,7 @@ import {
   RECORD_LIST_MAX, boolFlag, code, isoTime, opaqueRef, registryName,
   type RawRecord, type RecordRunResult, type RecordSchema,
 } from "../../evidence/record-envelope";
-import type { PlatformAiToolContract } from "../contract";
+import { RECORD_PLACE_RULE, aggregatePlaceRule, countPaths, type AggregatePathSpec, type PlatformAiToolContract } from "../contract";
 import { CUSTOMER_AREA, CUSTOMER_RECORD_KIND, CUSTOMER_RID, refOfRid } from "./customers";
 
 /** The record kind every connections-pack record carries. */
@@ -141,8 +141,14 @@ const chainsOfLabel = (network: unknown): string[] => (typeof network === "strin
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
+/*
+ * S2 09io A1 — `placeable`: the CLOSED T1 fields the model may place as {{r:h|<field>}} (codes, times; pinned by
+ * tools/placeables.test.ts). Never: `customer` (an opaque ref), `institution` (a registry NAME — institution text
+ * stays out of placement), a bool.
+ */
 export const CUSTOMER_CONNECTION_SCHEMA: RecordSchema = {
   kind: CONNECTION_RECORD_KIND,
+  placeable: ["provider", "kind", "network", "status", "healthState", "errorCode", "lastSyncedAt", "connectedAt"],
   fields: {
     customer: { type: "opaqueRef" },
     provider: { type: "code", values: PROVIDERS },
@@ -213,6 +219,19 @@ export interface ConnectionHealthOverview {
 
 const n = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0);
 
+/**
+ * S2 09io B2 — connection_health_overview's CLOSED placeable result paths ({{a:connection_health_overview|<path>}}):
+ * the fleet counts keyed by health state / provider code, and asOf. NEVER unhealthyByInstitution (registry
+ * institution names), the fault / network lists (arrays) or anything per connection. Pinned by tools/placeables.test.ts.
+ */
+export const CONNECTION_HEALTH_OVERVIEW_PATHS: readonly AggregatePathSpec[] = [
+  { path: "total", type: "count" }, ...countPaths("byHealth", HEALTH_STATES),
+  { path: "retired.revoked", type: "count" }, { path: "retired.ownerInactive", type: "count" },
+  ...PROVIDERS.flatMap((p) => [{ path: `bySource.${p}.active`, type: "count" as const }, { path: `bySource.${p}.revoked`, type: "count" as const }]),
+  { path: "neverSyncedListed", type: "count" },
+  { path: "asOf", type: "isoTime" },
+];
+
 export function overviewOfHealth(h: ConnectionHealthResult, institutionIds: ReadonlyMap<string, string>): ConnectionHealthOverview {
   const byHealth: Record<string, number> = {};
   for (const s of HEALTH_STATES) byHealth[s] = n(h.counts?.[s]);
@@ -275,8 +294,9 @@ export function connectionsPackTools<Ctx extends ConnectionsToolContext>(readers
     {
       name: "connection_health_overview", pack: "connections", scope: "AGGREGATE", customerLinkable: false, pii: 0, cost: { toolCalls: 1 },
       requires: { areas: [CONNECTIONS_OPS_AREA, CUSTOMER_AREA], level: "READ", tier: "OPS" },
-      description: "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers.",
+      description: "Connection health counts (banks + wallets): total, byHealth, retired, bySource faults by healthState + errorCode, unhealthy by institution / wallet network code. No records, no customers. " + aggregatePlaceRule("connection_health_overview", "byHealth.ERROR"),
       args: { properties: {} },
+      placeablePaths: CONNECTION_HEALTH_OVERVIEW_PATHS,
       run: async (_args, ctx) => {
         const c = ctx as ConnectionsToolContext;
         const now = readers.now();
@@ -296,7 +316,7 @@ export function connectionsPackTools<Ctx extends ConnectionsToolContext>(readers
     {
       name: "get_customer_connections", pack: "connections", scope: "RECORD", customerLinkable: true, audit: viewed, pii: 2, cost: { toolCalls: 1 },
       requires: { areas: [CUSTOMER_AREA], level: "READ", tier: "CUSTOMER_SUCCESS" }, recordSchema: CUSTOMER_CONNECTION_SCHEMA,
-      description: "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt.",
+      description: "One customer's live connections by customer handle, ≤10: provider, kind, institution, network (wallet chain code), status, healthState, errorCode, needsReauth, lastSyncedAt, neverSynced, connectedAt. " + RECORD_PLACE_RULE,
       args: { properties: { customer: { kind: "handle", recordKind: CUSTOMER_RECORD_KIND } } },
       revalidate: async (rid) => CUSTOMER_RID.test(rid) && (await readers.resolveRid(rid)) !== null,
       run: async (args, ctx) => {

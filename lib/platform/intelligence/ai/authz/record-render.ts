@@ -25,7 +25,12 @@
  *      writer exists, and the PLATFORM_AI_RECORD_VIEWED rows (one per linked customer per
  *      area, written BEFORE any T2 value is read) were written. Any failure ⇒ MASKED: the
  *      record's T1 reference, or RECORD_PENDING_TEXT "[restricted]" when it has none;
- *   4. every other field renders the record's T1 reference (opaque ref / code-derived label),
+ *   4. S2 09io A1–A3 — a CLOSED T1 field (a schema `placeable` field: code / count / isoTime) renders the
+ *      value the turn's tool returned (the segment's `v`, server-formatted: compose/closed.ts) — only for a
+ *      record that passed 1–2 (fresh area check, revalidation, tier), only when the kind's source lists the
+ *      field (`placeable`) and `v` is a closed shape; anything else renders "[no longer available]", exactly
+ *      like a gone record (no existence or tier oracle);
+ *   5. every other field ("ref") renders the record's T1 reference (opaque ref / code-derived label),
  *      or "[restricted]".
  * The outcome texts are server literals or reader values; a model never receives a rendered
  * segment (history replays kind markers only — conversations/history.ts).
@@ -38,7 +43,7 @@ import "server-only";
 import type { PlatformArea } from "@prisma/client";
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
-import { RECORD_GONE_TEXT, RECORD_PENDING_TEXT, isT2Field } from "../compose/record";
+import { RECORD_GONE_TEXT, RECORD_PENDING_TEXT, isClosedField, isT2Field, renderClosedValue } from "../compose/record";
 import type { T2FieldName } from "../evidence/record-envelope";
 import type { ToolTier } from "../tools/contract";
 import type { FreshGuard } from "./recheck";
@@ -46,13 +51,21 @@ import { customerRecordSource } from "../tools/packs/customers.server";
 import { incidentRecordSource } from "../tools/packs/incidents.server";
 import { connectionRecordSource } from "../tools/packs/connections.server";
 
-/** The record segment the renderer reads (= conversations/answer.ts StoredRecordSegment / compose/record.ts RecordSpan). */
-export interface RecordRef { readonly rk: string; readonly rid: string; readonly a: string; readonly f: string }
+/**
+ * The record segment the renderer reads (= conversations/answer.ts StoredRecordSegment / compose/record.ts RecordSpan).
+ * `v` (S2 09io A1/A2): a CLOSED T1 field's value as the turn's tool returned it — present only for a closed field.
+ */
+export interface RecordRef { readonly rk: string; readonly rid: string; readonly a: string; readonly f: string; readonly v?: number | string }
 
 /** One RECORD kind's read-time source (registered by its pack, P5+). Every method reads FRESH. */
 export interface RecordRenderSource {
   /** T2 fields that exist behind this kind (names only). */
   readonly t2Fields: readonly T2FieldName[];
+  /**
+   * S2 09io A1 — the CLOSED T1 fields of this kind that may render (the union of its RECORD tools' schema
+   * `placeable` lists). Absent ⇒ none: a closed-field segment of this kind renders "[no longer available]".
+   */
+  readonly placeable?: readonly string[];
   /**
    * The record still exists and THIS fresh guard may see it: the tier it is visible at
    * (a CUSTOMER_SUCCESS-tier record only for a CS guard), or null ⇒ not visible.
@@ -108,7 +121,7 @@ export interface RecordRenderViewer {
 }
 
 /** What one record segment rendered to (the outcome CODE is for tests / counts; never logged with a value). */
-export interface RenderedRecord { readonly text: string; readonly outcome: "T2" | "T1" | "MASKED" | "GONE" }
+export interface RenderedRecord { readonly text: string; readonly outcome: "T2" | "T1" | "MASKED" | "GONE" | "CLOSED" }
 
 const isArea = (a: string): a is PlatformArea => (ALL_PLATFORM_AREAS as readonly string[]).includes(a);
 
@@ -170,6 +183,15 @@ export async function renderRecordSegments(segments: readonly RecordRef[], viewe
   const out: RenderedRecord[] = [];
   for (const l of live) {
     if (!l) { out.push({ text: RECORD_GONE_TEXT, outcome: "GONE" }); continue; }
+    // S2 09io A2/A3: a CLOSED T1 field renders its turn value ONLY after the same fresh area check, record
+    // revalidation and tier as every record span (steps 1–2: `l` is live), and only when this kind allows the field
+    // and the value is a closed shape. Anything else ⇒ the SAME "[no longer available]" as a gone record — no
+    // existence or tier oracle. (Export renders it too: it is T1.)
+    if (isClosedField(l.seg.f)) {
+      const text = (l.src.placeable ?? []).includes(l.seg.f) ? renderClosedValue(l.seg.v) : null;
+      out.push(text !== null ? { text, outcome: "CLOSED" } : { text: RECORD_GONE_TEXT, outcome: "GONE" });
+      continue;
+    }
     if (audited && wantsT2(l)) {
       const v = await safe(() => l.src.t2(l.seg.rid, l.area, l.seg.f as T2FieldName, l.guard), null);
       if (typeof v === "string" && v.length > 0 && v.length <= 200) { out.push({ text: v, outcome: "T2" }); continue; }

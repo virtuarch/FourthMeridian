@@ -34,10 +34,11 @@ import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { RecordRenderSource } from "../../authz/record-render";
 import type { FreshGuard } from "../../authz/recheck";
 import { institutionName, walletNetworkName } from "../../evidence/name-registry";
+import { placeableUnion } from "../../evidence/record-envelope";
 import { CUSTOMER_AREA } from "./customers";
 import { customerRid, resolveCustomerRid } from "./customers.server";
 import {
-  CONNECTION_RID, connectionsPackTools, networkCodeOf,
+  CONNECTION_RID, CUSTOMER_CONNECTION_SCHEMA, connectionsPackTools, networkCodeOf,
   type ConnectionsPackReaders, type ConnectionsToolContext, type CustomerConnectionFacts,
 } from "./connections";
 
@@ -129,6 +130,8 @@ async function ownedConnection(rid: string, client: Client): Promise<{ userId: s
 export function connectionRecordSource(client: Client = systemDb): RecordRenderSource {
   return {
     t2Fields: [],
+    // S2 09io A1: the CONNECTION schema's placeable closed fields.
+    placeable: placeableUnion(CUSTOMER_CONNECTION_SCHEMA),
     async revalidate(rid: string, area: PlatformArea, guard: FreshGuard) {
       if (area !== CUSTOMER_AREA || guard.csTier !== true) return null;
       return (await ownedConnection(rid, client)) ? "CUSTOMER_SUCCESS" : null;

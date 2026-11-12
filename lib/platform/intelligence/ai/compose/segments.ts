@@ -44,7 +44,14 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 export type TypedAnswerSegment =
   | { kind: "text"; text: string }
   /** `figureClass: "STALE"` ⇔ the envelope's figure is not current (its text carries the stale wording; absent = current). */
-  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass }
+  | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass;
+      /**
+       * S2 09io B5 — a {{a:<tool>|<resultPath>}} fill (compose/aggregate.ts): the pack AGGREGATE tool and the closed
+       * result path the value came from (codes). `metric` is then `agg:<tool>:<resultPath>` and `window` the
+       * point-in-time label "as of <stamp>". Derived from the placeholder fill only (an annotation such as the
+       * response's figure sources can read it); the stored segment keeps metric + window (storedAnswerOf).
+       */
+      aggregate?: { tool: string; resultPath: string } }
   | { kind: "link"; text: string; href: string }
   | ServerNoteSegment
   /** Platform AI memory (design v2 §4): a server-rendered {{mem:<id>}} span — "noted <date>" (+ tail), never the note. */
