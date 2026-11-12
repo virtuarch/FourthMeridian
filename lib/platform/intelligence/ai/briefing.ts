@@ -178,7 +178,8 @@ function fig(e: MetricEnvelope, part: string | null, estimated: boolean): Seg | 
   // STALE: the sentence states the stale wording once (withStaleTail); the figure carries the class.
   const text = renderPlaceholder(e, part, estimated, { window: false, stale: false });
   if (text === null) return null;
-  return { kind: "figure", text, metric: e.metric, window: e.window.days ?? envelopeWindowText(e), ...(isStaleEnvelope(e) ? { figureClass: "STALE" as const } : {}) };
+  // B1: the part rides on the typed figure (response-only figureSources; never stored).
+  return { kind: "figure", text, metric: e.metric, window: e.window.days ?? envelopeWindowText(e), ...(isStaleEnvelope(e) ? { figureClass: "STALE" as const } : {}), ...(part !== null ? { part } : {}) };
 }
 
 /** STALE — the sentence ends "(last evaluated <time>, may be out of date)." (server text, the shared phrasebook). */
