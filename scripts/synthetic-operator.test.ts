@@ -457,6 +457,8 @@ check("the shared per-user cleanup keeps the REVOKED-item guard, the zero-grace 
   && /where: \{ id: u\.id, email: expectedEmail, role: \{ in: \[\.\.\.allowedRoles\] \} \}/.test(purgeBody)
   && /data: \{ deletionRequestedAt: stampedAt, deletionScheduledAt: stampedAt, deactivatedAt: stampedAt, role: SYNTHETIC_ROLE \}/.test(purgeBody)
   && /allowedRoles: ReadonlyArray<typeof SYNTHETIC_ROLE \| typeof E0_LIVE_SA_ROLE> = \[SYNTHETIC_ROLE\]/.test(purgeBody)
+  && /tx\.userSession\.updateMany\(\{ where: \{ userId: u\.id, revokedAt: null \}, data: \{ revokedAt: new Date\(\) \} \}\);/.test(purgeBody)
+  && purgeBody.indexOf("role: SYNTHETIC_ROLE }") < purgeBody.indexOf("tx.userSession.updateMany(")
   && /for \(const f of SECRET_FILES\) shredFile\(path\.join\(opDir, f\)\);/.test(purgeBody));
 
 // ══ e0-live hard stop (S2 09eh) ═══════════════════════════════════════════════

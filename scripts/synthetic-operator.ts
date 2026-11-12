@@ -395,6 +395,9 @@ async function purgeOperator(db: Db, userId: string, expectedEmail: string, opDi
       data: { deletionRequestedAt: stampedAt, deletionScheduledAt: stampedAt, deactivatedAt: stampedAt, role: SYNTHETIC_ROLE },
     });
     if (n.count !== 1) throw new Error("deletion request stamp matched no synthetic operator");
+    // The stamp may change the role (the e0-live-sa demotion): every session is revoked in the SAME transaction
+    // (lib/auth/session-token-exposure.test.ts §6 — every role change revokes the user's sessions).
+    await tx.userSession.updateMany({ where: { userId: u.id, revokedAt: null }, data: { revokedAt: new Date() } });
     await tx.auditLog.create({
       data: {
         userId: u.id,
