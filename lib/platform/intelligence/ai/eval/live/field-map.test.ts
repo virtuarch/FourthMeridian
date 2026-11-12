@@ -18,7 +18,7 @@ import path from "node:path";
 import { LIVE_CASES, PA1_PACKS } from "./cases";
 import {
   CONNECTION_ERROR_CODES, CONNECTION_STATUS_CODES, FUNNEL_STAGE_KEY_OF_LABEL, IMPORT_HEALTH_CODES, INCIDENT_PROVIDER_CODES, INCIDENT_STATE_CODES,
-  LIVE_FIELD_MAP, ROUTE, guardedFacts, oracleKeyFor, projectOracle,
+  LIVE_FIELD_MAP, ROUTE, guardedFacts, keyOfField, oracleKeyFor, projectOracle,
 } from "./field-map";
 import { PLATFORM_AI_TOOL_REGISTRY } from "../../tools/registry";
 import { FUNNEL_STAGE_LABELS } from "@/lib/platform/growth/product-analytics-core";
@@ -26,6 +26,9 @@ import { stageKeyOf } from "../../tools/packs/customers";
 import { CONNECTION_ERROR_CODES as PACK_CONNECTION_ERROR_CODES, CUSTOMER_CONNECTION_SCHEMA, overviewOfHealth } from "../../tools/packs/connections";
 import { INCIDENT_LIST_SCHEMA } from "../../tools/packs/incidents";
 import { ONBOARDING_TIMELINE_SCHEMA, importsOf } from "../../tools/packs/onboarding";
+import { placedSourceOf } from "../../tools/figure-sources";
+import type { TypedAnswerSegment } from "../../compose/segments";
+import { oracleKeyOfSource } from "./score";
 
 let failures = 0;
 let passed = 0;
@@ -53,6 +56,13 @@ const EXPECTED_PLACEABLE: Record<string, { mapped: number; placeable: number; un
   incidents: { mapped: 34, placeable: 33, unmapped: 15 },
   onboarding: { mapped: 38, placeable: 38, unmapped: 5 },
   connections: { mapped: 28, placeable: 28, unmapped: 10 },
+};
+/** B1: per pack, MAPPED / PLACEABLE (S2 09io) / ANNOTATABLE end-to-end (figureSources → score.ts → oracleKeyFor keys the fact). */
+const EXPECTED_B1: Record<string, { mapped: number; placeable: number; annotatable: number }> = {
+  customers: { mapped: 12, placeable: 11, annotatable: 11 },
+  incidents: { mapped: 34, placeable: 33, annotatable: 33 },
+  onboarding: { mapped: 38, placeable: 38, annotatable: 38 },
+  connections: { mapped: 28, placeable: 28, annotatable: 28 },
 };
 
 console.log("\nG2 — completeness and shape\n");
@@ -171,6 +181,45 @@ console.log("\nG2 — per-pack mapped / unmapped report\n");
   for (const u of notPlaceable) console.log(`    MAPPED, NOT PLACEABLE ${u}`);
   check("pinned per-pack mapped / placeable / unmapped (S2 09io; a change to the allowlists or the mapping is deliberate)",
     JSON.stringify(placeableByPack) === JSON.stringify(EXPECTED_PLACEABLE), placeableByPack);
+}
+
+console.log("\nB1 — which MAPPED facts the response's figureSources carry end-to-end (per pack)\n");
+{
+  // PLACEABLE (S2 09io): the model can place the fact — a record field in the tool schema's `placeable` list
+  // ({{r:h|<field>}}) or an aggregate path in the tool's `placeablePaths` ({{a:<tool>|<path>}}).
+  // ANNOTATABLE (B1): a placed fill of it yields a figureSources entry (tools/figure-sources.ts placedSourceOf, from the
+  // FILL's codes) that score.ts oracleKeyOfSource keys to THIS fact (field-map oracleKeyFor) — i.e. end-to-end matchable.
+  const report: Record<string, { mapped: number; placeable: number; annotatable: number }> = {};
+  for (const p of PA1_PACKS) report[p] = { mapped: 0, placeable: 0, annotatable: 0 };
+  const notAnnotatable: string[] = [];
+  for (const c of guarded) {
+    for (const f of guardedFacts(c)) {
+      if (f.status !== "MAPPED") continue;
+      const r = (report[f.pack] ??= { mapped: 0, placeable: 0, annotatable: 0 });
+      r.mapped++;
+      const tool = PLATFORM_AI_TOOL_REGISTRY.find((t) => t.name === f.entry.tool);
+      const s = f.entry.source;
+      // The fills the model can make for this fact (none ⇒ not placeable).
+      const fills: TypedAnswerSegment[] = s.kind === "record"
+        ? ((tool?.recordSchema?.placeable ?? []).includes(s.field) ? [{ kind: "record", text: "[restricted]", rk: s.recordKind, rid: "x", a: "CUSTOMER_SUCCESS", f: s.field } as TypedAnswerSegment] : [])
+        : (tool?.placeablePaths ?? []).filter((x) => x.path === s.path || x.path.startsWith(`${s.path}.`))
+          .map((x) => ({ kind: "figure", text: "1", metric: `agg:${f.entry.tool}:${x.path}`, window: null, aggregate: { tool: f.entry.tool, resultPath: x.path } }) as TypedAnswerSegment);
+      if (fills.length === 0) continue;
+      r.placeable++;
+      const ok = fills.some((fill) => {
+        const src = placedSourceOf(fill);
+        if (!src) return false;
+        const key = oracleKeyOfSource(c, { segment: 0, start: 0, end: 1, ...src }, [f.entry.tool]);
+        return key !== null && keyOfField(key, f.field);
+      });
+      if (ok) r.annotatable++; else notAnnotatable.push(`${f.pack} ${f.field} [${c.id}]`);
+    }
+  }
+  console.log(`    B1 mapped / placeable / annotatable by pack: ${JSON.stringify(report)}`);
+  for (const u of notAnnotatable) console.log(`    PLACEABLE, NOT ANNOTATABLE ${u}`);
+  check("every PLACEABLE mapped fact is annotatable end-to-end (its fill's figureSources entry keys to that fact)",
+    Object.values(report).every((r) => r.annotatable === r.placeable), notAnnotatable);
+  check("pinned B1 report (a change to the mapping, the cases or the allowlists is deliberate)", JSON.stringify(report) === JSON.stringify(EXPECTED_B1), report);
 }
 
 console.log("\nG2 — purity and isolation\n");

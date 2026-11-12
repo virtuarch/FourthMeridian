@@ -464,7 +464,7 @@ export function resolvePlaceholders(
   const stream = { text: "", spans: [] as RenderedSpan[] };
 
   const resolveParts = (text: string, lineStart = true): { text: string; parts: TypedAnswerSegment[] } => {
-    const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null; stale: boolean } | { kind: "label" })[] = [];
+    const meta: ({ kind: "figure"; metric: string; window: number | string | null; windowPhrase: string | null; stale: boolean; part: string | null } | { kind: "label" })[] = [];
     const out = text.replace(PLACEHOLDER, (m, kind: "m" | "l", written: string, rawOpts: string, offset: number) => {
       claims++;
       const opts = placeholderOptions(rawOpts);
@@ -496,7 +496,9 @@ export function resolvePlaceholders(
       figures.set(key, [...(figures.get(key) ?? []), fig]);
       // The figure's qualifier carries its window unless the part is unwindowed (renderPlaceholder's rule).
       const windowed = !(p.part !== null && (e.unwindowedParts ?? []).includes(p.part)) && envelopeWindowText(e) !== null;
-      meta.push({ kind: "figure", metric: key, window: e.window.days ?? envelopeWindowText(e), windowPhrase: windowed ? quotableWindowPhrase(e) : null, stale: isStaleEnvelope(e) });
+      meta.push({ kind: "figure", metric: key, window: e.window.days ?? envelopeWindowText(e), windowPhrase: windowed ? quotableWindowPhrase(e) : null, stale: isStaleEnvelope(e),
+        // B1: only a part the envelope DECLARES (code); a model-written part on an UNAVAILABLE envelope is never kept.
+        part: p.part !== null && e.valueUnits !== null && typeof e.valueUnits === "object" && Object.prototype.hasOwnProperty.call(e.valueUnits, p.part) ? p.part : null });
       return `${SENTINEL}${fig}${SENTINEL}`;
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
@@ -543,7 +545,8 @@ export function resolvePlaceholders(
       const f = i % 2 === 1 ? meta[(i - 1) / 2] : null;
       if (f) stream.spans.push({ start: stream.text.length, end: stream.text.length + piece.length, kind: f.kind, text: piece, windowPhrase: f.kind === "figure" ? f.windowPhrase : null });
       stream.text += piece;
-      if (f?.kind === "figure") parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window, ...(f.stale ? { figureClass: "STALE" as const } : {}) });
+      // B1: the resolved PART rides on the typed figure (response-only figureSources; never stored).
+      if (f?.kind === "figure") parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window, ...(f.stale ? { figureClass: "STALE" as const } : {}), ...(f.part !== null ? { part: f.part } : {}) });
       else if (piece) {
         const prev = parts[parts.length - 1];
         if (prev?.kind === "text") prev.text += piece; else parts.push({ kind: "text", text: piece });

@@ -46,6 +46,13 @@ export type TypedAnswerSegment =
   /** `figureClass: "STALE"` ⇔ the envelope's figure is not current (its text carries the stale wording; absent = current). */
   | { kind: "figure"; text: string; metric: string; window: number | string | null; figureClass?: FigureClass;
       /**
+       * B1 — the envelope PART the placeholder resolved to (a part key the metric's retrieval contract declares;
+       * absent for a scalar). Set by the fill (compose/placeholders.ts, briefing.ts fig); read only by
+       * tools/figure-sources.ts for the response's metadata-only `figureSources`. Never stored (storedAnswerOf
+       * copies named fields only).
+       */
+      part?: string;
+      /**
        * S2 09io B5 — a {{a:<tool>|<resultPath>}} fill (compose/aggregate.ts): the pack AGGREGATE tool and the closed
        * result path the value came from (codes). `metric` is then `agg:<tool>:<resultPath>` and `window` the
        * point-in-time label "as of <stamp>". Derived from the placeholder fill only (an annotation such as the

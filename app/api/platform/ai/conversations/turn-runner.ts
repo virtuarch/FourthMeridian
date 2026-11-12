@@ -42,6 +42,7 @@ import { STORED_NOTES_MAX } from "@/lib/platform/intelligence/ai/conversations/a
 import { answerReadable, packAreasRead, withAreasRead } from "@/lib/platform/intelligence/ai/conversations/multi-area";
 import { CORE_PACKS } from "@/lib/platform/intelligence/ai/engine/router";
 import { platformAiToolTrace } from "@/lib/platform/intelligence/ai/tools/tool-trace";
+import { placedSpansOf } from "@/lib/platform/intelligence/ai/tools/figure-sources";
 
 const ROUTE_KEY = "platform-ai-conversation";
 
@@ -128,10 +129,13 @@ export const runConversationTurnForRoute: TurnRunDeps["runTurn"] = async ({ oper
   // S2 09hu G1 — the response's metadata-only tool trace (tool / pack / tier / outcome / calls; the same for every
   // operator). The handler splits it off BEFORE the settle: it is never stored.
   const toolTrace = platformAiToolTrace(run.result?.trace ?? []);
+  // B1 — the placed spans' closed sources (record kind + field code / metric key + result path; never an id or a
+  // value). The handler splits them off BEFORE the settle (never stored) and positions them on the response.
+  const figureSources = run.outcome.status === "COMPLETE" ? placedSpansOf(run.typed ?? []) : [];
   // P5: the one uniform server note for any unresolved subject (code-written; never says why).
   if (subjectNote && outcome.status === "COMPLETE" && !outcome.answer.notes.includes(subjectNote) && outcome.answer.notes.length < STORED_NOTES_MAX) {
-    return { ...outcome, answer: { ...outcome.answer, notes: [...outcome.answer.notes, subjectNote] }, toolTrace };
+    return { ...outcome, answer: { ...outcome.answer, notes: [...outcome.answer.notes, subjectNote] }, toolTrace, figureSources };
   }
-  return { ...outcome, toolTrace };
+  return { ...outcome, toolTrace, figureSources };
 };
 
