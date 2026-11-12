@@ -1,4 +1,4 @@
-*Effective November 2, 2026.*
+*Effective November 12, 2026.*
 
 This Privacy Policy explains what information Fourth Meridian (the "Service") collects, how we use it, and the choices you have. Fourth Meridian is currently offered as a closed, invite-only beta.
 
@@ -33,8 +33,6 @@ You can disconnect a connection at any time. Disconnecting stops syncing, remove
 The Daily Brief and Conversations send relevant portions of your financial context to OpenAI's API for processing. See our [AI Disclosures](/legal/ai) for exactly what is sent, what is never sent, what Fourth Meridian remembers, and the limits of AI-generated output.
 
 ### Operator tools and AI
-
-<!-- DRAFT (owner decision D3) — wording, including the AI-provider retention paragraph, still pending owner approval. The "Last updated" date (LEGAL.privacy.updated in copy.ts) and the "Effective" line above are left unchanged; the owner updates them on publish. -->
 
 When our staff use AI-assisted tools, it is to help our support and operations team understand problems with accounts and connections, such as why a bank connection stopped syncing. Only authorized staff can use them, and daily spending limits cap their use.
 

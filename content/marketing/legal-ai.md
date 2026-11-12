@@ -1,4 +1,4 @@
-*Effective October 7, 2026.*
+*Effective November 12, 2026.*
 
 Fourth Meridian uses artificial intelligence in two places: the Daily Brief and Conversations. This page explains, plainly, what that involves, what is shared with the model provider, what Fourth Meridian records, and the limits of what the AI produces.
 
@@ -40,8 +40,6 @@ Fourth Meridian uses OpenAI's API to generate Briefs and Conversation answers. T
 - **Memory**: what you have asked Fourth Meridian to remember in that Space, and the projections it has previously given you.
 
 Your password, your bank or brokerage credentials, and the access tokens Fourth Meridian holds for your linked accounts are never sent, and neither is your e-mail address.
-
-<!-- DRAFT — the AI-provider retention wording below is pending owner approval (mirrors the Privacy Policy "Operator tools and AI" paragraph). The "Last updated" date is left unchanged; the owner updates it on publish. -->
 
 Fourth Meridian does not train any model on your data. Our AI provider, OpenAI, does not use this information to train its models under its API terms, and we have not opted in to any data sharing. We do not ask OpenAI to store these requests. Under its current API data policy, OpenAI may keep them for up to 30 days to monitor for abuse before deleting them, unless the law requires it to keep them longer or it is needed to protect against harm. See our [Privacy Policy](/privacy) for how your data is handled overall.
 
