@@ -114,7 +114,8 @@ console.log("\nG1 — wiring: both routes, response only, no per-operator branch
   check("the ask route passes the projection to the handler", /toolTrace: platformAiToolTrace,/.test(ask));
   const core = code(read("lib/platform/intelligence/ai/core.ts"));
   check("core.ts adds it to the 200 body from the turn's metadata trace (and imports no registry)",
-    /const \{ trace, \.\.\.answer \} = result;/.test(core) && /body: \{ \.\.\.answer, \.\.\.\(deps\.toolTrace \? \{ toolTrace: deps\.toolTrace\(trace\) \} : \{\}\) \}/.test(core)
+    // B1: the body continues with the response-only figureSources spread (tools/figure-sources.test.ts).
+    /const \{ trace, \.\.\.answer \} = result;/.test(core) && /body: \{ \.\.\.answer, \.\.\.\(deps\.toolTrace \? \{ toolTrace: deps\.toolTrace\(trace\) \} : \{\}\),/.test(core)
     && !/tools\/registry|tools\/tool-trace/.test(core));
   const runner = code(read("app/api/platform/ai/conversations/turn-runner.ts"));
   check("the conversations' turn runner computes it from the turn's metadata trace", /const toolTrace = platformAiToolTrace\(run\.result\?\.trace \?\? \[\]\);/.test(runner));

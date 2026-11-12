@@ -6,8 +6,10 @@
  * placed with {{r:<handle>|<field>}}, or a metric figure it placed with {{m:<key>[|part=<name>]}} —
  * WHERE that span sits in the response and WHICH closed source it was filled from:
  *
- *   { segment, start, end, source: "record", recordKind, fieldCode }     — a record span
+ *   { segment, start, end, source: "record", recordKind, fieldCode }     — a record span ({{r:h|<field>}}: ref, a T2
+ *                                                                           name, or — S2 09io A1 — a CLOSED field)
  *   { segment, start, end, source: "metric", metricKey, resultPath }     — a metric figure span
+ *   { segment, start, end, source: "aggregate", tool, resultPath }       — S2 09io B1–B6: a {{a:<tool>|<path>}} fill
  *
  *   THE CLOSED KEY SET: FIGURE_SOURCE_KEYS (each entry carries exactly the record or the metric subset;
  *   pinned by figure-sources.test.ts).
@@ -21,6 +23,9 @@
  *   fieldCode   "ref", a T2 field NAME a schema of that kind declares (t2Fields) or a field the schemas of that
  *               kind declare — the field CODE the placeholder named, never its value.
  *   metricKey   a registered metric key (metrics/registry.ts).
+ *   tool        (aggregate) a registered AGGREGATE tool with a placeable-path allowlist (tools/contract.ts placeablePaths).
+ *   resultPath  (aggregate) the closed path of THAT tool's allowlist the value was filled from — the typed figure's
+ *               `aggregate` (core.ts, from compose/aggregate.ts extractAggregatePlaceholders), never its value.
  *   resultPath  the JSON path of the figure inside get_metric's result for that key: "value" (a scalar) or
  *               "value.<part>". The fill keeps a part only when THAT envelope declares it (compose/placeholders.ts);
  *               this projection also requires it to be a retrieval-contract part (memory/constants.ts
@@ -53,11 +58,15 @@ import { figureSourceEntry, type FigureSourceEntry, type PlacedFigureSource, typ
 import { PLATFORM_AI_TOOL_REGISTRY } from "./registry";
 
 export {
-  FIGURE_SOURCE_KEYS, FIGURE_SOURCE_KINDS, FIGURE_SOURCE_METRIC_KEYS, FIGURE_SOURCE_RECORD_KEYS, storedFigureSources,
+  FIGURE_SOURCE_AGGREGATE_KEYS, FIGURE_SOURCE_KEYS, FIGURE_SOURCE_KINDS, FIGURE_SOURCE_METRIC_KEYS, FIGURE_SOURCE_RECORD_KEYS, storedFigureSources,
   type FigureSourceEntry, type PlacedFigureSource, type PlacedSpan,
 } from "../conversations/figure-positions";
 
-type RegistryView = readonly { readonly recordSchema?: { readonly kind: string; readonly fields: Readonly<Record<string, unknown>>; readonly t2Fields?: readonly string[] } }[];
+type RegistryView = readonly {
+  readonly name?: string;
+  readonly recordSchema?: { readonly kind: string; readonly fields: Readonly<Record<string, unknown>>; readonly t2Fields?: readonly string[] };
+  readonly placeablePaths?: readonly { readonly path: string }[];
+}[];
 
 /** recordKind → its closed field codes ("ref" + the T2 NAMES its schemas declare + every schema field of that kind). */
 export function recordFieldCodes(registry: RegistryView = PLATFORM_AI_TOOL_REGISTRY): ReadonlyMap<string, ReadonlySet<string>> {
@@ -75,7 +84,18 @@ export function recordFieldCodes(registry: RegistryView = PLATFORM_AI_TOOL_REGIS
 
 type FieldCodes = ReadonlyMap<string, ReadonlySet<string>>;
 
+/** S2 09io B2 — tool → its closed placeable aggregate paths (the registry's placeablePaths allowlists). */
+export function aggregatePathCodes(registry: RegistryView = PLATFORM_AI_TOOL_REGISTRY): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const t of registry) {
+    if (typeof t.name !== "string" || !t.placeablePaths?.length) continue;
+    out.set(t.name, new Set(t.placeablePaths.map((p) => p.path).filter((p): p is string => typeof p === "string")));
+  }
+  return out;
+}
+
 const RECORD_FIELDS = recordFieldCodes();
+const AGGREGATE_PATHS = aggregatePathCodes();
 const METRIC_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
 
 /** The parts a figure of a registered metric may name (the retrieval contracts' part keys; [] for an unknown key). */
@@ -90,6 +110,12 @@ export function placedSourceOf(t: TypedAnswerSegment, fields: FieldCodes = RECOR
     if (typeof rk !== "string" || typeof f !== "string") return null;
     const allowed = fields.get(rk);
     return allowed && allowed.has(f) ? { source: "record", recordKind: rk, fieldCode: f } : null;
+  }
+  if (t.kind === "figure" && t.aggregate !== undefined) {
+    // S2 09io: an aggregate fill — the tool + closed path from the FILL (never the stored key text, never the value).
+    const tool: unknown = t.aggregate?.tool, path: unknown = t.aggregate?.resultPath;
+    return typeof tool === "string" && typeof path === "string" && !!AGGREGATE_PATHS.get(tool)?.has(path)
+      ? { source: "aggregate", tool, resultPath: path } : null;
   }
   if (t.kind === "figure") {
     const key: unknown = t.metric, part: unknown = t.part;

@@ -34,6 +34,7 @@
 import { leftoverPlaceholders, outOfPolicyLinks, sentinelsIn } from "../gates";
 import { LIVE_REFUSAL_CODES, LIVE_TOOL_TIER, type LiveCase, type LivePack, type LiveRefusalCode, type LiveTier } from "./cases";
 import { guardedFacts, keyOfField, oracleKeyFor, projectOracle, projectPlaced } from "./field-map";
+import { closedTypeOf, codeWords, formatClosedValue } from "../../compose/closed";
 
 /**
  * S2 09hu G4 — the export-leak check. Platform AI conversations have NO per-conversation export route:
@@ -71,6 +72,12 @@ export interface ObservedSegment {
   window?: string;
   /** figure / record: false when the server rendered the unresolved fallback (RECORD_UNRESOLVED). */
   resolved?: boolean;
+  /**
+   * B1: "closed" ⇔ `value` is the SERVER's rendering of a closed value ({{r:h|<closed field>}} / {{a:<tool>|<path>}},
+   * compose/closed.ts formatClosedValue: "1,234", "2026-11-12 03:18 UTC", "needs reauth"); parity then renders the
+   * oracle's projected value the same way before comparing (renderedOracle).
+   */
+  form?: "closed";
 }
 
 export interface ObservedTurn {
@@ -127,13 +134,27 @@ export interface ServedFigureSource {
   segment: number;
   start: number;
   end: number;
-  source: "record" | "metric";
+  source: "record" | "metric" | "aggregate";
   recordKind?: string;
   fieldCode?: string;
   metricKey?: string;
   resultPath?: string;
+  /** aggregate: the pack AGGREGATE tool the value was filled from (S2 09io). */
+  tool?: string;
 }
-export const SERVED_FIGURE_SOURCE_KEYS = ["segment", "start", "end", "source", "recordKind", "fieldCode", "metricKey", "resultPath"] as const;
+export const SERVED_FIGURE_SOURCE_KEYS = ["segment", "start", "end", "source", "recordKind", "fieldCode", "metricKey", "resultPath", "tool"] as const;
+
+/**
+ * B1 — an oracle value (already projected by the fact's FieldCompare) in the SERVER's closed rendering
+ * (compose/closed.ts — the same code the answer used): a count "1,234", an instant "2026-11-12 03:18 UTC", a code
+ * in words. A boolean / null stays as it is (never placeable as a closed value).
+ */
+export function renderedOracle(v: string | number | boolean | null | undefined): string | number | boolean | null | undefined {
+  if (v === null || v === undefined || typeof v === "boolean") return v;
+  const t = closedTypeOf(v);
+  if (t) return formatClosedValue(t, v) ?? v;
+  return typeof v === "string" ? codeWords(v) : v;
+}
 
 /** One segment as a served response renders it (/ask `answer[]`, conversations `assistantMessage.content[]`). */
 export interface ServedSegment { kind: string; text: string; href?: string }
@@ -147,9 +168,11 @@ export const METRIC_TOOL = "get_metric";
 /**
  * The oracle key of one served figure source in THIS case, or null: field-map oracleKeyFor over each candidate
  * tool (the tools the turn ran, else the case's expected tools) — a record by (record kind, field code), a metric
- * figure by its result path under get_metric. Built from the source's CODES only; never from the rendered text.
+ * figure by its result path under get_metric, an aggregate fill by (its tool, its result path). Built from the
+ * source's CODES only; never from the rendered text.
  */
 export function oracleKeyOfSource(c: Pick<LiveCase, "id" | "pack" | "expectedTools" | "oracle">, src: ServedFigureSource, tools: readonly string[]): string | null {
+  if (src.source === "aggregate") return typeof src.tool === "string" && typeof src.resultPath === "string" ? oracleKeyFor(c, { tool: src.tool, path: src.resultPath }) : null;
   const candidates = src.source === "metric" ? [METRIC_TOOL] : tools.length ? [...tools] : [...c.expectedTools];
   for (const tool of candidates) {
     const key = src.source === "record"
@@ -186,7 +209,9 @@ export function observeServedAnswer(c: Pick<LiveCase, "id" | "pack" | "expectedT
       const value = text.slice(x.start, x.end);
       const key = oracleKeyOfSource(c, x, tools);
       const resolved = value !== RECORD_GONE_LITERAL && value !== RECORD_PENDING_LITERAL;
-      out.push({ kind: x.source === "record" ? "record" : "figure", text: value, value, resolved, ...(key !== null ? { key } : {}) });
+      // A closed record field or an aggregate fill renders a closed value (compose/closed.ts): compare in that form.
+      const closed = x.source === "aggregate" || (x.source === "record" && x.fieldCode !== "ref" && !["name", "email", "username"].includes(x.fieldCode ?? ""));
+      out.push({ kind: x.source === "record" ? "record" : "figure", text: value, value, resolved, ...(key !== null ? { key } : {}), ...(closed ? { form: "closed" as const } : {}) });
       at = x.end;
     }
     if (at < text.length) out.push({ kind, text: text.slice(at) });
@@ -493,10 +518,12 @@ export function scoreCase(c: LiveCase, obs: CaseObservation, ctx: ScoreContext):
         const entry = fact?.status === "MAPPED" ? fact.entry : null;
         const want = oracle[key];
         const candidates = Array.isArray(want) ? want : [want as Exclude<OracleValue, readonly unknown[]>];
-        const got = normaliseValue(entry ? projectPlaced(entry, s.value) : s.value);
+        // B1: a server-rendered closed value is compared with the oracle rendered the same way (renderedOracle).
+        const closed = s.form === "closed";
+        const got = normaliseValue(closed ? s.value : entry ? projectPlaced(entry, s.value) : s.value);
         const match = candidates.some((o) => {
           const p = entry ? projectOracle(entry, o) : o;
-          return p !== undefined && normaliseValue(p) === got;
+          return p !== undefined && normaliseValue(closed ? renderedOracle(p) : p) === got;
         });
         if (!match) { ok = false; fails.add("PARITY_MISMATCH"); }
       }

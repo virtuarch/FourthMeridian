@@ -17,13 +17,17 @@ import path from "node:path";
 import { LIVE_CASES, type LiveCase } from "./cases";
 import { guardedFacts } from "./field-map";
 import {
-  causalFindings, evaluatePackGates, numericClaims, observeServedAnswer, oracleKeyOfSource, scoreCase, scorePackRun,
+  causalFindings, evaluatePackGates, numericClaims, observeServedAnswer, oracleKeyOfSource, renderedOracle, scoreCase, scorePackRun,
   EXPORT_LEAK_CHECK, IDENTITY_FALLBACK_LITERAL, RECORD_GONE_LITERAL, RECORD_PENDING_LITERAL, SERVED_FIGURE_SOURCE_KEYS, SUBJECT_UNRESOLVED_LITERAL,
-  type CaseObservation, type ObservedSegment, type ObservedTurn, type PackRunScore, type ScoreContext,
+  type CaseObservation, type ObservedSegment, type ObservedTurn, type OracleValue, type PackRunScore, type ScoreContext,
 } from "./score";
 import { FIGURE_SOURCE_KEYS, alignedFigureSources, placedSpansOf, storedFigureSources } from "../../tools/figure-sources";
-import { RECORD_PENDING_TEXT, type RecordSpan } from "../../compose/record";
+import { PLATFORM_AI_TOOL_REGISTRY } from "../../tools/registry";
+import { RECORD_GONE_TEXT, RECORD_PENDING_TEXT, extractRecordPlaceholders, renderClosedValue, type RecordSpan } from "../../compose/record";
+import { captureAggregateResult, extractAggregatePlaceholders, type AggregateCaptures } from "../../compose/aggregate";
 import type { TypedAnswerSegment } from "../../compose/segments";
+import { displayWithRecords } from "../../core";
+import { storedAnswerOf } from "../../conversations/turn";
 
 let failures = 0;
 let passed = 0;
@@ -262,45 +266,94 @@ console.log("\ne0-live score — B1: a served response's figureSources key its s
 {
   check("SERVED_FIGURE_SOURCE_KEYS = the served FIGURE_SOURCE_KEYS", JSON.stringify(SERVED_FIGURE_SOURCE_KEYS) === JSON.stringify(FIGURE_SOURCE_KEYS));
   check("[restricted] = RECORD_PENDING_TEXT", RECORD_PENDING_LITERAL === RECORD_PENDING_TEXT);
-  const c = LIVE_CASES.find((x) => x.id.startsWith("L.conn.customer.C26."))!;
-  check("the case: one MAPPED fact, connections[].healthState via get_customer_connections (CONNECTION.healthState)",
-    !!c && guardedFacts(c).length === 1 && guardedFacts(c)[0].status === "MAPPED", c && guardedFacts(c));
-  // A synthetic served CONVERSATION turn, built by the SERVED code: the typed answer's record span → the stored
-  // segments (1:1 with assistantMessage.content) → storedFigureSources. The record renders "NEEDS_REAUTH" here.
-  const span: RecordSpan = { kind: "record", text: RECORD_PENDING_TEXT, rk: "CONNECTION", rid: "p:test-item-0001", a: "CUSTOMER_SUCCESS", f: "healthState" };
-  const typed: TypedAnswerSegment[] = [{ kind: "text", text: "Their wallet connection is " }, span, { kind: "text", text: "." }];
-  const content = [{ kind: "text", text: "Their wallet connection is " }, { kind: "text", text: "NEEDS_REAUTH" }, { kind: "text", text: "." }];
-  const stored = [{ kind: "text" }, { kind: "record", rk: "CONNECTION", rid: "p:test-item-0001", a: "CUSTOMER_SUCCESS", f: "healthState" }, { kind: "text" }];
-  const figureSources = storedFigureSources(placedSpansOf(typed), stored, content);
-  const segs = observeServedAnswer(c, content, figureSources, ["get_customer_connections"]);
-  check("observeServedAnswer: the span becomes a record segment keyed connections[].healthState, valued by its rendered text",
-    JSON.stringify(segs) === JSON.stringify([
-      { kind: "text", text: "Their wallet connection is " },
-      { kind: "record", text: "NEEDS_REAUTH", value: "NEEDS_REAUTH", resolved: true, key: "connections[].healthState" },
-      { kind: "text", text: "." },
-    ]), segs);
-  const oracle = { "connections[].healthState": ["HEALTHY", "NEEDS_REAUTH"] };
-  const pass = scoreCase(c, obs(c, [turn(segs, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX);
-  check("end-to-end: the mapped fact MATCHES the oracle ⇒ parity PASS, no fail", pass.parity === "PASS" && pass.fails.length === 0 && pass.facts.mapped === 1, pass);
-  const wrong = observeServedAnswer(c, content.map((x, i) => (i === 1 ? { ...x, text: "ERROR" } : x)), figureSources.map((e) => ({ ...e, end: 5 })), ["get_customer_connections"]);
-  check("…a different rendered value ⇒ PARITY_MISMATCH", scoreCase(c, obs(c, [turn(wrong, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).fails.includes("PARITY_MISMATCH"));
-  const none = observeServedAnswer(c, content, undefined, ["get_customer_connections"]);
-  check("…without figureSources nothing is keyed ⇒ PARITY_MISSING (the gap B1 closes)", scoreCase(c, obs(c, [turn(none, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).fails.includes("PARITY_MISSING"));
-  // The same through the /ask display answer (offsets inside one merged text segment).
-  const display = [{ kind: "text", text: "Their wallet connection is NEEDS_REAUTH." }];
-  const askSources = alignedFigureSources(typed, display, () => "NEEDS_REAUTH");
-  const askSegs = observeServedAnswer(c, display, askSources, ["get_customer_connections"]);
-  check("/ask: the offsets split the merged text and key the span the same way",
-    askSegs.length === 3 && askSegs[1].kind === "record" && askSegs[1].key === "connections[].healthState" && askSegs[1].value === "NEEDS_REAUTH"
-    && scoreCase(c, obs(c, [turn(askSegs, { toolTrace: ["get_customer_connections"] })], { oracle }), CTX).parity === "PASS", askSegs);
-  const restricted = observeServedAnswer(c, [{ kind: "text", text: `x ${RECORD_PENDING_TEXT}` }], [{ segment: 0, start: 2, end: 2 + RECORD_PENDING_TEXT.length, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]);
+  check("renderedOracle renders like the server (compose/closed.ts): count, instant, code words",
+    renderedOracle(1234) === "1,234" && renderedOracle("2026-11-03T09:05:00.000Z") === "2026-11-03 09:05 UTC" && renderedOracle("NEEDS_REAUTH") === "needs reauth"
+    && renderedOracle("firstConnection") === "first connection" && renderedOracle(null) === null && renderedOracle(true) === true);
+
+  // ── A #570-style fill through the REAL compose code (S2 09io): a record tool's CLOSED fields (the boundary's
+  //    `closed`, as compose/record.ts extractRecordPlaceholders resolves {{r:h|<closed field>}}), and a pack
+  //    aggregate tool's result captured + filled (compose/aggregate.ts). Rendered as the server renders them
+  //    (record-render → renderClosedValue; the aggregate span's own text). Test-only values throughout.
+  const H = "h_testhandle000001";
+  const CONN_RID = "p:test-item-0001";
+  const lookup = (h: string) => (h === H ? {
+    rk: "CONNECTION", rid: CONN_RID, a: "CUSTOMER_SUCCESS", fields: ["ref", "healthState", "lastSyncedAt"],
+    closed: { healthState: { type: "code" as const, value: "NEEDS_REAUTH" }, lastSyncedAt: { type: "isoTime" as const, value: "2026-11-03T09:05:00.000Z" } },
+  } : null);
+  const rec = extractRecordPlaceholders(`Their connection is {{r:${H}|healthState}}, last synced {{r:${H}|lastSyncedAt}}.`, lookup);
+  check("the fill resolved both closed fields (spans carry the closed value v, as #570 stores it)", rec.unresolved === 0 && rec.spans.length === 2 && rec.spans.every((s) => s.v !== undefined), rec);
+  const captures: AggregateCaptures = new Map();
+  const healthTool = PLATFORM_AI_TOOL_REGISTRY.find((t) => t.name === "connection_health_overview")!;
+  captureAggregateResult(captures, healthTool.name, healthTool.placeablePaths, { status: "CONFIRMED", asOf: "2026-11-12T00:00:00.000Z", total: 41, byHealth: { ERROR: 3, HEALTHY: 30 } });
+  const agg = extractAggregatePlaceholders("Errored: {{a:connection_health_overview|byHealth.ERROR}}.", captures);
+  check("the aggregate fill resolved from THIS turn's capture", agg.unresolved === 0 && agg.spans.length === 1 && agg.spans[0].text === "3", agg);
+  // The typed answer exactly as core.ts builds it from those spans (record spans as-is; an aggregate span ⇒ a figure).
+  const [hs, ls] = rec.spans;
+  const sp = agg.spans[0];
+  const aggFigure: TypedAnswerSegment = { kind: "figure", text: sp.text, metric: `agg:${sp.tool}:${sp.path}`, window: null, aggregate: { tool: sp.tool, resultPath: sp.path } };
+  const typed: TypedAnswerSegment[] = [
+    { kind: "text", text: "Their connection is " }, hs, { kind: "text", text: ", last synced " }, ls, { kind: "text", text: ". Errored: " }, aggFigure, { kind: "text", text: "." },
+  ];
+  const shown = (s: RecordSpan) => renderClosedValue(s.v) ?? RECORD_GONE_TEXT;
+  check("rendered as the server renders closed values", shown(hs) === "needs reauth" && shown(ls) === "2026-11-03 09:05 UTC");
+  // /ask: the display answer (records rendered for the viewer, adjacent text merged) + alignedFigureSources.
+  const display = displayWithRecords(typed, new Map([[hs, shown(hs)], [ls, shown(ls)]]));
+  const askSources = alignedFigureSources(typed, display, shown);
+  check("figureSources: CONNECTION.healthState, CONNECTION.lastSyncedAt (record), connection_health_overview|byHealth.ERROR (aggregate) — codes only",
+    JSON.stringify(askSources.map((e) => ({ ...e, segment: 0, start: 0, end: 0 }))) === JSON.stringify([
+      { segment: 0, start: 0, end: 0, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" },
+      { segment: 0, start: 0, end: 0, source: "record", recordKind: "CONNECTION", fieldCode: "lastSyncedAt" },
+      { segment: 0, start: 0, end: 0, source: "aggregate", tool: "connection_health_overview", resultPath: "byHealth.ERROR" },
+    ]) && !/NEEDS_REAUTH|needs reauth|2026-11-03|p:test-item|h_test|CUSTOMER_SUCCESS/.test(JSON.stringify(askSources)), askSources);
+
+  const caseOf = (prefix: string) => LIVE_CASES.find((x) => x.id.startsWith(prefix))!;
+  const e2e = (c: LiveCase, tools: string[], oracle: Record<string, OracleValue>, segs = observeServedAnswer(c, display, askSources, tools)) =>
+    scoreCase(c, obs(c, [turn(segs, { toolTrace: tools })], { oracle }), CTX);
+  // 1. a CLOSED CODE record field (connections[].healthState, EXACT).
+  const cHealth = caseOf("L.conn.customer.C26.");
+  const pHealth = e2e(cHealth, ["get_customer_connections"], { "connections[].healthState": ["HEALTHY", "NEEDS_REAUTH"] });
+  check("end-to-end CLOSED CODE record fact (connections[].healthState): parity PASS", pHealth.parity === "PASS" && pHealth.fails.length === 0 && pHealth.facts.mapped === 1, pHealth);
+  check("…the same fact with a different oracle value ⇒ PARITY_MISMATCH", e2e(cHealth, ["get_customer_connections"], { "connections[].healthState": ["HEALTHY"] }).fails.includes("PARITY_MISMATCH"));
+  // 2. a CLOSED INSTANT record field (connections[].lastSyncedAt, ISO_INSTANT) — compared in the server's minute stamp.
+  const cSync = caseOf("L.conn.customer.C18.");
+  const pSync = e2e(cSync, ["get_customer_connections"], { "connections[].lastSyncedAt": ["2026-11-03T09:05:00.000Z"] });
+  check("end-to-end CLOSED INSTANT record fact (connections[].lastSyncedAt): parity PASS", pSync.parity === "PASS" && pSync.fails.length === 0, pSync);
+  check("…another instant ⇒ PARITY_MISMATCH", e2e(cSync, ["get_customer_connections"], { "connections[].lastSyncedAt": ["2026-11-04T09:05:00.000Z"] }).fails.includes("PARITY_MISMATCH"));
+  // 3. an AGGREGATE fact (counts.ERROR ↤ byHealth.ERROR), keyed by the aggregate source's tool + path.
+  const cErr = caseOf("L.conn.fleet.2");
+  const segs = observeServedAnswer(cErr, display, askSources, ["connection_health_overview"]);
+  check("the aggregate span is keyed counts.ERROR (field-map oracleKeyFor) and valued by its rendered text",
+    segs.some((s) => s.kind === "figure" && s.key === "counts.ERROR" && s.value === "3" && s.form === "closed"), segs);
+  const pErr = e2e(cErr, ["connection_health_overview"], { "counts.ERROR": 3 }, segs);
+  check("end-to-end AGGREGATE fact (counts.ERROR): parity PASS", pErr.parity === "PASS" && pErr.fails.length === 0 && pErr.facts.mapped === 1, pErr);
+  check("…a different count ⇒ PARITY_MISMATCH", e2e(cErr, ["connection_health_overview"], { "counts.ERROR": 4 }, segs).fails.includes("PARITY_MISMATCH"));
+  check("…without figureSources nothing is keyed ⇒ PARITY_MISSING (the gap B1 closes)",
+    e2e(cErr, ["connection_health_overview"], { "counts.ERROR": 3 }, observeServedAnswer(cErr, display, undefined, ["connection_health_overview"])).fails.includes("PARITY_MISSING"));
+  // 4. the conversations path: the same answer as stored (1:1 with assistantMessage.content) → storedFigureSources.
+  const stored = storedAnswerOf({ citations: [], notes: [], stop: "ANSWERED" } as never, { typed, pages: new Map() });
+  const content = stored.segments.map((s) => (s.kind === "record" ? { kind: "text", text: renderClosedValue(s.v) ?? RECORD_GONE_TEXT } : { kind: s.kind, text: (s as { text: string }).text }));
+  const convSources = storedFigureSources(placedSpansOf(typed), stored.segments, content);
+  check("conversations: the stored answer (V3: closed values, agg figure) yields the same three sources, each its own segment",
+    convSources.length === 3 && convSources.every((e) => e.start === 0) && convSources.map((e) => content[e.segment].text).join("|") === "needs reauth|2026-11-03 09:05 UTC|3", { convSources, content });
+  const convPass = e2e(cHealth, ["get_customer_connections"], { "connections[].healthState": ["NEEDS_REAUTH"] }, observeServedAnswer(cHealth, content, convSources, ["get_customer_connections"]));
+  check("conversations: end-to-end CLOSED record fact parity PASS", convPass.parity === "PASS" && convPass.fails.length === 0, convPass);
+  // 5. a STAGE label → key fact (rollup.funnelStage via CUSTOMER.stage, a closed code rendered in words).
+  const cStage = caseOf("L.onb.nextstep.C17");
+  const stageSegs = observeServedAnswer(cStage, [{ kind: "text", text: "Stage: first connection." }], [{ segment: 0, start: 7, end: 23, source: "record", recordKind: "CUSTOMER", fieldCode: "stage" }], ["get_onboarding_timeline"]);
+  check("end-to-end STAGE_LABEL_TO_KEY fact: the route label 'First connection' matches the rendered key 'first connection'",
+    e2e(cStage, ["get_onboarding_timeline"], { "rollup.funnelStage": "First connection" }, stageSegs).parity === "PASS", stageSegs);
+
+  const restricted = observeServedAnswer(cHealth, [{ kind: "text", text: `x ${RECORD_PENDING_TEXT}` }], [{ segment: 0, start: 2, end: 2 + RECORD_PENDING_TEXT.length, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]);
   check("a span rendered as the fail-closed marker is keyed but unresolved (never a pass)", restricted[1].resolved === false && restricted[1].key === "connections[].healthState");
   check("a metric source keys only through get_metric (no field-map entry today ⇒ unkeyed)",
-    oracleKeyOfSource(c, { segment: 0, start: 0, end: 1, source: "metric", metricKey: "incident-broken-now@1", resultPath: "value" }, ["get_customer_connections"]) === null);
+    oracleKeyOfSource(cHealth, { segment: 0, start: 0, end: 1, source: "metric", metricKey: "incident-broken-now@1", resultPath: "value" }, ["get_customer_connections"]) === null);
+  check("an aggregate source of another tool / an unmapped path ⇒ unkeyed",
+    oracleKeyOfSource(cErr, { segment: 0, start: 0, end: 1, source: "aggregate", tool: "incident_overview", resultPath: "byHealth.ERROR" }, []) === null
+    && oracleKeyOfSource(cErr, { segment: 0, start: 0, end: 1, source: "aggregate", tool: "connection_health_overview", resultPath: "neverSyncedListed" }, []) === null);
   check("an out-of-bounds / overlapping source is ignored (never guessed)",
-    observeServedAnswer(c, content, [{ segment: 1, start: 0, end: 99, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]).every((s) => s.key === undefined)
-    && observeServedAnswer(c, display, [...askSources, { ...askSources[0], start: askSources[0].start + 1 }]).filter((s) => s.key !== undefined).length === 1);
-  check("the scorer output still carries no value", !JSON.stringify(pass).includes("NEEDS_REAUTH"));
+    observeServedAnswer(cHealth, content, [{ segment: 0, start: 0, end: 999, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]).every((s) => s.key === undefined)
+    && observeServedAnswer(cHealth, display, [...askSources, { ...askSources[0], start: askSources[0].start + 1 }], ["get_customer_connections"]).filter((s) => s.key !== undefined).length === 1);
+  check("the scorer output still carries no value", !/needs reauth|NEEDS_REAUTH|2026-11-03/.test(JSON.stringify([pHealth, pSync, pErr])));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed, ${passed} passed`); process.exit(1); }
