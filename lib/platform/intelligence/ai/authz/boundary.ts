@@ -89,13 +89,13 @@ import {
   type ModelRecord, type RawRecord, type RecordFields, type RecordRunResult,
 } from "../evidence/record-envelope";
 import { closedValueOk, type ClosedValue } from "../compose/closed";
-import { captureAggregateResult } from "../compose/aggregate";
+import { aggregatePlaceholdersFor, captureAggregateResult } from "../compose/aggregate";
 import { MORE_TOOLS_NAME, toolCallableIn, type PlatformAiTurnRouter } from "../engine/router";
 import { GUARDED_TEXT_ALLOWLIST, TOOL_TIERS, parseClosedArgs, type ToolPack, type ToolTier } from "../tools/contract";
 import { PLATFORM_AI_TOOL_REGISTRY, type LegacyToolContext, type PlatformAiTool } from "../tools/registry";
 import { createHandleTable } from "./handles";
 import { PLATFORM_AI_RECORD_SOURCES, type RecordRenderSource } from "./record-render";
-import { RECORD_REF_FIELD, type TurnRecordRef } from "../compose/record";
+import { RECORD_REF_FIELD, recordPlaceholderText, type TurnRecordRef } from "../compose/record";
 import {
   createDenialLog, createTurnScope,
   type BoundaryDenialReason, type DenialRow, type FreshGuard, type PlatformAiRecheck,
@@ -316,6 +316,13 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
       if (tool.placeablePaths?.length) {
         c.ev.aggregates ??= new Map();
         captureAggregateResult(c.ev.aggregates, tool.name, tool.placeablePaths, out);
+        // S2 09jr S-a: the ready-to-copy {{a:<tool>|<path>}} strings for the allowlisted paths THIS result holds (and the
+        // turn can still fill) — built from the tool name + path codes only; no value, no new key of the tool's own.
+        const placeholders = aggregatePlaceholdersFor(c.ev.aggregates, tool.name, tool.placeablePaths, out);
+        if (Object.keys(placeholders).length > 0) {
+          (c.ev.issuedPlaceholders ??= []).push(...Object.values(placeholders));
+          return { ...(out as Record<string, unknown>), placeholders };
+        }
       }
       return out;
     }
@@ -426,11 +433,18 @@ export function createTurnBoundary(opts: TurnBoundaryOptions): TurnBoundary {
         facts: Object.freeze({ ...withoutT2(r.fields) }),
         closed: Object.freeze(closed),
       }));
+      // S2 09jr S-a: one ready-to-copy {{r:<handle>|<field>}} per A1-allowlisted closed field THIS result gives a value for
+      // (the keys of `closed`): the handle the model already has + the field code — never a value, never "ref", never T2.
+      const placeholders: Record<string, string> = {};
+      for (const f of Object.keys(closed)) { const p = recordPlaceholderText(handle, f); if (p) placeholders[f] = p; }
+      const issued = Object.values(placeholders);
+      if (issued.length > 0) (ctx.ev.issuedPlaceholders ??= []).push(...issued);
       return {
         handle,
         kind: schema.kind,
         fields: withoutT2(r.fields),
         ...(schema.t2Fields?.length ? { t2Fields: [...schema.t2Fields] } : {}),
+        ...(issued.length > 0 ? { placeholders } : {}),
       };
     });
 

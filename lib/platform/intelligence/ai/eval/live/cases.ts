@@ -46,6 +46,17 @@ export const LIVE_TOOL_TIER = {
 } as const satisfies Record<string, LiveTier>;
 export type LiveTool = keyof typeof LIVE_TOOL_TIER;
 
+/**
+ * S2 09jr — the tier vocabulary bridge. The SERVER's tier names are canonical (tools/contract.ts TOOL_TIERS: "OPS",
+ * "CUSTOMER_SUCCESS" — what a served toolTrace entry's `tier` carries); "CS" is only this catalogue's short form.
+ * Nothing served changes: the eval maps at its own edge, both ways, strictly (anything else ⇒ null, never a guess).
+ */
+export const SERVER_TIER_OF = { OPS: "OPS", CS: "CUSTOMER_SUCCESS" } as const satisfies Record<LiveTier, string>;
+export type ServerTier = (typeof SERVER_TIER_OF)[LiveTier];
+export function liveTierOf(serverTier: unknown): LiveTier | null {
+  return serverTier === SERVER_TIER_OF.OPS ? "OPS" : serverTier === SERVER_TIER_OF.CS ? "CS" : null;
+}
+
 /** The closed refusal set the scorer recognises (score.ts derives each from what the runner observed). */
 export const LIVE_REFUSAL_CODES = [
   "SUBJECT_NOT_RESOLVED", // the uniform "[customer not resolved]" literal

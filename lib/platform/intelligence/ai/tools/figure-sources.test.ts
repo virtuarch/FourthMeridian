@@ -315,9 +315,9 @@ function wiring(): void {
   const h = code(read("lib/platform/intelligence/ai/conversations/handlers.ts"));
   const rs = h.slice(h.indexOf("async function runAndSettle("), h.indexOf("async function admit("));
   check("the handler splits the figure sources off BEFORE the settle (the stored outcome never carries them)",
-    rs.indexOf("const { toolTrace, figureSources, ...outcome } = run;") > 0 && rs.indexOf("const { toolTrace, figureSources, ...outcome } = run;") < rs.indexOf("settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome)"), rs);
+    rs.indexOf("const { toolTrace, figureSources, answerVerdict, ...outcome } = run;") > 0 && rs.indexOf("const { toolTrace, figureSources, answerVerdict, ...outcome } = run;") < rs.indexOf("settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome)"), rs);
   check("create AND append responses carry the sources of the turn they ran (a replay carries none)",
-    (h.match(/pairResponse\(\d+, [^;]*r\.toolTrace, r\.figureSources\)/g) ?? []).length === 2 && (h.match(/pairResponse\(/g) ?? []).length >= 4);
+    (h.match(/pairResponse\(\d+, [^;]*r\.toolTrace, r\.figureSources, r\.answerVerdict\)/g) ?? []).length === 2 && (h.match(/pairResponse\(/g) ?? []).length >= 4);
   check("the conversations handler positions through the PURE conversations/figure-positions.ts and imports no tool registry (no DB-touching import on the memory / purge routes)",
     /from "\.\/figure-positions"/.test(h) && !/tools\/registry|tools\/figure-sources/.test(h));
   const positions = read("lib/platform/intelligence/ai/conversations/figure-positions.ts");

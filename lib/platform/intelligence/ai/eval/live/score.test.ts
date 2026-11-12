@@ -18,7 +18,7 @@ import { LIVE_CASES, type LiveCase } from "./cases";
 import { guardedFacts } from "./field-map";
 import {
   causalFindings, evaluatePackGates, numericClaims, observeServedAnswer, oracleKeyOfSource, renderedOracle, scoreCase, scorePackRun,
-  EXPORT_LEAK_CHECK, IDENTITY_FALLBACK_LITERAL, RECORD_GONE_LITERAL, RECORD_PENDING_LITERAL, SERVED_FIGURE_SOURCE_KEYS, SUBJECT_UNRESOLVED_LITERAL,
+  EXPORT_LEAK_CHECK, IDENTITY_FALLBACK_LITERAL, RECORD_GONE_LITERAL, RECORD_PENDING_LITERAL, SERVED_ANSWER_VERDICTS, SERVED_FIGURE_SOURCE_KEYS, SUBJECT_UNRESOLVED_LITERAL, liveAnswerVerdictOf,
   type CaseObservation, type ObservedSegment, type ObservedTurn, type OracleValue, type PackRunScore, type ScoreContext,
 } from "./score";
 import { FIGURE_SOURCE_KEYS, alignedFigureSources, placedSpansOf, storedFigureSources } from "../../tools/figure-sources";
@@ -26,7 +26,7 @@ import { PLATFORM_AI_TOOL_REGISTRY } from "../../tools/registry";
 import { RECORD_GONE_TEXT, RECORD_PENDING_TEXT, extractRecordPlaceholders, renderClosedValue, type RecordSpan } from "../../compose/record";
 import { captureAggregateResult, extractAggregatePlaceholders, type AggregateCaptures } from "../../compose/aggregate";
 import type { TypedAnswerSegment } from "../../compose/segments";
-import { displayWithRecords } from "../../core";
+import { ANSWER_VERDICTS, displayWithRecords } from "../../core";
 import { storedAnswerOf } from "../../conversations/turn";
 
 let failures = 0;
@@ -354,6 +354,30 @@ console.log("\ne0-live score — B1: a served response's figureSources key its s
     observeServedAnswer(cHealth, content, [{ segment: 0, start: 0, end: 999, source: "record", recordKind: "CONNECTION", fieldCode: "healthState" }]).every((s) => s.key === undefined)
     && observeServedAnswer(cHealth, display, [...askSources, { ...askSources[0], start: askSources[0].start + 1 }], ["get_customer_connections"]).filter((s) => s.key !== undefined).length === 1);
   check("the scorer output still carries no value", !/needs reauth|NEEDS_REAUTH|2026-11-03/.test(JSON.stringify([pHealth, pSync, pErr])));
+}
+
+console.log("\ne0-live score — S2 09jr: answerVerdict per turn; FALLBACK distinct from PARITY_MISSING; server tier vocabulary\n");
+{
+  check("SERVED_ANSWER_VERDICTS = the served ANSWER_VERDICTS (closed set, pinned)", JSON.stringify(SERVED_ANSWER_VERDICTS) === JSON.stringify(ANSWER_VERDICTS));
+  check("liveAnswerVerdictOf: served value kept; missing ⇒ ABSENT; anything else ⇒ UNKNOWN (never echoed)",
+    liveAnswerVerdictOf("COMPLETE") === "COMPLETE" && liveAnswerVerdictOf("FALLBACK:RECORD_UNRESOLVED") === "FALLBACK:RECORD_UNRESOLVED" && liveAnswerVerdictOf(undefined) === "ABSENT"
+      && liveAnswerVerdictOf("FALLBACK:<script>") === "UNKNOWN" && liveAnswerVerdictOf(3) === "UNKNOWN");
+  const ok = scoreCase(profileCase, obs(profileCase, [{ ...goodProfileTurn(), answerVerdict: "COMPLETE" }], { oracle: ORACLE }), CTX);
+  check("a COMPLETE turn: recorded per turn, no fail", JSON.stringify(ok.answerVerdicts) === JSON.stringify(["COMPLETE"]) && ok.fails.length === 0, ok);
+  const fb = scoreCase(profileCase, obs(profileCase, [turn([{ kind: "text", text: "I couldn't verify that figure." }], { toolTrace: ["get_customer_connections"], answerVerdict: "FALLBACK:RECORD_UNRESOLVED" })], { oracle: ORACLE }), CTX);
+  check("a FALLBACK turn on a fact case ⇒ ANSWER_FALLBACK, NOT PARITY_MISSING (a distinct cause); parity still FAIL",
+    fb.fails.includes("ANSWER_FALLBACK") && !fb.fails.includes("PARITY_MISSING") && fb.parity === "FAIL" && JSON.stringify(fb.answerVerdicts) === JSON.stringify(["FALLBACK:RECORD_UNRESOLVED"]), fb);
+  const miss = scoreCase(profileCase, obs(profileCase, [turn([{ kind: "text", text: "Nothing placed." }], { toolTrace: ["get_customer_connections"], answerVerdict: "COMPLETE" })], { oracle: ORACLE }), CTX);
+  check("a COMPLETE turn that placed nothing ⇒ PARITY_MISSING (unchanged), no ANSWER_FALLBACK", miss.fails.includes("PARITY_MISSING") && !miss.fails.includes("ANSWER_FALLBACK"), miss.fails);
+  const absent = scoreCase(profileCase, obs(profileCase, [goodProfileTurn()], { oracle: ORACLE }), CTX);
+  check("no served verdict ⇒ ABSENT (recorded, no fail)", JSON.stringify(absent.answerVerdicts) === JSON.stringify(["ABSENT"]) && absent.fails.length === 0);
+  const run = scorePackRun("customers", [ok, fb, absent]);
+  check("the pack run counts turns by verdict (codes and counts only)", JSON.stringify(run.answerVerdicts) === JSON.stringify({ COMPLETE: 1, "FALLBACK:RECORD_UNRESOLVED": 1, ABSENT: 1 }) && run.failsByCode.ANSWER_FALLBACK === 1, run.answerVerdicts);
+  const opsCase = LIVE_CASES.find((c) => c.operator === "ops" && c.expected.kind === "fact")!;
+  const tierHit = scoreCase(opsCase, obs(opsCase, [turn([], { toolTrace: [...opsCase.expectedTools], toolTiers: ["OPS", "CUSTOMER_SUCCESS"] })]), CTX);
+  const tierOk = scoreCase(opsCase, obs(opsCase, [turn([], { toolTrace: [...opsCase.expectedTools], toolTiers: ["OPS"] })]), CTX);
+  check("a served CUSTOMER_SUCCESS tier step for an Ops viewer ⇒ TIER_VIOLATION (server tier mapped to CS); OPS alone ⇒ none",
+    tierHit.fails.includes("TIER_VIOLATION") && !tierOk.fails.includes("TIER_VIOLATION"), [tierHit.fails, tierOk.fails]);
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed, ${passed} passed`); process.exit(1); }

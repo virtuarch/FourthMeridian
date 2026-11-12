@@ -30,8 +30,8 @@
  */
 
 import {
-  PLATFORM_AI_TURN_TIMEOUT_MS, runPlatformAiTurn, segmentsText, traceLine,
-  type PlaceholderVerdict, type PlatformAiAnswer, type PlatformAiBinding, type PlatformAiGenerate, type PlatformAiToolInvoker, type PlatformAiTurnRecord, type PlatformAiTurnTools,
+  PLATFORM_AI_TURN_TIMEOUT_MS, answerVerdictOf, runPlatformAiTurn, segmentsText, traceLine,
+  type AnswerVerdict, type PlaceholderVerdict, type PlatformAiAnswer, type PlatformAiBinding, type PlatformAiGenerate, type PlatformAiToolInvoker, type PlatformAiTurnRecord, type PlatformAiTurnTools,
 } from "../core";
 import {
   EVIDENCE_REFS_MAX, REF_ID_SHAPE, STORED_CITATIONS_MAX, STORED_NOTES_MAX, STORED_RECORDS_MAX, STORED_SEGMENTS_MAX, STORED_TEXT_MAX,
@@ -51,9 +51,11 @@ import type { PlatformArea } from "@prisma/client";
 /** The settle outcome (store.ts SettleOutcome, restated here so this module stays free of the data module). */
 export type ConversationTurnOutcome =
   | { status: "COMPLETE"; answer: StoredAnswer; evidenceRefs: readonly EvidenceRef[]; /** Memory: the confirm card (never stored). */ memoryProposal?: MemoryProposalCard | null; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[];
-      /** B1: the placed spans' closed sources (tools/figure-sources.ts) — response only (never stored). */ figureSources?: readonly PlacedSpan[] }
+      /** B1: the placed spans' closed sources (tools/figure-sources.ts) — response only (never stored). */ figureSources?: readonly PlacedSpan[];
+      /** S2 09jr E-b: the closed answer verdict (core.ts answerVerdictOf) — response only (stripped before the settle). */ answerVerdict?: AnswerVerdict }
   | { status: "FAILED"; failureCode: "TIMEOUT" | "PROVIDER" | "KILL_SWITCH"; /** S2 09hu G1: response only (never stored). */ toolTrace?: readonly PlatformAiToolTraceEntry[];
-      /** B1: response only (never stored; a FAILED turn places nothing). */ figureSources?: readonly PlacedSpan[] };
+      /** B1: response only (never stored; a FAILED turn places nothing). */ figureSources?: readonly PlacedSpan[];
+      /** S2 09jr E-b: response only — present when the turn produced an answer that could not be stored; absent on a provider failure. */ answerVerdict?: AnswerVerdict };
 
 /** What the CURRENT token can see, for history's earlier-evidence filter: the binding's own accessors. */
 export function historyScopeFor(binding: Pick<PlatformAiBinding, "describeMetric" | "resolvePage">, reminted?: ReadonlyMap<StoredRecordSegment, string>, heldAreas?: ReadonlySet<PlatformArea>): HistoryScope {
@@ -236,14 +238,14 @@ export async function runConversationTurn(input: ConversationTurnInput): Promise
     // S2 C1: a saved note the model echoed never reaches the stored transcript.
     const answer = input.memory ? input.memory.redactStored(storedAnswerOf(result, record)) : storedAnswerOf(result, record);
     // P4: an unstorable answer — a bad shape, or the identity rule (IDENTITY_LEAK, defence in depth) — is never stored.
-    if (!isStoredAnswer(answer) || answerIdentityProblems(answer).length > 0) return { outcome: { status: "FAILED", failureCode: "PROVIDER" }, history, transcript, result };
+    if (!isStoredAnswer(answer) || answerIdentityProblems(answer).length > 0) return { outcome: { status: "FAILED", failureCode: "PROVIDER", answerVerdict: answerVerdictOf(result) }, history, transcript, result };
     let memoryProposal: MemoryProposalCard | null = null;
     if (input.memory) {
       const fin = input.memory.finalize(segmentsText(result.answer));
       memoryProposal = fin.card;
       if (fin.refusals.length > 0) input.onMemoryRefusals?.(fin.refusals);
     }
-    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record), ...(input.memory ? { memoryProposal } : {}) }, history, transcript, result, typed: record.typed };
+    return { outcome: { status: "COMPLETE", answer, evidenceRefs: evidenceRefsOf(record), ...(input.memory ? { memoryProposal } : {}), answerVerdict: answerVerdictOf(result) }, history, transcript, result, typed: record.typed };
   } catch (err) {
     let code: "KILL_SWITCH" | "TIMEOUT" | "PROVIDER";
     try { code = input.classify(err); } catch { code = "PROVIDER"; }

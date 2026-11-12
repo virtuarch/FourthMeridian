@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  CI_ONLY_TURNS, LIVE_CASES, LIVE_CASES_MIN_PER_PACK, LIVE_TOOL_TIER, MAX_LIVE_CASES_PER_FACT, PA1_PACKS, PLACEHOLDER,
+  CI_ONLY_TURNS, LIVE_CASES, LIVE_CASES_MIN_PER_PACK, LIVE_TOOL_TIER, MAX_LIVE_CASES_PER_FACT, PA1_PACKS, PLACEHOLDER, SERVER_TIER_OF, liveTierOf,
   distinctFactKey, formatGlobalFactLine, isCiOnly, liveGlobalFactReport, livePackCounts, operatorTier, turnCounts, type LiveCase, type LiveTool,
 } from "./cases";
 import { E0_T2_SENTINELS } from "../fixtures";
@@ -28,6 +28,7 @@ import { customersPackTools } from "../../tools/packs/customers";
 import { incidentsPackTools } from "../../tools/packs/incidents";
 import { onboardingPackTools } from "../../tools/packs/onboarding";
 import { connectionsPackTools } from "../../tools/packs/connections";
+import { TOOL_TIERS } from "../../tools/contract";
 
 let failures = 0;
 let passed = 0;
@@ -160,7 +161,12 @@ check("census: no real institution / card-product name in the catalogue", realHi
 console.log("\ne0-live cases — tool tiers equal the pack contracts\n");
 const stub = {} as never;
 const contracts = [...customersPackTools(stub), ...incidentsPackTools(stub), ...onboardingPackTools(stub), ...connectionsPackTools(stub)];
-const contractTier = new Map(contracts.map((t) => [t.name, t.requires.tier === "OPS" ? "OPS" : "CS"]));
+// S2 09jr: the server tier is canonical; the catalogue's short form maps strictly (an unknown server tier ⇒ null ⇒ a mismatch).
+const contractTier = new Map(contracts.map((t) => [t.name, liveTierOf(t.requires.tier)]));
+check("liveTierOf / SERVER_TIER_OF: OPS ↔ OPS, CUSTOMER_SUCCESS ↔ CS, both ways; anything else ⇒ null",
+  liveTierOf("OPS") === "OPS" && liveTierOf("CUSTOMER_SUCCESS") === "CS" && liveTierOf("CS") === null && liveTierOf("cs") === null && liveTierOf(undefined) === null
+    && SERVER_TIER_OF.CS === "CUSTOMER_SUCCESS" && SERVER_TIER_OF.OPS === "OPS" && (["OPS", "CS"] as const).every((t) => liveTierOf(SERVER_TIER_OF[t]) === t));
+check("SERVER_TIER_OF's values are EXACTLY the served TOOL_TIERS (server vocabulary canonical)", JSON.stringify(Object.values(SERVER_TIER_OF).sort()) === JSON.stringify([...TOOL_TIERS].sort()));
 const tierMismatch = Object.entries(LIVE_TOOL_TIER).filter(([n, t]) => contractTier.get(n) !== t).map(([n]) => n);
 check("LIVE_TOOL_TIER matches every pack tool's requires.tier", tierMismatch.length === 0, tierMismatch);
 check("every PA-1 pack tool is in LIVE_TOOL_TIER", [...contractTier.keys()].every((n) => n in LIVE_TOOL_TIER), [...contractTier.keys()].filter((n) => !(n in LIVE_TOOL_TIER)));

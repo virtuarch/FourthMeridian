@@ -133,8 +133,23 @@ export interface RecordExtraction {
   unresolved: number;
   /** Well-formed record placeholders the model wrote (claims). */
   claims: number;
+  /**
+   * S2 09jr S-c/S-d — of `unresolved`, the MALFORMED ones (`{{r:…}}` that is not the `{{r:h_<16>|<field>}}` shape). A
+   * shape count only: it says nothing about which handles or fields exist (no oracle), so it may drive the one retry.
+   */
+  malformed: number;
   /** P8 — per span (same index): the record's closed facts (TurnRecordRef.facts) or null. Never stored. */
   facts: (Readonly<Record<string, unknown>> | null)[];
+}
+
+/**
+ * S2 09jr S-a — the ready-to-copy record placeholder for one of THIS turn's handles and one A1-allowlisted closed
+ * field (authz/boundary.ts builds a record's `placeholders` map with it). Server text only: the handle the boundary
+ * minted and the field CODE — never a value. null for anything that is not that shape.
+ */
+export function recordPlaceholderText(handle: string, field: string): string | null {
+  const s = `{{r:${handle}|${field}}}`;
+  return /^h_[A-Za-z0-9_-]{16}$/.test(handle) && isClosedField(field) && new RegExp(`^${RECORD_PLACEHOLDER.source}$`).test(s) ? s : null;
 }
 
 /**
@@ -144,7 +159,7 @@ export interface RecordExtraction {
 export function extractRecordPlaceholders(raw: string, lookup: TurnRecordLookup | undefined): RecordExtraction {
   const spans: RecordSpan[] = [];
   const facts: (Readonly<Record<string, unknown>> | null)[] = [];
-  let unresolved = 0, claims = 0;
+  let unresolved = 0, claims = 0, malformed = 0;
   let text = raw.replace(RECORD_PLACEHOLDER, (_m, handle: string, field: string) => {
     claims++;
     let ref: TurnRecordRef | null = null;
@@ -161,8 +176,8 @@ export function extractRecordPlaceholders(raw: string, lookup: TurnRecordLookup 
     facts.push(ref!.facts ?? null);
     return `${RECORD_OPEN}${String.fromCharCode(97 + spans.length - 1)}${RECORD_CLOSE}`;
   });
-  text = text.replace(RECORD_PLACEHOLDER_LOOSE, () => { unresolved++; return " "; });
-  return { text, spans, unresolved, claims, facts };
+  text = text.replace(RECORD_PLACEHOLDER_LOOSE, () => { unresolved++; malformed++; return " "; });
+  return { text, spans, unresolved, claims, malformed, facts };
 }
 
 /** Mark every paired `{{inferred}}…{{/inferred}}` with private sentinels (rendered "Likely: …" later). */
@@ -204,6 +219,8 @@ export function identityShapesIn(text: string, t2Values: readonly string[] = [])
 
 /** True when a handle key appears as plain prose (a record the model did not place). */
 export const hasHandleText = (text: string): boolean => HANDLE_TEXT.test(text);
+/** S2 09jr S-d — how many handle keys appear as plain prose (RECORD_BARE_HANDLE; a count, never the key). */
+export const handleTextCount = (text: string): number => (text.match(new RegExp(HANDLE_TEXT.source, "g")) ?? []).length;
 
 // ── Replay markers (history → the model) ─────────────────────────────────────
 

@@ -84,7 +84,7 @@ import { labelPlaceholdersFor, placeholdersFor, resolvePlaceholders, windowMixNo
 import { LINK_TARGET_KINDS, SANITISE_KINDS, sanitiseAnswer, strippedLinkTargets, type LinkTargetKind, type SanitiseKind } from "./compose/sanitise";
 import { segmentsText, type AnswerSegment, type TypedAnswerSegment } from "./compose/segments";
 import {
-  RECORD_GONE_TEXT, RECORD_PENDING_TEXT, RECORD_PRIVATE_CHARS, RECORD_SENTINEL, extractRecordPlaceholders, hasHandleText, identityShapesIn, markInferred, renderInferred,
+  RECORD_GONE_TEXT, RECORD_PENDING_TEXT, RECORD_PRIVATE_CHARS, RECORD_SENTINEL, extractRecordPlaceholders, handleTextCount, identityShapesIn, markInferred, renderInferred,
   type RecordSpan, type TurnRecordLookup,
 } from "./compose/record";
 import { causalInPlay, markUnbackedCausal } from "./compose/causal";
@@ -94,8 +94,8 @@ import {
 } from "./compose/aggregate";
 import { isStaleEnvelope, staleNoteText, staleQualifierOf } from "./compose/stale";
 import {
-  DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
-  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type UnresolvedReason,
+  DIGIT_KINDS, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, PLACEHOLDER_VERDICTS, RECORD_REASONS, UNRESOLVED_REASONS, periodCorrectionText, periodMismatchCount, placeholderPasses,
+  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type RecordReason, type UnresolvedReason,
 } from "./compose/verdicts";
 import { envelopeHours, quotableWindowPhrase, requestedWindows } from "./compose/windows";
 import { parseAskedPeriods, windowDisclosureText } from "./compose/window-disclosure";
@@ -226,15 +226,15 @@ export type PlatformAiGenerate = (args: {
 export const PLATFORM_AI_SYSTEM_PROMPT = [
   "You are Fourth Meridian's Platform AI: platform-wide operational intelligence for operators. You are READ-ONLY: no tool you have can change anything, so never claim or offer to take an action.",
   "Answer ONLY from the results of the tools you call in this turn.",
-  "NEVER write a number or a digit yourself. Where a figure goes, COPY a placeholder string from your get_metric result VERBATIM and the server fills in the figure, its unit, its window and its status wording. Use \"placeholder\", or the part's entry in \"placeholders\"; copy its string exactly as given — never type, shorten or edit one.",
-  "Counts are figures: never write one as a word (\"two\", \"a dozen\", \"twice\"); copy the count part's placeholder (briefing counts are parts).",
-  "Do not write units ($, %, k, M) or \"at least\" next to a placeholder; the server writes them. Do not add, subtract, divide or estimate figures, and do not write dates, counts or metric ids in your own words: any digit outside a placeholder, or a placeholder for a metric you did not read in this turn, makes the whole answer refused. The one exception: you may repeat a time window the operator wrote in the question.",
+  "NEVER type a number, a digit or a number word yourself. Where a figure, count, code or time goes, COPY a placeholder string VERBATIM from a get_metric OR pack tool result — copy, never build: get_metric's \"placeholder\" or \"placeholders\" entry ({{m:…}}), a record's \"placeholders\" entry ({{r:…}}), an aggregate result's \"placeholders\" entry ({{a:…}}). The server fills in the value, unit, window and status wording. Never type, shorten or edit one; never write a handle (h_…) in prose.",
+  "Counts are figures: never write one as a word (\"two\", \"a dozen\", \"twice\"); copy its placeholder.",
+  "Do not write units ($, %, k, M) or \"at least\" next to a placeholder. Do not add, subtract, divide or estimate figures, or write dates, counts or metric ids in your own words: any digit outside a placeholder, or a placeholder no tool gave you this turn, makes the whole answer refused. The one exception: you may repeat a time window the operator wrote in the question.",
   "If a metric's status is UNAVAILABLE, say it is unavailable. Never present an unavailable figure as 0, $0, none or an estimate. PARTIAL means a lower bound.",
   "BRIEFING. For a general status question (\"how are we looking\", \"anything wrong\", \"status today\"), read the briefing metrics named in BRIEFING COVERAGE (the server's list for this operator; call several get_metric in one round) and answer in this order, most important first: (1) overall health; (2) customer-impacting failures; (3) incidents — active, needing verification, recently resolved; (4) sync and connection problems, including customers who must reconnect; (5) job and provider reliability; (6) costs or unusual activity, ONLY if the operator asked or a figure is anomalous — otherwise read no economics metric; (7) at most three recommended next actions, each a link from find_page / open_page or a drill.page. Lead with what is wrong; say briefly what is healthy. Name the area a figure comes from when you use more than one area (the get_metric result's \"area\"). Name an unhealthy job, domain, rule or resource only from a result's \"subjects\".",
   "COVERAGE. Never claim to have checked anything you did not read. Say plainly which briefing domains are unavailable, not permitted for this operator, or not yet covered (BRIEFING COVERAGE lists them); never imply that something you could not read is fine.",
   "\"Today\" or \"right now\" is not a window: read point-in-time metrics, and for a windowed metric use the smallest window it lists, letting the figure state its own window. Pass a window only from that metric's \"windows\".",
   "When the question is about cost (spend, what is costing the most), read the economics metrics. A dollar figure whose basis.kind is \"estimated\" is an estimate: call it estimated, never billed or invoiced. If you compare categories and any figure is PARTIAL or a part is null, say it is the largest of the measured categories and that a full ranking can't be verified. The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns.",
-  "Never mention placeholders. {{m:…}} renders a figure only, never a name, and you never type a name for one: copy \"labelPlaceholder\" (the metric) or a \"labelPlaceholders\" entry (a category; a ranking's names the category the server picked), form {{l:<metric>|part=<name>|window=<days>}}.",
+  "Never mention placeholders. {{m:…}}, {{r:…}} and {{a:…}} render values, never a name, and you never type a name: copy \"labelPlaceholder\" (the metric) or a \"labelPlaceholders\" entry (a category; a ranking's names the category the server picked).",
   "Name the ranked category once, using its ranking label placeholder; never also use that category's own label placeholder in the same sentence.",
   "If asked_period_available is false, never name the asked period; describe the time with window_phrase.",
   "A {{m:…}} figure already states its window; use window_phrase only in a sentence that has no figure, never right after a figure.",
@@ -383,6 +383,12 @@ export interface ToolEvidence {
    * returned). The ONLY thing {{a:<tool>|<path>}} fills from; per turn, never stored, never cross-turn.
    */
   aggregates?: AggregateCaptures;
+  /**
+   * S2 09jr S-a/S-c — every ready-to-copy {{r:…}} / {{a:…}} string a pack tool result handed the model THIS turn (the
+   * boundary's `placeholders` maps), in issue order. Per turn, never stored. The corrective retry lists the ones that
+   * still resolve; nothing ever resolves BECAUSE it is listed here (resolution is the record lookup / the captures).
+   */
+  issuedPlaceholders?: string[];
 }
 
 export const PLATFORM_AI_TOOLS =["list_metrics", "get_metric", "find_page", "open_page"] as const;
@@ -714,9 +720,9 @@ export {
 } from "./compose/sanitise";
 export { envelopeWindowText, quotableWindowPhrase, requestedWindows } from "./compose/windows";
 export {
-  DIGIT_KINDS, LIST_MARKER, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, PLACEHOLDER_VERDICTS, UNRESOLVED_REASONS, WINDOW_REPEAT_REACH,
+  DIGIT_KINDS, LIST_MARKER, MALFORMED_REASONS, NUMBER_WORD_FAMILIES, PLACEHOLDER_VERDICTS, RECORD_REASONS, UNRESOLVED_REASONS, WINDOW_REPEAT_REACH,
   classifyDigitRuns, labelRepeatCount, numberWordCount, numberWordFamilies, periodCorrectionText, periodMismatchCount, placeholderPasses, stripListMarkers, windowRepeatCount,
-  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type RenderedSpan, type UnresolvedReason,
+  type ClaimsSummary, type DigitKind, type MalformedReason, type NumberWordFamily, type PlaceholderVerdict, type ReasonCounts, type RecordReason, type RenderedSpan, type UnresolvedReason,
 } from "./compose/verdicts";
 export {
   NO_RANKED_CATEGORY, USER_NUMERAL_TIME_UNIT, admitUserNumerals, bareKeyNet, fixedWindowOption, formatPlaceholder, labelPlaceholdersFor, malformedShapes,
@@ -755,6 +761,8 @@ export interface PlatformAiAnswer {
     replaced: boolean; verdict: PlaceholderVerdict;
     /** Diagnosis: why placeholders did not resolve / were malformed — reason CODES and counts, never text. */
     unresolvedBy: ReasonCounts<UnresolvedReason>; malformedBy: ReasonCounts<MalformedReason>;
+    /** S2 09jr S-d — record placeholder failures by SHAPE (RECORD_MALFORMED / RECORD_BARE_HANDLE), counts only; absent when none. */
+    recordBy?: ReasonCounts<RecordReason>;
     /** Counts by DigitKind of the leftover digit runs (UNGROUNDED_DIGIT diagnosis). */
     digitBy: ReasonCounts<DigitKind>;
     /** (i) NUMBER_WORD runs by word family (counts only; never the words). */
@@ -835,6 +843,7 @@ export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" 
   return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)}${linkTo ? ` linkTo=${linkTo}` : ""} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
     + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "")
+    + (reasonCounts(RECORD_REASONS, r.grounding.recordBy) ? ` recordBy=${reasonCounts(RECORD_REASONS, r.grounding.recordBy)}` : "")
     + (reasonCounts(DIGIT_KINDS, r.grounding.digitBy) ? ` digitBy=${digitByText(r.grounding.digitBy, r.grounding.wordFamilyBy)}` : "")
     + (mechanismLeakCount(r.answer) > 0 ? ` mechanismLeak=${mechanismLeakCount(r.answer)}` : "")
     + (typeof r.grounding.periodMismatch === "number" ? ` period_mismatch=${r.grounding.periodMismatch}` : "")
@@ -843,6 +852,28 @@ export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" 
     + (typeof r.grounding.windowRepeat === "number" ? ` window_repeat=${r.grounding.windowRepeat}` : "")
     + (r.grounding.retry ? ` retry=${r.grounding.retry.outcome}(${r.grounding.retry.verdict})${r.grounding.retry.digitBy && reasonCounts(DIGIT_KINDS, r.grounding.retry.digitBy) ? ` retryDigitBy=${digitByText(r.grounding.retry.digitBy, r.grounding.retry.wordFamilyBy)}` : ""}` : "")
     + (r.briefing ? ` briefing=composed:${r.briefing.kind === "COST_RANKING" ? "COST:" : ""}${r.briefing.pattern} list=${r.briefing.list} shown=${r.briefing.shown} overflow=${r.briefing.overflow} lines=${r.briefing.lines}${r.briefing.windowNote ? " windowNote=1" : ""} cost=${r.briefing.cost ?? "none"} issues=${r.briefing.issues} figures=${r.briefing.figures} framing=${r.briefing.framing}${r.briefing.framingVerdict && r.briefing.framing === "DROPPED" ? `(${r.briefing.framingVerdict})` : ""} actions=${r.briefing.actions} actionsDropped=${r.briefing.actionsDropped} absolute=${r.briefing.absoluteStripped}${r.briefing.modelError ? " modelError=1" : ""}` : "");
+}
+
+/**
+ * S2 09jr E-b — the RESPONSE's closed `answerVerdict`: "COMPLETE" (the model's answer, or a composed briefing, was
+ * shown) or "FALLBACK:<code>" (a server fallback was shown instead): <code> is a replacing placeholder verdict (the
+ * same enum the trace already carries) or BUDGET (the turn hit its round / token bound before answering). A closed
+ * set, codes only, decided from the turn's own result — the same for every operator. Response only: the
+ * conversations handler strips it before the settle (never stored, never on a replay); never inside toolTrace.
+ */
+export const ANSWER_FALLBACK_CODES = [...PLACEHOLDER_VERDICTS.filter((v) => !placeholderPasses(v)), "BUDGET"] as const;
+export type AnswerFallbackCode = Exclude<PlaceholderVerdict, "NONE" | "RESOLVED" | "RESOLVED_WITH_WINDOW_NOTE" | "RESOLVED_WITH_STALE_NOTE" | "UNMARKED_CAUSAL"> | "BUDGET";
+export type AnswerVerdict = "COMPLETE" | `FALLBACK:${AnswerFallbackCode}`;
+export const ANSWER_VERDICTS: readonly AnswerVerdict[] = ["COMPLETE", ...ANSWER_FALLBACK_CODES.map((c) => `FALLBACK:${c}` as AnswerVerdict)];
+/** The response key that carries it (pinned; the only key this adds to a response body). */
+export const ANSWER_VERDICT_KEY = "answerVerdict";
+
+export function answerVerdictOf(r: Pick<PlatformAiAnswer, "grounding" | "stop">): AnswerVerdict {
+  if (r.grounding.replaced) {
+    const v = `FALLBACK:${r.grounding.verdict}` as AnswerVerdict;
+    return ANSWER_VERDICTS.includes(v) ? v : "FALLBACK:UNRESOLVED_PLACEHOLDER";
+  }
+  return r.stop === "ANSWERED" ? "COMPLETE" : "FALLBACK:BUDGET";
 }
 
 export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
@@ -896,12 +927,28 @@ export function citationEnvelopes(envelopes: readonly MetricEnvelope[]): MetricE
 export const RETRYABLE_VERDICTS: readonly PlaceholderVerdict[] = ["UNGROUNDED_DIGIT", "WINDOW_MISMATCH"];
 
 /**
+ * S2 09jr S-c — RECORD_UNRESOLVED is retryable ONLY when every record failure is a SHAPE failure: malformed record
+ * placeholders and / or bare handles in prose, with NO well-formed `{{r:…}}` that failed to resolve (a forged /
+ * foreign / undeclared one stays the immediate fallback — no oracle) and no aggregate placeholder that failed
+ * (AGGREGATE_UNRESOLVED is never retried). Pure: counts in, a boolean out.
+ */
+export function recordRetryable(rec: { unresolved: number; malformed: number }, bareHandles: number, aggregateUnresolved: number): boolean {
+  return rec.unresolved - rec.malformed === 0 && aggregateUnresolved === 0 && (rec.malformed > 0 || bareHandles > 0);
+}
+
+/**
  * B1 — the server's corrective message: WHY the answer was not shown (codes turned into words)
  * and the EXACT placeholders available from this turn's envelopes (placeholdersFor /
  * labelPlaceholdersFor — the strings get_metric already handed the model). Server text only.
+ * S2 09jr S-c: plus THIS turn's issued pack placeholders ({{r:…}} / {{a:…}} — the strings the pack results already
+ * handed the model; the caller passes only those that still resolve), and the record shape reasons (recordBy).
  */
-export function correctiveRetryMessage(verdict: PlaceholderVerdict, digitBy: ReasonCounts<DigitKind>, envelopes: readonly MetricEnvelope[]): string {
+export function correctiveRetryMessage(verdict: PlaceholderVerdict, digitBy: ReasonCounts<DigitKind>, envelopes: readonly MetricEnvelope[],
+  pack: { issued?: readonly string[]; recordBy?: ReasonCounts<RecordReason> } = {}): string {
+  const recordWhy = [(pack.recordBy?.RECORD_MALFORMED ?? 0) > 0 ? "a record placeholder was not copied exactly" : null, (pack.recordBy?.RECORD_BARE_HANDLE ?? 0) > 0 ? "it wrote a handle as text" : null]
+    .filter(Boolean).join(" and ");
   const why = verdict === "WINDOW_MISMATCH" ? "a placeholder named a window this turn did not read"
+    : verdict === "RECORD_UNRESOLVED" ? recordWhy || "a record placeholder was not copied exactly"
     : [(digitBy.NUMBER_WORD ?? 0) > 0 ? "it wrote counts as words" : null, Object.entries(digitBy).some(([k, n]) => k !== "NUMBER_WORD" && (n ?? 0) > 0) ? "it wrote digits outside placeholders" : null]
       .filter(Boolean).join(" and ") || "it wrote a figure outside a placeholder";
   const seen = new Set<string>();
@@ -915,9 +962,11 @@ export function correctiveRetryMessage(verdict: PlaceholderVerdict, digitBy: Rea
     const names = l.labelPlaceholders ? `; names: ${Object.entries(l.labelPlaceholders).map(([part, x]) => `${part} ${x}`).join(", ")}` : "";
     lines.push(`- ${l.labelPlaceholder} — figures: ${figs}${names}`);
   }
+  const issued = [...new Set(pack.issued ?? [])];
+  if (issued.length > 0) lines.push(`- records and overview counts: ${issued.join(", ")}`);
   return [
     `SERVER CHECK: your answer was NOT shown to the operator because ${why}. Rewrite the whole answer ONCE, from the same tool results.`,
-    "Copy every figure ONLY as one of the placeholders below, exactly as written — the server fills in the figure, its unit and its window. Write no digit and no number word (one, two, twice, a dozen, a single…) outside a placeholder, and never add or change a |window.",
+    "Copy every figure ONLY as one of the placeholders below, exactly as written — the server fills in the figure, its unit and its window. Write no digit and no number word (one, two, twice, a dozen, a single…) outside a placeholder, never write a handle (h_…) as text, and never add or change a |window.",
     "AVAILABLE PLACEHOLDERS (this turn's reads):",
     ...(lines.length ? lines : ["- none: answer without figures"]),
   ].join("\n");
@@ -1078,27 +1127,39 @@ export async function runPlatformAiTurn(input: {
     const placed = resolvePlaceholders(s.segments, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
     // P4: record claims join the counts; an identity shape in the MODEL'S OWN prose is a hard fail
     // (IDENTITY_LEAK, before every other verdict); an unresolved record / a bare handle ⇒ RECORD_UNRESOLVED.
-    for (const x of [rec, agg]) {
-      if (x.claims === 0) continue;
-      placed.summary.claims += x.claims;
-      placed.summary.resolved += x.claims - x.unresolved;
+    // S2 09jr S-d: counted from the spans + every unresolved one (malformed included) and every bare handle — no
+    // `claims === 0` skip, so a turn whose only record placeholders were malformed (or bare handles) is never 0/0/0.
+    const bareHandles = handleTextCount(placed.modelProse);
+    for (const x of [{ resolved: rec.spans.length, unresolved: rec.unresolved + bareHandles }, { resolved: agg.spans.length, unresolved: agg.unresolved }]) {
+      placed.summary.claims += x.resolved + x.unresolved;
+      placed.summary.resolved += x.resolved;
       placed.summary.unresolved += x.unresolved;
     }
+    const recordBy: ReasonCounts<RecordReason> = {
+      ...(rec.malformed > 0 ? { RECORD_MALFORMED: rec.malformed } : {}), ...(bareHandles > 0 ? { RECORD_BARE_HANDLE: bareHandles } : {}),
+    };
     if (identityShapesIn(placed.modelProse).length > 0) placed.summary.verdict = "IDENTITY_LEAK";
-    else if (rec.unresolved > 0 || hasHandleText(placed.modelProse)) placed.summary.verdict = "RECORD_UNRESOLVED";
+    else if (rec.unresolved > 0 || bareHandles > 0) placed.summary.verdict = "RECORD_UNRESOLVED";
     // S2 09io B3: any aggregate placeholder that did not fill (tool not called this turn, path not allowed, value
     // absent / conflicting, malformed) ⇒ ONE verdict, the same safe fallback whatever the reason (never retried).
     else if (agg.unresolved > 0) placed.summary.verdict = "AGGREGATE_UNRESOLVED";
     else if (causal.marked > 0 && (placed.summary.verdict === "RESOLVED" || placed.summary.verdict === "NONE")) placed.summary.verdict = "UNMARKED_CAUSAL";
-    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans, aggSpans: agg.spans };
+    return { memText, memIds, removed: s.removed, kinds: s.kinds, placed, spans: rec.spans, aggSpans: agg.spans, recordBy,
+      recordRetryable: recordRetryable(rec, bareHandles, agg.unresolved) };
   };
   let first = evaluate(raw);
+  // S2 09jr S-c: the pack placeholders THIS turn's results issued that still resolve now (this turn's handles /
+  // captures) — the only pack strings the retry lists. Listing grants nothing: resolution stays the lookup / captures.
+  const stillIssued = () => [...new Set(ev.issuedPlaceholders ?? [])].filter((p) =>
+    p.startsWith("{{r:") ? extractRecordPlaceholders(p, input.records).spans.length === 1 : extractAggregatePlaceholders(p, ev.aggregates).spans.length === 1);
   // B1 (S2-approved): ONE corrective retry, only for UNGROUNDED_DIGIT (incl. NUMBER_WORD) / WINDOW_MISMATCH,
+  // and (S2 09jr S-c) RECORD_UNRESOLVED when its only causes are malformed record placeholders / bare handles,
   // inside the SAME bounds (a round left under PLATFORM_AI_MAX_ROUNDS, tokens under the ceiling; no tools).
   // B2: a retry that still fails ⇒ the fallback exactly as before. (A composed briefing never reaches here.)
   let retry: { outcome: "PASS" | "FAIL"; verdict: PlaceholderVerdict } | undefined;
-  if (stop === "ANSWERED" && RETRYABLE_VERDICTS.includes(first.placed.summary.verdict) && rounds < PLATFORM_AI_MAX_ROUNDS && tokens < PLATFORM_AI_TURN_TOKEN_CEILING) {
-    messages.push({ role: "system", content: correctiveRetryMessage(first.placed.summary.verdict, first.placed.digitBy, ev.envelopes) });
+  const retryable = RETRYABLE_VERDICTS.includes(first.placed.summary.verdict) || (first.placed.summary.verdict === "RECORD_UNRESOLVED" && first.recordRetryable);
+  if (stop === "ANSWERED" && retryable && rounds < PLATFORM_AI_MAX_ROUNDS && tokens < PLATFORM_AI_TURN_TOKEN_CEILING) {
+    messages.push({ role: "system", content: correctiveRetryMessage(first.placed.summary.verdict, first.placed.digitBy, ev.envelopes, { issued: stillIssued(), recordBy: first.recordBy }) });
     rounds++;
     const out = await input.generate({ model: input.model, messages, tools: [], maxTokens, signal: input.signal });
     tokens += out.usage?.totalTokens ?? 0;
@@ -1109,7 +1170,7 @@ export async function runPlatformAiTurn(input: {
       ...(pass ? {} : { digitBy: second.placed.digitBy, wordFamilyBy: second.placed.wordFamilyBy }) };
     if (pass) { first = second; raw = out.content ?? ""; }
   }
-  const { memText, memIds, removed, kinds, placed, spans, aggSpans } = first;
+  const { memText, memIds, removed, kinds, placed, spans, aggSpans, recordBy } = first;
   let answer = placed.segments;
   let typed: TypedAnswerSegment[] = placed.typed;
   let verdict = placed.summary.verdict;
@@ -1258,7 +1319,8 @@ export async function runPlatformAiTurn(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy, digitBy: placed.digitBy,
+      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy,
+        ...(Object.keys(recordBy).length ? { recordBy } : {}), digitBy: placed.digitBy,
         ...(Object.keys(placed.wordFamilyBy).length ? { wordFamilyBy: placed.wordFamilyBy } : {}), ...(periodMismatch !== undefined ? { periodMismatch } : {}),
         ...(retry ? { retry } : {}),
         ...(correction ? { correction } : {}),
@@ -1666,7 +1728,9 @@ export async function handlePlatformAiAsk(body: unknown, deps: PlatformAiAskDeps
     // B1: plus `figureSources` (the placed spans' closed sources, positioned on `answer`; never stored).
     const { trace, ...answer } = result;
     return { status: 200, body: { ...answer, ...(deps.toolTrace ? { toolTrace: deps.toolTrace(trace) } : {}),
-      ...(deps.figureSources ? { figureSources: deps.figureSources(record.typed, result.answer, recordText) } : {}) } };
+      ...(deps.figureSources ? { figureSources: deps.figureSources(record.typed, result.answer, recordText) } : {}),
+      // S2 09jr E-b: the closed response-only verdict (COMPLETE / FALLBACK:<code>) — the same for every operator; nothing stored.
+      answerVerdict: answerVerdictOf(result) } };
   } catch (err) {
     const c = deps.classify(err);
     return refuse(503, c);
